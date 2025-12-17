@@ -72,6 +72,8 @@ impl Tool for ListProjectsTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
+            // This tool is only needed in MCP mode where we don't control the system message.
+            // The regular code-assistant will insert known projects into the system message.
             supported_scopes: &[ToolScope::McpServer],
             hidden: false,
             title_template: None, // Uses default tool name

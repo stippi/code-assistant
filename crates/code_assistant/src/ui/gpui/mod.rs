@@ -16,7 +16,9 @@ mod plan_banner;
 mod root;
 pub mod sandbox_selector;
 pub mod simple_renderers;
+pub mod spawn_agent_renderer;
 pub mod theme;
+pub mod tool_output_renderers;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::PlanState;
@@ -27,6 +29,8 @@ use crate::ui::gpui::{
     elements::MessageRole,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
     simple_renderers::SimpleParameterRenderer,
+    spawn_agent_renderer::SpawnAgentInstructionsRenderer,
+    tool_output_renderers::{SpawnAgentOutputRenderer, ToolOutputRendererRegistry},
 };
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use assets::Assets;
@@ -235,11 +239,19 @@ impl Gpui {
             false, // These are not full-width
         )));
 
+        // Register spawn_agent instructions renderer (full-width markdown)
+        registry.register_renderer(Box::new(SpawnAgentInstructionsRenderer));
+
         // Wrap the registry in Arc for sharing
         let parameter_renderers = Arc::new(registry);
 
         // Set the global registry
         ParameterRendererRegistry::set_global(parameter_renderers.clone());
+
+        // Initialize tool output renderers registry
+        let mut tool_output_registry = ToolOutputRendererRegistry::new();
+        tool_output_registry.register_renderer(Box::new(SpawnAgentOutputRenderer));
+        ToolOutputRendererRegistry::set_global(Arc::new(tool_output_registry));
 
         // Create a channel to send and receive UiEvents
         let (tx, rx) = async_channel::unbounded::<UiEvent>();
@@ -1001,6 +1013,20 @@ impl Gpui {
                     path.display()
                 );
             }
+            UiEvent::CancelSubAgent { tool_id } => {
+                debug!("UI: CancelSubAgent event for tool_id: {}", tool_id);
+                // Forward to backend with current session ID
+                if let Some(session_id) = self.current_session_id.lock().unwrap().clone() {
+                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::CancelSubAgent {
+                            session_id,
+                            tool_id,
+                        });
+                    }
+                } else {
+                    warn!("UI: CancelSubAgent requested but no active session");
+                }
+            }
         }
     }
 
@@ -1323,6 +1349,7 @@ impl Gpui {
                     );
                 }
             }
+
             BackendResponse::SandboxPolicyChanged { session_id, policy } => {
                 let current_session_id = self.current_session_id.lock().unwrap().clone();
                 if current_session_id.as_deref() == Some(session_id.as_str()) {
@@ -1337,6 +1364,17 @@ impl Gpui {
                         session_id, current_session_id
                     );
                 }
+            }
+            BackendResponse::SubAgentCancelled {
+                session_id,
+                tool_id,
+            } => {
+                debug!(
+                    "Received BackendResponse::SubAgentCancelled for tool {} in session {}",
+                    tool_id, session_id
+                );
+                // The sub-agent will update its own UI state via the normal tool output mechanism
+                // No additional UI update needed here
             }
         }
     }

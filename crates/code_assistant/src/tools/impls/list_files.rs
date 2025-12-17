@@ -113,6 +113,8 @@ impl Tool for ListFilesTool {
                 ToolScope::McpServer,
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentReadOnly,
+                ToolScope::SubAgentDefault,
             ],
             hidden: false,
             title_template: Some("Listing files in {paths}"),

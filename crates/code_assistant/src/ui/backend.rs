@@ -52,6 +52,12 @@ pub enum BackendEvent {
         session_id: String,
         policy: SandboxPolicy,
     },
+
+    // Sub-agent management
+    CancelSubAgent {
+        session_id: String,
+        tool_id: String,
+    },
 }
 
 // Response from backend to UI
@@ -83,9 +89,14 @@ pub enum BackendResponse {
         session_id: String,
         model_name: String,
     },
+
     SandboxPolicyChanged {
         session_id: String,
         policy: SandboxPolicy,
+    },
+    SubAgentCancelled {
+        session_id: String,
+        tool_id: String,
     },
 }
 
@@ -164,6 +175,11 @@ pub async fn handle_backend_events(
             BackendEvent::ChangeSandboxPolicy { session_id, policy } => Some(
                 handle_change_sandbox_policy(&multi_session_manager, &session_id, policy).await,
             ),
+
+            BackendEvent::CancelSubAgent {
+                session_id,
+                tool_id,
+            } => Some(handle_cancel_sub_agent(&multi_session_manager, &session_id, &tool_id).await),
         };
 
         // Send response back to UI only if there is one
@@ -543,5 +559,54 @@ async fn handle_change_sandbox_policy(
         Err(e) => BackendResponse::Error {
             message: format!("Failed to update sandbox policy: {e}"),
         },
+    }
+}
+
+async fn handle_cancel_sub_agent(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    tool_id: &str,
+) -> BackendResponse {
+    debug!(
+        "Cancelling sub-agent {} for session {}",
+        tool_id, session_id
+    );
+
+    let result = {
+        let manager = multi_session_manager.lock().await;
+        manager.cancel_sub_agent(session_id, tool_id)
+    };
+
+    match result {
+        Ok(true) => {
+            info!(
+                "Successfully cancelled sub-agent {} for session {}",
+                tool_id, session_id
+            );
+            BackendResponse::SubAgentCancelled {
+                session_id: session_id.to_string(),
+                tool_id: tool_id.to_string(),
+            }
+        }
+        Ok(false) => {
+            debug!(
+                "Sub-agent {} not found or already completed for session {}",
+                tool_id, session_id
+            );
+            // Not really an error - the sub-agent may have already completed
+            BackendResponse::SubAgentCancelled {
+                session_id: session_id.to_string(),
+                tool_id: tool_id.to_string(),
+            }
+        }
+        Err(e) => {
+            error!(
+                "Failed to cancel sub-agent {} for session {}: {}",
+                tool_id, session_id, e
+            );
+            BackendResponse::Error {
+                message: format!("Failed to cancel sub-agent: {e}"),
+            }
+        }
     }
 }

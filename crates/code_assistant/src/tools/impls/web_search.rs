@@ -108,11 +108,15 @@ impl Tool for WebSearchTool {
                 "idempotentHint": true,
                 "openWorldHint": true
             })),
+
             supported_scopes: &[
                 ToolScope::McpServer,
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentReadOnly,
+                ToolScope::SubAgentDefault,
             ],
+            // Note: can be disabled in read-only sub-agents if needed later.
             hidden: false,
             title_template: Some("Searching web for '{query}'"),
         }

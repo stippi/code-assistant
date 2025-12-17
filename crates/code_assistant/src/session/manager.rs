@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
-use crate::agent::{Agent, AgentComponents};
+use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
 use crate::permissions::PermissionMediator;
 use crate::persistence::{
@@ -315,8 +315,31 @@ impl SessionManager {
 
         let sandboxed_project_manager = Box::new(crate::config::SandboxAwareProjectManager::new(
             project_manager,
-            sandbox_context_clone,
+            sandbox_context_clone.clone(),
         ));
+
+        // Get the cancellation registry from the session instance
+        let sub_agent_cancellation_registry = self
+            .active_sessions
+            .get(session_id)
+            .map(|s| s.sub_agent_cancellation_registry.clone())
+            .unwrap_or_else(|| Arc::new(SubAgentCancellationRegistry::default()));
+
+        // Create sub-agent runner
+        let model_name_for_subagent = session_state
+            .model_config
+            .as_ref()
+            .map(|c| c.model_name.clone())
+            .unwrap_or_else(|| self.default_model_name.clone());
+        let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> =
+            Arc::new(DefaultSubAgentRunner::new(
+                model_name_for_subagent,
+                session_config.clone(),
+                sandbox_context_clone,
+                sub_agent_cancellation_registry.clone(),
+                proxy_ui.clone(),
+                permission_handler.clone(),
+            ));
 
         let components = AgentComponents {
             llm_provider,
@@ -325,6 +348,7 @@ impl SessionManager {
             ui: proxy_ui,
             state_persistence: state_storage,
             permission_handler,
+            sub_agent_runner: Some(sub_agent_runner),
         };
 
         let mut agent = Agent::new(components, session_config.clone());
@@ -435,6 +459,17 @@ impl SessionManager {
         self.persistence.delete_chat_session(session_id)?;
 
         Ok(())
+    }
+
+    /// Cancel a running sub-agent by its tool ID
+    /// Returns Ok(true) if the sub-agent was found and cancelled,
+    /// Ok(false) if the sub-agent was not found (may have already completed)
+    pub fn cancel_sub_agent(&self, session_id: &str, tool_id: &str) -> Result<bool> {
+        if let Some(session_instance) = self.active_sessions.get(session_id) {
+            Ok(session_instance.cancel_sub_agent(tool_id))
+        } else {
+            Err(anyhow::anyhow!("Session not found: {}", session_id))
+        }
     }
 
     /// Get a session instance by ID

@@ -7,6 +7,10 @@ pub enum ToolScope {
     Agent,
     /// Tool can be used in the agent when configured for diff blocks format
     AgentWithDiffBlocks,
+    /// Tool scope for sub-agents running in a restricted, read-only mode
+    SubAgentReadOnly,
+    /// Tool scope for sub-agents running with broader permissions (reserved for future use)
+    SubAgentDefault,
 }
 
 /// Specification for a tool, including metadata

@@ -5,9 +5,17 @@ pub trait Render: Send + Sync + 'static {
     /// Generate a short status message for display in action history
     fn status(&self) -> String;
 
-    /// Format the detailed output, with awareness of other tool results
+    /// Format the detailed output for LLM context (tool result in conversation)
     /// The resources_tracker helps detect and handle redundant output
     fn render(&self, resources_tracker: &mut ResourcesTracker) -> String;
+
+    /// Format the output for UI display in tool blocks.
+    /// By default, returns the same as render().
+    /// Override this for tools that need different UI representation (e.g., spawn_agent
+    /// returns JSON for custom rendering while render() returns plain text for LLM).
+    fn render_for_ui(&self, resources_tracker: &mut ResourcesTracker) -> String {
+        self.render(resources_tracker)
+    }
 }
 
 /// Tracks resources that have been included in tool outputs to prevent redundant display

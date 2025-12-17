@@ -395,6 +395,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -516,6 +517,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -640,6 +642,7 @@ async fn test_parse_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -778,6 +781,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -878,6 +882,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -995,6 +1000,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -1121,6 +1127,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -1596,6 +1603,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         ui,
         state_persistence,
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -1944,6 +1952,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -1998,6 +2007,7 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -2066,6 +2076,7 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {
@@ -2118,6 +2129,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        sub_agent_runner: None,
     };
 
     let session_config = SessionConfig {

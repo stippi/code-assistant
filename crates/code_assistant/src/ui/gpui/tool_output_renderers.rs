@@ -1,0 +1,509 @@
+use crate::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
+use crate::ui::ToolStatus;
+use gpui::{
+    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, ClickEvent, Context,
+    Element, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    Transformation, Window,
+};
+use gpui_component::text::TextView;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+use tracing::warn;
+
+/// A unique key for tool name
+pub type ToolKey = String;
+
+/// Trait for tool output renderers that can provide custom rendering for tool output
+pub trait ToolOutputRenderer: Send + Sync {
+    /// List of tool names this renderer supports
+    fn supported_tools(&self) -> Vec<String>;
+
+    /// Render the tool output as a UI element
+    /// Returns None if the default rendering should be used
+    fn render(
+        &self,
+        tool_id: &str,
+        output: &str,
+        status: &ToolStatus,
+        theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
+    ) -> Option<gpui::AnyElement>;
+}
+
+/// Registry for tool output renderers
+pub struct ToolOutputRendererRegistry {
+    renderers: HashMap<ToolKey, Arc<Box<dyn ToolOutputRenderer>>>,
+}
+
+// Global registry singleton using OnceLock (thread-safe)
+static GLOBAL_REGISTRY: OnceLock<Mutex<Option<Arc<ToolOutputRendererRegistry>>>> = OnceLock::new();
+
+impl ToolOutputRendererRegistry {
+    /// Set the global registry
+    pub fn set_global(registry: Arc<ToolOutputRendererRegistry>) {
+        let global_mutex = GLOBAL_REGISTRY.get_or_init(|| Mutex::new(None));
+        if let Ok(mut guard) = global_mutex.lock() {
+            *guard = Some(registry);
+        } else {
+            warn!("Failed to acquire lock for setting global tool output registry");
+        }
+    }
+
+    /// Get a reference to the global registry
+    pub fn global() -> Option<Arc<ToolOutputRendererRegistry>> {
+        if let Some(global_mutex) = GLOBAL_REGISTRY.get() {
+            if let Ok(guard) = global_mutex.lock() {
+                return guard.clone();
+            }
+        }
+        None
+    }
+
+    /// Create a new empty registry
+    pub fn new() -> Self {
+        Self {
+            renderers: HashMap::new(),
+        }
+    }
+
+    /// Register a new renderer for its supported tools
+    pub fn register_renderer(&mut self, renderer: Box<dyn ToolOutputRenderer>) {
+        let renderer_arc = Arc::new(renderer);
+        for tool_name in renderer_arc.supported_tools() {
+            if self.renderers.contains_key(&tool_name) {
+                warn!(
+                    "Overriding existing output renderer for tool: {}",
+                    tool_name
+                );
+            }
+            self.renderers.insert(tool_name, renderer_arc.clone());
+        }
+    }
+
+    /// Check if a custom renderer exists for a tool
+    #[allow(dead_code)]
+    pub fn has_renderer(&self, tool_name: &str) -> bool {
+        self.renderers.contains_key(tool_name)
+    }
+
+    /// Render tool output using the appropriate renderer
+    /// Returns None if no custom renderer is registered (use default rendering)
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_output(
+        &self,
+        tool_name: &str,
+        tool_id: &str,
+        output: &str,
+        status: &ToolStatus,
+        theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
+    ) -> Option<gpui::AnyElement> {
+        self.renderers
+            .get(tool_name)
+            .and_then(|renderer| renderer.render(tool_id, output, status, theme, window, cx))
+    }
+}
+
+impl Default for ToolOutputRendererRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Renderer for spawn_agent tool output
+/// Displays sub-agent tool calls in a compact, Zed-like style with markdown response
+pub struct SpawnAgentOutputRenderer;
+
+impl SpawnAgentOutputRenderer {
+    /// Get the icon for a tool name (matching file_icons.rs logic)
+    fn get_tool_icon(tool_name: &str) -> Option<SharedString> {
+        use super::file_icons;
+        file_icons::get().get_tool_icon(tool_name)
+    }
+
+    /// Render a single compact tool line showing tool title (one-liner)
+    fn render_tool_line(
+        tool: &crate::agent::sub_agent::SubAgentToolCall,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
+        use super::file_icons;
+
+        let icon = Self::get_tool_icon(&tool.name);
+
+        // Status-based colors
+        let (icon_color, text_color) = match tool.status {
+            SubAgentToolStatus::Running => (theme.info, theme.muted_foreground),
+            SubAgentToolStatus::Success => (theme.success, theme.muted_foreground),
+            SubAgentToolStatus::Error => (theme.danger, theme.danger),
+        };
+
+        // Use title (generated from template) if available,
+        // otherwise fall back to status message, then tool name
+        let display_text = tool
+            .title
+            .as_ref()
+            .filter(|t| !t.is_empty())
+            .cloned()
+            .or_else(|| tool.message.as_ref().filter(|m| !m.is_empty()).cloned())
+            .unwrap_or_else(|| tool.name.replace('_', " "));
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .py(px(2.))
+            .children(vec![
+                // Icon
+                file_icons::render_icon_container(&icon, 14.0, icon_color, "🔧").into_any(),
+                // Title text (one-liner from template or fallback)
+                div()
+                    .text_size(px(13.))
+                    .text_color(text_color)
+                    .child(display_text)
+                    .into_any(),
+            ])
+            .into_any()
+    }
+
+    /// Render activity line with a cancel button for running sub-agents
+    fn render_activity_with_cancel(
+        activity: SubAgentActivity,
+        tool_id: &str,
+        theme: &gpui_component::theme::Theme,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
+    ) -> Option<gpui::AnyElement> {
+        let (text, color, show_spinner, is_cancellable) = match activity {
+            SubAgentActivity::WaitingForLlm => ("Waiting...", theme.muted_foreground, true, true),
+            SubAgentActivity::Streaming => ("Responding...", theme.info, true, true),
+            SubAgentActivity::ExecutingTools => ("Executing tools...", theme.info, true, true),
+            SubAgentActivity::Completed => return None, // Don't show for completed
+            SubAgentActivity::Cancelled => ("Cancelled", theme.warning, false, false),
+            SubAgentActivity::Failed => return None, // Error shown separately
+        };
+
+        let mut children: Vec<gpui::AnyElement> = Vec::new();
+
+        // Add spinning arrow if active
+        if show_spinner {
+            children.push(
+                svg()
+                    .size(px(14.))
+                    .path(SharedString::from("icons/arrow_circle.svg"))
+                    .text_color(color)
+                    .with_animation(
+                        "sub_agent_spinner",
+                        Animation::new(Duration::from_secs(2))
+                            .repeat()
+                            .with_easing(bounce(ease_in_out)),
+                        |svg, delta| {
+                            svg.with_transformation(Transformation::rotate(percentage(delta)))
+                        },
+                    )
+                    .into_any(),
+            );
+        }
+
+        // Add status text
+        children.push(
+            div()
+                .text_size(px(13.))
+                .text_color(color)
+                .child(text)
+                .into_any(),
+        );
+
+        // Add cancel button for active sub-agents
+        if is_cancellable {
+            let tool_id_owned = tool_id.to_string();
+            let cancel_color = theme.muted_foreground;
+            let cancel_hover_color = theme.danger;
+
+            children.push(
+                div()
+                    .id(SharedString::from(format!("cancel-{}", tool_id)))
+                    .ml_2()
+                    .px_2()
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .text_size(px(11.))
+                    .text_color(cancel_color)
+                    .cursor_pointer()
+                    .hover(|s| {
+                        s.bg(cancel_hover_color.opacity(0.15))
+                            .text_color(cancel_hover_color)
+                    })
+                    .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                        // Send cancel event through the UI event system
+                        if let Some(sender) = cx.try_global::<crate::ui::gpui::UiEventSender>() {
+                            let _ = sender.0.try_send(crate::ui::UiEvent::CancelSubAgent {
+                                tool_id: tool_id_owned.clone(),
+                            });
+                        }
+                    }))
+                    .child("Cancel")
+                    .into_any(),
+            );
+        }
+
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .py(px(2.))
+                .children(children)
+                .into_any(),
+        )
+    }
+
+    /// Render error/cancelled status if present
+    fn render_status_line(
+        output: &SubAgentOutput,
+        theme: &gpui_component::theme::Theme,
+    ) -> Option<gpui::AnyElement> {
+        if output.cancelled == Some(true) {
+            return Some(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .py(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme.warning)
+                            .child("Sub-agent cancelled"),
+                    )
+                    .into_any(),
+            );
+        }
+
+        if let Some(error) = &output.error {
+            return Some(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .py(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme.danger)
+                            .child(format!("Error: {error}")),
+                    )
+                    .into_any(),
+            );
+        }
+
+        None
+    }
+
+    /// Render the final response as markdown
+    fn render_response(
+        response: &str,
+        theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
+    ) -> gpui::AnyElement {
+        div()
+            .mt_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .text_color(theme.foreground)
+            .child(TextView::markdown(
+                "sub-agent-response",
+                response.to_string(),
+                window,
+                cx,
+            ))
+            .into_any()
+    }
+}
+
+impl ToolOutputRenderer for SpawnAgentOutputRenderer {
+    fn supported_tools(&self) -> Vec<String> {
+        vec!["spawn_agent".to_string()]
+    }
+
+    fn render(
+        &self,
+        tool_id: &str,
+        output: &str,
+        _status: &ToolStatus,
+        theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
+    ) -> Option<gpui::AnyElement> {
+        if output.is_empty() {
+            return None;
+        }
+
+        // Parse JSON output
+        let parsed = match SubAgentOutput::from_json(output) {
+            Some(p) => p,
+            None => {
+                // If not valid JSON, return None to use default text rendering
+                // This handles backwards compatibility with any old markdown format
+                return None;
+            }
+        };
+
+        // Always render if we have activity state, response, or tools
+        let has_activity = parsed.activity.is_some();
+        let has_response = parsed.response.is_some();
+        if parsed.tools.is_empty()
+            && parsed.cancelled.is_none()
+            && parsed.error.is_none()
+            && !has_activity
+            && !has_response
+        {
+            return None;
+        }
+
+        let mut elements: Vec<gpui::AnyElement> = Vec::new();
+
+        // Render compact list of tool calls first (history of what was done)
+        for tool in &parsed.tools {
+            elements.push(Self::render_tool_line(tool, theme));
+        }
+
+        // Add activity line with cancel button (shows current state with spinner)
+        // This is where new output will appear
+        if let Some(activity) = parsed.activity {
+            if let Some(activity_element) =
+                Self::render_activity_with_cancel(activity, tool_id, theme, cx)
+            {
+                elements.push(activity_element);
+            }
+        }
+
+        // Add error/cancelled status line if present
+        if let Some(status_line) = Self::render_status_line(&parsed, theme) {
+            elements.push(status_line);
+        }
+
+        // Add the final response rendered as markdown (after completion)
+        if let Some(ref response) = parsed.response {
+            if !response.is_empty() {
+                elements.push(Self::render_response(response, theme, window, cx));
+            }
+        }
+
+        if elements.is_empty() {
+            return None;
+        }
+
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_0()
+                .mt_1()
+                .children(elements)
+                .into_any(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_json_output() {
+        let json = r#"{"tools":[{"name":"read_files","status":"success"},{"name":"search_files","status":"running","message":"Searching..."}]}"#;
+
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.tools.len(), 2);
+        assert_eq!(parsed.tools[0].name, "read_files");
+        assert_eq!(parsed.tools[0].status, SubAgentToolStatus::Success);
+        assert_eq!(parsed.tools[1].name, "search_files");
+        assert_eq!(parsed.tools[1].status, SubAgentToolStatus::Running);
+        assert_eq!(parsed.tools[1].message.as_deref(), Some("Searching..."));
+    }
+
+    #[test]
+    fn test_parse_json_with_cancelled() {
+        let json = r#"{"tools":[{"name":"read_files","status":"success"}],"cancelled":true}"#;
+
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.tools.len(), 1);
+        assert_eq!(parsed.cancelled, Some(true));
+    }
+
+    #[test]
+    fn test_parse_json_with_error() {
+        let json = r#"{"tools":[],"error":"Connection failed"}"#;
+
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.error.as_deref(), Some("Connection failed"));
+    }
+
+    #[test]
+    fn test_roundtrip() {
+        let mut output = SubAgentOutput::new();
+        output
+            .tools
+            .push(crate::agent::sub_agent::SubAgentToolCall {
+                name: "read_files".to_string(),
+                status: SubAgentToolStatus::Success,
+                title: None,
+                message: None,
+                parameters: std::collections::HashMap::new(),
+            });
+        output
+            .tools
+            .push(crate::agent::sub_agent::SubAgentToolCall {
+                name: "search_files".to_string(),
+                status: SubAgentToolStatus::Running,
+                title: Some("Searching for 'pattern'".to_string()),
+                message: Some("Searching for pattern".to_string()),
+                parameters: std::collections::HashMap::new(),
+            });
+
+        let json = output.to_json();
+        let parsed = SubAgentOutput::from_json(&json).unwrap();
+
+        assert_eq!(parsed.tools.len(), 2);
+        assert_eq!(parsed.tools[0].name, "read_files");
+        assert_eq!(
+            parsed.tools[1].message.as_deref(),
+            Some("Searching for pattern")
+        );
+        assert_eq!(
+            parsed.tools[1].title.as_deref(),
+            Some("Searching for 'pattern'")
+        );
+    }
+
+    #[test]
+    fn test_invalid_json_returns_none() {
+        let invalid = "### Sub-agent activity\n- Calling tool read_files";
+        assert!(SubAgentOutput::from_json(invalid).is_none());
+    }
+
+    #[test]
+    fn test_parse_json_with_response() {
+        let json = r#"{"tools":[{"name":"read_files","status":"success","message":"Successfully loaded 2 file(s)"}],"activity":"completed","response":"Here is the answer based on the files I read."}"#;
+
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.tools.len(), 1);
+        assert_eq!(
+            parsed.tools[0].message.as_deref(),
+            Some("Successfully loaded 2 file(s)")
+        );
+        assert_eq!(parsed.activity, Some(SubAgentActivity::Completed));
+        assert_eq!(
+            parsed.response.as_deref(),
+            Some("Here is the answer based on the files I read.")
+        );
+    }
+}

@@ -21,6 +21,9 @@ pub struct ToolContext<'a> {
     pub tool_id: Option<String>,
     /// Optional permission handler for potentially sensitive operations
     pub permission_handler: Option<&'a dyn PermissionMediator>,
+
+    /// Optional sub-agent runner used by the `spawn_agent` tool.
+    pub sub_agent_runner: Option<&'a dyn crate::agent::SubAgentRunner>,
 }
 
 /// Core trait for tools, defining the execution interface

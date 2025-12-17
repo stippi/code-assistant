@@ -118,6 +118,8 @@ pub enum UiEvent {
     UpdateCurrentModel { model_name: String },
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
+    /// Cancel a running sub-agent by its tool id
+    CancelSubAgent { tool_id: String },
 
     // === Resource Events (for tool operations) ===
     /// A file was loaded/read by a tool

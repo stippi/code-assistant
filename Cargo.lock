@@ -1341,6 +1341,7 @@ dependencies = [
  "dirs 5.0.1",
  "dotenv",
  "fs_explorer",
+ "futures",
  "glob",
  "gpui",
  "gpui-component",

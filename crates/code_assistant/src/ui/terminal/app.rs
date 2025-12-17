@@ -430,6 +430,7 @@ impl TerminalTuiApp {
                                 "Switched to model: {model_name}",
                             )));
                         }
+
                         BackendResponse::SandboxPolicyChanged {
                             session_id: _,
                             policy,
@@ -440,6 +441,13 @@ impl TerminalTuiApp {
                                 "Sandbox mode set to {:?}",
                                 policy
                             )));
+                        }
+                        BackendResponse::SubAgentCancelled {
+                            session_id: _,
+                            tool_id: _,
+                        } => {
+                            // Sub-agent cancellation handled; the sub-agent will
+                            // update its tool output via the normal mechanism
                         }
                     }
                 }
