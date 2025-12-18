@@ -353,6 +353,57 @@ impl FileSessionPersistence {
         Ok(())
     }
 
+    /// Delete all empty sessions (sessions with no messages).
+    /// Returns the number of deleted sessions.
+    pub fn delete_empty_sessions(&mut self) -> Result<usize> {
+        let sessions_dir = self.root_dir.join("sessions");
+        if !sessions_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut deleted_count = 0;
+        let mut session_ids_to_delete = Vec::new();
+
+        // First, collect all empty session IDs
+        for entry in std::fs::read_dir(&sessions_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Only process .json files, skip metadata.json
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if path.file_stem().and_then(|s| s.to_str()) == Some("metadata") {
+                continue;
+            }
+
+            // Extract session ID from filename
+            if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
+                if let Ok(Some(session)) = self.load_chat_session(session_id) {
+                    if session.messages.is_empty() {
+                        session_ids_to_delete.push(session_id.to_string());
+                    }
+                }
+            }
+        }
+
+        // Now delete the collected sessions
+        for session_id in session_ids_to_delete {
+            if let Err(e) = self.delete_chat_session(&session_id) {
+                warn!("Failed to delete empty session {}: {}", session_id, e);
+            } else {
+                info!("Deleted empty session: {}", session_id);
+                deleted_count += 1;
+            }
+        }
+
+        if deleted_count > 0 {
+            info!("Cleaned up {} empty session(s)", deleted_count);
+        }
+
+        Ok(deleted_count)
+    }
+
     /// Rebuild metadata from existing session files (used when metadata file is corrupted)
     fn rebuild_metadata_from_sessions(&self) -> Result<Vec<ChatMetadata>> {
         let mut metadata_list = Vec::new();
@@ -681,6 +732,7 @@ mod tests {
     use super::*;
     use crate::session::SessionConfig;
     use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus};
+    use tempfile::tempdir;
 
     #[test]
     fn chat_session_plan_roundtrip() {
@@ -710,5 +762,86 @@ mod tests {
 
         let meta = restored.plan.meta.expect("plan meta should exist");
         assert_eq!(meta["source"], "unit-test");
+    }
+
+    #[test]
+    fn delete_empty_sessions_removes_only_empty() {
+        // Create a temporary directory for this test
+        let temp_dir = tempdir().expect("failed to create temp dir");
+
+        // Create a persistence instance using the temp directory
+        let mut persistence = FileSessionPersistence {
+            root_dir: temp_dir.path().to_path_buf(),
+        };
+
+        // Create an empty session
+        let empty_session = ChatSession::new_empty(
+            "empty_session".to_string(),
+            "Empty Session".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+        persistence
+            .save_chat_session(&empty_session)
+            .expect("save empty session");
+
+        // Create a session with messages
+        let mut non_empty_session = ChatSession::new_empty(
+            "non_empty_session".to_string(),
+            "Non-Empty Session".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+        non_empty_session.messages.push(Message::new_user("Hello"));
+        persistence
+            .save_chat_session(&non_empty_session)
+            .expect("save non-empty session");
+
+        // Verify both sessions exist
+        let sessions = persistence.list_chat_sessions().expect("list sessions");
+        assert_eq!(sessions.len(), 2);
+
+        // Delete empty sessions
+        let deleted_count = persistence
+            .delete_empty_sessions()
+            .expect("delete empty sessions");
+
+        // Should have deleted exactly one session
+        assert_eq!(deleted_count, 1);
+
+        // Verify only the non-empty session remains
+        let remaining_sessions = persistence.list_chat_sessions().expect("list sessions");
+        assert_eq!(remaining_sessions.len(), 1);
+        assert_eq!(remaining_sessions[0].id, "non_empty_session");
+
+        // Verify the empty session file is gone
+        assert!(persistence
+            .load_chat_session("empty_session")
+            .expect("load")
+            .is_none());
+
+        // Verify the non-empty session still exists
+        assert!(persistence
+            .load_chat_session("non_empty_session")
+            .expect("load")
+            .is_some());
+    }
+
+    #[test]
+    fn delete_empty_sessions_handles_no_sessions() {
+        // Create a temporary directory for this test
+        let temp_dir = tempdir().expect("failed to create temp dir");
+
+        // Create a persistence instance using the temp directory
+        let mut persistence = FileSessionPersistence {
+            root_dir: temp_dir.path().to_path_buf(),
+        };
+
+        // Delete empty sessions when there are no sessions
+        let deleted_count = persistence
+            .delete_empty_sessions()
+            .expect("delete empty sessions");
+
+        assert_eq!(deleted_count, 0);
     }
 }
