@@ -1170,4 +1170,128 @@ mod tests {
         print_fragments(&fragments);
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_hidden_tool_emits_paragraph_break() {
+        // Test that hidden tools (like update_plan) emit a paragraph break when suppressed
+        // This ensures subsequent content starts on a new line for proper markdown rendering
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(test_ui.clone());
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+
+        // First send some text
+        processor
+            .process(&StreamingChunk::Text("Some text before.".to_string()))
+            .unwrap();
+
+        // Then process the hidden tool (update_plan is hidden)
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: String::new(),
+                tool_name: Some("update_plan".to_string()),
+                tool_id: Some("tool-42-1".to_string()),
+            })
+            .unwrap();
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: r#"{"entries":[{"content":"test"}]}"#.to_string(),
+                tool_name: None,
+                tool_id: None,
+            })
+            .unwrap();
+
+        // Then send more text
+        processor
+            .process(&StreamingChunk::Text("Next content.".to_string()))
+            .unwrap();
+
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
+
+        // The tool fragments should be suppressed (update_plan is hidden)
+        // but we should see a paragraph break ("\n\n") instead of ToolEnd
+        assert!(
+            !fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::ToolName { .. })),
+            "ToolName should be suppressed for hidden tools"
+        );
+        assert!(
+            !fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::ToolEnd { .. })),
+            "ToolEnd should be suppressed for hidden tools"
+        );
+
+        // Check that we have the paragraph break
+        let combined_text: String = fragments
+            .iter()
+            .filter_map(|f| match f {
+                DisplayFragment::PlainText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            combined_text.contains("\n\n"),
+            "Should contain paragraph break after hidden tool"
+        );
+    }
+
+    #[test]
+    fn test_hidden_tool_paragraph_break_preserves_thinking_type() {
+        // Test that when the last fragment was thinking text, the paragraph break
+        // is also emitted as thinking text
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(test_ui.clone());
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+
+        // Send thinking text first using thinking tags in text
+        processor
+            .process(&StreamingChunk::Text(
+                "<thinking>Some thinking before.</thinking>".to_string(),
+            ))
+            .unwrap();
+
+        // Then process the hidden tool (update_plan is hidden)
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: String::new(),
+                tool_name: Some("update_plan".to_string()),
+                tool_id: Some("tool-42-1".to_string()),
+            })
+            .unwrap();
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: r#"{"entries":[{"content":"test"}]}"#.to_string(),
+                tool_name: None,
+                tool_id: None,
+            })
+            .unwrap();
+
+        // Then send more text
+        processor
+            .process(&StreamingChunk::Text("More content after".to_string()))
+            .unwrap();
+
+        // Check raw fragments to verify the paragraph break is ThinkingText
+        let raw_fragments = test_ui.get_raw_fragments();
+
+        // Find the paragraph break fragment
+        let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
+            DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => {
+                text == "\n\n"
+            }
+            _ => false,
+        });
+
+        assert!(
+            matches!(
+                paragraph_break_fragment,
+                Some(DisplayFragment::ThinkingText(text)) if text == "\n\n"
+            ),
+            "Paragraph break should be ThinkingText since last fragment was thinking. Found: {:?}",
+            paragraph_break_fragment
+        );
+    }
 }

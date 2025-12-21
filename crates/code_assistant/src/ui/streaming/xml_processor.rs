@@ -47,6 +47,14 @@ enum StreamingState {
     Blocked,
 }
 
+/// Tracks the last type of text fragment emitted (for paragraph breaks after hidden tools)
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LastFragmentType {
+    None,
+    PlainText,
+    ThinkingText,
+}
+
 /// Manages the conversion of LLM streaming chunks to display fragments using XML-style tags
 pub struct XmlStreamProcessor {
     state: ProcessorState,
@@ -54,6 +62,8 @@ pub struct XmlStreamProcessor {
     request_id: u64,
     filter: Box<dyn ToolUseFilter>,
     streaming_state: StreamingState,
+    /// Tracks the last emitted text fragment type for paragraph breaks after hidden tools
+    last_fragment_type: LastFragmentType,
 }
 
 // Define tag types we need to process
@@ -76,6 +86,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
             request_id,
             filter: Box::new(SmartToolFilter::new()),
             streaming_state: StreamingState::PreFirstTool,
+            last_fragment_type: LastFragmentType::None,
         }
     }
 
@@ -595,16 +606,39 @@ impl XmlStreamProcessor {
         // Filter out tool-related fragments for hidden tools
         if self.state.current_tool_hidden {
             match &fragment {
-                DisplayFragment::ToolName { .. }
-                | DisplayFragment::ToolParameter { .. }
-                | DisplayFragment::ToolEnd { .. } => {
+                DisplayFragment::ToolName { .. } | DisplayFragment::ToolParameter { .. } => {
                     // Skip tool-related fragments for hidden tools
                     return Ok(());
+                }
+                DisplayFragment::ToolEnd { .. } => {
+                    // When suppressing ToolEnd for hidden tools, emit a paragraph break
+                    // to ensure subsequent content starts on a new paragraph
+                    let paragraph_break = match self.last_fragment_type {
+                        LastFragmentType::ThinkingText => {
+                            DisplayFragment::ThinkingText("\n\n".to_string())
+                        }
+                        _ => DisplayFragment::PlainText("\n\n".to_string()),
+                    };
+                    return self.emit_fragment_inner(paragraph_break);
                 }
                 _ => {
                     // Allow non-tool fragments even when current tool is hidden
                 }
             }
+        }
+
+        self.emit_fragment_inner(fragment)
+    }
+
+    /// Inner emit function that handles streaming state and actually sends fragments
+    fn emit_fragment_inner(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
+        // Track last fragment type for paragraph breaks after hidden tools
+        match &fragment {
+            DisplayFragment::PlainText(_) => self.last_fragment_type = LastFragmentType::PlainText,
+            DisplayFragment::ThinkingText(_) => {
+                self.last_fragment_type = LastFragmentType::ThinkingText
+            }
+            _ => {}
         }
 
         match &self.streaming_state {
