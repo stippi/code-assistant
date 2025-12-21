@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use crate::tools::core::config::ToolsConfig;
 use crate::tools::core::dyn_tool::DynTool;
 use crate::tools::core::spec::ToolScope;
 use crate::tools::AnnotatedToolDefinition;
@@ -29,9 +30,18 @@ impl ToolRegistry {
         }
     }
 
-    /// Register a tool in the registry
+    /// Register a tool in the registry.
+    /// The tool will only be registered if it's available based on the current configuration.
     pub fn register(&mut self, tool: Box<dyn DynTool>) {
-        self.tools.insert(tool.spec().name.to_string(), tool);
+        let config = ToolsConfig::global();
+        if tool.is_available(config) {
+            self.tools.insert(tool.spec().name.to_string(), tool);
+        } else {
+            tracing::debug!(
+                "Tool '{}' is not available (missing configuration)",
+                tool.spec().name
+            );
+        }
     }
 
     /// Get a tool by name

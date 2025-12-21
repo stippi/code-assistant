@@ -196,6 +196,21 @@ The code-assistant uses two JSON configuration files to manage LLM providers and
 
 **Full Examples**: See [`providers.example.json`](providers.example.json) and [`models.example.json`](models.example.json) for complete configuration examples with all supported providers (Anthropic, OpenAI, Ollama, SAP AI Core, Vertex AI, Groq, Cerebras, MistralAI, OpenRouter).
 
+### Tool Configuration
+
+Some tools require external API keys to function. Configure these in `~/.config/code-assistant/tools.json`:
+
+```json
+{
+  "perplexity_api_key": "${PERPLEXITY_API_KEY}"
+}
+```
+
+**Available Tool Settings**:
+- `perplexity_api_key` - Enables the `perplexity_ask` tool for AI-powered web search
+
+Tools without their required configuration will not be available to the assistant.
+
 **List Available Models**:
 ```bash
 # See all configured models
@@ -217,7 +232,6 @@ Configure in Claude Desktop settings (**Developer** tab → **Edit Config**):
       "command": "/path/to/code-assistant/target/release/code-assistant",
       "args": ["server"],
       "env": {
-        "PERPLEXITY_API_KEY": "pplx-...",   // Optional, enables perplexity_ask tool
         "SHELL": "/bin/zsh"                 // Your login shell
       }
     }

@@ -298,7 +298,8 @@ fn test_tool_scope_for_sub_agent() {
     assert!(available.contains(&"glob_files".to_string()));
     assert!(available.contains(&"web_fetch".to_string()));
     assert!(available.contains(&"web_search".to_string()));
-    assert!(available.contains(&"perplexity_ask".to_string()));
+    // Note: perplexity_ask is only available if PERPLEXITY_API_KEY is configured in tools.json
+    // So we don't assert its presence here - it depends on runtime configuration
 
     // Check write tools are NOT available in SubAgentReadOnly scope
     assert!(!available.contains(&"write_file".to_string()));
