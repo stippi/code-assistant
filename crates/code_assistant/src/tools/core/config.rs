@@ -37,7 +37,7 @@ impl ToolsConfig {
             .with_context(|| format!("Failed to parse tools config: {}", config_path.display()))?;
 
         // Substitute environment variables in API keys
-        Ok(Self::substitute_env_vars(config)?)
+        Self::substitute_env_vars(config)
     }
 
     /// Get the path to the tools configuration file.
