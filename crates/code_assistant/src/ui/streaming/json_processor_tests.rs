@@ -1172,9 +1172,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hidden_tool_emits_paragraph_break() {
+    fn test_hidden_tool_emits_paragraph_break_when_same_type() {
         // Test that hidden tools (like update_plan) emit a paragraph break when suppressed
-        // This ensures subsequent content starts on a new line for proper markdown rendering
+        // AND the next fragment is the same type as the previous one
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
@@ -1200,7 +1200,7 @@ mod tests {
             })
             .unwrap();
 
-        // Then send more text
+        // Then send more text (same type as before)
         processor
             .process(&StreamingChunk::Text("Next content.".to_string()))
             .unwrap();
@@ -1209,7 +1209,6 @@ mod tests {
         print_fragments(&fragments);
 
         // The tool fragments should be suppressed (update_plan is hidden)
-        // but we should see a paragraph break ("\n\n") instead of ToolEnd
         assert!(
             !fragments
                 .iter()
@@ -1223,7 +1222,7 @@ mod tests {
             "ToolEnd should be suppressed for hidden tools"
         );
 
-        // Check that we have the paragraph break
+        // Check that we have the paragraph break (because both before and after are PlainText)
         let combined_text: String = fragments
             .iter()
             .filter_map(|f| match f {
@@ -1234,14 +1233,14 @@ mod tests {
 
         assert!(
             combined_text.contains("\n\n"),
-            "Should contain paragraph break after hidden tool"
+            "Should contain paragraph break after hidden tool when same type"
         );
     }
 
     #[test]
-    fn test_hidden_tool_paragraph_break_preserves_thinking_type() {
-        // Test that when the last fragment was thinking text, the paragraph break
-        // is also emitted as thinking text
+    fn test_hidden_tool_no_paragraph_break_when_type_changes() {
+        // Test that NO paragraph break is emitted when the fragment type changes
+        // (e.g., thinking -> hidden tool -> plain text)
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
@@ -1269,13 +1268,71 @@ mod tests {
             })
             .unwrap();
 
-        // Then send more text
+        // Then send plain text (different type than before)
         processor
-            .process(&StreamingChunk::Text("More content after".to_string()))
+            .process(&StreamingChunk::Text("Plain text after".to_string()))
+            .unwrap();
+
+        // Check raw fragments - should NOT have a paragraph break since type changed
+        let raw_fragments = test_ui.get_raw_fragments();
+        print_fragments(&raw_fragments);
+
+        // Find any paragraph break fragment
+        let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
+            DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => {
+                text == "\n\n"
+            }
+            _ => false,
+        });
+
+        assert!(
+            paragraph_break_fragment.is_none(),
+            "Should NOT have paragraph break when type changes (thinking -> plain). Found: {:?}",
+            paragraph_break_fragment
+        );
+    }
+
+    #[test]
+    fn test_hidden_tool_paragraph_break_preserves_thinking_type() {
+        // Test that when the last fragment was thinking text, the paragraph break
+        // is also emitted as thinking text (when next fragment is also thinking)
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(test_ui.clone());
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+
+        // Send thinking text first using thinking tags in text
+        processor
+            .process(&StreamingChunk::Text(
+                "<thinking>Some thinking before.</thinking>".to_string(),
+            ))
+            .unwrap();
+
+        // Then process the hidden tool (update_plan is hidden)
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: String::new(),
+                tool_name: Some("update_plan".to_string()),
+                tool_id: Some("tool-42-1".to_string()),
+            })
+            .unwrap();
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: r#"{"entries":[{"content":"test"}]}"#.to_string(),
+                tool_name: None,
+                tool_id: None,
+            })
+            .unwrap();
+
+        // Then send more thinking text (same type as before)
+        processor
+            .process(&StreamingChunk::Text(
+                "<thinking>More thinking after</thinking>".to_string(),
+            ))
             .unwrap();
 
         // Check raw fragments to verify the paragraph break is ThinkingText
         let raw_fragments = test_ui.get_raw_fragments();
+        print_fragments(&raw_fragments);
 
         // Find the paragraph break fragment
         let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
@@ -1290,7 +1347,7 @@ mod tests {
                 paragraph_break_fragment,
                 Some(DisplayFragment::ThinkingText(text)) if text == "\n\n"
             ),
-            "Paragraph break should be ThinkingText since last fragment was thinking. Found: {:?}",
+            "Paragraph break should be ThinkingText since both before and after are thinking. Found: {:?}",
             paragraph_break_fragment
         );
     }

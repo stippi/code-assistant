@@ -886,11 +886,11 @@ fn test_smart_filter_blocks_write_tool_after_read_tool() {
 }
 
 #[test]
-fn test_hidden_tool_emits_paragraph_break() {
+fn test_hidden_tool_emits_paragraph_break_when_same_type() {
     use super::test_utils::print_fragments;
 
     // Test that hidden tools (like update_plan) emit a paragraph break when suppressed
-    // This ensures subsequent content starts on a new line for proper markdown rendering
+    // AND the next fragment is the same type as the previous one
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
@@ -907,7 +907,7 @@ fn test_hidden_tool_emits_paragraph_break() {
         ))
         .unwrap();
 
-    // Then send more text
+    // Then send more text (same type as before)
     processor
         .process(&StreamingChunk::Text("Next content.".to_string()))
         .unwrap();
@@ -916,7 +916,6 @@ fn test_hidden_tool_emits_paragraph_break() {
     print_fragments(&fragments);
 
     // The tool fragments should be suppressed (update_plan is hidden)
-    // but we should see a paragraph break ("\n\n") instead of ToolEnd
     assert!(
         !fragments
             .iter()
@@ -930,7 +929,7 @@ fn test_hidden_tool_emits_paragraph_break() {
         "ToolEnd should be suppressed for hidden tools"
     );
 
-    // Check that we have the paragraph break
+    // Check that we have the paragraph break (because both before and after are PlainText)
     let combined_text: String = fragments
         .iter()
         .filter_map(|f| match f {
@@ -941,27 +940,23 @@ fn test_hidden_tool_emits_paragraph_break() {
 
     assert!(
         combined_text.contains("\n\n"),
-        "Should contain paragraph break after hidden tool"
+        "Should contain paragraph break after hidden tool when same type"
     );
 }
 
 #[test]
-fn test_hidden_tool_paragraph_break_preserves_thinking_type() {
+fn test_hidden_tool_no_paragraph_break_when_type_changes() {
     use super::test_utils::print_fragments;
 
-    // Test that when the last fragment was thinking text, the paragraph break
-    // is also emitted as thinking text
-    // Note: Caret format doesn't typically have thinking tags, but we can test via the
-    // Thinking streaming chunk type that is passed through
+    // Test that NO paragraph break is emitted when the fragment type changes
+    // Note: In caret processor, we use native Thinking chunks
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
-    // First send thinking text via the native Thinking chunk
+    // First send some plain text
     processor
-        .process(&StreamingChunk::Thinking(
-            "Some thinking before.".to_string(),
-        ))
+        .process(&StreamingChunk::Text("Some text before.\n".to_string()))
         .unwrap();
 
     // Then process the hidden tool (update_plan is hidden)
@@ -971,26 +966,28 @@ fn test_hidden_tool_paragraph_break_preserves_thinking_type() {
         ))
         .unwrap();
 
-    // Then send more text
+    // Then send thinking text (different type than before)
+    // Note: Native Thinking chunks bypass emit_fragment in caret processor
     processor
-        .process(&StreamingChunk::Text("More content after".to_string()))
+        .process(&StreamingChunk::Thinking("Some thinking after".to_string()))
         .unwrap();
 
-    // Check raw fragments to verify the paragraph break type
+    // Check raw fragments - should NOT have a paragraph break since type changed
     let raw_fragments = test_ui.get_raw_fragments();
     print_fragments(&raw_fragments);
 
-    // Find the paragraph break fragment - it should be ThinkingText since that was the last type
-    // Note: In caret processor, Thinking chunks are passed through directly without updating
-    // last_fragment_type tracking (they bypass emit_fragment). So the paragraph break
-    // will be PlainText since no text fragment was emitted before the hidden tool.
+    // Find any paragraph break fragment
     let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
         DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => text == "\n\n",
         _ => false,
     });
 
+    // Native Thinking chunks bypass emit_fragment in caret processor, so they don't
+    // trigger the paragraph break check. The break would only happen if we had PlainText after.
+    // This test verifies that when type changes, no break is emitted.
     assert!(
-        paragraph_break_fragment.is_some(),
-        "Should have a paragraph break fragment"
+        paragraph_break_fragment.is_none(),
+        "Should NOT have paragraph break when type changes. Found: {:?}",
+        paragraph_break_fragment
     );
 }
