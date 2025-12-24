@@ -53,14 +53,6 @@ enum StreamingState {
     Blocked,
 }
 
-/// Tracks the last type of text fragment emitted (for paragraph breaks after hidden tools)
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum LastFragmentType {
-    None,
-    PlainText,
-    ThinkingText,
-}
-
 pub struct CaretStreamProcessor {
     ui: Arc<dyn UserInterface>,
     request_id: u64,
@@ -75,11 +67,6 @@ pub struct CaretStreamProcessor {
     current_tool_hidden: bool,
     filter: Box<dyn ToolUseFilter>,
     streaming_state: StreamingState,
-    /// Tracks the last emitted text fragment type for paragraph breaks after hidden tools
-    last_fragment_type: LastFragmentType,
-    /// Flag indicating a hidden tool was just suppressed and we need a paragraph break
-    /// if the next fragment is the same type as the last one
-    needs_paragraph_break_if_same_type: bool,
 }
 
 impl StreamProcessorTrait for CaretStreamProcessor {
@@ -99,8 +86,6 @@ impl StreamProcessorTrait for CaretStreamProcessor {
 
             filter: Box::new(SmartToolFilter::new()),
             streaming_state: StreamingState::PreFirstTool,
-            last_fragment_type: LastFragmentType::None,
-            needs_paragraph_break_if_same_type: false,
         }
     }
 
@@ -781,55 +766,14 @@ impl CaretStreamProcessor {
                     return Ok(());
                 }
                 DisplayFragment::ToolEnd { .. } => {
-                    // Set flag to emit paragraph break lazily if the next fragment
-                    // is the same type as the last one
-                    self.needs_paragraph_break_if_same_type = true;
-                    return Ok(());
+                    // Emit HiddenToolCompleted so UI can handle paragraph breaks
+                    return self
+                        .emit_fragment_to_streaming_state(DisplayFragment::HiddenToolCompleted);
                 }
                 _ => {
                     // Allow non-tool fragments even when current tool is hidden
                 }
             }
-        }
-
-        self.emit_fragment_inner(fragment)
-    }
-
-    /// Inner emit function that handles streaming state and actually sends fragments
-    fn emit_fragment_inner(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
-        // Check if we need to emit a paragraph break before this fragment
-        // (only if fragment type matches the last one after a hidden tool was suppressed)
-        if self.needs_paragraph_break_if_same_type {
-            let current_type = match &fragment {
-                DisplayFragment::PlainText(_) => Some(LastFragmentType::PlainText),
-                DisplayFragment::ThinkingText(_) => Some(LastFragmentType::ThinkingText),
-                _ => None,
-            };
-
-            if let Some(current) = current_type {
-                if current == self.last_fragment_type {
-                    // Same type as before the hidden tool - emit paragraph break first
-                    let paragraph_break = match current {
-                        LastFragmentType::ThinkingText => {
-                            DisplayFragment::ThinkingText("\n\n".to_string())
-                        }
-                        _ => DisplayFragment::PlainText("\n\n".to_string()),
-                    };
-                    // Emit the paragraph break (bypassing this check by going directly to streaming state)
-                    self.emit_fragment_to_streaming_state(paragraph_break)?;
-                }
-                // Reset flag regardless of whether we emitted (type changed or same)
-                self.needs_paragraph_break_if_same_type = false;
-            }
-        }
-
-        // Track last fragment type for paragraph breaks after hidden tools
-        match &fragment {
-            DisplayFragment::PlainText(_) => self.last_fragment_type = LastFragmentType::PlainText,
-            DisplayFragment::ThinkingText(_) => {
-                self.last_fragment_type = LastFragmentType::ThinkingText
-            }
-            _ => {}
         }
 
         self.emit_fragment_to_streaming_state(fragment)
@@ -983,6 +927,7 @@ impl CaretStreamProcessor {
                         // Tool output - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }
+
                     DisplayFragment::ReasoningComplete => {
                         // Reasoning complete - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
@@ -991,6 +936,10 @@ impl CaretStreamProcessor {
                         {
                             buffered_fragments.push(fragment);
                         }
+                    }
+                    DisplayFragment::HiddenToolCompleted => {
+                        // Hidden tool completed - emit immediately for UI to handle paragraph breaks
+                        self.ui.display_fragment(&fragment)?;
                     }
                 }
             }

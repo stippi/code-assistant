@@ -271,10 +271,18 @@ impl UserInterface for TerminalTuiUI {
                     renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
                 }
             }
+
             UiEvent::EndTool { id: _ } => {
                 // EndTool just marks the end of parameter streaming
                 // The actual status comes later via UpdateToolStatus
                 // For now, we don't change the status here - wait for UpdateToolStatus
+            }
+            UiEvent::HiddenToolCompleted => {
+                // Mark that a hidden tool completed - renderer handles paragraph breaks
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.mark_hidden_tool_completed();
+                }
             }
             UiEvent::StreamingStopped {
                 id,
@@ -461,8 +469,13 @@ impl UserInterface for TerminalTuiUI {
                     summary: summary.clone(),
                 });
             }
+
             DisplayFragment::ReasoningComplete => {
                 // For terminal UI, no specific action needed for reasoning completion
+            }
+            DisplayFragment::HiddenToolCompleted => {
+                // Signal that a hidden tool completed - renderer handles paragraph breaks
+                self.push_event(UiEvent::HiddenToolCompleted);
             }
         }
 

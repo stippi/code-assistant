@@ -27,14 +27,6 @@ enum JsonParsingState {
     ExpectCommaOrCloseBrace, // Looking for ',' or '}' after a value
 }
 
-/// Tracks the last type of text fragment emitted (for paragraph breaks after hidden tools)
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum LastFragmentType {
-    None,
-    PlainText,
-    ThinkingText,
-}
-
 /// State tracking for JSON processor
 struct JsonProcessorState {
     /// Buffer for accumulating incomplete JSON from chunks
@@ -53,11 +45,6 @@ struct JsonProcessorState {
     /// True if any part of the current string value being parsed has been emitted.
     /// Used to detect and emit empty strings: ""
     emitted_string_part_for_current_key: bool,
-    /// Tracks the last emitted text fragment type for paragraph breaks after hidden tools
-    last_fragment_type: LastFragmentType,
-    /// Flag indicating a hidden tool was just suppressed and we need a paragraph break
-    /// if the next fragment is the same type as the last one
-    needs_paragraph_break_if_same_type: bool,
 
     // JSON specific state
     json_parsing_state: JsonParsingState,
@@ -79,8 +66,6 @@ impl Default for JsonProcessorState {
 
             at_block_start: false,
             emitted_string_part_for_current_key: false,
-            last_fragment_type: LastFragmentType::None,
-            needs_paragraph_break_if_same_type: false,
             json_parsing_state: JsonParsingState::ExpectOpenBrace,
             current_key: None,
             complex_value_nesting: 0,
@@ -108,56 +93,15 @@ impl JsonStreamProcessor {
                     return Ok(());
                 }
                 DisplayFragment::ToolEnd { .. } => {
-                    // Set flag to emit paragraph break lazily if the next fragment
-                    // is the same type as the last one
-                    self.state.needs_paragraph_break_if_same_type = true;
-                    return Ok(());
+                    // Emit HiddenToolCompleted so UI can handle paragraph breaks
+                    return self
+                        .ui
+                        .display_fragment(&DisplayFragment::HiddenToolCompleted);
                 }
                 _ => {
                     // Allow non-tool fragments even when current tool is hidden
                 }
             }
-        }
-
-        self.emit_fragment_inner(fragment)
-    }
-
-    /// Inner emit function that tracks fragment type and sends to UI
-    fn emit_fragment_inner(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
-        // Check if we need to emit a paragraph break before this fragment
-        // (only if fragment type matches the last one after a hidden tool was suppressed)
-        if self.state.needs_paragraph_break_if_same_type {
-            let current_type = match &fragment {
-                DisplayFragment::PlainText(_) => Some(LastFragmentType::PlainText),
-                DisplayFragment::ThinkingText(_) => Some(LastFragmentType::ThinkingText),
-                _ => None,
-            };
-
-            if let Some(current) = current_type {
-                if current == self.state.last_fragment_type {
-                    // Same type as before the hidden tool - emit paragraph break first
-                    let paragraph_break = match current {
-                        LastFragmentType::ThinkingText => {
-                            DisplayFragment::ThinkingText("\n\n".to_string())
-                        }
-                        _ => DisplayFragment::PlainText("\n\n".to_string()),
-                    };
-                    self.ui.display_fragment(&paragraph_break)?;
-                }
-                // Reset flag regardless of whether we emitted (type changed or same)
-                self.state.needs_paragraph_break_if_same_type = false;
-            }
-        }
-
-        // Track last fragment type for paragraph breaks after hidden tools
-        match &fragment {
-            DisplayFragment::PlainText(_) => {
-                self.state.last_fragment_type = LastFragmentType::PlainText
-            }
-            DisplayFragment::ThinkingText(_) => {
-                self.state.last_fragment_type = LastFragmentType::ThinkingText
-            }
-            _ => {}
         }
 
         self.ui.display_fragment(&fragment)

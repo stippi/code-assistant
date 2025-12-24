@@ -31,6 +31,7 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
                 meta: None,
             })
         }
+
         // Tool-related fragments are not converted to content blocks
         // They are handled separately as ToolCall updates
         DisplayFragment::ToolName { .. }
@@ -40,7 +41,8 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
         | DisplayFragment::ToolTerminal { .. }
         | DisplayFragment::ReasoningSummaryStart
         | DisplayFragment::ReasoningSummaryDelta(_)
-        | DisplayFragment::ReasoningComplete => {
+        | DisplayFragment::ReasoningComplete
+        | DisplayFragment::HiddenToolCompleted => {
             // These should not be converted to content blocks
             // Return empty text as placeholder
             acp::ContentBlock::Text(acp::TextContent {

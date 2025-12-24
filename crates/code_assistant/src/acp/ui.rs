@@ -709,7 +709,8 @@ impl UserInterface for ACPUserUI {
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. }
             | UiEvent::UpdateSandboxPolicy { .. }
-            | UiEvent::CancelSubAgent { .. } => {
+            | UiEvent::CancelSubAgent { .. }
+            | UiEvent::HiddenToolCompleted => {
                 // These are UI management events, not relevant for ACP
             }
             UiEvent::DisplayError { message } => {
@@ -837,8 +838,11 @@ impl UserInterface for ACPUserUI {
 
                 self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
             }
-            DisplayFragment::ReasoningSummaryStart | DisplayFragment::ReasoningComplete => {
-                // No ACP representation needed yet
+
+            DisplayFragment::ReasoningSummaryStart
+            | DisplayFragment::ReasoningComplete
+            | DisplayFragment::HiddenToolCompleted => {
+                // No ACP representation needed
             }
             DisplayFragment::ReasoningSummaryDelta(delta) => {
                 // Reasoning summaries are emitted as AgentThoughtChunk, same as ThinkingText

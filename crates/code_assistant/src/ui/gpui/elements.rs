@@ -75,8 +75,20 @@ pub struct MessageContainer {
     /// each new request (see `UiEvent::StreamingStarted` in gpui/mod). When the user cancels
     /// streaming, all blocks that were created for that last, canceled request are removed.
     current_request_id: Arc<Mutex<u64>>,
+
     /// Current project for parameter filtering
     current_project: Arc<Mutex<String>>,
+    /// Tracks the last block type for hidden tool paragraph breaks
+    last_block_type_for_hidden_tool: Arc<Mutex<Option<HiddenToolBlockType>>>,
+    /// Flag indicating a hidden tool completed and we may need a paragraph break
+    needs_paragraph_break_after_hidden_tool: Arc<Mutex<bool>>,
+}
+
+/// Tracks the last block type for paragraph breaks after hidden tools
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HiddenToolBlockType {
+    Text,
+    Thinking,
 }
 
 impl MessageContainer {
@@ -86,6 +98,8 @@ impl MessageContainer {
             role,
             current_request_id: Arc::new(Mutex::new(0)),
             current_project: Arc::new(Mutex::new(String::new())),
+            last_block_type_for_hidden_tool: Arc::new(Mutex::new(None)),
+            needs_paragraph_break_after_hidden_tool: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -97,6 +111,34 @@ impl MessageContainer {
     /// Set the current project for parameter filtering
     pub fn set_current_project(&self, project: String) {
         *self.current_project.lock().unwrap() = project;
+    }
+
+    /// Mark that a hidden tool completed - paragraph break may be needed before next text
+    pub fn mark_hidden_tool_completed(&self, _cx: &mut Context<Self>) {
+        *self.needs_paragraph_break_after_hidden_tool.lock().unwrap() = true;
+    }
+
+    /// Check if we need a paragraph break after a hidden tool and return it if so
+    fn get_paragraph_break_if_needed(
+        &self,
+        current_block_type: HiddenToolBlockType,
+    ) -> Option<String> {
+        let mut needs_break = self.needs_paragraph_break_after_hidden_tool.lock().unwrap();
+        if !*needs_break {
+            return None;
+        }
+
+        // Reset the flag
+        *needs_break = false;
+
+        // Check if the block type matches the last one
+        let last_type = *self.last_block_type_for_hidden_tool.lock().unwrap();
+        if last_type == Some(current_block_type) {
+            // Same type as before the hidden tool - need paragraph break
+            Some("\n\n".to_string())
+        } else {
+            None
+        }
     }
 
     // Remove all blocks with the given request ID
@@ -320,6 +362,12 @@ impl MessageContainer {
     pub fn add_or_append_to_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
         self.finish_any_thinking_blocks(cx);
 
+        // Check if we need to insert a paragraph break after a hidden tool
+        let paragraph_prefix = self.get_paragraph_break_if_needed(HiddenToolBlockType::Text);
+
+        // Track block type for future hidden tool events
+        *self.last_block_type_for_hidden_tool.lock().unwrap() = Some(HiddenToolBlockType::Text);
+
         let content = content.into();
         let mut elements = self.elements.lock().unwrap();
 
@@ -328,6 +376,9 @@ impl MessageContainer {
 
             last.update(cx, |view, cx| {
                 if let Some(text_block) = view.block.as_text_mut() {
+                    if let Some(prefix) = &paragraph_prefix {
+                        text_block.content.push_str(prefix);
+                    }
                     text_block.content.push_str(&content);
                     was_appended = true;
                     cx.notify();
@@ -341,8 +392,13 @@ impl MessageContainer {
 
         // If we reach here, we need to add a new text block
         let request_id = *self.current_request_id.lock().unwrap();
+        let final_content = if let Some(prefix) = paragraph_prefix {
+            format!("{}{}", prefix, content)
+        } else {
+            content.to_string()
+        };
         let block = BlockData::TextBlock(TextBlock {
-            content: content.to_string(),
+            content: final_content,
         });
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
@@ -355,6 +411,12 @@ impl MessageContainer {
         content: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
+        // Check if we need to insert a paragraph break after a hidden tool
+        let paragraph_prefix = self.get_paragraph_break_if_needed(HiddenToolBlockType::Thinking);
+
+        // Track block type for future hidden tool events
+        *self.last_block_type_for_hidden_tool.lock().unwrap() = Some(HiddenToolBlockType::Thinking);
+
         let content = content.into();
         let mut elements = self.elements.lock().unwrap();
 
@@ -363,6 +425,9 @@ impl MessageContainer {
 
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    if let Some(prefix) = &paragraph_prefix {
+                        thinking_block.content.push_str(prefix);
+                    }
                     thinking_block.content.push_str(&content);
                     was_appended = true;
                     cx.notify();
@@ -376,7 +441,12 @@ impl MessageContainer {
 
         // If we reach here, we need to add a new thinking block
         let request_id = *self.current_request_id.lock().unwrap();
-        let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.to_string()));
+        let final_content = if let Some(prefix) = paragraph_prefix {
+            format!("{}{}", prefix, content)
+        } else {
+            content.to_string()
+        };
+        let block = BlockData::ThinkingBlock(ThinkingBlock::new(final_content));
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();

@@ -1222,25 +1222,19 @@ mod tests {
             "ToolEnd should be suppressed for hidden tools"
         );
 
-        // Check that we have the paragraph break (because both before and after are PlainText)
-        let combined_text: String = fragments
-            .iter()
-            .filter_map(|f| match f {
-                DisplayFragment::PlainText(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-
+        // Check that HiddenToolCompleted is emitted (UI handles paragraph breaks)
         assert!(
-            combined_text.contains("\n\n"),
-            "Should contain paragraph break after hidden tool when same type"
+            fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+            "HiddenToolCompleted should be emitted for hidden tools"
         );
     }
 
     #[test]
     fn test_hidden_tool_no_paragraph_break_when_type_changes() {
-        // Test that NO paragraph break is emitted when the fragment type changes
-        // (e.g., thinking -> hidden tool -> plain text)
+        // Test that HiddenToolCompleted is emitted even when fragment type changes
+        // (the UI decides whether to insert a paragraph break based on fragment types)
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
@@ -1273,11 +1267,19 @@ mod tests {
             .process(&StreamingChunk::Text("Plain text after".to_string()))
             .unwrap();
 
-        // Check raw fragments - should NOT have a paragraph break since type changed
+        // Check raw fragments - HiddenToolCompleted should be emitted
         let raw_fragments = test_ui.get_raw_fragments();
         print_fragments(&raw_fragments);
 
-        // Find any paragraph break fragment
+        // HiddenToolCompleted should be present
+        assert!(
+            raw_fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+            "HiddenToolCompleted should be emitted for hidden tools"
+        );
+
+        // Paragraph break is NOT emitted by processor - that's now the UI's responsibility
         let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
             DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => {
                 text == "\n\n"
@@ -1287,15 +1289,15 @@ mod tests {
 
         assert!(
             paragraph_break_fragment.is_none(),
-            "Should NOT have paragraph break when type changes (thinking -> plain). Found: {:?}",
+            "Processor should NOT emit paragraph break - UI handles it. Found: {:?}",
             paragraph_break_fragment
         );
     }
 
     #[test]
     fn test_hidden_tool_paragraph_break_preserves_thinking_type() {
-        // Test that when the last fragment was thinking text, the paragraph break
-        // is also emitted as thinking text (when next fragment is also thinking)
+        // Test that HiddenToolCompleted is emitted for hidden tools
+        // (the UI decides whether to insert a paragraph break and what type)
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
@@ -1330,11 +1332,19 @@ mod tests {
             ))
             .unwrap();
 
-        // Check raw fragments to verify the paragraph break is ThinkingText
+        // Check raw fragments
         let raw_fragments = test_ui.get_raw_fragments();
         print_fragments(&raw_fragments);
 
-        // Find the paragraph break fragment
+        // HiddenToolCompleted should be present
+        assert!(
+            raw_fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+            "HiddenToolCompleted should be emitted for hidden tools"
+        );
+
+        // Paragraph break is NOT emitted by processor - that's now the UI's responsibility
         let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
             DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => {
                 text == "\n\n"
@@ -1343,11 +1353,8 @@ mod tests {
         });
 
         assert!(
-            matches!(
-                paragraph_break_fragment,
-                Some(DisplayFragment::ThinkingText(text)) if text == "\n\n"
-            ),
-            "Paragraph break should be ThinkingText since both before and after are thinking. Found: {:?}",
+            paragraph_break_fragment.is_none(),
+            "Processor should NOT emit paragraph break - UI handles it. Found: {:?}",
             paragraph_break_fragment
         );
     }

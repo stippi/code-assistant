@@ -929,18 +929,12 @@ fn test_hidden_tool_emits_paragraph_break_when_same_type() {
         "ToolEnd should be suppressed for hidden tools"
     );
 
-    // Check that we have the paragraph break (because both before and after are PlainText)
-    let combined_text: String = fragments
-        .iter()
-        .filter_map(|f| match f {
-            DisplayFragment::PlainText(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-
+    // Check that HiddenToolCompleted is emitted (UI handles paragraph breaks)
     assert!(
-        combined_text.contains("\n\n"),
-        "Should contain paragraph break after hidden tool when same type"
+        fragments
+            .iter()
+            .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+        "HiddenToolCompleted should be emitted for hidden tools"
     );
 }
 
@@ -972,22 +966,27 @@ fn test_hidden_tool_no_paragraph_break_when_type_changes() {
         .process(&StreamingChunk::Thinking("Some thinking after".to_string()))
         .unwrap();
 
-    // Check raw fragments - should NOT have a paragraph break since type changed
+    // Check raw fragments - HiddenToolCompleted should be emitted
     let raw_fragments = test_ui.get_raw_fragments();
     print_fragments(&raw_fragments);
 
-    // Find any paragraph break fragment
+    // HiddenToolCompleted should be present
+    assert!(
+        raw_fragments
+            .iter()
+            .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+        "HiddenToolCompleted should be emitted for hidden tools"
+    );
+
+    // Paragraph break is NOT emitted by processor - that's now the UI's responsibility
     let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
         DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => text == "\n\n",
         _ => false,
     });
 
-    // Native Thinking chunks bypass emit_fragment in caret processor, so they don't
-    // trigger the paragraph break check. The break would only happen if we had PlainText after.
-    // This test verifies that when type changes, no break is emitted.
     assert!(
         paragraph_break_fragment.is_none(),
-        "Should NOT have paragraph break when type changes. Found: {:?}",
+        "Processor should NOT emit paragraph break - UI handles it. Found: {:?}",
         paragraph_break_fragment
     );
 }

@@ -53,6 +53,8 @@ pub enum DisplayFragment {
     ReasoningComplete,
     /// Divider indicating the conversation was compacted, with expandable summary text
     CompactionDivider { summary: String },
+    /// A hidden tool completed - UI may need to insert paragraph break if next fragment is same type
+    HiddenToolCompleted,
 }
 
 /// Common trait for stream processors
