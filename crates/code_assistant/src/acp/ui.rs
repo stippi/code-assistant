@@ -11,6 +11,14 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use crate::acp::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
 use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 
+/// Tracks the last type of content for paragraph breaks after hidden tools
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LastContentType {
+    None,
+    Text,
+    Thinking,
+}
+
 /// UserInterface implementation that sends session/update notifications via ACP
 pub struct ACPUserUI {
     session_id: acp::SessionId,
@@ -21,6 +29,10 @@ pub struct ACPUserUI {
     // Track if we should continue streaming (atomic for lock-free access from sync callbacks)
     should_continue: Arc<AtomicBool>,
     last_error: Arc<Mutex<Option<String>>>,
+    // Track last content type for paragraph breaks after hidden tools
+    last_content_type: Arc<Mutex<LastContentType>>,
+    // Flag indicating a hidden tool completed and we may need a paragraph break
+    needs_paragraph_break_after_hidden_tool: Arc<Mutex<bool>>,
 }
 
 #[derive(Default, Clone)]
@@ -427,6 +439,8 @@ impl ACPUserUI {
             base_path,
             should_continue: Arc::new(AtomicBool::new(true)),
             last_error: Arc::new(Mutex::new(None)),
+            last_content_type: Arc::new(Mutex::new(LastContentType::None)),
+            needs_paragraph_break_after_hidden_tool: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -518,6 +532,38 @@ impl ACPUserUI {
         } else {
             tracing::trace!("ACPUserUI: Queued session update");
         }
+    }
+
+    /// Check if we need a paragraph break after a hidden tool and emit it if so
+    fn maybe_emit_paragraph_break(&self, current_type: LastContentType) -> Result<(), UIError> {
+        let mut needs_break = self.needs_paragraph_break_after_hidden_tool.lock().unwrap();
+        if !*needs_break {
+            return Ok(());
+        }
+
+        // Reset the flag
+        *needs_break = false;
+
+        // Check if the content type matches the last one
+        let last_type = *self.last_content_type.lock().unwrap();
+        if last_type == current_type {
+            // Same type as before the hidden tool - emit paragraph break
+            let content = acp::ContentBlock::Text(acp::TextContent {
+                annotations: None,
+                text: "\n\n".to_string(),
+                meta: None,
+            });
+            let chunk = Self::content_chunk(content);
+
+            // Use the appropriate update type based on content type
+            let update = match current_type {
+                LastContentType::Thinking => acp::SessionUpdate::AgentThoughtChunk(chunk),
+                _ => acp::SessionUpdate::AgentMessageChunk(chunk),
+            };
+            self.queue_session_update(update);
+        }
+
+        Ok(())
     }
 
     pub fn tool_call_update(&self, tool_id: &str) -> Option<acp::ToolCallUpdate> {
@@ -725,7 +771,22 @@ impl UserInterface for ACPUserUI {
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         match fragment {
-            DisplayFragment::PlainText(_) | DisplayFragment::Image { .. } => {
+            DisplayFragment::PlainText(text) => {
+                // Check if we need a paragraph break after a hidden tool
+                self.maybe_emit_paragraph_break(LastContentType::Text)?;
+
+                // Track content type for future hidden tool events
+                *self.last_content_type.lock().unwrap() = LastContentType::Text;
+
+                let content = acp::ContentBlock::Text(acp::TextContent {
+                    annotations: None,
+                    text: text.clone(),
+                    meta: None,
+                });
+                let chunk = Self::content_chunk(content);
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
+            }
+            DisplayFragment::Image { .. } => {
                 let content = fragment_to_content_block(fragment);
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
@@ -735,8 +796,18 @@ impl UserInterface for ACPUserUI {
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
-            DisplayFragment::ThinkingText(_) => {
-                let content = fragment_to_content_block(fragment);
+            DisplayFragment::ThinkingText(text) => {
+                // Check if we need a paragraph break after a hidden tool
+                self.maybe_emit_paragraph_break(LastContentType::Thinking)?;
+
+                // Track content type for future hidden tool events
+                *self.last_content_type.lock().unwrap() = LastContentType::Thinking;
+
+                let content = acp::ContentBlock::Text(acp::TextContent {
+                    annotations: None,
+                    text: text.clone(),
+                    meta: None,
+                });
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk(chunk));
             }
@@ -839,10 +910,12 @@ impl UserInterface for ACPUserUI {
                 self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
             }
 
-            DisplayFragment::ReasoningSummaryStart
-            | DisplayFragment::ReasoningComplete
-            | DisplayFragment::HiddenToolCompleted => {
+            DisplayFragment::ReasoningSummaryStart | DisplayFragment::ReasoningComplete => {
                 // No ACP representation needed
+            }
+            DisplayFragment::HiddenToolCompleted => {
+                // Mark that a hidden tool completed - paragraph break may be needed before next text
+                *self.needs_paragraph_break_after_hidden_tool.lock().unwrap() = true;
             }
             DisplayFragment::ReasoningSummaryDelta(delta) => {
                 // Reasoning summaries are emitted as AgentThoughtChunk, same as ThinkingText
