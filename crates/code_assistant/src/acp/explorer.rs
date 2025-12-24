@@ -330,17 +330,38 @@ impl CodeExplorer for AcpCodeExplorer {
 pub struct AcpProjectManager {
     inner: DefaultProjectManager,
     session_id: acp::SessionId,
+    /// The root directory of the ACP session (i.e., the project opened in Zed).
+    /// Only projects with a path matching this root will use the ACP explorer.
+    acp_root: Option<PathBuf>,
 }
 
 impl AcpProjectManager {
-    pub fn new(inner: DefaultProjectManager, session_id: acp::SessionId) -> Self {
-        Self { inner, session_id }
+    pub fn new(
+        inner: DefaultProjectManager,
+        session_id: acp::SessionId,
+        acp_root: Option<PathBuf>,
+    ) -> Self {
+        let acp_root = acp_root.and_then(|p| p.canonicalize().ok());
+        Self {
+            inner,
+            session_id,
+            acp_root,
+        }
     }
 
     fn maybe_project(&self, name: &str) -> Result<Project> {
         self.inner
             .get_project(name)?
             .ok_or_else(|| anyhow!("Project not found: {name}"))
+    }
+
+    /// Returns true if the given project path matches the ACP session root.
+    fn is_acp_project(&self, project_path: &Path) -> bool {
+        let Some(acp_root) = &self.acp_root else {
+            return false;
+        };
+        let canonical = project_path.canonicalize().ok();
+        canonical.as_ref() == Some(acp_root)
     }
 }
 
@@ -359,9 +380,22 @@ impl ProjectManager for AcpProjectManager {
 
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
         let project = self.maybe_project(name)?;
-        Ok(Box::new(AcpCodeExplorer::new(
-            project.path,
-            self.session_id.clone(),
-        )))
+
+        // Use ACP explorer only for the project that matches the ACP session root.
+        // Other projects (e.g., referenced via settings) use the standard local explorer
+        // because Zed's ACP filesystem access is restricted to the current project.
+        if self.is_acp_project(&project.path) {
+            Ok(Box::new(AcpCodeExplorer::new(
+                project.path,
+                self.session_id.clone(),
+            )))
+        } else {
+            tracing::debug!(
+                "Using local explorer for project '{}' at {} (outside ACP root)",
+                name,
+                project.path.display()
+            );
+            Ok(Box::new(Explorer::new(project.path)))
+        }
     }
 }
