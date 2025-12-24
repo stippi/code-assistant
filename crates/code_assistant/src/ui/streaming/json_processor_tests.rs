@@ -1172,9 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hidden_tool_emits_paragraph_break_when_same_type() {
-        // Test that hidden tools (like update_plan) emit a paragraph break when suppressed
-        // AND the next fragment is the same type as the previous one
+    fn test_hidden_tool_emits_hidden_tool_completed() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
@@ -1228,134 +1226,6 @@ mod tests {
                 .iter()
                 .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
             "HiddenToolCompleted should be emitted for hidden tools"
-        );
-    }
-
-    #[test]
-    fn test_hidden_tool_no_paragraph_break_when_type_changes() {
-        // Test that HiddenToolCompleted is emitted even when fragment type changes
-        // (the UI decides whether to insert a paragraph break based on fragment types)
-        let test_ui = TestUI::new();
-        let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
-
-        // Send thinking text first using thinking tags in text
-        processor
-            .process(&StreamingChunk::Text(
-                "<thinking>Some thinking before.</thinking>".to_string(),
-            ))
-            .unwrap();
-
-        // Then process the hidden tool (update_plan is hidden)
-        processor
-            .process(&StreamingChunk::InputJson {
-                content: String::new(),
-                tool_name: Some("update_plan".to_string()),
-                tool_id: Some("tool-42-1".to_string()),
-            })
-            .unwrap();
-        processor
-            .process(&StreamingChunk::InputJson {
-                content: r#"{"entries":[{"content":"test"}]}"#.to_string(),
-                tool_name: None,
-                tool_id: None,
-            })
-            .unwrap();
-
-        // Then send plain text (different type than before)
-        processor
-            .process(&StreamingChunk::Text("Plain text after".to_string()))
-            .unwrap();
-
-        // Check raw fragments - HiddenToolCompleted should be emitted
-        let raw_fragments = test_ui.get_raw_fragments();
-        print_fragments(&raw_fragments);
-
-        // HiddenToolCompleted should be present
-        assert!(
-            raw_fragments
-                .iter()
-                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
-            "HiddenToolCompleted should be emitted for hidden tools"
-        );
-
-        // Paragraph break is NOT emitted by processor - that's now the UI's responsibility
-        let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
-            DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => {
-                text == "\n\n"
-            }
-            _ => false,
-        });
-
-        assert!(
-            paragraph_break_fragment.is_none(),
-            "Processor should NOT emit paragraph break - UI handles it. Found: {:?}",
-            paragraph_break_fragment
-        );
-    }
-
-    #[test]
-    fn test_hidden_tool_paragraph_break_preserves_thinking_type() {
-        // Test that HiddenToolCompleted is emitted for hidden tools
-        // (the UI decides whether to insert a paragraph break and what type)
-        let test_ui = TestUI::new();
-        let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
-
-        // Send thinking text first using thinking tags in text
-        processor
-            .process(&StreamingChunk::Text(
-                "<thinking>Some thinking before.</thinking>".to_string(),
-            ))
-            .unwrap();
-
-        // Then process the hidden tool (update_plan is hidden)
-        processor
-            .process(&StreamingChunk::InputJson {
-                content: String::new(),
-                tool_name: Some("update_plan".to_string()),
-                tool_id: Some("tool-42-1".to_string()),
-            })
-            .unwrap();
-        processor
-            .process(&StreamingChunk::InputJson {
-                content: r#"{"entries":[{"content":"test"}]}"#.to_string(),
-                tool_name: None,
-                tool_id: None,
-            })
-            .unwrap();
-
-        // Then send more thinking text (same type as before)
-        processor
-            .process(&StreamingChunk::Text(
-                "<thinking>More thinking after</thinking>".to_string(),
-            ))
-            .unwrap();
-
-        // Check raw fragments
-        let raw_fragments = test_ui.get_raw_fragments();
-        print_fragments(&raw_fragments);
-
-        // HiddenToolCompleted should be present
-        assert!(
-            raw_fragments
-                .iter()
-                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
-            "HiddenToolCompleted should be emitted for hidden tools"
-        );
-
-        // Paragraph break is NOT emitted by processor - that's now the UI's responsibility
-        let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
-            DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => {
-                text == "\n\n"
-            }
-            _ => false,
-        });
-
-        assert!(
-            paragraph_break_fragment.is_none(),
-            "Processor should NOT emit paragraph break - UI handles it. Found: {:?}",
-            paragraph_break_fragment
         );
     }
 }

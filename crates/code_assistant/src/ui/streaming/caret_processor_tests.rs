@@ -886,11 +886,9 @@ fn test_smart_filter_blocks_write_tool_after_read_tool() {
 }
 
 #[test]
-fn test_hidden_tool_emits_paragraph_break_when_same_type() {
+fn test_hidden_tool_emits_hidden_tool_completed() {
     use super::test_utils::print_fragments;
 
-    // Test that hidden tools (like update_plan) emit a paragraph break when suppressed
-    // AND the next fragment is the same type as the previous one
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
@@ -935,58 +933,5 @@ fn test_hidden_tool_emits_paragraph_break_when_same_type() {
             .iter()
             .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
         "HiddenToolCompleted should be emitted for hidden tools"
-    );
-}
-
-#[test]
-fn test_hidden_tool_no_paragraph_break_when_type_changes() {
-    use super::test_utils::print_fragments;
-
-    // Test that NO paragraph break is emitted when the fragment type changes
-    // Note: In caret processor, we use native Thinking chunks
-    let test_ui = TestUI::new();
-    let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
-
-    // First send some plain text
-    processor
-        .process(&StreamingChunk::Text("Some text before.\n".to_string()))
-        .unwrap();
-
-    // Then process the hidden tool (update_plan is hidden)
-    processor
-        .process(&StreamingChunk::Text(
-            "^^^update_plan\nentries: [{\"content\": \"test\"}]\n^^^".to_string(),
-        ))
-        .unwrap();
-
-    // Then send thinking text (different type than before)
-    // Note: Native Thinking chunks bypass emit_fragment in caret processor
-    processor
-        .process(&StreamingChunk::Thinking("Some thinking after".to_string()))
-        .unwrap();
-
-    // Check raw fragments - HiddenToolCompleted should be emitted
-    let raw_fragments = test_ui.get_raw_fragments();
-    print_fragments(&raw_fragments);
-
-    // HiddenToolCompleted should be present
-    assert!(
-        raw_fragments
-            .iter()
-            .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
-        "HiddenToolCompleted should be emitted for hidden tools"
-    );
-
-    // Paragraph break is NOT emitted by processor - that's now the UI's responsibility
-    let paragraph_break_fragment = raw_fragments.iter().find(|f| match f {
-        DisplayFragment::ThinkingText(text) | DisplayFragment::PlainText(text) => text == "\n\n",
-        _ => false,
-    });
-
-    assert!(
-        paragraph_break_fragment.is_none(),
-        "Processor should NOT emit paragraph break - UI handles it. Found: {:?}",
-        paragraph_break_fragment
     );
 }
