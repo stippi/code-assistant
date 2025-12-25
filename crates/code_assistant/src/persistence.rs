@@ -355,45 +355,63 @@ impl FileSessionPersistence {
 
     /// Delete all empty sessions (sessions with no messages).
     /// Returns the number of deleted sessions.
+    ///
+    /// This method uses metadata to identify potentially empty sessions first,
+    /// avoiding the need to load all session files. For safety, it verifies
+    /// each candidate session is actually empty before deleting.
     pub fn delete_empty_sessions(&mut self) -> Result<usize> {
         let sessions_dir = self.root_dir.join("sessions");
         if !sessions_dir.exists() {
             return Ok(0);
         }
 
-        let mut deleted_count = 0;
-        let mut session_ids_to_delete = Vec::new();
+        // Use metadata to find candidate empty sessions (message_count == 0)
+        let metadata_list = self.list_chat_sessions()?;
+        let candidate_ids: Vec<String> = metadata_list
+            .iter()
+            .filter(|m| m.message_count == 0)
+            .map(|m| m.id.clone())
+            .collect();
 
-        // First, collect all empty session IDs
-        for entry in std::fs::read_dir(&sessions_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            // Only process .json files, skip metadata.json
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            if path.file_stem().and_then(|s| s.to_str()) == Some("metadata") {
-                continue;
-            }
-
-            // Extract session ID from filename
-            if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
-                if let Ok(Some(session)) = self.load_chat_session(session_id) {
-                    if session.messages.is_empty() {
-                        session_ids_to_delete.push(session_id.to_string());
-                    }
-                }
-            }
+        if candidate_ids.is_empty() {
+            return Ok(0);
         }
 
-        // Now delete the collected sessions
-        for session_id in session_ids_to_delete {
-            if let Err(e) = self.delete_chat_session(&session_id) {
-                warn!("Failed to delete empty session {}: {}", session_id, e);
-            } else {
-                info!("Deleted empty session: {}", session_id);
-                deleted_count += 1;
+        let mut deleted_count = 0;
+
+        // Verify and delete each candidate
+        for session_id in candidate_ids {
+            // Safety check: load the session and verify it's actually empty
+            match self.load_chat_session(&session_id) {
+                Ok(Some(session)) if session.messages.is_empty() => {
+                    if let Err(e) = self.delete_chat_session(&session_id) {
+                        warn!("Failed to delete empty session {}: {}", session_id, e);
+                    } else {
+                        info!("Deleted empty session: {}", session_id);
+                        deleted_count += 1;
+                    }
+                }
+                Ok(Some(_)) => {
+                    // Metadata was out of sync, session has messages - skip
+                    debug!(
+                        "Session {} has messages despite metadata saying 0, skipping",
+                        session_id
+                    );
+                }
+                Ok(None) => {
+                    // Session file doesn't exist, clean up metadata
+                    debug!(
+                        "Session {} file not found, cleaning up metadata",
+                        session_id
+                    );
+                    let _ = self.delete_chat_session(&session_id);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to load session {} for verification: {}",
+                        session_id, e
+                    );
+                }
             }
         }
 
