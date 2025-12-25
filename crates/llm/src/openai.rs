@@ -456,10 +456,15 @@ impl OpenAIClient {
 
         for block in blocks {
             match block {
-                ContentBlock::Text { text, .. } => content_parts.push(serde_json::json!({
-                    "type": "text",
-                    "text": text
-                })),
+                ContentBlock::Text { text, .. } => {
+                    // Skip empty text blocks (can occur with some providers)
+                    if !text.is_empty() {
+                        content_parts.push(serde_json::json!({
+                            "type": "text",
+                            "text": text
+                        }));
+                    }
+                }
                 ContentBlock::Image {
                     media_type, data, ..
                 } => {
@@ -920,18 +925,22 @@ impl OpenAIClient {
 
                         // Handle content streaming
                         if let Some(content) = &delta.delta.content {
-                            // Add or extend text block
-                            if let Some(ContentBlock::Text { text, .. }) = content_blocks.last_mut()
-                            {
-                                text.push_str(content);
-                            } else {
-                                content_blocks.push(ContentBlock::Text {
-                                    text: content.clone(),
-                                    start_time: Some(std::time::SystemTime::now()),
-                                    end_time: None,
-                                });
+                            // Skip empty content (some providers send empty content with finish_reason)
+                            if !content.is_empty() {
+                                // Add or extend text block
+                                if let Some(ContentBlock::Text { text, .. }) =
+                                    content_blocks.last_mut()
+                                {
+                                    text.push_str(content);
+                                } else {
+                                    content_blocks.push(ContentBlock::Text {
+                                        text: content.clone(),
+                                        start_time: Some(std::time::SystemTime::now()),
+                                        end_time: None,
+                                    });
+                                }
+                                callback(&StreamingChunk::Text(content.clone()))?;
                             }
-                            callback(&StreamingChunk::Text(content.clone()))?;
                         }
 
                         // Handle tool calls
