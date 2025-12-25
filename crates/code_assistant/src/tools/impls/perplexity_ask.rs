@@ -142,8 +142,7 @@ impl Tool for PerplexityAskTool {
         let query = input
             .messages
             .iter()
-            .filter(|m| m.role == "user")
-            .next_back()
+            .rfind(|m| m.role == "user")
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "No user query found".to_string());
 
