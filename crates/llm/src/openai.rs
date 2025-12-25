@@ -161,10 +161,14 @@ struct OpenAIDelta {
     role: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAIToolCallDelta>>,
+    /// Groq-style reasoning (with channel field)
     #[serde(default)]
     reasoning: Option<String>,
     #[serde(default)]
     channel: Option<String>,
+    /// Z.ai/DeepSeek-style reasoning content
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -887,8 +891,29 @@ impl OpenAIClient {
 
                 if let Ok(chunk_response) = serde_json::from_str::<OpenAIStreamResponse>(data) {
                     debug!("Received stream event: '{}'", data);
+
                     if let Some(delta) = chunk_response.choices.first() {
-                        // Handle reasoning/thinking streaming (Groq-specific)
+                        // Handle reasoning_content streaming (Z.ai/DeepSeek-style)
+                        if let Some(reasoning) = &delta.delta.reasoning_content {
+                            if !reasoning.is_empty() {
+                                // Add or extend thinking block
+                                if let Some(ContentBlock::Thinking { thinking, .. }) =
+                                    content_blocks.last_mut()
+                                {
+                                    thinking.push_str(reasoning);
+                                } else {
+                                    content_blocks.push(ContentBlock::Thinking {
+                                        thinking: reasoning.clone(),
+                                        signature: String::new(),
+                                        start_time: Some(std::time::SystemTime::now()),
+                                        end_time: None,
+                                    });
+                                }
+                                callback(&StreamingChunk::Thinking(reasoning.clone()))?;
+                            }
+                        }
+
+                        // Handle reasoning/thinking streaming (Groq-specific with channel)
                         if let Some(reasoning) = &delta.delta.reasoning {
                             // Check if this is analysis channel (thinking content)
                             if delta.delta.channel.as_deref() == Some("analysis") {
