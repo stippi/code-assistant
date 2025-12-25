@@ -11,7 +11,9 @@ pub struct MinimaxClient {
 
 impl MinimaxClient {
     pub fn default_base_url() -> String {
-        "https://api.minimax.io/anthropic".to_string()
+        // Minimax Anthropic-compatible endpoint
+        // The /v1 suffix is needed because our DefaultRequestCustomizer appends /messages
+        "https://api.minimax.io/anthropic/v1".to_string()
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
@@ -57,7 +59,7 @@ mod tests {
     fn test_minimax_default_url() {
         assert_eq!(
             MinimaxClient::default_base_url(),
-            "https://api.minimax.io/anthropic"
+            "https://api.minimax.io/anthropic/v1"
         );
     }
 }
