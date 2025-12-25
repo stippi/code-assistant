@@ -3,8 +3,8 @@ use crate::auth::TokenManager;
 use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
 use crate::{
     recording::PlaybackState, AnthropicClient, CerebrasClient, GroqClient, LLMProvider,
-    MistralAiClient, OllamaClient, OpenAIClient, OpenAIResponsesClient, OpenRouterClient,
-    VertexClient,
+    MistralAiClient, MoonshotClient, OllamaClient, OpenAIClient, OpenAIResponsesClient,
+    OpenRouterClient, VertexClient,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -95,6 +95,12 @@ impl WithCustomConfig for MistralAiClient {
     }
 }
 
+impl WithCustomConfig for MoonshotClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
 impl WithCustomConfig for OpenAIResponsesClient {
     fn with_custom_config(self, custom_config: Value) -> Self {
         self.with_custom_config(custom_config)
@@ -151,6 +157,7 @@ macro_rules! simple_provider_factory {
 simple_provider_factory!(create_cerebras_client, CerebrasClient, "Cerebras");
 simple_provider_factory!(create_groq_client, GroqClient, "Groq");
 simple_provider_factory!(create_mistral_client, MistralAiClient, "MistralAI");
+simple_provider_factory!(create_moonshot_client, MoonshotClient, "Moonshot");
 simple_provider_factory!(create_openai_client, OpenAIClient, "OpenAI");
 simple_provider_factory!(create_openrouter_client, OpenRouterClient, "OpenRouter");
 
@@ -165,6 +172,7 @@ pub enum LLMProviderType {
     Cerebras,
     Groq,
     MistralAI,
+    Moonshot,
     Ollama,
     OpenAI,
     OpenAIResponses,
@@ -231,6 +239,7 @@ pub async fn create_llm_client_from_configs(
         "cerebras" => LLMProviderType::Cerebras,
         "groq" => LLMProviderType::Groq,
         "mistral-ai" => LLMProviderType::MistralAI,
+        "moonshot" => LLMProviderType::Moonshot,
         "ollama" => LLMProviderType::Ollama,
         "openai" => LLMProviderType::OpenAI,
         "openai-responses" => LLMProviderType::OpenAIResponses,
@@ -263,7 +272,9 @@ pub async fn create_llm_client_from_configs(
         }
         LLMProviderType::Cerebras => create_cerebras_client(model_config, provider_config).await,
         LLMProviderType::Groq => create_groq_client(model_config, provider_config).await,
+
         LLMProviderType::MistralAI => create_mistral_client(model_config, provider_config).await,
+        LLMProviderType::Moonshot => create_moonshot_client(model_config, provider_config).await,
         LLMProviderType::OpenAI => create_openai_client(model_config, provider_config).await,
         LLMProviderType::OpenAIResponses => {
             create_openai_responses_client(
