@@ -1,3 +1,4 @@
+use super::config::ToolsConfig;
 use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
@@ -37,6 +38,14 @@ pub trait Tool: Send + Sync + 'static {
 
     /// Get the metadata for this tool
     fn spec(&self) -> ToolSpec;
+
+    /// Check if this tool is available based on configuration.
+    /// Tools that require external API keys or services should override this
+    /// to return false when their requirements are not met.
+    /// Default implementation returns true (tool is always available).
+    fn is_available(&self, _config: &ToolsConfig) -> bool {
+        true
+    }
 
     /// Execute the tool with the given context and input
     /// The input may be modified during execution (e.g., for format-on-save)

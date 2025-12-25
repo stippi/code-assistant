@@ -1170,4 +1170,62 @@ mod tests {
         print_fragments(&fragments);
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_hidden_tool_emits_hidden_tool_completed() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(test_ui.clone());
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+
+        // First send some text
+        processor
+            .process(&StreamingChunk::Text("Some text before.".to_string()))
+            .unwrap();
+
+        // Then process the hidden tool (update_plan is hidden)
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: String::new(),
+                tool_name: Some("update_plan".to_string()),
+                tool_id: Some("tool-42-1".to_string()),
+            })
+            .unwrap();
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: r#"{"entries":[{"content":"test"}]}"#.to_string(),
+                tool_name: None,
+                tool_id: None,
+            })
+            .unwrap();
+
+        // Then send more text (same type as before)
+        processor
+            .process(&StreamingChunk::Text("Next content.".to_string()))
+            .unwrap();
+
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
+
+        // The tool fragments should be suppressed (update_plan is hidden)
+        assert!(
+            !fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::ToolName { .. })),
+            "ToolName should be suppressed for hidden tools"
+        );
+        assert!(
+            !fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::ToolEnd { .. })),
+            "ToolEnd should be suppressed for hidden tools"
+        );
+
+        // Check that HiddenToolCompleted is emitted (UI handles paragraph breaks)
+        assert!(
+            fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+            "HiddenToolCompleted should be emitted for hidden tools"
+        );
+    }
 }

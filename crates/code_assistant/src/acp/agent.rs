@@ -593,11 +593,20 @@ impl acp::Agent for ACPAgentImpl {
 
             let use_acp_fs = filesystem_supported && client_connection.is_some();
 
+            // Get the ACP root path for this session (the working directory opened in Zed)
+            let acp_root = {
+                let manager = session_manager.lock().await;
+                manager
+                    .get_session(&arguments.session_id.0)
+                    .and_then(|session| session.session.config.init_path.clone())
+            };
+
             // Create project manager and command executor
             let project_manager: Box<dyn ProjectManager> = if use_acp_fs {
                 Box::new(AcpProjectManager::new(
                     DefaultProjectManager::new(),
                     arguments.session_id.clone(),
+                    acp_root,
                 ))
             } else {
                 Box::new(DefaultProjectManager::new())

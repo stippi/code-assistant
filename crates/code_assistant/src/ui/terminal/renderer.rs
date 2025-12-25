@@ -92,10 +92,22 @@ pub struct TerminalRenderer<B: Backend> {
     plan_expanded: bool,
     /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
     pub last_overflow: u16,
+
     /// Maximum rows for input area (including 1 for content min + border)
     pub max_input_rows: u16,
     /// Spinner state for loading indication
     spinner_state: SpinnerState,
+    /// Tracks the last block type for hidden tool paragraph breaks
+    last_block_type_for_hidden_tool: Option<LastBlockType>,
+    /// Flag indicating a hidden tool completed and we may need a paragraph break
+    needs_paragraph_break_after_hidden_tool: bool,
+}
+
+/// Tracks the last block type for paragraph breaks after hidden tools
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LastBlockType {
+    PlainText,
+    Thinking,
 }
 
 /// Type alias for the production terminal renderer
@@ -115,11 +127,14 @@ impl<B: Backend> TerminalRenderer<B> {
             pending_user_message: None,
             current_error: None,
             info_message: None,
+
             plan_state: None,
             plan_expanded: false,
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
             spinner_state: SpinnerState::Hidden,
+            last_block_type_for_hidden_tool: None,
+            needs_paragraph_break_after_hidden_tool: false,
         })
     }
 
@@ -177,6 +192,43 @@ impl<B: Backend> TerminalRenderer<B> {
     /// If not, append a new block of that type
     /// Returns true if a new block was created, false if the last block was already the right type
     pub fn ensure_last_block_type(&mut self, block: MessageBlock) -> bool {
+        // Determine the block type for hidden tool tracking
+        let current_block_type = match &block {
+            MessageBlock::PlainText(_) => Some(LastBlockType::PlainText),
+            MessageBlock::Thinking(_) => Some(LastBlockType::Thinking),
+            _ => None,
+        };
+
+        // Check if we need to insert a paragraph break after a hidden tool
+        if self.needs_paragraph_break_after_hidden_tool {
+            if let (Some(last_type), Some(current_type)) =
+                (self.last_block_type_for_hidden_tool, current_block_type)
+            {
+                if last_type == current_type {
+                    // Same type as before the hidden tool - insert paragraph break
+                    if let Some(live_message) = self.live_message.as_mut() {
+                        if let Some(last_block) = live_message.blocks.last_mut() {
+                            match last_block {
+                                MessageBlock::PlainText(text_block) => {
+                                    text_block.content.push_str("\n\n");
+                                }
+                                MessageBlock::Thinking(thinking_block) => {
+                                    thinking_block.content.push_str("\n\n");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            self.needs_paragraph_break_after_hidden_tool = false;
+        }
+
+        // Track the block type for future hidden tool events
+        if let Some(block_type) = current_block_type {
+            self.last_block_type_for_hidden_tool = Some(block_type);
+        }
+
         let live_message = self.live_message.as_mut()
             .expect("ensure_last_block_type called without an active live message - call start_new_message first");
 
@@ -193,6 +245,11 @@ impl<B: Backend> TerminalRenderer<B> {
         }
 
         needs_new_block
+    }
+
+    /// Mark that a hidden tool completed - paragraph break may be needed before next text
+    pub fn mark_hidden_tool_completed(&mut self) {
+        self.needs_paragraph_break_after_hidden_tool = true;
     }
 
     /// Set or unset a pending user message (displayed while streaming)

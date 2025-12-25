@@ -41,6 +41,7 @@ struct JsonProcessorState {
     in_thinking: bool,
     /// Track if we're at the beginning of a block (thinking/content) for text chunks
     at_block_start: bool,
+
     /// True if any part of the current string value being parsed has been emitted.
     /// Used to detect and emit empty strings: ""
     emitted_string_part_for_current_key: bool,
@@ -62,6 +63,7 @@ impl Default for JsonProcessorState {
             tool_name: String::new(),
             current_tool_hidden: false,
             in_thinking: false,
+
             at_block_start: false,
             emitted_string_part_for_current_key: false,
             json_parsing_state: JsonParsingState::ExpectOpenBrace,
@@ -82,15 +84,19 @@ pub struct JsonStreamProcessor {
 
 impl JsonStreamProcessor {
     /// Emit a fragment through this central function that handles hidden tool filtering
-    fn emit_fragment(&self, fragment: DisplayFragment) -> Result<(), UIError> {
+    fn emit_fragment(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
         // Filter out tool-related fragments for hidden tools
         if self.state.current_tool_hidden {
             match &fragment {
-                DisplayFragment::ToolName { .. }
-                | DisplayFragment::ToolParameter { .. }
-                | DisplayFragment::ToolEnd { .. } => {
+                DisplayFragment::ToolName { .. } | DisplayFragment::ToolParameter { .. } => {
                     // Skip tool-related fragments for hidden tools
                     return Ok(());
+                }
+                DisplayFragment::ToolEnd { .. } => {
+                    // Emit HiddenToolCompleted so UI can handle paragraph breaks
+                    return self
+                        .ui
+                        .display_fragment(&DisplayFragment::HiddenToolCompleted);
                 }
                 _ => {
                     // Allow non-tool fragments even when current tool is hidden

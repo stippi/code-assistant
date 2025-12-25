@@ -83,6 +83,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
             current_tool_id: String::new(),
             current_tool_name: String::new(),
             current_tool_hidden: false,
+
             filter: Box::new(SmartToolFilter::new()),
             streaming_state: StreamingState::PreFirstTool,
         }
@@ -759,11 +760,15 @@ impl CaretStreamProcessor {
             match &fragment {
                 DisplayFragment::ToolName { .. }
                 | DisplayFragment::ToolParameter { .. }
-                | DisplayFragment::ToolEnd { .. }
                 | DisplayFragment::ToolOutput { .. }
                 | DisplayFragment::ToolTerminal { .. } => {
                     // Skip tool-related fragments for hidden tools
                     return Ok(());
+                }
+                DisplayFragment::ToolEnd { .. } => {
+                    // Emit HiddenToolCompleted so UI can handle paragraph breaks
+                    return self
+                        .emit_fragment_to_streaming_state(DisplayFragment::HiddenToolCompleted);
                 }
                 _ => {
                     // Allow non-tool fragments even when current tool is hidden
@@ -771,6 +776,14 @@ impl CaretStreamProcessor {
             }
         }
 
+        self.emit_fragment_to_streaming_state(fragment)
+    }
+
+    /// Send fragment to streaming state machine (handles buffering logic)
+    fn emit_fragment_to_streaming_state(
+        &mut self,
+        fragment: DisplayFragment,
+    ) -> Result<(), UIError> {
         match &self.streaming_state {
             StreamingState::Blocked => {
                 // Already blocked, check if this is just whitespace and ignore silently
@@ -914,6 +927,7 @@ impl CaretStreamProcessor {
                         // Tool output - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }
+
                     DisplayFragment::ReasoningComplete => {
                         // Reasoning complete - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
@@ -922,6 +936,10 @@ impl CaretStreamProcessor {
                         {
                             buffered_fragments.push(fragment);
                         }
+                    }
+                    DisplayFragment::HiddenToolCompleted => {
+                        // Hidden tool completed - emit immediately for UI to handle paragraph breaks
+                        self.ui.display_fragment(&fragment)?;
                     }
                 }
             }

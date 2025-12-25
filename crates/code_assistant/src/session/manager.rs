@@ -18,7 +18,7 @@ use crate::ui::UserInterface;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
-use tracing::{debug, error};
+use tracing::{debug, error, info, warn};
 
 /// The main SessionManager that manages multiple active sessions with on-demand agents
 pub struct SessionManager {
@@ -40,12 +40,27 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    /// Create a new SessionManager
+    /// Create a new SessionManager.
+    ///
+    /// On creation, this will clean up any empty sessions from previous runs.
+    /// This handles the case where a client (e.g., Zed) starts code-assistant
+    /// and creates a session, but the user never sends a message before closing.
     pub fn new(
-        persistence: FileSessionPersistence,
+        mut persistence: FileSessionPersistence,
         session_config_template: SessionConfig,
         default_model_name: String,
     ) -> Self {
+        // Clean up empty sessions from previous runs at startup
+        match persistence.delete_empty_sessions() {
+            Ok(count) if count > 0 => {
+                info!("Cleaned up {} empty session(s) from previous runs", count);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("Failed to clean up empty sessions at startup: {}", e);
+            }
+        }
+
         Self {
             persistence,
             active_sessions: HashMap::new(),

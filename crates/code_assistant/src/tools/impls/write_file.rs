@@ -166,7 +166,7 @@ impl Tool for WriteFileTool {
             .write_file(&full_path, &input.content, input.append)
             .await
         {
-            Ok(mut full_content) => {
+            Ok(_) => {
                 // If format-on-save applies, run the formatter
                 if let Some(command_line) = project_config.format_command_for(&path) {
                     let mut format_request = SandboxCommandRequest::default();
@@ -178,9 +178,8 @@ impl Tool for WriteFileTool {
 
                     // Regardless of formatter success, try to re-read the file content
                     if let Ok(updated) = explorer.read_file(&full_path).await {
-                        full_content = updated;
                         // Update the input content to the formatted content so the LLM sees it
-                        input.content = full_content.clone();
+                        input.content = updated;
                     }
                 }
 

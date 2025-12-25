@@ -168,8 +168,12 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                 terminal_id,
             } => println!("  [{i}] ToolTerminal(tool_id: {tool_id}, terminal_id: {terminal_id})"),
             DisplayFragment::ReasoningComplete => println!("  [{i}] ReasoningComplete"),
+
             DisplayFragment::CompactionDivider { summary } => {
                 println!("  [{i}] CompactionDivider: {summary}");
+            }
+            DisplayFragment::HiddenToolCompleted => {
+                println!("  [{i}] HiddenToolCompleted");
             }
         }
     }

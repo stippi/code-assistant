@@ -51,8 +51,11 @@ pub enum UiEvent {
         message: Option<String>,
         output: Option<String>,
     },
+
     /// End a tool invocation
     EndTool { id: String },
+    /// A hidden tool completed - UI may need paragraph break before next text
+    HiddenToolCompleted,
     /// Add an image to the message
     AddImage { media_type: String, data: String },
     /// Append streaming tool output

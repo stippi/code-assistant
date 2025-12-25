@@ -977,10 +977,72 @@ mod tests {
             fragments[2],
             DisplayFragment::ToolParameter { .. }
         ));
+
         assert!(matches!(
             fragments[3],
             DisplayFragment::ToolParameter { .. }
         ));
         assert!(matches!(fragments[4], DisplayFragment::ToolEnd { .. }));
+    }
+
+    #[test]
+    fn test_hidden_tool_emits_hidden_tool_completed() {
+        // Test that hidden tools (like update_plan) emit a paragraph break when suppressed
+        // AND the next fragment is the same type as the previous one
+        let input = concat!(
+            "Some text before.\n",
+            "<tool:update_plan>\n",
+            "<param:entries>[{\"content\": \"test\"}]</param:entries>\n",
+            "</tool:update_plan>",
+            "Text after hidden tool"
+        );
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(test_ui.clone());
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Process the input
+        processor
+            .process(&StreamingChunk::Text(input.to_string()))
+            .unwrap();
+
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
+
+        // The tool fragments should be suppressed (update_plan is hidden)
+        assert!(
+            !fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::ToolName { .. })),
+            "ToolName should be suppressed for hidden tools"
+        );
+        assert!(
+            !fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::ToolEnd { .. })),
+            "ToolEnd should be suppressed for hidden tools"
+        );
+
+        // Check that HiddenToolCompleted is emitted (UI handles paragraph breaks)
+        assert!(
+            fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+            "HiddenToolCompleted should be emitted for hidden tools"
+        );
+
+        // Check that the text after the hidden tool is present
+        let combined_text: String = fragments
+            .iter()
+            .filter_map(|f| match f {
+                DisplayFragment::PlainText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            combined_text.contains("Text after hidden tool"),
+            "Should contain the text after the hidden tool"
+        );
     }
 }

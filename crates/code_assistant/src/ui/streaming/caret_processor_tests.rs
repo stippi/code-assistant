@@ -884,3 +884,54 @@ fn test_smart_filter_blocks_write_tool_after_read_tool() {
     ));
     assert!(matches!(fragments[2], DisplayFragment::ToolEnd { .. }));
 }
+
+#[test]
+fn test_hidden_tool_emits_hidden_tool_completed() {
+    use super::test_utils::print_fragments;
+
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(test_ui.clone());
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+
+    // First send some text
+    processor
+        .process(&StreamingChunk::Text("Some text before.\n".to_string()))
+        .unwrap();
+
+    // Then process the hidden tool (update_plan is hidden)
+    processor
+        .process(&StreamingChunk::Text(
+            "^^^update_plan\nentries: [{\"content\": \"test\"}]\n^^^".to_string(),
+        ))
+        .unwrap();
+
+    // Then send more text (same type as before)
+    processor
+        .process(&StreamingChunk::Text("Next content.".to_string()))
+        .unwrap();
+
+    let fragments = test_ui.get_fragments();
+    print_fragments(&fragments);
+
+    // The tool fragments should be suppressed (update_plan is hidden)
+    assert!(
+        !fragments
+            .iter()
+            .any(|f| matches!(f, DisplayFragment::ToolName { .. })),
+        "ToolName should be suppressed for hidden tools"
+    );
+    assert!(
+        !fragments
+            .iter()
+            .any(|f| matches!(f, DisplayFragment::ToolEnd { .. })),
+        "ToolEnd should be suppressed for hidden tools"
+    );
+
+    // Check that HiddenToolCompleted is emitted (UI handles paragraph breaks)
+    assert!(
+        fragments
+            .iter()
+            .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+        "HiddenToolCompleted should be emitted for hidden tools"
+    );
+}

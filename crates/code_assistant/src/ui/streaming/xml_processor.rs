@@ -74,6 +74,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
             state: ProcessorState::default(),
             ui,
             request_id,
+
             filter: Box::new(SmartToolFilter::new()),
             streaming_state: StreamingState::PreFirstTool,
         }
@@ -595,11 +596,14 @@ impl XmlStreamProcessor {
         // Filter out tool-related fragments for hidden tools
         if self.state.current_tool_hidden {
             match &fragment {
-                DisplayFragment::ToolName { .. }
-                | DisplayFragment::ToolParameter { .. }
-                | DisplayFragment::ToolEnd { .. } => {
+                DisplayFragment::ToolName { .. } | DisplayFragment::ToolParameter { .. } => {
                     // Skip tool-related fragments for hidden tools
                     return Ok(());
+                }
+                DisplayFragment::ToolEnd { .. } => {
+                    // Emit HiddenToolCompleted so UI can handle paragraph breaks
+                    return self
+                        .emit_fragment_to_streaming_state(DisplayFragment::HiddenToolCompleted);
                 }
                 _ => {
                     // Allow non-tool fragments even when current tool is hidden
@@ -607,6 +611,14 @@ impl XmlStreamProcessor {
             }
         }
 
+        self.emit_fragment_to_streaming_state(fragment)
+    }
+
+    /// Send fragment to streaming state machine (handles buffering logic)
+    fn emit_fragment_to_streaming_state(
+        &mut self,
+        fragment: DisplayFragment,
+    ) -> Result<(), UIError> {
         match &self.streaming_state {
             StreamingState::Blocked => {
                 // Already blocked, check if this is just whitespace and ignore silently
@@ -750,6 +762,7 @@ impl XmlStreamProcessor {
                         // Tool output - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }
+
                     DisplayFragment::ReasoningComplete => {
                         // Reasoning complete - buffer it
                         if let StreamingState::BufferingAfterTool {
@@ -758,6 +771,10 @@ impl XmlStreamProcessor {
                         {
                             buffered_fragments.push(fragment);
                         }
+                    }
+                    DisplayFragment::HiddenToolCompleted => {
+                        // Hidden tool completed - emit immediately for UI to handle paragraph breaks
+                        self.ui.display_fragment(&fragment)?;
                     }
                 }
             }

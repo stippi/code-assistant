@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec, ToolsConfig,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -123,13 +123,17 @@ impl Tool for PerplexityAskTool {
         }
     }
 
+    fn is_available(&self, config: &ToolsConfig) -> bool {
+        config.has_perplexity_api_key()
+    }
+
     async fn execute<'a>(
         &self,
         _context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        // Check if the API key exists
-        let api_key = std::env::var("PERPLEXITY_API_KEY").ok();
+        // Get the API key from configuration
+        let api_key = ToolsConfig::global().perplexity_api_key.clone();
 
         // Create a new Perplexity client
         let client = PerplexityClient::new(api_key);
@@ -138,8 +142,7 @@ impl Tool for PerplexityAskTool {
         let query = input
             .messages
             .iter()
-            .filter(|m| m.role == "user")
-            .next_back()
+            .rfind(|m| m.role == "user")
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "No user query found".to_string());
 

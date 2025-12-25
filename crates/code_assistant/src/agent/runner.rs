@@ -17,7 +17,6 @@ use llm::{
 };
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
@@ -1024,9 +1023,10 @@ impl Agent {
     /// Attempt to read AGENTS.md or CLAUDE.md from the initial project root.
     /// Prefers AGENTS.md when both exist. Returns (file_name, content) on success.
     fn read_repository_guidance(&self) -> Option<(String, String)> {
-        // Determine search root
-        let root_path = if !self.session_config.initial_project.is_empty() {
-            PathBuf::from(&self.session_config.initial_project)
+        // Determine search root from init_path (the actual directory path),
+        // not initial_project (which is just the project name)
+        let root_path = if let Some(path) = &self.session_config.init_path {
+            path.clone()
         } else {
             std::env::current_dir().ok()?
         };

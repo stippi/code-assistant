@@ -570,9 +570,16 @@ impl Gpui {
                     );
                 });
             }
+
             UiEvent::EndTool { id } => {
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.end_tool_use(&id, cx);
+                });
+            }
+            UiEvent::HiddenToolCompleted => {
+                // Mark that a hidden tool completed - message container handles paragraph breaks
+                self.update_last_message(cx, |message, cx| {
+                    message.mark_hidden_tool_completed(cx);
                 });
             }
 
@@ -1101,9 +1108,15 @@ impl Gpui {
                         "GPUI: Tool {tool_id} attached terminal {terminal_id}; GUI terminal embedding unsupported"
                     );
                 }
+
                 DisplayFragment::ReasoningComplete => {
                     self.update_container(container, cx, |container, cx| {
                         container.complete_reasoning(cx);
+                    });
+                }
+                DisplayFragment::HiddenToolCompleted => {
+                    self.update_container(container, cx, |container, cx| {
+                        container.mark_hidden_tool_completed(cx);
                     });
                 }
             }
@@ -1511,10 +1524,14 @@ impl UserInterface for Gpui {
                     "GPUI: Tool {tool_id} attached terminal {terminal_id}; no dedicated UI hook"
                 );
             }
+
             DisplayFragment::CompactionDivider { summary } => {
                 self.push_event(UiEvent::DisplayCompactionSummary {
                     summary: summary.clone(),
                 });
+            }
+            DisplayFragment::HiddenToolCompleted => {
+                self.push_event(UiEvent::HiddenToolCompleted);
             }
         }
 
