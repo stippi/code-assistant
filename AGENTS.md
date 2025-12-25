@@ -1,22 +1,16 @@
 # Repository Guidance
 
 This file provides guidance to AI agents when working with code in this repository.
+Additional documentation is available in the `docs` folder if needed.
 
 ## Essential Commands
 
 ### Building and Development
-- `cargo build` - Build the project
-- `cargo build --release` - Build optimized release version
+- `cargo check` - Test if the project compiles
+- `cargo check --tests` - Test if the tests compile
 - `cargo test` - Run all tests
 - `cargo fmt --all -- --check` - Check code formatting
-- `cargo clippy --all-targets --all-features -- -D warnings` - Run linter (currently disabled in CI)
-
-### Running the Application
-- `cargo run -- --task "description"` - Run in agent mode with a task
-- `cargo run -- --ui` - Start with GUI interface
-- `cargo run -- --ui --task "description"` - Start GUI with initial task
-- `cargo run -- server` - Run as MCP server
-- `cargo run -- --help` - Show all available options
+- `cargo clippy --all-targets --all-features -- -D warnings` - Run linter
 
 ### Testing Specific Components
 - `cargo test --package code-assistant` - Test main crate
@@ -25,7 +19,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Architecture Overview
 
-This is a Rust-based CLI tool for AI-assisted code tasks with multiple operational modes:
+This is a Rust-based tool for AI-assisted code tasks with multiple operational modes.
 
 ### Core Structure
 - **Workspace Layout**: Multi-crate workspace with 3 main crates:
@@ -48,6 +42,7 @@ This is a Rust-based CLI tool for AI-assisted code tasks with multiple operation
 - **Tool Modes**:
   - `native` - Uses LLM provider's native tool calling
   - `xml` - Custom XML-based tool syntax in system messages
+  - `caret` - Custom triple-caret-fenced tool syntax in system messages
 
 ### LLM Integration
 - Multi-provider support: Anthropic, OpenAI, Google Vertex, Ollama, OpenRouter, AI Core
@@ -57,14 +52,11 @@ This is a Rust-based CLI tool for AI-assisted code tasks with multiple operation
 ## Configuration
 
 ### MCP Server Mode
-- Requires `~/.config/code-assistant/projects.json` for project definitions
 - Integrates with Claude Desktop as MCP server
-- Environment variables: `PERPLEXITY_API_KEY`, `ANTHROPIC_API_KEY`, etc.
 
 ### Agent Mode
-- Supports both terminal and GUI interfaces
+- Supports both terminal, Agent Client Protocol, and GUI interfaces
 - State persistence for continuing sessions
-- Working memory system for codebase exploration
 
 ## Development Notes
 
@@ -74,9 +66,9 @@ This is a Rust-based CLI tool for AI-assisted code tasks with multiple operation
 - Mock implementations for testing (`src/tests/mocks.rs`)
 
 ### UI Development
-- GPUI-based GUI with custom components
-- Streaming JSON/XML processors for real-time updates
-- Theme support and file type icons
+- GUI based on Zed's gpui and gpui-component with custom components
+- Streaming JSON/XML/Caret processors for real-time updates
+- Theme support
 
 ### Tool Development
 - Implement `DynTool` trait for new tools
