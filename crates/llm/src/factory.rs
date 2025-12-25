@@ -3,8 +3,8 @@ use crate::auth::TokenManager;
 use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
 use crate::{
     recording::PlaybackState, AnthropicClient, CerebrasClient, GroqClient, LLMProvider,
-    MistralAiClient, MoonshotClient, OllamaClient, OpenAIClient, OpenAIResponsesClient,
-    OpenRouterClient, VertexClient, ZaiClient,
+    MinimaxClient, MistralAiClient, MoonshotClient, OllamaClient, OpenAIClient,
+    OpenAIResponsesClient, OpenRouterClient, VertexClient, ZaiClient,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -89,6 +89,12 @@ impl WithCustomConfig for OllamaClient {
     }
 }
 
+impl WithCustomConfig for MinimaxClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
 impl WithCustomConfig for MistralAiClient {
     fn with_custom_config(self, custom_config: Value) -> Self {
         self.with_custom_config(custom_config)
@@ -162,6 +168,7 @@ macro_rules! simple_provider_factory {
 // Use the macro to generate factory functions for simple providers
 simple_provider_factory!(create_cerebras_client, CerebrasClient, "Cerebras");
 simple_provider_factory!(create_groq_client, GroqClient, "Groq");
+simple_provider_factory!(create_minimax_client, MinimaxClient, "Minimax");
 simple_provider_factory!(create_mistral_client, MistralAiClient, "MistralAI");
 simple_provider_factory!(create_moonshot_client, MoonshotClient, "Moonshot");
 simple_provider_factory!(create_zai_client, ZaiClient, "Z.ai");
@@ -178,6 +185,7 @@ pub enum LLMProviderType {
     Anthropic,
     Cerebras,
     Groq,
+    Minimax,
     MistralAI,
     Moonshot,
     Zai,
@@ -246,6 +254,7 @@ pub async fn create_llm_client_from_configs(
         "anthropic" => LLMProviderType::Anthropic,
         "cerebras" => LLMProviderType::Cerebras,
         "groq" => LLMProviderType::Groq,
+        "minimax" => LLMProviderType::Minimax,
         "mistral-ai" => LLMProviderType::MistralAI,
         "moonshot" => LLMProviderType::Moonshot,
         "z-ai" => LLMProviderType::Zai,
@@ -281,7 +290,7 @@ pub async fn create_llm_client_from_configs(
         }
         LLMProviderType::Cerebras => create_cerebras_client(model_config, provider_config).await,
         LLMProviderType::Groq => create_groq_client(model_config, provider_config).await,
-
+        LLMProviderType::Minimax => create_minimax_client(model_config, provider_config).await,
         LLMProviderType::MistralAI => create_mistral_client(model_config, provider_config).await,
         LLMProviderType::Moonshot => create_moonshot_client(model_config, provider_config).await,
         LLMProviderType::Zai => create_zai_client(model_config, provider_config).await,

@@ -21,6 +21,7 @@ pub mod config_merge;
 pub mod display;
 pub mod factory;
 pub mod groq;
+pub mod minimax;
 pub mod mistralai;
 pub mod moonshot;
 pub mod ollama;
@@ -41,6 +42,7 @@ pub use aicore::{
 pub use anthropic::AnthropicClient;
 pub use cerebras::CerebrasClient;
 pub use groq::GroqClient;
+pub use minimax::MinimaxClient;
 pub use mistralai::MistralAiClient;
 pub use moonshot::MoonshotClient;
 pub use ollama::OllamaClient;
