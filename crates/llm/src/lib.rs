@@ -32,6 +32,7 @@ pub mod recording;
 pub mod streaming;
 pub mod types;
 pub mod vertex;
+pub mod zai;
 
 pub use aicore::{
     create_aicore_client, create_aicore_client_with_recorder, AiCoreAnthropicClient, AiCoreApiType,
@@ -48,6 +49,7 @@ pub use openai_responses::OpenAIResponsesClient;
 pub use openrouter::OpenRouterClient;
 pub use types::*;
 pub use vertex::VertexClient;
+pub use zai::ZaiClient;
 
 use anyhow::Result;
 use async_trait::async_trait;
