@@ -4,32 +4,18 @@ use agent_client_protocol as acp;
 /// Convert a DisplayFragment to an ACP ContentBlock
 pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBlock {
     match fragment {
-        DisplayFragment::PlainText(text) => acp::ContentBlock::Text(acp::TextContent {
-            annotations: None,
-            text: text.clone(),
-            meta: None,
-        }),
-        // Thinking text is just regular text in ACP (no special annotation)
-        DisplayFragment::ThinkingText(text) => acp::ContentBlock::Text(acp::TextContent {
-            annotations: None,
-            text: text.clone(),
-            meta: None,
-        }),
-        DisplayFragment::CompactionDivider { summary } => {
-            acp::ContentBlock::Text(acp::TextContent {
-                annotations: None,
-                text: format!("Conversation compacted:\n{summary}"),
-                meta: None,
-            })
+        DisplayFragment::PlainText(text) => {
+            acp::ContentBlock::Text(acp::TextContent::new(text.clone()))
         }
+        // Thinking text is just regular text in ACP (no special annotation)
+        DisplayFragment::ThinkingText(text) => {
+            acp::ContentBlock::Text(acp::TextContent::new(text.clone()))
+        }
+        DisplayFragment::CompactionDivider { summary } => acp::ContentBlock::Text(
+            acp::TextContent::new(format!("Conversation compacted:\n{summary}")),
+        ),
         DisplayFragment::Image { media_type, data } => {
-            acp::ContentBlock::Image(acp::ImageContent {
-                annotations: None,
-                data: data.clone(),
-                mime_type: media_type.clone(),
-                uri: None,
-                meta: None,
-            })
+            acp::ContentBlock::Image(acp::ImageContent::new(data.clone(), media_type.clone()))
         }
 
         // Tool-related fragments are not converted to content blocks
@@ -45,11 +31,7 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
         | DisplayFragment::HiddenToolCompleted => {
             // These should not be converted to content blocks
             // Return empty text as placeholder
-            acp::ContentBlock::Text(acp::TextContent {
-                annotations: None,
-                text: String::new(),
-                meta: None,
-            })
+            acp::ContentBlock::Text(acp::TextContent::new(String::new()))
         }
     }
 }
@@ -104,18 +86,8 @@ mod tests {
     #[test]
     fn prompt_conversion_handles_text_and_images() {
         let prompt = vec![
-            acp::ContentBlock::Text(acp::TextContent {
-                annotations: None,
-                text: "hello".into(),
-                meta: None,
-            }),
-            acp::ContentBlock::Image(acp::ImageContent {
-                annotations: None,
-                data: "image-data".into(),
-                mime_type: "image/png".into(),
-                uri: None,
-                meta: None,
-            }),
+            acp::ContentBlock::Text(acp::TextContent::new("hello")),
+            acp::ContentBlock::Image(acp::ImageContent::new("image-data", "image/png")),
         ];
 
         let blocks = convert_prompt_to_content_blocks(prompt);

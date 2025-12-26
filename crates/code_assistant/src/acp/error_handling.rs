@@ -49,29 +49,26 @@ pub fn to_acp_error(error: &anyhow::Error) -> acp::Error {
     {
         // Configuration errors - these are client-side issues
         let formatted = format_config_error(error);
-        acp::Error::new((acp::ErrorCode::INVALID_PARAMS.code, error_str)).with_data(formatted)
+        acp::Error::invalid_params().data(formatted)
     } else if error_lower.contains("401") || error_lower.contains("unauthorized") {
         // Authentication errors
-        acp::Error::new((acp::ErrorCode::AUTH_REQUIRED.code, error_str.clone()))
-            .with_data(error_str)
+        acp::Error::auth_required().data(error_str)
     } else if error_lower.contains("404") || error_lower.contains("not found") {
         // Resource not found errors
-        acp::Error::new((acp::ErrorCode::RESOURCE_NOT_FOUND.code, error_str.clone()))
-            .with_data(error_str)
+        acp::Error::resource_not_found(None).data(error_str)
     } else if error_lower.contains("400")
         || error_lower.contains("bad request")
         || error_lower.contains("invalid request")
     {
         // Client provided invalid parameters
-        acp::Error::new((acp::ErrorCode::INVALID_PARAMS.code, error_str.clone())).with_data(
+        acp::Error::invalid_params().data(
             json!({
                 "hint": "The model configuration may include custom fields under `config` that this provider does not accept. Remove unexpected keys or move them into `meta`."
             }),
         )
     } else {
         // All other errors are internal
-        acp::Error::new((acp::ErrorCode::INTERNAL_ERROR.code, error_str.clone()))
-            .with_data(error_str)
+        acp::Error::internal_error().data(error_str)
     }
 }
 
@@ -112,11 +109,11 @@ mod tests {
         let acp_error = to_acp_error(&error);
 
         // Should be invalid_params for configuration errors
-        assert_eq!(acp_error.code, acp::ErrorCode::INVALID_PARAMS.code);
-        assert!(acp_error
-            .message
-            .contains("Providers configuration file not found"));
-        assert!(acp_error.data.is_some());
+        assert_eq!(acp_error.code, acp::ErrorCode::InvalidParams);
+        // The data should contain the formatted error with helpful context
+        let data = acp_error.data.expect("expected data");
+        let data_str = data.to_string();
+        assert!(data_str.contains("configuration file not found"));
     }
 
     #[test]
@@ -125,8 +122,10 @@ mod tests {
         let acp_error = to_acp_error(&error);
 
         // Should be auth_required for 401 errors - but using -32000 range
-        assert_eq!(acp_error.code, acp::ErrorCode::AUTH_REQUIRED.code);
-        assert!(acp_error.message.contains("HTTP 401"));
+        assert_eq!(acp_error.code, acp::ErrorCode::AuthRequired);
+        // Data should contain the original error message
+        let data = acp_error.data.expect("expected data");
+        assert!(data.to_string().contains("HTTP 401"));
     }
 
     #[test]
@@ -135,8 +134,10 @@ mod tests {
         let acp_error = to_acp_error(&error);
 
         // Should be resource_not_found for 404 errors
-        assert_eq!(acp_error.code, acp::ErrorCode::RESOURCE_NOT_FOUND.code);
-        assert!(acp_error.message.contains("HTTP 404"));
+        assert_eq!(acp_error.code, acp::ErrorCode::ResourceNotFound);
+        // Data should contain the original error message
+        let data = acp_error.data.expect("expected data");
+        assert!(data.to_string().contains("HTTP 404"));
     }
 
     #[test]
@@ -145,8 +146,10 @@ mod tests {
         let acp_error = to_acp_error(&error);
 
         // Should be internal_error for other errors
-        assert_eq!(acp_error.code, acp::ErrorCode::INTERNAL_ERROR.code);
-        assert!(acp_error.message.contains("Some unexpected error"));
+        assert_eq!(acp_error.code, acp::ErrorCode::InternalError);
+        // Data should contain the original error message
+        let data = acp_error.data.expect("expected data");
+        assert!(data.to_string().contains("Some unexpected error"));
     }
 
     #[test]
@@ -154,10 +157,7 @@ mod tests {
         let error = anyhow!("HTTP 400: Bad request due to invalid payload");
         let acp_error = to_acp_error(&error);
 
-        assert_eq!(acp_error.code, acp::ErrorCode::INVALID_PARAMS.code);
-        assert!(acp_error
-            .message
-            .contains("HTTP 400: Bad request due to invalid payload"));
+        assert_eq!(acp_error.code, acp::ErrorCode::InvalidParams);
         let data = acp_error.data.expect("expected hint data");
         let hint = data
             .get("hint")
@@ -173,10 +173,7 @@ mod tests {
         );
         let acp_error = to_acp_error(&error);
 
-        assert_eq!(acp_error.code, acp::ErrorCode::INVALID_PARAMS.code);
-        assert!(acp_error
-            .message
-            .contains("thinking_budget: Extra inputs are not permitted"));
+        assert_eq!(acp_error.code, acp::ErrorCode::InvalidParams);
         let data = acp_error.data.expect("expected hint data");
         let hint = data
             .get("hint")

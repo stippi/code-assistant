@@ -6,6 +6,12 @@ Before a Session can be created, Clients **MUST** initialize the connection by c
 
 ## Initialize Request
 
+Clients **MUST** initialize the connection with:
+- The latest protocol version supported
+- The capabilities supported
+
+They **SHOULD** also provide a name and version to the Agent.
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -19,6 +25,11 @@ Before a Session can be created, Clients **MUST** initialize the connection by c
         "writeTextFile": true
       },
       "terminal": true
+    },
+    "clientInfo": {
+      "name": "my-client",
+      "title": "My Client",
+      "version": "1.0.0"
     }
   }
 }
@@ -28,6 +39,7 @@ Before a Session can be created, Clients **MUST** initialize the connection by c
 
 - `protocolVersion` (required): The latest protocol version supported by the Client
 - `clientCapabilities` (optional): Capabilities supported by the client
+- `clientInfo` (optional): Information about the Client name and version (will be required in future versions)
 
 ## Initialize Response
 
@@ -46,10 +58,15 @@ The Agent **MUST** respond with the chosen protocol version and the capabilities
         "audio": true,
         "embeddedContext": true
       },
-      "mcpCapabilities": {
+      "mcp": {
         "http": true,
         "sse": true
       }
+    },
+    "agentInfo": {
+      "name": "my-agent",
+      "title": "My Agent",
+      "version": "1.0.0"
     },
     "authMethods": []
   }
@@ -60,7 +77,18 @@ The Agent **MUST** respond with the chosen protocol version and the capabilities
 
 - `protocolVersion` (required): The negotiated protocol version
 - `agentCapabilities` (optional): Capabilities supported by the agent
+- `agentInfo` (optional): Information about the Agent name and version (will be required in future versions)
 - `authMethods` (optional): Authentication methods supported by the agent
+
+## Implementation Information
+
+Both Clients and Agents **SHOULD** provide information about their implementation in the `clientInfo` and `agentInfo` fields respectively:
+
+- `name` (required): Intended for programmatic or logical use, but can be used as a display name fallback if title isn't present
+- `title` (optional): Intended for UI and end-user contexts — optimized to be human-readable and easily understood
+- `version` (required): Version of the implementation. Can be displayed to the user or used for debugging or metrics purposes
+
+> Note: In future versions of the protocol, this information will be required.
 
 ## Protocol Version
 
@@ -90,22 +118,16 @@ The Client **SHOULD** specify whether it supports the following capabilities:
 
 #### File System
 
-```json
-{
-  "fs": {
-    "readTextFile": boolean,  // fs/read_text_file method is available
-    "writeTextFile": boolean  // fs/write_text_file method is available
-  }
-}
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `readTextFile` | boolean | The `fs/read_text_file` method is available |
+| `writeTextFile` | boolean | The `fs/write_text_file` method is available |
 
 #### Terminal
 
-```json
-{
-  "terminal": boolean  // All terminal/* methods are available
-}
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `terminal` | boolean | All `terminal/*` methods are available |
 
 ### Agent Capabilities
 
@@ -113,11 +135,9 @@ The Agent **SHOULD** specify whether it supports the following capabilities:
 
 #### Load Session
 
-```json
-{
-  "loadSession": boolean  // session/load method is available (default: false)
-}
-```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `loadSession` | boolean | false | The `session/load` method is available |
 
 #### Prompt Capabilities
 
@@ -125,28 +145,28 @@ Indicates which content types beyond the baseline (text and resource links) the 
 
 As a baseline, all Agents **MUST** support `ContentBlock::Text` and `ContentBlock::ResourceLink` in `session/prompt` requests.
 
-```json
-{
-  "promptCapabilities": {
-    "image": boolean,           // ContentBlock::Image supported (default: false)
-    "audio": boolean,           // ContentBlock::Audio supported (default: false)
-    "embeddedContext": boolean  // ContentBlock::Resource supported (default: false)
-  }
-}
-```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `image` | boolean | false | `ContentBlock::Image` supported |
+| `audio` | boolean | false | `ContentBlock::Audio` supported |
+| `embeddedContext` | boolean | false | `ContentBlock::Resource` supported |
 
 #### MCP Capabilities
 
-```json
-{
-  "mcpCapabilities": {
-    "http": boolean,  // Agent supports connecting to MCP servers over HTTP (default: false)
-    "sse": boolean    // Agent supports connecting to MCP servers over SSE (default: false)
-  }
-}
-```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `http` | boolean | false | Agent supports connecting to MCP servers over HTTP |
+| `sse` | boolean | false | Agent supports connecting to MCP servers over SSE (deprecated) |
 
-Note: The SSE transport has been deprecated by the MCP spec.
+> Note: The SSE transport has been deprecated by the MCP spec.
+
+#### Session Capabilities
+
+As a baseline, all Agents **MUST** support `session/new`, `session/prompt`, `session/cancel`, and `session/update`.
+
+Optionally, they **MAY** support other session methods and notifications by specifying additional capabilities.
+
+> Note: `session/load` is still handled by the top-level `loadSession` capability. This will be unified in future versions of the protocol.
 
 ## Custom Capabilities
 

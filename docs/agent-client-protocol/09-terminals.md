@@ -50,12 +50,14 @@ The `terminal/create` method starts a command in a new terminal:
 
 ### Request Parameters
 
-- `sessionId` (required): The Session ID for this request
-- `command` (required): The command to execute
-- `args` (optional): Array of command arguments
-- `env` (optional): Environment variables for the command (array of `{name, value}` objects)
-- `cwd` (optional): Working directory for the command (absolute path)
-- `outputByteLimit` (optional): Maximum number of output bytes to retain
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sessionId` | SessionId | Yes | The Session ID for this request |
+| `command` | string | Yes | The command to execute |
+| `args` | string[] | No | Array of command arguments |
+| `env` | EnvVariable[] | No | Environment variables for the command (array of `{name, value}` objects) |
+| `cwd` | string | No | Working directory for the command (absolute path) |
+| `outputByteLimit` | number | No | Maximum number of output bytes to retain |
 
 #### Output Byte Limit
 
@@ -145,11 +147,15 @@ The `terminal/output` method retrieves the current terminal output without waiti
 
 ### Response Fields
 
-- `output` (required): The terminal output captured so far
-- `truncated` (required): Whether the output was truncated due to byte limits
-- `exitStatus` (optional): Present only if the command has exited
-  - `exitCode`: The process exit code (may be null)
-  - `signal`: The signal that terminated the process (may be null)
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `output` | string | Yes | The terminal output captured so far |
+| `truncated` | boolean | Yes | Whether the output was truncated due to byte limits |
+| `exitStatus` | TerminalExitStatus | No | Present only if the command has exited |
+
+Exit status fields:
+- `exitCode`: The process exit code (may be null)
+- `signal`: The signal that terminated the process (may be null)
 
 ## Waiting for Exit
 
@@ -184,8 +190,10 @@ The `terminal/wait_for_exit` method returns once the command completes:
 
 ### Response Fields
 
-- `exitCode` (optional): The process exit code (may be null if terminated by signal)
-- `signal` (optional): The signal that terminated the process (may be null if exited normally)
+| Field | Type | Description |
+|-------|------|-------------|
+| `exitCode` | number | The process exit code (may be null if terminated by signal) |
+| `signal` | string | The signal that terminated the process (may be null if exited normally) |
 
 ## Killing Commands
 
@@ -211,7 +219,7 @@ The `terminal/kill` method terminates a command without releasing the terminal:
 {
   "jsonrpc": "2.0",
   "id": 8,
-  "result": {}
+  "result": null
 }
 ```
 
@@ -258,7 +266,7 @@ The `terminal/release` method kills the command if still running and releases al
 {
   "jsonrpc": "2.0",
   "id": 9,
-  "result": {}
+  "result": null
 }
 ```
 
@@ -276,75 +284,6 @@ If the terminal was added to a tool call, the Client **SHOULD** continue to disp
 5. (Optional) Wait with terminal/wait_for_exit
 6. (Optional) Kill with terminal/kill if needed
 7. Release with terminal/release (required)
-```
-
-## Use Cases
-
-### Running Tests
-
-```rust
-// Create terminal and run tests
-let terminal_id = client.create_terminal("npm", &["test"]).await?;
-
-// Embed in tool call for live output
-tool_call.add_terminal(terminal_id);
-
-// Wait for completion
-let exit_status = client.wait_for_exit(terminal_id).await?;
-
-// Check result
-if exit_status.exit_code == Some(0) {
-    // Tests passed
-}
-
-// Clean up
-client.release_terminal(terminal_id).await?;
-```
-
-### Running with Timeout
-
-```rust
-// Create terminal
-let terminal_id = client.create_terminal("long-running-cmd", &[]).await?;
-
-// Wait with timeout
-let result = tokio::time::timeout(
-    Duration::from_secs(30),
-    client.wait_for_exit(terminal_id)
-).await;
-
-match result {
-    Ok(exit_status) => {
-        // Completed within timeout
-    }
-    Err(_) => {
-        // Timeout - kill and get output
-        client.kill_terminal(terminal_id).await?;
-        let output = client.get_terminal_output(terminal_id).await?;
-        // Process output...
-    }
-}
-
-// Always release
-client.release_terminal(terminal_id).await?;
-```
-
-### Background Process
-
-```rust
-// Start a server in background
-let terminal_id = client.create_terminal("npm", &["run", "dev"]).await?;
-
-// Do other work...
-// Periodically check if still running
-let output = client.get_terminal_output(terminal_id).await?;
-if output.exit_status.is_some() {
-    // Server crashed
-}
-
-// When done, kill and release
-client.kill_terminal(terminal_id).await?;
-client.release_terminal(terminal_id).await?;
 ```
 
 ## Best Practices

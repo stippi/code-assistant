@@ -89,6 +89,8 @@ The Agent may report its plan for accomplishing the task:
 }
 ```
 
+See [Agent Plan](./10-agent-plan.md) for more details.
+
 #### Text Responses
 
 The Agent reports text responses from the model:
@@ -208,11 +210,13 @@ The cycle returns to step 2, continuing until the language model completes its r
 
 When an Agent stops a turn, it must specify the reason:
 
-- `end_turn`: The language model finishes responding without requesting more tools
-- `max_tokens`: The maximum token limit is reached
-- `max_turn_requests`: The maximum number of model requests in a single turn is exceeded
-- `refusal`: The Agent refuses to continue
-- `cancelled`: The Client cancels the turn
+| Reason | Description |
+|--------|-------------|
+| `end_turn` | The language model finishes responding without requesting more tools |
+| `max_tokens` | The maximum token limit is reached |
+| `max_turn_requests` | The maximum number of model requests in a single turn is exceeded |
+| `refusal` | The Agent refuses to continue |
+| `cancelled` | The Client cancels the turn |
 
 ## Cancellation
 

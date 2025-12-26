@@ -158,13 +158,10 @@ impl AcpCodeExplorer {
 
     async fn read_entire(&self, path: &Path) -> Result<(String, PathBuf)> {
         let abs = self.ensure_allowed(path)?;
-        let response = fs_read_text_file(acp::ReadTextFileRequest {
-            session_id: self.session_id.clone(),
-            path: abs.clone(),
-            line: None,
-            limit: None,
-            meta: None,
-        })
+        let response = fs_read_text_file(acp::ReadTextFileRequest::new(
+            self.session_id.clone(),
+            abs.clone(),
+        ))
         .await?;
 
         let line_ending = detect_line_ending(&response.content);
@@ -183,20 +180,16 @@ impl AcpCodeExplorer {
         let abs = self.ensure_allowed(path)?;
         let format = self.format_for_path(&abs);
         let formatted = apply_file_format(content, &format);
-        fs_write_text_file(acp::WriteTextFileRequest {
-            session_id: self.session_id.clone(),
-            path: abs.clone(),
-            content: formatted,
-            meta: None,
-        })
+        fs_write_text_file(acp::WriteTextFileRequest::new(
+            self.session_id.clone(),
+            abs.clone(),
+            formatted,
+        ))
         .await?;
-        let response = fs_read_text_file(acp::ReadTextFileRequest {
-            session_id: self.session_id.clone(),
-            path: abs.clone(),
-            line: None,
-            limit: None,
-            meta: None,
-        })
+        let response = fs_read_text_file(acp::ReadTextFileRequest::new(
+            self.session_id.clone(),
+            abs.clone(),
+        ))
         .await?;
         let line_ending = detect_line_ending(&response.content);
         self.store_format(

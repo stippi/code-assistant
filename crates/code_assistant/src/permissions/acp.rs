@@ -46,25 +46,19 @@ impl AcpPermissionMediator {
             .tool_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| format!("permission-{}", request.tool_name));
-        acp::ToolCallUpdate {
-            id: acp::ToolCallId(id.into()),
-            meta: None,
-            fields: acp::ToolCallUpdateFields {
-                kind: Some(acp::ToolKind::Execute),
-                status: Some(acp::ToolCallStatus::Pending),
-                title: Some(format!("{} (permission required)", request.tool_name)),
-                content: Some(vec![acp::ToolCallContent::Content {
-                    content: acp::ContentBlock::Text(acp::TextContent {
-                        annotations: None,
-                        text: self.reason_summary(&request.reason),
-                        meta: None,
-                    }),
-                }]),
-                locations: None,
-                raw_input: Some(self.reason_metadata(&request.reason)),
-                raw_output: None,
-            },
-        }
+
+        let fields = acp::ToolCallUpdateFields::new()
+            .kind(acp::ToolKind::Execute)
+            .status(acp::ToolCallStatus::Pending)
+            .title(format!("{} (permission required)", request.tool_name))
+            .content(vec![acp::ToolCallContent::Content(acp::Content::new(
+                acp::ContentBlock::Text(acp::TextContent::new(
+                    self.reason_summary(&request.reason),
+                )),
+            ))])
+            .raw_input(self.reason_metadata(&request.reason));
+
+        acp::ToolCallUpdate::new(acp::ToolCallId::new(id), fields)
     }
 
     fn reason_summary(&self, reason: &PermissionRequestReason<'_>) -> String {
@@ -113,32 +107,25 @@ impl PermissionMediator for AcpPermissionMediator {
 
         let tool_call = self.tool_call_update(&permission_request);
         let options = vec![
-            acp::PermissionOption {
-                id: acp::PermissionOptionId::from(ALLOW_ALWAYS_OPTION_ID),
-                name: "Always allow in this session".into(),
-                kind: acp::PermissionOptionKind::AllowAlways,
-                meta: None,
-            },
-            acp::PermissionOption {
-                id: acp::PermissionOptionId::from(ALLOW_OPTION_ID),
-                name: "Allow this command".into(),
-                kind: acp::PermissionOptionKind::AllowOnce,
-                meta: None,
-            },
-            acp::PermissionOption {
-                id: acp::PermissionOptionId::from(DENY_OPTION_ID),
-                name: "Deny".into(),
-                kind: acp::PermissionOptionKind::RejectOnce,
-                meta: None,
-            },
+            acp::PermissionOption::new(
+                ALLOW_ALWAYS_OPTION_ID,
+                "Always allow in this session",
+                acp::PermissionOptionKind::AllowAlways,
+            ),
+            acp::PermissionOption::new(
+                ALLOW_OPTION_ID,
+                "Allow this command",
+                acp::PermissionOptionKind::AllowOnce,
+            ),
+            acp::PermissionOption::new(
+                DENY_OPTION_ID,
+                "Deny",
+                acp::PermissionOptionKind::RejectOnce,
+            ),
         ];
 
-        let acp_request = acp::RequestPermissionRequest {
-            session_id: self.session_id.clone(),
-            tool_call,
-            options,
-            meta: None,
-        };
+        let acp_request =
+            acp::RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
 
         let connection = self.connection.clone();
         let handle = Handle::current();
@@ -148,8 +135,8 @@ impl PermissionMediator for AcpPermissionMediator {
 
         let decision = match response.outcome {
             acp::RequestPermissionOutcome::Cancelled => PermissionDecision::Denied,
-            acp::RequestPermissionOutcome::Selected { option_id }
-                if option_id == acp::PermissionOptionId::from(ALLOW_ALWAYS_OPTION_ID) =>
+            acp::RequestPermissionOutcome::Selected(selected)
+                if selected.option_id == acp::PermissionOptionId::from(ALLOW_ALWAYS_OPTION_ID) =>
             {
                 if matches!(
                     permission_request.reason,
@@ -160,22 +147,24 @@ impl PermissionMediator for AcpPermissionMediator {
                 }
                 PermissionDecision::GrantedSession
             }
-            acp::RequestPermissionOutcome::Selected { option_id }
-                if option_id == acp::PermissionOptionId::from(ALLOW_OPTION_ID) =>
+            acp::RequestPermissionOutcome::Selected(selected)
+                if selected.option_id == acp::PermissionOptionId::from(ALLOW_OPTION_ID) =>
             {
                 PermissionDecision::GrantedOnce
             }
-            acp::RequestPermissionOutcome::Selected { option_id }
-                if option_id == acp::PermissionOptionId::from(DENY_OPTION_ID) =>
+            acp::RequestPermissionOutcome::Selected(selected)
+                if selected.option_id == acp::PermissionOptionId::from(DENY_OPTION_ID) =>
             {
                 PermissionDecision::Denied
             }
-            acp::RequestPermissionOutcome::Selected { option_id } => {
+            acp::RequestPermissionOutcome::Selected(selected) => {
                 return Err(anyhow!(
                     "Unknown permission option selected: {}",
-                    option_id.0
+                    selected.option_id.0
                 ))
             }
+            // Non-exhaustive enum - handle future variants
+            _ => return Err(anyhow!("Unknown permission outcome variant")),
         };
 
         Ok(decision)

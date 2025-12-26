@@ -30,8 +30,10 @@ Plain text messages form the foundation of most interactions.
 
 #### Fields
 
-- `text` (required): The text content to display
-- `annotations` (optional): Optional metadata about how the content should be used or displayed
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `text` | string | Yes | The text content to display |
+| `annotations` | Annotations | No | Optional metadata about how the content should be used or displayed |
 
 ### Image Content
 
@@ -49,10 +51,12 @@ Images can be included for visual context or analysis.
 
 #### Fields
 
-- `data` (required): Base64-encoded image data
-- `mimeType` (required): The MIME type of the image (e.g., "image/png", "image/jpeg")
-- `uri` (optional): Optional URI reference for the image source
-- `annotations` (optional): Optional metadata
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `data` | string | Yes | Base64-encoded image data |
+| `mimeType` | string | Yes | The MIME type of the image (e.g., "image/png", "image/jpeg") |
+| `uri` | string | No | Optional URI reference for the image source |
+| `annotations` | Annotations | No | Optional metadata |
 
 ### Audio Content
 
@@ -70,9 +74,11 @@ Audio data for transcription or analysis.
 
 #### Fields
 
-- `data` (required): Base64-encoded audio data
-- `mimeType` (required): The MIME type of the audio (e.g., "audio/wav", "audio/mp3")
-- `annotations` (optional): Optional metadata
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `data` | string | Yes | Base64-encoded audio data |
+| `mimeType` | string | Yes | The MIME type of the audio (e.g., "audio/wav", "audio/mp3") |
+| `annotations` | Annotations | No | Optional metadata |
 
 ### Embedded Resource
 
@@ -97,8 +103,10 @@ By embedding the content directly in the request, Clients can include context fr
 
 #### Fields
 
-- `resource` (required): The embedded resource contents (can be text or blob)
-- `annotations` (optional): Optional metadata
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `resource` | EmbeddedResourceResource | Yes | The embedded resource contents (can be text or blob) |
+| `annotations` | Annotations | No | Optional metadata |
 
 #### Text Resource
 
@@ -112,10 +120,11 @@ For text-based resources:
 }
 ```
 
-Fields:
-- `uri` (required): The URI identifying the resource
-- `text` (required): The text content of the resource
-- `mimeType` (optional): MIME type of the text content
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `uri` | string | Yes | The URI identifying the resource |
+| `text` | string | Yes | The text content of the resource |
+| `mimeType` | string | No | MIME type of the text content |
 
 #### Blob Resource
 
@@ -129,10 +138,11 @@ For binary resources:
 }
 ```
 
-Fields:
-- `uri` (required): The URI identifying the resource
-- `blob` (required): Base64-encoded binary data
-- `mimeType` (optional): MIME type of the blob
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `uri` | string | Yes | The URI identifying the resource |
+| `blob` | string | Yes | Base64-encoded binary data |
+| `mimeType` | string | No | MIME type of the blob |
 
 ### Resource Link
 
@@ -152,13 +162,15 @@ References to resources that the Agent can access.
 
 #### Fields
 
-- `uri` (required): The URI of the resource
-- `name` (required): A human-readable name for the resource
-- `mimeType` (optional): The MIME type of the resource
-- `title` (optional): Optional display title for the resource
-- `description` (optional): Optional description of the resource contents
-- `size` (optional): Optional size of the resource in bytes
-- `annotations` (optional): Optional metadata
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `uri` | string | Yes | The URI of the resource |
+| `name` | string | Yes | A human-readable name for the resource |
+| `mimeType` | string | No | The MIME type of the resource |
+| `title` | string | No | Optional display title for the resource |
+| `description` | string | No | Optional description of the resource contents |
+| `size` | integer | No | Optional size of the resource in bytes |
+| `annotations` | Annotations | No | Optional metadata |
 
 ## Annotations
 

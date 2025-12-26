@@ -73,7 +73,7 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::NewSessionResponse {
             session_id: acp::SessionId(session_id.to_string().into()),
             modes: None,
-            #[cfg(feature = "unstable")]
+            #[cfg(feature = "unstable_session_model")]
             models: None,
             meta: None,
         })
@@ -86,7 +86,7 @@ impl acp::Agent for ExampleAgent {
         log::info!("Received load session request {arguments:?}");
         Ok(acp::LoadSessionResponse {
             modes: None,
-            #[cfg(feature = "unstable")]
+            #[cfg(feature = "unstable_session_model")]
             models: None,
             meta: None,
         })
@@ -133,13 +133,32 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::SetSessionModeResponse::default())
     }
 
-    #[cfg(feature = "unstable")]
+    #[cfg(feature = "unstable_session_model")]
     async fn set_session_model(
         &self,
         args: acp::SetSessionModelRequest,
     ) -> Result<acp::SetSessionModelResponse, acp::Error> {
         log::info!("Received select model request {args:?}");
         Ok(acp::SetSessionModelResponse::default())
+    }
+
+    #[cfg(feature = "unstable_session_config_options")]
+    async fn set_session_config_option(
+        &self,
+        args: acp::SetSessionConfigOptionRequest,
+    ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
+        log::info!("Received set session config option request {args:?}");
+        Ok(acp::SetSessionConfigOptionResponse::new(vec![
+            acp::SessionConfigOption::select(
+                args.config_id,
+                "Example Option",
+                args.value,
+                vec![
+                    acp::SessionConfigSelectOption::new("option1", "Option 1"),
+                    acp::SessionConfigSelectOption::new("option2", "Option 2"),
+                ],
+            ),
+        ]))
     }
 
     async fn ext_method(&self, args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
