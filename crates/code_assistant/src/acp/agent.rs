@@ -514,7 +514,7 @@ impl acp::Agent for ACPAgentImpl {
             let acp_ui = Arc::new(ACPUserUI::new(
                 arguments.session_id.clone(),
                 session_update_tx.clone(),
-                base_path,
+                base_path.clone(),
             ));
 
             // Store it so cancel() can reach it
@@ -526,7 +526,8 @@ impl acp::Agent for ACPAgentImpl {
             let ui: Arc<dyn crate::ui::UserInterface> = acp_ui.clone();
 
             // Convert prompt content blocks
-            let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
+            let content_blocks =
+                convert_prompt_to_content_blocks(arguments.prompt, base_path.as_deref());
 
             let config_result = {
                 let manager = session_manager.lock().await;
