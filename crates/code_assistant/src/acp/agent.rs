@@ -77,11 +77,8 @@ impl ACPAgentImpl {
     }
 
     fn agent_info() -> acp::Implementation {
-        acp::Implementation {
-            name: "code-assistant".to_string(),
-            title: Some("Code Assistant".to_string()),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        }
+        acp::Implementation::new("code-assistant", env!("CARGO_PKG_VERSION"))
+            .title("Code Assistant")
     }
 
     fn compute_model_state(
@@ -117,26 +114,28 @@ impl ACPAgentImpl {
                 Some(provider_config.label.clone())
             };
 
-            let model_meta = json!({
-                "provider": {
+            let mut model_meta = JsonMap::new();
+            model_meta.insert(
+                "provider".into(),
+                json!({
                     "id": model_config.provider,
                     "label": provider_config.label,
                     "type": provider_config.provider,
-                },
-                "model": {
+                }),
+            );
+            model_meta.insert(
+                "model".into(),
+                json!({
                     "id": model_config.id,
-                },
-                "display_name": display_name,
-            });
+                }),
+            );
+            model_meta.insert("display_name".into(), json!(display_name));
 
             entries.push((
                 provider_config.label.clone(),
-                acp::ModelInfo {
-                    model_id: acp::ModelId(display_name.clone().into()),
-                    name: display_name.clone(),
-                    description,
-                    meta: Some(model_meta),
-                },
+                acp::ModelInfo::new(display_name.clone(), display_name.clone())
+                    .description(description)
+                    .meta(model_meta),
             ));
         }
 
@@ -213,11 +212,8 @@ impl ACPAgentImpl {
         state_meta.insert("providers".into(), JsonValue::Object(providers_meta));
 
         Some(ModelStateInfo {
-            state: acp::SessionModelState {
-                current_model_id: acp::ModelId(selected_model_id.clone().into()),
-                available_models,
-                meta: Some(JsonValue::Object(state_meta)),
-            },
+            state: acp::SessionModelState::new(selected_model_id.clone(), available_models)
+                .meta(state_meta),
             selected_model_name,
             selection_changed,
         })
@@ -258,32 +254,27 @@ impl acp::Agent for ACPAgentImpl {
                 *caps = Some(arguments.client_capabilities.clone());
             }
 
-            Ok(acp::InitializeResponse {
-                protocol_version: acp::V1,
-                agent_capabilities: acp::AgentCapabilities {
-                    load_session: true,
-                    mcp_capabilities: acp::McpCapabilities {
-                        http: false,
-                        sse: false,
-                        meta: None,
-                    },
-                    prompt_capabilities: acp::PromptCapabilities {
-                        image: true,
-                        audio: false,
-                        embedded_context: true,
-                        meta: None,
-                    },
-                    meta: Some(json!({
-                    "models": {
-                            "supportsModelSelector": true,
-                            "idFormat": "display_name",
-                        },
-                    })),
-                },
-                auth_methods: Vec::new(),
-                agent_info: Some(Self::agent_info()),
-                meta: None,
-            })
+            let mut capabilities_meta = JsonMap::new();
+            capabilities_meta.insert(
+                "models".into(),
+                json!({
+                    "supportsModelSelector": true,
+                    "idFormat": "display_name",
+                }),
+            );
+
+            Ok(acp::InitializeResponse::new(acp::ProtocolVersion::V1)
+                .agent_capabilities(
+                    acp::AgentCapabilities::new()
+                        .load_session(true)
+                        .prompt_capabilities(
+                            acp::PromptCapabilities::new()
+                                .image(true)
+                                .embedded_context(true),
+                        )
+                        .meta(capabilities_meta),
+                )
+                .agent_info(Self::agent_info()))
         })
     }
 
@@ -303,7 +294,7 @@ impl acp::Agent for ACPAgentImpl {
     {
         Box::pin(async move {
             tracing::info!("ACP: Received authenticate request");
-            Ok(acp::AuthenticateResponse { meta: None })
+            Ok(acp::AuthenticateResponse::new())
         })
     }
 
@@ -369,12 +360,7 @@ impl acp::Agent for ACPAgentImpl {
                 models_state = Some(model_info.state);
             }
 
-            Ok(acp::NewSessionResponse {
-                session_id: acp::SessionId(session_id.into()),
-                modes: None, // TODO: Support modes like "Plan", "Architect" and "Code".
-                models: models_state,
-                meta: None,
-            })
+            Ok(acp::NewSessionResponse::new(session_id).models(models_state))
         })
     }
 
@@ -473,11 +459,7 @@ impl acp::Agent for ACPAgentImpl {
 
             tracing::info!("ACP: Loaded session: {}", arguments.session_id.0);
 
-            Ok(acp::LoadSessionResponse {
-                modes: None,
-                models: models_state,
-                meta: None,
-            })
+            Ok(acp::LoadSessionResponse::new().models(models_state))
         })
     }
 
@@ -532,7 +514,7 @@ impl acp::Agent for ACPAgentImpl {
             let acp_ui = Arc::new(ACPUserUI::new(
                 arguments.session_id.clone(),
                 session_update_tx.clone(),
-                base_path,
+                base_path.clone(),
             ));
 
             // Store it so cancel() can reach it
@@ -544,7 +526,8 @@ impl acp::Agent for ACPAgentImpl {
             let ui: Arc<dyn crate::ui::UserInterface> = acp_ui.clone();
 
             // Convert prompt content blocks
-            let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
+            let content_blocks =
+                convert_prompt_to_content_blocks(arguments.prompt, base_path.as_deref());
 
             let config_result = {
                 let manager = session_manager.lock().await;
@@ -764,10 +747,7 @@ impl acp::Agent for ACPAgentImpl {
                         uis.remove(arguments.session_id.0.as_ref());
                     }
 
-                    return Ok(acp::PromptResponse {
-                        stop_reason: acp::StopReason::Cancelled,
-                        meta: None,
-                    });
+                    return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
                 }
             }
 
@@ -799,10 +779,7 @@ impl acp::Agent for ACPAgentImpl {
                 return Err(to_acp_error(&anyhow::anyhow!(message)));
             }
 
-            Ok(acp::PromptResponse {
-                stop_reason: acp::StopReason::EndTurn,
-                meta: None,
-            })
+            Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
         })
     }
 
@@ -879,14 +856,15 @@ impl acp::Agent for ACPAgentImpl {
                 display_name,
             );
 
-            Ok(acp::SetSessionModelResponse {
-                meta: Some(json!({
-                    "model": {
-                        "id": display_name,
-                        "display_name": display_name,
-                    }
-                })),
-            })
+            let mut response_meta = JsonMap::new();
+            response_meta.insert(
+                "model".into(),
+                json!({
+                    "id": display_name,
+                    "display_name": display_name,
+                }),
+            );
+            Ok(acp::SetSessionModelResponse::new().meta(response_meta))
         })
     }
 

@@ -193,15 +193,9 @@ async fn run_command(
 
     // Pass the complete command line as the command parameter with empty args.
     // This avoids escaping issues on the Zed side when args are passed separately.
-    let create_request = acp::CreateTerminalRequest {
-        session_id: session_id.clone(),
-        command: command_line,
-        args: Vec::new(),
-        env: Vec::new(),
-        cwd,
-        output_byte_limit: Some(OUTPUT_BYTE_LIMIT),
-        meta: None,
-    };
+    let create_request = acp::CreateTerminalRequest::new(session_id.clone(), command_line)
+        .cwd(cwd)
+        .output_byte_limit(OUTPUT_BYTE_LIMIT);
 
     let create_response = connection
         .create_terminal(create_request)
@@ -226,11 +220,7 @@ async fn run_command(
         wait_for_terminal_completion(connection.clone(), &session_id, &terminal_id, timeout).await
     };
 
-    let release_request = acp::ReleaseTerminalRequest {
-        session_id,
-        terminal_id: terminal_id.clone(),
-        meta: None,
-    };
+    let release_request = acp::ReleaseTerminalRequest::new(session_id, terminal_id.clone());
 
     match (
         result,
@@ -261,11 +251,10 @@ async fn stream_terminal_output(
 
     loop {
         let output_response = connection
-            .terminal_output(acp::TerminalOutputRequest {
-                session_id: session_id.clone(),
-                terminal_id: terminal_id.clone(),
-                meta: None,
-            })
+            .terminal_output(acp::TerminalOutputRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            ))
             .await
             .map_err(|e| anyhow!("Failed to get terminal output: {e}"))?;
 
@@ -297,11 +286,10 @@ async fn stream_terminal_output(
 
         if Instant::now() >= deadline {
             let _ = connection
-                .kill_terminal_command(acp::KillTerminalCommandRequest {
-                    session_id: session_id.clone(),
-                    terminal_id: terminal_id.clone(),
-                    meta: None,
-                })
+                .kill_terminal_command(acp::KillTerminalCommandRequest::new(
+                    session_id.clone(),
+                    terminal_id.clone(),
+                ))
                 .await
                 .map_err(|e| anyhow!("Failed to kill terminal after timeout: {e}"))?;
 
@@ -318,11 +306,10 @@ async fn wait_for_terminal_completion(
     terminal_id: &acp::TerminalId,
     timeout: Duration,
 ) -> Result<CommandOutput> {
-    let wait_future = connection.wait_for_terminal_exit(acp::WaitForTerminalExitRequest {
-        session_id: session_id.clone(),
-        terminal_id: terminal_id.clone(),
-        meta: None,
-    });
+    let wait_future = connection.wait_for_terminal_exit(acp::WaitForTerminalExitRequest::new(
+        session_id.clone(),
+        terminal_id.clone(),
+    ));
 
     let wait_response = tokio::time::timeout(timeout, wait_future)
         .await
@@ -330,11 +317,10 @@ async fn wait_for_terminal_completion(
         .map_err(|e| anyhow!("Failed to wait for terminal exit: {e}"))?;
 
     let output_response = connection
-        .terminal_output(acp::TerminalOutputRequest {
-            session_id: session_id.clone(),
-            terminal_id: terminal_id.clone(),
-            meta: None,
-        })
+        .terminal_output(acp::TerminalOutputRequest::new(
+            session_id.clone(),
+            terminal_id.clone(),
+        ))
         .await
         .map_err(|e| anyhow!("Failed to read terminal output: {e}"))?;
 

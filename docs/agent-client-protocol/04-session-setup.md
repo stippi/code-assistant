@@ -6,7 +6,9 @@ Before creating a session, Clients **MUST** first complete the initialization ph
 
 ## Creating a Session
 
-Clients create a new session by calling the `session/new` method:
+Clients create a new session by calling the `session/new` method with:
+- The working directory for the session
+- A list of MCP servers the Agent should connect to
 
 ### Request
 
@@ -38,10 +40,30 @@ The Agent **MUST** respond with a unique Session ID:
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "sessionId": "sess_abc123def456"
+    "sessionId": "sess_abc123def456",
+    "modes": {
+      "currentModeId": "code",
+      "availableModes": [
+        {
+          "id": "ask",
+          "name": "Ask",
+          "description": "Request permission before making any changes"
+        },
+        {
+          "id": "code",
+          "name": "Code",
+          "description": "Write and modify code with full tool access"
+        }
+      ]
+    }
   }
 }
 ```
+
+### Response Fields
+
+- `sessionId` (required): Unique identifier for the created session
+- `modes` (optional): Initial mode state if supported by the Agent
 
 ## Loading Sessions
 
@@ -67,6 +89,11 @@ Before attempting to load a session, Clients **MUST** verify that the Agent supp
 If `loadSession` is `false` or not present, the Agent does not support loading sessions and Clients **MUST NOT** attempt to call `session/load`.
 
 ### Loading a Session
+
+To load an existing session, Clients **MUST** call the `session/load` method with:
+- The Session ID to resume
+- MCP servers to connect to
+- The working directory
 
 ```json
 {
@@ -136,7 +163,7 @@ When **all** conversation entries have been streamed, the Agent responds to the 
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "result": {}
+  "result": null
 }
 ```
 
@@ -163,11 +190,22 @@ The `cwd` (current working directory) parameter establishes the file system cont
 
 The [Model Context Protocol (MCP)](https://modelcontextprotocol.io) allows Agents to access external tools and data sources. When creating a session, Clients **MAY** include connection details for MCP servers that the Agent should connect to.
 
+MCP servers can be connected to using different transports. All Agents **MUST** support the stdio transport, while HTTP and SSE transports are optional capabilities.
+
+While not required by the spec, new Agents **SHOULD** support the HTTP transport to ensure compatibility with modern MCP servers.
+
 ### Transport Types
 
 #### Stdio Transport (Required)
 
 All Agents **MUST** support connecting to MCP servers via stdio.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Human-readable identifier for the server |
+| `command` | string | Yes | Absolute path to the MCP server executable |
+| `args` | array | Yes | Command-line arguments to pass to the server |
+| `env` | EnvVariable[] | No | Environment variables to set when launching the server |
 
 ```json
 {
@@ -183,15 +221,16 @@ All Agents **MUST** support connecting to MCP servers via stdio.
 }
 ```
 
-Fields:
-- `name` (required): Human-readable identifier for the server
-- `command` (required): Absolute path to the MCP server executable
-- `args` (required): Command-line arguments to pass to the server
-- `env` (required): Environment variables to set when launching the server
-
 #### HTTP Transport (Optional)
 
 Available when the Agent supports `mcpCapabilities.http`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Must be `"http"` |
+| `name` | string | Yes | Human-readable identifier |
+| `url` | string | Yes | The URL of the MCP server |
+| `headers` | HttpHeader[] | Yes | HTTP headers to include in requests |
 
 ```json
 {
@@ -211,15 +250,16 @@ Available when the Agent supports `mcpCapabilities.http`:
 }
 ```
 
-Fields:
-- `type` (required): Must be `"http"`
-- `name` (required): Human-readable identifier
-- `url` (required): The URL of the MCP server
-- `headers` (required): HTTP headers to include in requests
-
 #### SSE Transport (Optional, Deprecated)
 
 Available when the Agent supports `mcpCapabilities.sse`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Must be `"sse"` |
+| `name` | string | Yes | Human-readable identifier |
+| `url` | string | Yes | The URL of the SSE endpoint |
+| `headers` | HttpHeader[] | Yes | HTTP headers to include |
 
 ```json
 {
@@ -235,7 +275,7 @@ Available when the Agent supports `mcpCapabilities.sse`:
 }
 ```
 
-Note: This transport was deprecated by the MCP spec.
+> Note: This transport was deprecated by the MCP spec.
 
 ### Checking Transport Support
 

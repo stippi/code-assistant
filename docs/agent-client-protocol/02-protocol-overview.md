@@ -129,6 +129,7 @@ The protocol provides built-in mechanisms for adding custom functionality while 
 ## Transport
 
 - **Protocol**: JSON-RPC 2.0
-- **Transport**: stdio (standard input/output)
-- Agents run as subprocesses of the Client
-- All communication is via JSON messages over stdio
+- **Transport**: 
+  - Local agents: stdio (standard input/output), running as subprocesses of the Client
+  - Remote agents: HTTP or WebSocket (work in progress)
+- All communication is via JSON messages

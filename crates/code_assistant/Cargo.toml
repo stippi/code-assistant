@@ -71,7 +71,7 @@ base64 = "0.22"
 image = "0.25"
 
 # Agent Client Protocol
-agent-client-protocol = { version = "0.7", features = ["unstable"] }
+agent-client-protocol = { version = "0.9", features = ["unstable"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]

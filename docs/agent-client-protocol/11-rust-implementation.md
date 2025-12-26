@@ -14,8 +14,19 @@ Or add it manually:
 
 ```toml
 [dependencies]
-agent-client-protocol = "0.1"  # Check crates.io for latest version
+agent-client-protocol = "0.9"  # Check crates.io for latest version
 ```
+
+### Feature Flags
+
+The crate provides several feature flags:
+
+```toml
+[dependencies]
+agent-client-protocol = { version = "0.9", features = ["unstable"] }
+```
+
+- `unstable` - Enables unstable features like model selection
 
 ## Core Traits
 
@@ -26,26 +37,23 @@ Depending on what kind of tool you're building, you'll need to implement either 
 Implement this trait to build an agent that responds to client requests:
 
 ```rust
-use agent_client_protocol::Agent;
+use agent_client_protocol as acp;
 
 pub trait Agent {
     // Required methods
-    async fn initialize(&mut self, params: InitializeRequest) -> Result<InitializeResponse>;
-    async fn new_session(&mut self, params: NewSessionRequest) -> Result<NewSessionResponse>;
-    async fn prompt(&mut self, params: PromptRequest) -> Result<PromptResponse>;
-    
+    async fn initialize(&self, params: InitializeRequest) -> Result<InitializeResponse, Error>;
+    async fn new_session(&self, params: NewSessionRequest) -> Result<NewSessionResponse, Error>;
+    async fn prompt(&self, params: PromptRequest) -> Result<PromptResponse, Error>;
+    async fn cancel(&self, params: CancelNotification) -> Result<(), Error>;
+
     // Optional methods with default implementations
-    async fn authenticate(&mut self, params: AuthenticateRequest) -> Result<AuthenticateResponse> {
-        // Default implementation
-    }
+    async fn authenticate(&self, params: AuthenticateRequest) -> Result<AuthenticateResponse, Error>;
+    async fn load_session(&self, params: LoadSessionRequest) -> Result<LoadSessionResponse, Error>;
+    async fn set_session_mode(&self, params: SetSessionModeRequest) -> Result<SetSessionModeResponse, Error>;
     
-    async fn load_session(&mut self, params: LoadSessionRequest) -> Result<LoadSessionResponse> {
-        // Default implementation - returns unsupported
-    }
-    
-    async fn set_session_mode(&mut self, params: SetSessionModeRequest) -> Result<SetSessionModeResponse> {
-        // Default implementation
-    }
+    // Extension methods
+    async fn ext_method(&self, params: ExtRequest) -> Result<ExtResponse, Error>;
+    async fn ext_notification(&self, params: ExtNotification) -> Result<(), Error>;
 }
 ```
 
@@ -54,41 +62,22 @@ pub trait Agent {
 Implement this trait to build a client (editor) that hosts agents:
 
 ```rust
-use agent_client_protocol::Client;
+use agent_client_protocol as acp;
 
 pub trait Client {
     // Required methods
-    async fn request_permission(&mut self, params: RequestPermissionRequest) -> Result<RequestPermissionResponse>;
-    
+    async fn request_permission(&self, params: RequestPermissionRequest) -> Result<RequestPermissionResponse, Error>;
+
     // Optional methods for file system support
-    async fn read_text_file(&mut self, params: ReadTextFileRequest) -> Result<ReadTextFileResponse> {
-        // Default implementation - returns unsupported
-    }
-    
-    async fn write_text_file(&mut self, params: WriteTextFileRequest) -> Result<WriteTextFileResponse> {
-        // Default implementation - returns unsupported
-    }
-    
+    async fn read_text_file(&self, params: ReadTextFileRequest) -> Result<ReadTextFileResponse, Error>;
+    async fn write_text_file(&self, params: WriteTextFileRequest) -> Result<WriteTextFileResponse, Error>;
+
     // Optional methods for terminal support
-    async fn create_terminal(&mut self, params: CreateTerminalRequest) -> Result<CreateTerminalResponse> {
-        // Default implementation - returns unsupported
-    }
-    
-    async fn terminal_output(&mut self, params: TerminalOutputRequest) -> Result<TerminalOutputResponse> {
-        // Default implementation - returns unsupported
-    }
-    
-    async fn wait_for_terminal_exit(&mut self, params: WaitForTerminalExitRequest) -> Result<WaitForTerminalExitResponse> {
-        // Default implementation - returns unsupported
-    }
-    
-    async fn kill_terminal(&mut self, params: KillTerminalRequest) -> Result<KillTerminalResponse> {
-        // Default implementation - returns unsupported
-    }
-    
-    async fn release_terminal(&mut self, params: ReleaseTerminalRequest) -> Result<ReleaseTerminalResponse> {
-        // Default implementation - returns unsupported
-    }
+    async fn create_terminal(&self, params: CreateTerminalRequest) -> Result<CreateTerminalResponse, Error>;
+    async fn terminal_output(&self, params: TerminalOutputRequest) -> Result<TerminalOutputResponse, Error>;
+    async fn wait_for_terminal_exit(&self, params: WaitForTerminalExitRequest) -> Result<WaitForTerminalExitResponse, Error>;
+    async fn kill_terminal(&self, params: KillTerminalCommandRequest) -> Result<KillTerminalCommandResponse, Error>;
+    async fn release_terminal(&self, params: ReleaseTerminalRequest) -> Result<ReleaseTerminalResponse, Error>;
 }
 ```
 
@@ -98,7 +87,7 @@ The crate includes runnable examples that demonstrate how to implement both side
 
 ### Agent Example
 
-[agent.rs](https://github.com/zed-industries/agent-client-protocol/blob/main/rust/examples/agent.rs) - A complete example of implementing an agent server
+[agent.rs](https://github.com/agentclientprotocol/rust-sdk/blob/main/examples/agent.rs) - A complete example of implementing an agent server
 
 Key points:
 - Implements the `Agent` trait
@@ -109,7 +98,7 @@ Key points:
 
 ### Client Example
 
-[client.rs](https://github.com/zed-industries/agent-client-protocol/blob/main/rust/examples/client.rs) - A complete example of implementing a client
+[client.rs](https://github.com/agentclientprotocol/rust-sdk/blob/main/examples/client.rs) - A complete example of implementing a client
 
 Key points:
 - Implements the `Client` trait
@@ -123,139 +112,106 @@ Key points:
 Here's a minimal agent implementation:
 
 ```rust
-use agent_client_protocol::{Agent, InitializeRequest, InitializeResponse, 
-                             NewSessionRequest, NewSessionResponse,
-                             PromptRequest, PromptResponse, StopReason};
-use std::sync::Arc;
+use agent_client_protocol as acp;
+use std::cell::Cell;
+use tokio::sync::{mpsc, oneshot};
 
 struct MyAgent {
-    sessions: HashMap<SessionId, SessionState>,
+    session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+    next_session_id: Cell<u64>,
 }
 
-impl Agent for MyAgent {
-    async fn initialize(&mut self, params: InitializeRequest) -> Result<InitializeResponse> {
-        Ok(InitializeResponse {
-            protocol_version: params.protocol_version,
-            agent_capabilities: AgentCapabilities {
-                load_session: false,
-                prompt_capabilities: PromptCapabilities {
-                    image: true,
-                    audio: false,
-                    embedded_context: true,
-                },
-                mcp_capabilities: McpCapabilities {
-                    http: true,
-                    sse: false,
-                },
-            },
-            auth_methods: vec![],
-            _meta: None,
+impl acp::Agent for MyAgent {
+    async fn initialize(
+        &self,
+        arguments: acp::InitializeRequest,
+    ) -> Result<acp::InitializeResponse, acp::Error> {
+        Ok(acp::InitializeResponse {
+            protocol_version: acp::V1,
+            agent_capabilities: acp::AgentCapabilities::default(),
+            auth_methods: Vec::new(),
+            agent_info: Some(acp::Implementation {
+                name: "my-agent".to_string(),
+                title: Some("My Agent".to_string()),
+                version: "0.1.0".to_string(),
+            }),
+            meta: None,
         })
     }
-    
-    async fn new_session(&mut self, params: NewSessionRequest) -> Result<NewSessionResponse> {
-        let session_id = SessionId(Arc::from(format!("sess_{}", uuid::Uuid::new_v4())));
-        
-        // Initialize session state
-        let state = SessionState::new(params.cwd, params.mcp_servers);
-        self.sessions.insert(session_id.clone(), state);
-        
-        Ok(NewSessionResponse {
-            session_id,
+
+    async fn new_session(
+        &self,
+        arguments: acp::NewSessionRequest,
+    ) -> Result<acp::NewSessionResponse, acp::Error> {
+        let session_id = self.next_session_id.get();
+        self.next_session_id.set(session_id + 1);
+        Ok(acp::NewSessionResponse {
+            session_id: acp::SessionId(session_id.to_string().into()),
             modes: None,
             models: None,
-            _meta: None,
+            meta: None,
         })
     }
-    
-    async fn prompt(&mut self, params: PromptRequest) -> Result<PromptResponse> {
-        let session = self.sessions.get_mut(&params.session_id)
-            .ok_or_else(|| Error::SessionNotFound)?;
-        
-        // Process the prompt with your LLM
-        // Send updates via session/update notifications
-        // Handle tool calls
+
+    async fn prompt(
+        &self,
+        arguments: acp::PromptRequest,
+    ) -> Result<acp::PromptResponse, acp::Error> {
+        // Process the prompt and send updates via session_update_tx
         // ...
         
-        Ok(PromptResponse {
-            stop_reason: StopReason::EndTurn,
-            _meta: None,
+        Ok(acp::PromptResponse {
+            stop_reason: acp::StopReason::EndTurn,
+            meta: None,
         })
+    }
+
+    async fn cancel(&self, args: acp::CancelNotification) -> Result<(), acp::Error> {
+        // Handle cancellation
+        Ok(())
     }
 }
 ```
 
-## Building a Client
+## Running with AgentSideConnection
 
-Here's a minimal client implementation:
-
-```rust
-use agent_client_protocol::{Client, RequestPermissionRequest, RequestPermissionResponse,
-                             RequestPermissionOutcome, PermissionOptionId};
-
-struct MyClient {
-    // UI state, file system access, etc.
-}
-
-impl Client for MyClient {
-    async fn request_permission(&mut self, params: RequestPermissionRequest) -> Result<RequestPermissionResponse> {
-        // Show UI to user with the provided options
-        // Wait for user selection
-        let selected_option_id = self.show_permission_dialog(&params).await?;
-        
-        Ok(RequestPermissionResponse {
-            outcome: RequestPermissionOutcome::Selected {
-                option_id: selected_option_id,
-            },
-            _meta: None,
-        })
-    }
-    
-    async fn read_text_file(&mut self, params: ReadTextFileRequest) -> Result<ReadTextFileResponse> {
-        // Read file from editor state (including unsaved changes)
-        let content = self.read_editor_buffer(&params.path).await?;
-        
-        Ok(ReadTextFileResponse {
-            content,
-            _meta: None,
-        })
-    }
-    
-    async fn write_text_file(&mut self, params: WriteTextFileRequest) -> Result<WriteTextFileResponse> {
-        // Write file through editor
-        self.write_editor_buffer(&params.path, &params.content).await?;
-        
-        Ok(WriteTextFileResponse {
-            _meta: None,
-        })
-    }
-}
-```
-
-## JSON-RPC Transport
-
-The protocol uses JSON-RPC 2.0 over stdio. The crate provides utilities for handling this:
+The `AgentSideConnection` handles the JSON-RPC transport over stdio:
 
 ```rust
-use agent_client_protocol::transport::{StdioTransport, Transport};
+use agent_client_protocol as acp;
+use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 
-// For agents (server side)
-let mut transport = StdioTransport::new();
-let mut agent = MyAgent::new();
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> acp::Result<()> {
+    let outgoing = tokio::io::stdout().compat_write();
+    let incoming = tokio::io::stdin().compat();
 
-loop {
-    let request = transport.receive().await?;
-    let response = agent.handle_request(request).await?;
-    transport.send(response).await?;
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            
+            let (conn, handle_io) =
+                acp::AgentSideConnection::new(MyAgent::new(tx), outgoing, incoming, |fut| {
+                    tokio::task::spawn_local(fut);
+                });
+            
+            // Background task to send session notifications
+            tokio::task::spawn_local(async move {
+                while let Some((notification, tx)) = rx.recv().await {
+                    let result = conn.session_notification(notification).await;
+                    if let Err(e) = result {
+                        log::error!("{e}");
+                        break;
+                    }
+                    tx.send(()).ok();
+                }
+            });
+            
+            handle_io.await
+        })
+        .await
 }
-
-// For clients (spawning agent subprocess)
-let mut child = Command::new("path/to/agent")
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .spawn()?;
-
-let mut transport = StdioTransport::from_child(&mut child);
 ```
 
 ## Sending Notifications
@@ -264,17 +220,20 @@ Agents send notifications to clients for streaming updates:
 
 ```rust
 // Send a session update notification
-transport.send_notification("session/update", SessionNotification {
+let notification = acp::SessionNotification {
     session_id: session_id.clone(),
-    update: SessionUpdate::AgentMessageChunk {
-        content: ContentBlock::Text {
+    update: acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
+        content: acp::ContentBlock::Text(acp::TextContent {
             text: "Thinking...".to_string(),
             annotations: None,
-            _meta: None,
-        },
-    },
-    _meta: None,
-}).await?;
+            meta: None,
+        }),
+        meta: None,
+    }),
+    meta: None,
+};
+
+conn.session_notification(notification).await?;
 ```
 
 ## Error Handling
@@ -284,12 +243,17 @@ The crate provides an `Error` type for protocol errors:
 ```rust
 use agent_client_protocol::Error;
 
-match result {
-    Ok(response) => // handle success,
-    Err(Error::SessionNotFound) => // session doesn't exist,
-    Err(Error::MethodNotSupported) => // capability not available,
-    Err(Error::AuthRequired) => // authentication needed,
-    Err(e) => // other error,
+// Create standard errors
+let error = Error::internal_error();
+let error = Error::invalid_params();
+let error = Error::method_not_found();
+
+// Errors can be returned from trait methods
+async fn my_method(&self, params: Params) -> Result<Response, Error> {
+    if !valid {
+        return Err(Error::invalid_params());
+    }
+    Ok(response)
 }
 ```
 
@@ -302,21 +266,17 @@ The crate provides strong typing for all protocol types:
 - `ContentBlock` - Union type for different content types
 - `StopReason` - Enumeration of turn completion reasons
 - `ToolKind` - Enumeration of tool categories
+- `SessionUpdate` - Different types of session updates
 - And many more...
 
 ## Documentation
 
 Full API documentation is available on [docs.rs](https://docs.rs/agent-client-protocol/latest/agent_client_protocol/).
 
-## Real-World Usage
-
-The `agent-client-protocol` crate powers the integration with external agents in the [Zed](https://zed.dev) editor.
-
-You can study Zed's source code to see a production implementation of the client side.
-
 ## Resources
 
 - **Crate**: https://crates.io/crates/agent-client-protocol
 - **Documentation**: https://docs.rs/agent-client-protocol
-- **Examples**: https://github.com/zed-industries/agent-client-protocol/tree/main/rust/examples
-- **GitHub**: https://github.com/zed-industries/agent-client-protocol
+- **Examples**: https://github.com/agentclientprotocol/rust-sdk/tree/main/examples
+- **GitHub**: https://github.com/agentclientprotocol/agent-client-protocol
+- **Rust SDK**: https://github.com/agentclientprotocol/rust-sdk

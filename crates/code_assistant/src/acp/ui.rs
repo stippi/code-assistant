@@ -67,7 +67,7 @@ struct ToolCallState {
 impl ToolCallState {
     fn new(id: &str) -> Self {
         Self {
-            id: acp::ToolCallId(id.to_string().into()),
+            id: acp::ToolCallId::new(id.to_string()),
             tool_name: None,
             title: None,
             kind: None,
@@ -170,7 +170,7 @@ impl ToolCallState {
             return;
         }
 
-        self.terminal_id = Some(acp::TerminalId(Arc::<str>::from(terminal_id.to_string())));
+        self.terminal_id = Some(acp::TerminalId::new(terminal_id.to_string()));
     }
 
     fn raw_input(&self) -> Option<JsonValue> {
@@ -212,14 +212,9 @@ impl ToolCallState {
         let new_text = self.parameters.get("new_text")?.value.clone();
         let old_text = self.parameters.get("old_text").map(|v| v.value.clone());
 
-        let diff = acp::Diff {
-            path: resolve_path(path, base_path),
-            old_text,
-            new_text,
-            meta: None,
-        };
+        let diff = acp::Diff::new(resolve_path(path, base_path), new_text).old_text(old_text);
 
-        Some(acp::ToolCallContent::Diff { diff })
+        Some(acp::ToolCallContent::Diff(diff))
     }
 
     fn build_content(&self, base_path: Option<&Path>) -> Option<Vec<acp::ToolCallContent>> {
@@ -228,9 +223,9 @@ impl ToolCallState {
 
         // Always add terminal content first if present
         if let Some(terminal_id) = &self.terminal_id {
-            content.push(acp::ToolCallContent::Terminal {
-                terminal_id: terminal_id.clone(),
-            });
+            content.push(acp::ToolCallContent::Terminal(acp::Terminal::new(
+                terminal_id.clone(),
+            )));
         }
 
         // For file modification tools (edit, write_file, replace_in_file), use diff content
@@ -299,45 +294,36 @@ impl ToolCallState {
             .or_else(|| self.parameters.get("line_number"))
             .and_then(|value| value.value.trim().parse::<u32>().ok());
 
-        Some(vec![acp::ToolCallLocation {
-            path: resolved,
-            line,
-            meta: None,
-        }])
+        Some(vec![acp::ToolCallLocation::new(resolved).line(line)])
     }
 
     fn to_tool_call(&self, base_path: Option<&Path>) -> acp::ToolCall {
-        acp::ToolCall {
-            id: self.id.clone(),
-            title: self
-                .title
-                .clone()
-                .or_else(|| self.tool_name.clone())
-                .unwrap_or_default(),
-            kind: self.kind(),
-            status: self.status(),
-            content: self.build_content(base_path).unwrap_or_default(),
-            locations: self.build_locations(base_path).unwrap_or_default(),
-            raw_input: self.raw_input(),
-            raw_output: self.raw_output(),
-            meta: None,
-        }
+        let title = self
+            .title
+            .clone()
+            .or_else(|| self.tool_name.clone())
+            .unwrap_or_default();
+
+        acp::ToolCall::new(self.id.clone(), title)
+            .kind(self.kind())
+            .status(self.status())
+            .content(self.build_content(base_path).unwrap_or_default())
+            .locations(self.build_locations(base_path).unwrap_or_default())
+            .raw_input(self.raw_input())
+            .raw_output(self.raw_output())
     }
 
     fn to_update(&self, base_path: Option<&Path>) -> acp::ToolCallUpdate {
-        acp::ToolCallUpdate {
-            id: self.id.clone(),
-            meta: None,
-            fields: acp::ToolCallUpdateFields {
-                kind: self.kind,
-                status: Some(self.status()),
-                title: self.title.clone(),
-                content: self.build_content(base_path),
-                locations: self.build_locations(base_path),
-                raw_input: self.raw_input(),
-                raw_output: self.raw_output(),
-            },
-        }
+        let fields = acp::ToolCallUpdateFields::new()
+            .kind(self.kind)
+            .status(self.status())
+            .title(self.title.clone())
+            .content(self.build_content(base_path))
+            .locations(self.build_locations(base_path))
+            .raw_input(self.raw_input())
+            .raw_output(self.raw_output());
+
+        acp::ToolCallUpdate::new(self.id.clone(), fields)
     }
 }
 
@@ -355,13 +341,9 @@ fn parse_parameter_value(raw: &str) -> JsonValue {
 }
 
 fn text_content(text: String) -> acp::ToolCallContent {
-    acp::ToolCallContent::Content {
-        content: acp::ContentBlock::Text(acp::TextContent {
-            annotations: None,
-            text,
-            meta: None,
-        }),
-    }
+    acp::ToolCallContent::Content(acp::Content::new(acp::ContentBlock::Text(
+        acp::TextContent::new(text),
+    )))
 }
 
 /// Render SubAgentOutput JSON as markdown for ACP display.
@@ -451,10 +433,7 @@ impl ACPUserUI {
     }
 
     fn content_chunk(content: acp::ContentBlock) -> acp::ContentChunk {
-        acp::ContentChunk {
-            content,
-            meta: None,
-        }
+        acp::ContentChunk::new(content)
     }
 
     /// Send a session update notification
@@ -463,11 +442,7 @@ impl ACPUserUI {
         let (tx, rx) = oneshot::channel();
         self.session_update_tx
             .send((
-                acp::SessionNotification {
-                    session_id: self.session_id.clone(),
-                    update,
-                    meta: None,
-                },
+                acp::SessionNotification::new(self.session_id.clone(), update),
                 tx,
             ))
             .map_err(|_| {
@@ -521,11 +496,7 @@ impl ACPUserUI {
 
     fn queue_session_update(&self, update: acp::SessionUpdate) {
         let (ack_tx, _ack_rx) = oneshot::channel();
-        let notification = acp::SessionNotification {
-            session_id: self.session_id.clone(),
-            update,
-            meta: None,
-        };
+        let notification = acp::SessionNotification::new(self.session_id.clone(), update);
 
         if let Err(e) = self.session_update_tx.send((notification, ack_tx)) {
             tracing::error!("ACPUserUI: Failed to send queued update: {:?}", e);
@@ -548,11 +519,7 @@ impl ACPUserUI {
         let last_type = *self.last_content_type.lock().unwrap();
         if last_type == current_type {
             // Same type as before the hidden tool - emit paragraph break
-            let content = acp::ContentBlock::Text(acp::TextContent {
-                annotations: None,
-                text: "\n\n".to_string(),
-                meta: None,
-            });
+            let content = acp::ContentBlock::Text(acp::TextContent::new("\n\n"));
             let chunk = Self::content_chunk(content);
 
             // Use the appropriate update type based on content type
@@ -592,11 +559,7 @@ impl UserInterface for ACPUserUI {
             } => {
                 // Send user message content
                 self.send_session_update(acp::SessionUpdate::UserMessageChunk(
-                    Self::content_chunk(acp::ContentBlock::Text(acp::TextContent {
-                        annotations: None,
-                        text: content,
-                        meta: None,
-                    })),
+                    Self::content_chunk(acp::ContentBlock::Text(acp::TextContent::new(content))),
                 ))
                 .await?;
 
@@ -606,13 +569,9 @@ impl UserInterface for ACPUserUI {
                     match attachment {
                         crate::persistence::DraftAttachment::Image { content, mime_type } => {
                             self.send_session_update(acp::SessionUpdate::UserMessageChunk(
-                                Self::content_chunk(acp::ContentBlock::Image(acp::ImageContent {
-                                    annotations: None,
-                                    data: content,
-                                    mime_type,
-                                    uri: None,
-                                    meta: None,
-                                })),
+                                Self::content_chunk(acp::ContentBlock::Image(
+                                    acp::ImageContent::new(content, mime_type),
+                                )),
                             ))
                             .await?;
                         }
@@ -641,16 +600,15 @@ impl UserInterface for ACPUserUI {
                 let entries = plan
                     .entries
                     .into_iter()
-                    .map(|entry| acp::PlanEntry {
-                        content: entry.content,
-                        priority: match entry.priority {
+                    .map(|entry| {
+                        let priority = match entry.priority {
                             crate::types::PlanItemPriority::High => acp::PlanEntryPriority::High,
                             crate::types::PlanItemPriority::Medium => {
                                 acp::PlanEntryPriority::Medium
                             }
                             crate::types::PlanItemPriority::Low => acp::PlanEntryPriority::Low,
-                        },
-                        status: match entry.status {
+                        };
+                        let status = match entry.status {
                             crate::types::PlanItemStatus::Pending => acp::PlanEntryStatus::Pending,
                             crate::types::PlanItemStatus::InProgress => {
                                 acp::PlanEntryStatus::InProgress
@@ -658,15 +616,14 @@ impl UserInterface for ACPUserUI {
                             crate::types::PlanItemStatus::Completed => {
                                 acp::PlanEntryStatus::Completed
                             }
-                        },
-                        meta: entry.meta,
+                        };
+                        let meta = entry.meta.and_then(|v| v.as_object().cloned());
+                        acp::PlanEntry::new(entry.content, priority, status).meta(meta)
                     })
                     .collect();
 
-                let acp_plan = acp::Plan {
-                    entries,
-                    meta: plan.meta,
-                };
+                let plan_meta = plan.meta.and_then(|v| v.as_object().cloned());
+                let acp_plan = acp::Plan::new(entries).meta(plan_meta);
 
                 self.send_session_update(acp::SessionUpdate::Plan(acp_plan))
                     .await?;
@@ -778,11 +735,7 @@ impl UserInterface for ACPUserUI {
                 // Track content type for future hidden tool events
                 *self.last_content_type.lock().unwrap() = LastContentType::Text;
 
-                let content = acp::ContentBlock::Text(acp::TextContent {
-                    annotations: None,
-                    text: text.clone(),
-                    meta: None,
-                });
+                let content = acp::ContentBlock::Text(acp::TextContent::new(text.clone()));
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
@@ -803,11 +756,7 @@ impl UserInterface for ACPUserUI {
                 // Track content type for future hidden tool events
                 *self.last_content_type.lock().unwrap() = LastContentType::Thinking;
 
-                let content = acp::ContentBlock::Text(acp::TextContent {
-                    annotations: None,
-                    text: text.clone(),
-                    meta: None,
-                });
+                let content = acp::ContentBlock::Text(acp::TextContent::new(text.clone()));
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk(chunk));
             }
@@ -920,11 +869,9 @@ impl UserInterface for ACPUserUI {
             DisplayFragment::ReasoningSummaryDelta(delta) => {
                 // Reasoning summaries are emitted as AgentThoughtChunk, same as ThinkingText
                 self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk(
-                    Self::content_chunk(acp::ContentBlock::Text(acp::TextContent {
-                        annotations: None,
-                        text: delta.clone(),
-                        meta: None,
-                    })),
+                    Self::content_chunk(acp::ContentBlock::Text(acp::TextContent::new(
+                        delta.clone(),
+                    ))),
                 ));
             }
         }
@@ -960,7 +907,7 @@ mod tests {
         mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
     ) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let ui = ACPUserUI::new(acp::SessionId("session-1".to_string().into()), tx, None);
+        let ui = ACPUserUI::new(acp::SessionId::new("session-1"), tx, None);
         (ui, rx)
     }
 
@@ -978,15 +925,15 @@ mod tests {
 
         assert!(matches!(
             content.first(),
-            Some(acp::ToolCallContent::Terminal { terminal_id })
-                if terminal_id.0.as_ref() == "term-123"
+            Some(acp::ToolCallContent::Terminal(terminal))
+                if terminal.terminal_id.0.as_ref() == "term-123"
         ));
 
         assert!(content.iter().any(|item| matches!(
             item,
-            acp::ToolCallContent::Content {
-                content: acp::ContentBlock::Text(acp::TextContent { text, .. })
-            } if text.contains("command: npm test")
+            acp::ToolCallContent::Content(content)
+                if matches!(&content.content, acp::ContentBlock::Text(text_content)
+                    if text_content.text.contains("command: npm test"))
         )));
     }
 
@@ -1015,7 +962,7 @@ mod tests {
         let (notification, _ack) = rx.try_recv().expect("expected tool call notification");
         match notification.update {
             acp::SessionUpdate::ToolCall(call) => {
-                assert_eq!(call.id.0.as_ref(), "tool-1");
+                assert_eq!(call.tool_call_id.0.as_ref(), "tool-1");
                 assert_eq!(call.kind, acp::ToolKind::Execute);
                 assert_eq!(call.title, "execute_command");
             }
@@ -1114,13 +1061,19 @@ mod tests {
         // Should contain the full output, not just parameters
         assert_eq!(content.len(), 1);
         match &content[0] {
-            acp::ToolCallContent::Content {
-                content: acp::ContentBlock::Text(acp::TextContent { text, .. }),
-            } => {
-                assert!(text.contains("Successfully loaded the following file(s)"));
-                assert!(text.contains("Content of file 1"));
-                assert!(text.contains("Content of file 2"));
-                assert!(!text.contains("paths: [\"file1.txt\", \"file2.txt\"]"));
+            acp::ToolCallContent::Content(content) => {
+                if let acp::ContentBlock::Text(text_content) = &content.content {
+                    assert!(text_content
+                        .text
+                        .contains("Successfully loaded the following file(s)"));
+                    assert!(text_content.text.contains("Content of file 1"));
+                    assert!(text_content.text.contains("Content of file 2"));
+                    assert!(!text_content
+                        .text
+                        .contains("paths: [\"file1.txt\", \"file2.txt\"]"));
+                } else {
+                    panic!("expected text content");
+                }
             }
             other => panic!("expected text content, got {other:?}"),
         }
@@ -1142,7 +1095,7 @@ mod tests {
         // Should contain diff content, not output
         assert_eq!(content.len(), 1);
         match &content[0] {
-            acp::ToolCallContent::Diff { diff } => {
+            acp::ToolCallContent::Diff(diff) => {
                 assert_eq!(diff.path.to_string_lossy(), "test.txt");
                 assert_eq!(diff.old_text.as_deref(), Some("old content"));
                 assert_eq!(diff.new_text, "new content");
@@ -1239,19 +1192,29 @@ mod tests {
             panic!("expected plan update, got {:?}", notification.update);
         };
 
-        assert_eq!(acp_plan.meta, expected_plan.meta);
+        // Convert expected meta values to the format ACP uses (Object maps, not arbitrary Values)
+        let expected_plan_meta = expected_plan.meta.and_then(|v| v.as_object().cloned());
+        assert_eq!(acp_plan.meta, expected_plan_meta);
         assert_eq!(acp_plan.entries.len(), expected_plan.entries.len());
 
         let first = &acp_plan.entries[0];
+        let expected_first_meta = expected_plan.entries[0]
+            .meta
+            .as_ref()
+            .and_then(|v| v.as_object().cloned());
         assert_eq!(first.content, expected_plan.entries[0].content);
         assert_eq!(first.priority, acp::PlanEntryPriority::High);
         assert_eq!(first.status, acp::PlanEntryStatus::InProgress);
-        assert_eq!(first.meta, expected_plan.entries[0].meta);
+        assert_eq!(first.meta, expected_first_meta);
 
         let second = &acp_plan.entries[1];
+        let expected_second_meta = expected_plan.entries[1]
+            .meta
+            .as_ref()
+            .and_then(|v| v.as_object().cloned());
         assert_eq!(second.content, expected_plan.entries[1].content);
         assert_eq!(second.priority, acp::PlanEntryPriority::Low);
         assert_eq!(second.status, acp::PlanEntryStatus::Completed);
-        assert_eq!(second.meta, expected_plan.entries[1].meta);
+        assert_eq!(second.meta, expected_second_meta);
     }
 }

@@ -1,10 +1,10 @@
 # Agent Client Protocol (ACP) Documentation
 
-This directory contains documentation about the Agent Client Protocol (ACP) from the creators of Zed.
+This directory contains documentation about the Agent Client Protocol (ACP).
 
 ## Overview
 
-The Agent Client Protocol standardizes communication between code editors (IDEs, text-editors, etc.) and coding agents (programs that use generative AI to autonomously modify code).
+The Agent Client Protocol standardizes communication between code editors (IDEs, text-editors, etc.) and coding agents (programs that use generative AI to autonomously modify code). It is suitable for both local and remote scenarios.
 
 ## Why ACP?
 
@@ -18,10 +18,10 @@ ACP solves this by providing a standardized protocol for agent-editor communicat
 
 ## Key Concepts
 
-- **Agents**: Programs that use generative AI to autonomously modify code. They typically run as subprocesses of the Client.
+- **Agents**: Programs that use generative AI to autonomously modify code. They typically run as subprocesses of the Client (local) or as remote services.
 - **Clients**: Code editors (IDEs, text editors) that provide the interface between users and agents. They manage the environment, handle user interactions, and control access to resources.
 - **Sessions**: Independent conversation contexts with their own history and state
-- **Communication**: JSON-RPC 2.0 over stdio
+- **Communication**: JSON-RPC 2.0 over stdio (local) or HTTP/WebSocket (remote)
 - **Content Format**: Markdown for user-readable text
 
 ## Documentation Structure
@@ -35,16 +35,22 @@ ACP solves this by providing a standardized protocol for agent-editor communicat
 7. [Content Types](./07-content-types.md) - Different content block types
 8. [File System](./08-file-system.md) - Reading and writing files
 9. [Terminals](./09-terminals.md) - Executing shell commands
-10. [Schema Reference](./10-schema.md) - Complete type definitions
+10. [Agent Plan](./10-agent-plan.md) - Execution plans for complex tasks
 11. [Rust Implementation](./11-rust-implementation.md) - Using the Rust crate
+12. [Session Modes](./12-session-modes.md) - Agent operating modes
+13. [Slash Commands](./13-slash-commands.md) - User-invokable commands
+14. [Extensibility](./14-extensibility.md) - Custom extensions and _meta fields
 
 ## Resources
 
 - Official Website: https://agentclientprotocol.com
 - Rust Crate: https://crates.io/crates/agent-client-protocol
 - Documentation: https://docs.rs/agent-client-protocol
-- GitHub Examples: https://github.com/zed-industries/agent-client-protocol
+- GitHub: https://github.com/agentclientprotocol/agent-client-protocol
+- Rust SDK: https://github.com/agentclientprotocol/rust-sdk
 
 ## Implementation Notes
 
 The protocol is still under development but complete enough to build interesting user experiences. Agents that implement ACP work with any compatible editor, and editors that support ACP gain access to the entire ecosystem of ACP-compatible agents.
+
+Note: Full support for remote agents is a work in progress.

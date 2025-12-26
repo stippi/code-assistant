@@ -46,10 +46,12 @@ The `fs/read_text_file` method allows Agents to read text file contents from the
 
 ### Request Parameters
 
-- `sessionId` (required): The Session ID for this request
-- `path` (required): Absolute path to the file to read
-- `line` (optional): Line number to start reading from (1-based)
-- `limit` (optional): Maximum number of lines to read
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sessionId` | SessionId | Yes | The Session ID for this request |
+| `path` | string | Yes | Absolute path to the file to read |
+| `line` | number | No | Line number to start reading from (1-based) |
+| `limit` | number | No | Maximum number of lines to read |
 
 ### Response
 
@@ -65,7 +67,9 @@ The `fs/read_text_file` method allows Agents to read text file contents from the
 
 ### Response Fields
 
-- `content` (required): The text content of the file
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `content` | string | Yes | The text content of the file |
 
 ## Writing Files
 
@@ -88,9 +92,11 @@ The `fs/write_text_file` method allows Agents to write or update text files in t
 
 ### Request Parameters
 
-- `sessionId` (required): The Session ID for this request
-- `path` (required): Absolute path to the file to write. The Client **MUST** create the file if it doesn't exist
-- `content` (required): The text content to write to the file
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sessionId` | SessionId | Yes | The Session ID for this request |
+| `path` | string | Yes | Absolute path to the file to write. The Client **MUST** create the file if it doesn't exist |
+| `content` | string | Yes | The text content to write to the file |
 
 ### Response
 
@@ -98,7 +104,7 @@ The `fs/write_text_file` method allows Agents to write or update text files in t
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "result": {}
+  "result": null
 }
 ```
 

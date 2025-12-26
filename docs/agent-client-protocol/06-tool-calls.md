@@ -29,29 +29,33 @@ When the language model requests a tool invocation, the Agent **SHOULD** report 
 
 ### Tool Call Fields
 
-- `toolCallId` (required): A unique identifier for this tool call within the session
-- `title` (required): A human-readable title describing what the tool is doing
-- `kind` (optional): The category of tool being invoked (defaults to `other`)
-- `status` (optional): The current execution status (defaults to `pending`)
-- `content` (optional): Content produced by the tool call
-- `locations` (optional): File locations affected by this tool call
-- `rawInput` (optional): The raw input parameters sent to the tool
-- `rawOutput` (optional): The raw output returned by the tool
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `toolCallId` | ToolCallId | Yes | A unique identifier for this tool call within the session |
+| `title` | string | Yes | A human-readable title describing what the tool is doing |
+| `kind` | ToolKind | No | The category of tool being invoked (defaults to `other`) |
+| `status` | ToolCallStatus | No | The current execution status (defaults to `pending`) |
+| `content` | ToolCallContent[] | No | Content produced by the tool call |
+| `locations` | ToolCallLocation[] | No | File locations affected by this tool call |
+| `rawInput` | object | No | The raw input parameters sent to the tool |
+| `rawOutput` | object | No | The raw output returned by the tool |
 
 ### Tool Kinds
 
 Tool kinds help Clients choose appropriate icons and optimize how they display tool execution progress:
 
-- `read`: Reading files or data
-- `edit`: Modifying files or content
-- `delete`: Removing files or data
-- `move`: Moving or renaming files
-- `search`: Searching for information
-- `execute`: Running commands or code
-- `think`: Internal reasoning or planning
-- `fetch`: Retrieving external data
-- `switch_mode`: Switching the current session mode
-- `other`: Other tool types (default)
+| Kind | Description |
+|------|-------------|
+| `read` | Reading files or data |
+| `edit` | Modifying files or content |
+| `delete` | Removing files or data |
+| `move` | Moving or renaming files |
+| `search` | Searching for information |
+| `execute` | Running commands or code |
+| `think` | Internal reasoning or planning |
+| `fetch` | Retrieving external data |
+| `switch_mode` | Switching the current session mode |
+| `other` | Other tool types (default) |
 
 ## Updating
 
@@ -87,10 +91,12 @@ All fields except `toolCallId` are optional in updates. Only the fields being ch
 
 Tool calls progress through different statuses during their lifecycle:
 
-- `pending`: The tool call hasn't started running yet because the input is either streaming or awaiting approval
-- `in_progress`: The tool call is currently running
-- `completed`: The tool call completed successfully
-- `failed`: The tool call failed with an error
+| Status | Description |
+|--------|-------------|
+| `pending` | The tool call hasn't started running yet because the input is either streaming or awaiting approval |
+| `in_progress` | The tool call is currently running |
+| `completed` | The tool call completed successfully |
+| `failed` | The tool call failed with an error |
 
 ## Content
 
@@ -123,10 +129,11 @@ File modifications shown as diffs:
 }
 ```
 
-Fields:
-- `path` (required): The absolute file path being modified
-- `oldText` (optional): The original content (null for new files)
-- `newText` (required): The new content after modification
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | Yes | The absolute file path being modified |
+| `oldText` | string | No | The original content (null for new files) |
+| `newText` | string | Yes | The new content after modification |
 
 ### Terminals
 
@@ -139,8 +146,9 @@ Live terminal output from command execution:
 }
 ```
 
-Fields:
-- `terminalId` (required): The ID of a terminal created with `terminal/create`
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `terminalId` | string | Yes | The ID of a terminal created with `terminal/create` |
 
 When a terminal is embedded in a tool call, the Client displays live output as it's generated and continues to display it even after the terminal is released.
 
@@ -176,9 +184,11 @@ The Agent **MAY** request permission from the user before executing a tool call:
 
 ### Request Parameters
 
-- `sessionId` (required): The session ID for this request
-- `toolCall` (required): The tool call update containing details about the operation
-- `options` (required): Available permission options for the user to choose from
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sessionId` | SessionId | Yes | The session ID for this request |
+| `toolCall` | ToolCallUpdate | Yes | The tool call update containing details about the operation |
+| `options` | PermissionOption[] | Yes | Available permission options for the user to choose from |
 
 ### Permission Response
 
@@ -219,16 +229,20 @@ If the current prompt turn gets cancelled, the Client **MUST** respond with the 
 
 Each permission option provided to the Client contains:
 
-- `optionId` (required): Unique identifier for this option
-- `name` (required): Human-readable label to display to the user
-- `kind` (required): A hint to help Clients choose appropriate icons and UI treatment
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `optionId` | string | Yes | Unique identifier for this option |
+| `name` | string | Yes | Human-readable label to display to the user |
+| `kind` | PermissionOptionKind | Yes | A hint to help Clients choose appropriate icons and UI treatment |
 
 #### Permission Option Kinds
 
-- `allow_once`: Allow this operation only this time
-- `allow_always`: Allow this operation and remember the choice
-- `reject_once`: Reject this operation only this time
-- `reject_always`: Reject this operation and remember the choice
+| Kind | Description |
+|------|-------------|
+| `allow_once` | Allow this operation only this time |
+| `allow_always` | Allow this operation and remember the choice |
+| `reject_once` | Reject this operation only this time |
+| `reject_always` | Reject this operation and remember the choice |
 
 ## Following the Agent
 
@@ -243,5 +257,7 @@ Tool calls can report file locations they're working with, enabling Clients to i
 
 ### Location Fields
 
-- `path` (required): The absolute file path being accessed or modified
-- `line` (optional): Line number within the file
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | Yes | The absolute file path being accessed or modified |
+| `line` | number | No | Line number within the file |

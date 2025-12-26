@@ -2,7 +2,7 @@
 
 ## What is ACP?
 
-The Agent Client Protocol standardizes communication between code editors (IDEs, text-editors, etc.) and coding agents (programs that use generative AI to autonomously modify code).
+The Agent Client Protocol standardizes communication between code editors (IDEs, text-editors, etc.) and coding agents (programs that use generative AI to autonomously modify code). It is suitable for both local and remote scenarios.
 
 The protocol is still under development, but it should be complete enough to build interesting user experiences using it.
 
@@ -27,10 +27,16 @@ ACP solves this by providing a standardized protocol for agent-editor communicat
 
 ACP assumes that the user is primarily in their editor, and wants to reach out and use agents to assist them with specific tasks.
 
+ACP is suitable for both local and remote scenarios:
+
+- **Local agents** run as sub-processes of the code editor, communicating via JSON-RPC over stdio.
+- **Remote agents** can be hosted in the cloud or on separate infrastructure, communicating over HTTP or WebSocket.
+
+> **Note:** Full support for remote agents is a work in progress.
+
 ### Architecture
 
-- **Agents run as sub-processes** of the code editor
-- **Communication** uses JSON-RPC over stdio
+- **Communication** uses JSON-RPC over stdio (local) or HTTP/WebSocket (remote)
 - **JSON representations** re-use the types used in MCP where possible
 - **Custom types** are included for useful agentic coding UX elements, like displaying diffs
 - **Default format** for user-readable text is Markdown
@@ -42,8 +48,8 @@ ACP assumes that the user is primarily in their editor, and wants to reach out a
 Agents are programs that use generative AI to autonomously modify code. They:
 - Handle requests from clients
 - Execute tasks using language models and tools
-- Run as subprocesses of the Client
-- Communicate via JSON-RPC 2.0 over stdio
+- Run as subprocesses of the Client (local) or as remote services
+- Communicate via JSON-RPC 2.0 over stdio or HTTP
 
 ### Clients
 
@@ -80,3 +86,5 @@ The protocol provides built-in mechanisms for adding custom functionality while 
 - Add custom data using `_meta` fields
 - Create custom methods by prefixing their name with underscore (`_`)
 - Advertise custom capabilities during initialization
+
+See [Extensibility](./14-extensibility.md) for details.
