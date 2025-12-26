@@ -143,13 +143,140 @@ struct ResponsesRequest {
     include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<TextControls>,
+}
+
+/// Text controls for the Responses API (verbosity and output format)
+#[derive(Debug, Serialize, Clone)]
+struct TextControls {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verbosity: Option<Verbosity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<TextFormat>,
+}
+
+/// Verbosity level for model output
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Verbosity {
+    Low,
+    Medium,
+    High,
+}
+
+/// Text format configuration for structured output
+#[derive(Debug, Serialize, Clone)]
+struct TextFormat {
+    #[serde(rename = "type")]
+    format_type: TextFormatType,
+    strict: bool,
+    schema: serde_json::Value,
+    name: String,
+}
+
+/// Format type for text output
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // JsonSchema variant reserved for future structured output support
+enum TextFormatType {
+    JsonSchema,
 }
 
 /// Reasoning configuration for the request
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct ReasoningConfig {
-    effort: String,
-    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+}
+
+/// Model capability information for reasoning and verbosity
+#[derive(Debug, Clone)]
+struct ModelCapabilities {
+    /// Whether the model supports reasoning
+    supports_reasoning: bool,
+    /// Default reasoning effort for the model
+    default_effort: Option<String>,
+    /// Default reasoning summary setting
+    default_summary: Option<String>,
+    /// Whether the model supports verbosity control
+    supports_verbosity: bool,
+    /// Default verbosity for the model
+    default_verbosity: Option<Verbosity>,
+}
+
+impl ModelCapabilities {
+    /// Get model capabilities based on model ID
+    fn for_model(model: &str) -> Self {
+        let model_lower = model.to_lowercase();
+
+        // GPT-5 and variants - full reasoning and verbosity support
+        if model_lower.contains("gpt-5") || model_lower.starts_with("gpt5") {
+            return Self {
+                supports_reasoning: true,
+                default_effort: Some("medium".to_string()),
+                default_summary: Some("auto".to_string()),
+                supports_verbosity: true,
+                default_verbosity: Some(Verbosity::Medium),
+            };
+        }
+
+        // o3/o4 reasoning models
+        if model_lower.starts_with("o3") || model_lower.starts_with("o4") {
+            return Self {
+                supports_reasoning: true,
+                default_effort: Some("medium".to_string()),
+                default_summary: Some("auto".to_string()),
+                supports_verbosity: false,
+                default_verbosity: None,
+            };
+        }
+
+        // o1 models - reasoning but typically lower effort, no verbosity
+        if model_lower.starts_with("o1") {
+            return Self {
+                supports_reasoning: true,
+                default_effort: Some("low".to_string()),
+                default_summary: Some("auto".to_string()),
+                supports_verbosity: false,
+                default_verbosity: None,
+            };
+        }
+
+        // GPT-4o and variants - no reasoning, no verbosity
+        if model_lower.contains("gpt-4o") || model_lower.contains("gpt4o") {
+            return Self {
+                supports_reasoning: false,
+                default_effort: None,
+                default_summary: None,
+                supports_verbosity: false,
+                default_verbosity: None,
+            };
+        }
+
+        // GPT-4 variants (non-4o) - no reasoning, no verbosity
+        if model_lower.contains("gpt-4") || model_lower.contains("gpt4") {
+            return Self {
+                supports_reasoning: false,
+                default_effort: None,
+                default_summary: None,
+                supports_verbosity: false,
+                default_verbosity: None,
+            };
+        }
+
+        // Default: assume reasoning support with conservative defaults, no verbosity
+        // This allows new models to work out of the box
+        Self {
+            supports_reasoning: true,
+            default_effort: Some("low".to_string()),
+            default_summary: Some("auto".to_string()),
+            supports_verbosity: false,
+            default_verbosity: None,
+        }
+    }
 }
 
 /// Input item for the Responses API
@@ -601,7 +728,7 @@ impl OpenAIResponsesClient {
                     ..
                 } => {
                     let input = serde_json::from_str(&arguments)
-                        .unwrap_or_else(|_| serde_json::Value::String(arguments));
+                        .unwrap_or(serde_json::Value::String(arguments));
 
                     blocks.push(ContentBlock::ToolUse {
                         id: call_id,
@@ -1234,11 +1361,35 @@ impl LLMProvider for OpenAIResponsesClient {
 
         // Configure for stateless mode with encrypted reasoning
         let store = false;
-        // Always request encrypted reasoning content when operating statelessly
-        let include = if !store {
+
+        // Get model capabilities and build reasoning config
+        let capabilities = ModelCapabilities::for_model(&self.model);
+        let reasoning = if capabilities.supports_reasoning {
+            Some(ReasoningConfig {
+                effort: capabilities.default_effort,
+                summary: capabilities.default_summary,
+            })
+        } else {
+            None
+        };
+
+        // Request encrypted reasoning content when operating statelessly and reasoning is enabled
+        let include = if !store && reasoning.is_some() {
             vec!["reasoning.encrypted_content".to_string()]
         } else {
             vec![]
+        };
+
+        // Build text controls for verbosity (if supported by model)
+        let text = if capabilities.supports_verbosity {
+            capabilities
+                .default_verbosity
+                .map(|verbosity| TextControls {
+                    verbosity: Some(verbosity),
+                    format: None,
+                })
+        } else {
+            None
         };
 
         let responses_request = ResponsesRequest {
@@ -1248,14 +1399,12 @@ impl LLMProvider for OpenAIResponsesClient {
             tools,
             tool_choice: Some("auto".to_string()),
             parallel_tool_calls: false,
-            reasoning: Some(ReasoningConfig {
-                effort: "low".to_string(),
-                summary: "detailed".to_string(),
-            }),
+            reasoning,
             store,
             stream: streaming_callback.is_some(),
             include,
             prompt_cache_key: Some(request.session_id),
+            text,
         };
 
         let request_start = std::time::SystemTime::now();
@@ -1644,5 +1793,200 @@ mod tests {
             }
             _ => panic!("Expected Message"),
         }
+    }
+
+    #[test]
+    fn test_model_capabilities_gpt5() {
+        let caps = ModelCapabilities::for_model("gpt-5");
+        assert!(caps.supports_reasoning);
+        assert_eq!(caps.default_effort, Some("medium".to_string()));
+        assert_eq!(caps.default_summary, Some("auto".to_string()));
+
+        // Variants
+        let caps = ModelCapabilities::for_model("gpt-5-turbo");
+        assert!(caps.supports_reasoning);
+
+        let caps = ModelCapabilities::for_model("GPT-5");
+        assert!(caps.supports_reasoning);
+    }
+
+    #[test]
+    fn test_model_capabilities_o_series() {
+        // o3 models
+        let caps = ModelCapabilities::for_model("o3");
+        assert!(caps.supports_reasoning);
+        assert_eq!(caps.default_effort, Some("medium".to_string()));
+
+        let caps = ModelCapabilities::for_model("o3-mini");
+        assert!(caps.supports_reasoning);
+
+        // o4 models
+        let caps = ModelCapabilities::for_model("o4-mini");
+        assert!(caps.supports_reasoning);
+
+        // o1 models - lower default effort
+        let caps = ModelCapabilities::for_model("o1");
+        assert!(caps.supports_reasoning);
+        assert_eq!(caps.default_effort, Some("low".to_string()));
+
+        let caps = ModelCapabilities::for_model("o1-preview");
+        assert!(caps.supports_reasoning);
+    }
+
+    #[test]
+    fn test_model_capabilities_gpt4() {
+        // GPT-4o - no reasoning, no verbosity
+        let caps = ModelCapabilities::for_model("gpt-4o");
+        assert!(!caps.supports_reasoning);
+        assert_eq!(caps.default_effort, None);
+        assert!(!caps.supports_verbosity);
+        assert_eq!(caps.default_verbosity, None);
+
+        let caps = ModelCapabilities::for_model("gpt-4o-mini");
+        assert!(!caps.supports_reasoning);
+        assert!(!caps.supports_verbosity);
+
+        // GPT-4 variants - no reasoning, no verbosity
+        let caps = ModelCapabilities::for_model("gpt-4-turbo");
+        assert!(!caps.supports_reasoning);
+        assert!(!caps.supports_verbosity);
+
+        let caps = ModelCapabilities::for_model("gpt-4");
+        assert!(!caps.supports_reasoning);
+        assert!(!caps.supports_verbosity);
+    }
+
+    #[test]
+    fn test_model_capabilities_unknown() {
+        // Unknown models default to reasoning enabled with conservative settings, no verbosity
+        let caps = ModelCapabilities::for_model("some-future-model");
+        assert!(caps.supports_reasoning);
+        assert_eq!(caps.default_effort, Some("low".to_string()));
+        assert_eq!(caps.default_summary, Some("auto".to_string()));
+        assert!(!caps.supports_verbosity);
+        assert_eq!(caps.default_verbosity, None);
+    }
+
+    #[test]
+    fn test_model_capabilities_verbosity() {
+        // GPT-5 supports verbosity
+        let caps = ModelCapabilities::for_model("gpt-5");
+        assert!(caps.supports_verbosity);
+        assert_eq!(caps.default_verbosity, Some(Verbosity::Medium));
+
+        // o3/o4 don't support verbosity
+        let caps = ModelCapabilities::for_model("o3");
+        assert!(!caps.supports_verbosity);
+        assert_eq!(caps.default_verbosity, None);
+
+        let caps = ModelCapabilities::for_model("o4-mini");
+        assert!(!caps.supports_verbosity);
+    }
+
+    #[test]
+    fn test_reasoning_config_serialization() {
+        // Full config
+        let config = ReasoningConfig {
+            effort: Some("medium".to_string()),
+            summary: Some("auto".to_string()),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["effort"], "medium");
+        assert_eq!(json["summary"], "auto");
+
+        // Partial config - effort only
+        let config = ReasoningConfig {
+            effort: Some("low".to_string()),
+            summary: None,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["effort"], "low");
+        assert!(json.get("summary").is_none());
+
+        // Partial config - summary only
+        let config = ReasoningConfig {
+            effort: None,
+            summary: Some("detailed".to_string()),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert!(json.get("effort").is_none());
+        assert_eq!(json["summary"], "detailed");
+    }
+
+    #[test]
+    fn test_request_without_reasoning() {
+        // For GPT-4o, reasoning and text should not be included
+        let request = ResponsesRequest {
+            model: "gpt-4o".to_string(),
+            instructions: Some("Test".to_string()),
+            input: vec![],
+            tools: None,
+            tool_choice: Some("auto".to_string()),
+            parallel_tool_calls: false,
+            reasoning: None,
+            store: false,
+            stream: false,
+            include: vec![],
+            prompt_cache_key: None,
+            text: None,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("reasoning").is_none());
+        assert!(json.get("text").is_none());
+    }
+
+    #[test]
+    fn test_request_with_reasoning_and_verbosity() {
+        // For GPT-5, reasoning and text (verbosity) should be included
+        let request = ResponsesRequest {
+            model: "gpt-5".to_string(),
+            instructions: Some("Test".to_string()),
+            input: vec![],
+            tools: None,
+            tool_choice: Some("auto".to_string()),
+            parallel_tool_calls: false,
+            reasoning: Some(ReasoningConfig {
+                effort: Some("medium".to_string()),
+                summary: Some("auto".to_string()),
+            }),
+            store: false,
+            stream: false,
+            include: vec!["reasoning.encrypted_content".to_string()],
+            prompt_cache_key: None,
+            text: Some(TextControls {
+                verbosity: Some(Verbosity::Medium),
+                format: None,
+            }),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+
+        // Check reasoning
+        assert!(json.get("reasoning").is_some());
+        assert_eq!(json["reasoning"]["effort"], "medium");
+        assert_eq!(json["reasoning"]["summary"], "auto");
+        assert_eq!(json["include"][0], "reasoning.encrypted_content");
+
+        // Check text/verbosity
+        assert!(json.get("text").is_some());
+        assert_eq!(json["text"]["verbosity"], "medium");
+        assert!(json["text"].get("format").is_none());
+    }
+
+    #[test]
+    fn test_verbosity_serialization() {
+        // Verbosity enum serializes to lowercase
+        let text = TextControls {
+            verbosity: Some(Verbosity::Low),
+            format: None,
+        };
+        let json = serde_json::to_value(&text).unwrap();
+        assert_eq!(json["verbosity"], "low");
+
+        let text = TextControls {
+            verbosity: Some(Verbosity::High),
+            format: None,
+        };
+        let json = serde_json::to_value(&text).unwrap();
+        assert_eq!(json["verbosity"], "high");
     }
 }
