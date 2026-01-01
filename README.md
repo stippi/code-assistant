@@ -27,6 +27,8 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 # On macOS or Linux, install Rust tool chain via rustup:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
+# On Linux, install libxkbcommon‑dev and libxkbcommon‑x11‑dev
+
 # On macOS, you need the metal tool chain:
 xcodebuild -downloadComponent MetalToolchain
 
