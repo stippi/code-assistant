@@ -136,6 +136,7 @@ impl Tool for UpdatePlanTool {
                                     "default": "pending"
                                 },
                                 "_meta": {
+                                    "type": "object",
                                     "description": "Optional metadata to store with the plan item."
                                 }
                             },
@@ -144,6 +145,7 @@ impl Tool for UpdatePlanTool {
                         "default": []
                     },
                     "_meta": {
+                        "type": "object",
                         "description": "Optional metadata applied to the entire plan."
                     }
                 },
