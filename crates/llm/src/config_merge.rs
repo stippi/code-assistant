@@ -1,15 +1,18 @@
 /// Utilities for merging JSON configurations
 ///
-/// This module provides functionality to recursively merge custom model configurations
-/// with base API request payloads in a non-destructive way.
+/// This module provides functionality to merge custom model configurations
+/// with base API request payloads using shallow (top-level only) merging.
 use serde_json::Value;
 
-/// Recursively merge two JSON values.
+/// Shallow merge two JSON values at the top level only.
 ///
 /// The merge behavior is:
-/// - For objects: recursively merge keys, with `custom` values overriding `base` values
+/// - For objects: merge only at top level - custom values completely replace base values
 /// - For arrays and primitives: `custom` replaces `base`
 /// - Keys that only exist in `base` are preserved
+///
+/// This approach requires custom configs to specify complete sub-objects when overriding
+/// nested structures, which is more explicit and avoids unexpected partial merges.
 ///
 /// # Examples
 ///
@@ -25,12 +28,12 @@ use serde_json::Value;
 ///     }
 /// });
 ///
+/// // To disable thinking, provide the complete thinking object
 /// let custom = json!({
 ///     "temperature": 0.9,
 ///     "thinking": {
-///         "budget_tokens": 16384
-///     },
-///     "max_tokens": 4096
+///         "type": "disabled"
+///     }
 /// });
 ///
 /// let result = merge_json(base, custom);
@@ -38,23 +41,17 @@ use serde_json::Value;
 /// assert_eq!(result, json!({
 ///     "temperature": 0.9,  // overridden
 ///     "thinking": {
-///         "type": "enabled",        // preserved from base
-///         "budget_tokens": 16384    // overridden
-///     },
-///     "max_tokens": 4096   // added from custom
+///         "type": "disabled"  // completely replaced (no budget_tokens)
+///     }
 /// }));
 /// ```
 pub fn merge_json(mut base: Value, custom: Value) -> Value {
     match (&mut base, custom) {
-        // Both are objects: recursively merge keys
+        // Both are objects: shallow merge at top level only
         (Value::Object(base_map), Value::Object(custom_map)) => {
             for (key, custom_value) in custom_map {
-                base_map
-                    .entry(key)
-                    .and_modify(|base_value| {
-                        *base_value = merge_json(base_value.clone(), custom_value.clone());
-                    })
-                    .or_insert(custom_value);
+                // Always replace - no recursive merging
+                base_map.insert(key, custom_value);
             }
             base
         }
@@ -100,7 +97,8 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_nested_objects() {
+    fn test_shallow_merge_nested_objects() {
+        // Shallow merge: nested objects are completely replaced, not recursively merged
         let base = json!({
             "outer": {
                 "inner1": "value1",
@@ -116,17 +114,18 @@ mod tests {
         });
         let expected = json!({
             "outer": {
-                "inner1": "value1",      // preserved
-                "inner2": "overridden",  // overridden
-                "inner3": "new"          // added
+                // inner1 is NOT preserved - entire "outer" object was replaced
+                "inner2": "overridden",
+                "inner3": "new"
             },
-            "other": "data"  // preserved
+            "other": "data"  // preserved (not in custom)
         });
         assert_eq!(merge_json(base, custom), expected);
     }
 
     #[test]
-    fn test_anthropic_thinking_example() {
+    fn test_anthropic_thinking_disabled() {
+        // Key use case: disabling thinking without leftover budget_tokens
         let base = json!({
             "model": "claude-sonnet-4",
             "temperature": 0.7,
@@ -137,6 +136,34 @@ mod tests {
         });
         let custom = json!({
             "thinking": {
+                "type": "disabled"
+            }
+        });
+        let expected = json!({
+            "model": "claude-sonnet-4",
+            "temperature": 0.7,
+            "thinking": {
+                "type": "disabled"
+                // No budget_tokens - entire thinking object was replaced
+            }
+        });
+        assert_eq!(merge_json(base, custom), expected);
+    }
+
+    #[test]
+    fn test_anthropic_thinking_custom_budget() {
+        // To customize budget, provide the complete thinking object
+        let base = json!({
+            "model": "claude-sonnet-4",
+            "temperature": 0.7,
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 8192
+            }
+        });
+        let custom = json!({
+            "thinking": {
+                "type": "enabled",
                 "budget_tokens": 16384
             }
         });
@@ -166,7 +193,8 @@ mod tests {
     }
 
     #[test]
-    fn test_deeply_nested_merge() {
+    fn test_shallow_replaces_deeply_nested() {
+        // Shallow merge: entire top-level key is replaced
         let base = json!({
             "level1": {
                 "level2": {
@@ -187,11 +215,12 @@ mod tests {
                 }
             }
         });
+        // The entire "level1" object is replaced
         let expected = json!({
             "level1": {
                 "level2": {
                     "level3": {
-                        "keep": "this",
+                        // "keep" is NOT preserved
                         "override": "new",
                         "add": "value"
                     }
