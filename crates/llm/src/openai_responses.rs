@@ -124,8 +124,6 @@ impl RequestCustomizer for DefaultRequestCustomizer {
 #[derive(Debug, Serialize)]
 struct ResponsesRequest {
     model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instructions: Option<String>,
     input: Vec<ResponseInputItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
@@ -1342,12 +1340,20 @@ impl LLMProvider for OpenAIResponsesClient {
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
-        let input = self.convert_messages(request.messages);
-        let instructions = if request.system_prompt.is_empty() {
-            None
-        } else {
-            Some(request.system_prompt)
-        };
+        let mut input = self.convert_messages(request.messages);
+
+        // Add system prompt as developer message at the beginning
+        if !request.system_prompt.is_empty() {
+            input.insert(
+                0,
+                ResponseInputItem::Message {
+                    role: "developer".to_string(),
+                    content: vec![ResponseContentItem::InputText {
+                        text: request.system_prompt,
+                    }],
+                },
+            );
+        }
 
         let tools = request.tools.map(|tools| {
             tools
@@ -1398,7 +1404,6 @@ impl LLMProvider for OpenAIResponsesClient {
 
         let responses_request = ResponsesRequest {
             model: self.model.clone(),
-            instructions,
             input,
             tools,
             tool_choice: Some("auto".to_string()),
@@ -1951,7 +1956,6 @@ mod tests {
         // For GPT-4o, reasoning and text should not be included
         let request = ResponsesRequest {
             model: "gpt-4o".to_string(),
-            instructions: Some("Test".to_string()),
             input: vec![],
             tools: None,
             tool_choice: Some("auto".to_string()),
@@ -1973,7 +1977,6 @@ mod tests {
         // For GPT-5, reasoning and text (verbosity) should be included
         let request = ResponsesRequest {
             model: "gpt-5".to_string(),
-            instructions: Some("Test".to_string()),
             input: vec![],
             tools: None,
             tool_choice: Some("auto".to_string()),
@@ -2003,6 +2006,65 @@ mod tests {
         assert!(json.get("text").is_some());
         assert_eq!(json["text"]["verbosity"], "medium");
         assert!(json["text"].get("format").is_none());
+    }
+
+    #[test]
+    fn test_system_prompt_as_developer_message() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        // Simulate converting messages with a system prompt
+        let messages = vec![Message::new_user("Hello")];
+        let mut input = client.convert_messages(messages);
+
+        // Add system prompt as developer message (simulating what send_message does)
+        let system_prompt = "You are a helpful assistant.";
+        if !system_prompt.is_empty() {
+            input.insert(
+                0,
+                ResponseInputItem::Message {
+                    role: "developer".to_string(),
+                    content: vec![ResponseContentItem::InputText {
+                        text: system_prompt.to_string(),
+                    }],
+                },
+            );
+        }
+
+        assert_eq!(input.len(), 2);
+
+        // First should be the developer message with system prompt
+        match &input[0] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "developer");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::InputText { text } => {
+                        assert_eq!(text, "You are a helpful assistant.");
+                    }
+                    _ => panic!("Expected InputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+
+        // Second should be the user message
+        match &input[1] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "user");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::InputText { text } => {
+                        assert_eq!(text, "Hello");
+                    }
+                    _ => panic!("Expected InputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
     }
 
     #[test]
