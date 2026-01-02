@@ -525,12 +525,16 @@ impl OpenAIResponsesClient {
         for message in messages {
             match message.content {
                 MessageContent::Text(text) => {
+                    let content_item = match message.role {
+                        MessageRole::User => ResponseContentItem::InputText { text },
+                        MessageRole::Assistant => ResponseContentItem::OutputText { text },
+                    };
                     result.push(ResponseInputItem::Message {
                         role: match message.role {
                             MessageRole::User => "user".to_string(),
                             MessageRole::Assistant => "assistant".to_string(),
                         },
-                        content: vec![ResponseContentItem::InputText { text }],
+                        content: vec![content_item],
                     });
                 }
                 MessageContent::Structured(blocks) => {
@@ -1448,6 +1452,35 @@ mod tests {
                         assert_eq!(text, "Hello");
                     }
                     _ => panic!("Expected InputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_convert_assistant_text_message() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        // Test that assistant messages with simple text use OutputText, not InputText
+        let messages = vec![Message::new_assistant("Hello from assistant")];
+
+        let converted = client.convert_messages(messages);
+        assert_eq!(converted.len(), 1);
+
+        match &converted[0] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text } => {
+                        assert_eq!(text, "Hello from assistant");
+                    }
+                    _ => panic!("Expected OutputText for assistant message"),
                 }
             }
             _ => panic!("Expected Message"),
