@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod attachment;
 pub mod auto_scroll;
+pub mod branch_switcher;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
@@ -101,6 +102,17 @@ pub struct Gpui {
     current_model: Arc<Mutex<Option<String>>>,
     // Current sandbox selection
     current_sandbox_policy: Arc<Mutex<Option<SandboxPolicy>>>,
+
+    // Pending message edit state (for branching)
+    pending_edit: Arc<Mutex<Option<PendingEdit>>>,
+}
+
+/// State for a pending message edit (for branching)
+#[derive(Clone, Debug)]
+pub struct PendingEdit {
+    pub content: String,
+    pub attachments: Vec<crate::persistence::DraftAttachment>,
+    pub branch_parent_id: Option<crate::persistence::NodeId>,
 }
 
 fn init(cx: &mut App) {
@@ -303,6 +315,9 @@ impl Gpui {
             current_model: Arc::new(Mutex::new(None)),
             // Current sandbox selection
             current_sandbox_policy: Arc::new(Mutex::new(None)),
+
+            // Pending message edit state
+            pending_edit: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -618,9 +633,11 @@ impl Gpui {
 
                     warn!("Using initial project: '{}'", current_project);
 
-                    // Update MessagesView with current project
+                    // Update MessagesView with current project and session ID
+                    let session_id_for_messages = session_id.clone();
                     self.update_messages_view(cx, |messages_view, _cx| {
                         messages_view.set_current_project(current_project.clone());
+                        messages_view.set_current_session_id(Some(session_id_for_messages));
                     });
                 }
 
@@ -648,6 +665,8 @@ impl Gpui {
                         let mut queue = self.message_queue.lock().unwrap();
 
                         // Check if we can reuse the last container (same role)
+                        // Note: For user messages, we always create a new container to preserve
+                        // node_id and branch_info for each message
                         let needs_new_container = if let Some(last_container) = queue.last() {
                             let last_role = cx
                                 .update_entity(last_container, |container, _cx| {
@@ -658,6 +677,7 @@ impl Gpui {
                                     }
                                 })
                                 .expect("Failed to get container role");
+                            // User messages always get their own container (for branching)
                             last_role == MessageRole::User || last_role != message_data.role
                         } else {
                             true
@@ -666,12 +686,18 @@ impl Gpui {
                         if needs_new_container {
                             // Create new container for this role
                             let container = cx
-                                .new(|cx| MessageContainer::with_role(message_data.role, cx))
+                                .new(|cx| {
+                                    MessageContainer::with_role(message_data.role.clone(), cx)
+                                })
                                 .expect("Failed to create message container");
 
-                            // Set current project on the new container
+                            // Set current project, node_id, and branch_info on the new container
+                            let node_id = message_data.node_id;
+                            let branch_info = message_data.branch_info.clone();
                             self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
+                                container.set_node_id(node_id);
+                                container.set_branch_info(branch_info);
                             });
 
                             queue.push(container.clone());
@@ -1069,6 +1095,7 @@ impl Gpui {
                     });
                 }
             }
+
             UiEvent::MessageEditReady {
                 content,
                 attachments,
@@ -1080,13 +1107,14 @@ impl Gpui {
                     attachments.len(),
                     branch_parent_id
                 );
-                // TODO Phase 4: Load content into input area
-                // self.update_input_area(cx, |input, cx| {
-                //     input.set_content(content);
-                //     input.set_attachments(attachments);
-                //     input.set_branch_parent_id(branch_parent_id);
-                //     cx.notify();
-                // });
+                // Store pending edit state for RootView to pick up on refresh
+                self.set_pending_edit(PendingEdit {
+                    content,
+                    attachments,
+                    branch_parent_id,
+                });
+                // Refresh UI to trigger RootView to process the pending edit
+                cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::BranchSwitched {
                 session_id,
@@ -1251,6 +1279,16 @@ impl Gpui {
 
     pub fn get_current_sandbox_policy(&self) -> Option<SandboxPolicy> {
         self.current_sandbox_policy.lock().unwrap().clone()
+    }
+
+    /// Get and clear pending edit (used by RootView to pick up edit state)
+    pub fn take_pending_edit(&self) -> Option<PendingEdit> {
+        self.pending_edit.lock().unwrap().take()
+    }
+
+    /// Set pending edit state
+    pub fn set_pending_edit(&self, edit: PendingEdit) {
+        *self.pending_edit.lock().unwrap() = Some(edit);
     }
 
     // Extended draft management methods with attachments

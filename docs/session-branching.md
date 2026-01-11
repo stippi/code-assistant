@@ -544,81 +544,86 @@ impl Agent {
 }
 ```
 
+
 ## Implementierungsplan
 
-### Phase 1: Datenstruktur (Backend)
+### Phase 1: Datenstruktur (Backend) ✅ COMPLETE
 
-1. **Neue Typen definieren** (`persistence.rs`)
+1. **Neue Typen definieren** (`persistence.rs`) ✅
    - `NodeId` type alias
    - `MessageNode` struct
    - `ConversationPath` type alias
    - `BranchInfo` struct
 
-2. **ChatSession erweitern** (`persistence.rs`)
+2. **ChatSession erweitern** (`persistence.rs`) ✅
    - Neue Felder: `message_nodes`, `active_path`, `next_node_id`
    - Migration-Logik für bestehende Sessions
    - Methoden: `get_active_messages()`, `add_message()`, `switch_branch()`, etc.
 
-3. **SessionState anpassen** (`session/mod.rs`)
+3. **SessionState anpassen** (`session/mod.rs`) ✅
    - Gleiche Struktur wie ChatSession
    - Hilfsmethoden für Linearisierung
 
-4. **Tests schreiben**
+4. **Tests schreiben** ✅
    - Migration von linear zu tree
    - Branch-Erstellung
    - Branch-Switching
    - Pfad-Berechnung
 
-### Phase 2: Agent-Anpassungen
+### Phase 2: Agent-Anpassungen ✅ COMPLETE
 
-1. **Agent-State erweitern** (`agent/runner.rs`)
+1. **Agent-State erweitern** (`agent/runner.rs`) ✅
    - Neue Felder für Tree-Struktur
    - `append_message()` anpassen
 
-2. **State-Laden/Speichern** (`agent/persistence.rs`)
+2. **State-Laden/Speichern** (`agent/persistence.rs`) ✅
    - Tree-Struktur in SessionState
 
-3. **LLM-Request-Building**
+3. **LLM-Request-Building** ✅
    - Nur aktiven Pfad an LLM senden
 
-### Phase 3: UI-Backend-Kommunikation
+### Phase 3: UI-Backend-Kommunikation ✅ COMPLETE
 
-1. **Neue UiEvents** (`ui/ui_events.rs`)
+1. **Neue UiEvents** (`ui/ui_events.rs`) ✅
    - `StartMessageEdit`
    - `SwitchBranch`
-   - `UpdateBranchInfo`
+   - `MessageEditReady`
+   - `BranchSwitched`
 
-2. **SessionInstance-Methoden** (`session/instance.rs`)
-   - `get_branch_info_for_path()`
-   - `generate_session_connect_events()` erweitern
+2. **SessionInstance-Methoden** (`session/instance.rs`) ✅
+   - `convert_messages_to_ui_data()` with branch info
+   - `convert_tool_executions_to_ui_data()`
 
-3. **SessionManager-Methoden** (`session/manager.rs`)
-   - `switch_branch()`
-   - `start_message_edit()`
+3. **Backend handlers** (`ui/backend.rs`) ✅
+   - `handle_start_message_edit()`
+   - `handle_switch_branch()`
 
-### Phase 4: UI (GPUI)
+### Phase 4: UI (GPUI) ✅ COMPLETE
 
-1. **Edit-Button** (`gpui/messages.rs`)
-   - Auf User-Nachrichten, bei Hover sichtbar
-   - Click-Handler
+1. **Edit-Button** (`gpui/messages.rs`) ✅
+   - Shown on user messages
+   - Click-Handler sends `StartMessageEdit` event
 
-2. **BranchSwitcher-Komponente** (`gpui/branch_switcher.rs` - neu)
+2. **BranchSwitcher-Komponente** (`gpui/branch_switcher.rs` - neu) ✅
    - Compact-Darstellung: "◀ 2/3 ▶"
    - Click-Handler für Navigation
+   - Both entity-based (`BranchSwitcher`) and element-based (`BranchSwitcherElement`)
 
-3. **MessagesView erweitern** (`gpui/messages.rs`)
+3. **MessagesView erweitern** (`gpui/messages.rs`) ✅
    - Branch-Info pro Message
    - BranchSwitcher rendern wo nötig
 
-4. **InputArea-Anpassungen** (`gpui/input_area.rs`)
-   - "Edit mode" state
-   - Branch-Point tracking
+4. **InputArea-Anpassungen** (`gpui/input_area.rs`) ✅
+   - `branch_parent_id` tracking for edit mode
+   - `set_content_for_edit()` method
+   - MessageSubmitted event includes `branch_parent_id`
 
-5. **Root/App-Integration** (`gpui/root.rs`, `gpui/mod.rs`)
+5. **Root/App-Integration** (`gpui/root.rs`, `gpui/mod.rs`) ✅
    - Event-Handling für Branch-Events
-   - State-Management
+   - `MessageEditReady` loads content into InputArea via `PendingEdit` state
+   - `BranchSwitched` updates messages display
 
-### Phase 5: Testing & Polish
+### Phase 5: Testing & Polish 🔄 PENDING
 
 1. **Integrationstests**
    - Branch-Erstellung durch Edit
@@ -634,6 +639,10 @@ impl Agent {
    - Leere Sessions
    - Single-Message Sessions
    - Tiefe Verschachtelung
+
+4. **Additional Work Needed**
+   - Backend support for creating new branches from edited messages (when `branch_parent_id` is set)
+   - Terminal UI support for branching (currently ignores branch events)
 
 ## Datei-Änderungen Übersicht
 
