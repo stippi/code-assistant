@@ -129,9 +129,10 @@ impl SessionInstance {
         self.session.updated_at = std::time::SystemTime::now();
     }
 
-    /// Get all messages in the session
-    pub fn messages(&self) -> &[Message] {
-        &self.session.messages
+    /// Get all messages in the session (linearized from active path)
+    #[allow(dead_code)] // Kept for backward compatibility
+    pub fn messages(&self) -> Vec<Message> {
+        self.session.get_active_messages_cloned()
     }
 
     /// Get the current context size (input tokens + cache reads from most recent assistant message)
@@ -229,6 +230,8 @@ impl SessionInstance {
             let incomplete_message = MessageData {
                 role: crate::ui::gpui::elements::MessageRole::Assistant,
                 fragments: buffered_fragments,
+                node_id: None,     // Streaming message doesn't have a node yet
+                branch_info: None, // No branch info for incomplete message
             };
             messages_data.push(incomplete_message);
         }
@@ -315,12 +318,32 @@ impl SessionInstance {
 
         let mut messages_data = Vec::new();
 
-        trace!(
-            "preparing {} messages for event",
-            self.session.messages.len()
-        );
+        // Use tree structure if available, otherwise fall back to legacy messages
+        let message_iter: Vec<(Option<crate::persistence::NodeId>, &llm::Message)> =
+            if !self.session.message_nodes.is_empty() {
+                // Use active path from tree
+                self.session
+                    .active_path
+                    .iter()
+                    .filter_map(|&node_id| {
+                        self.session
+                            .message_nodes
+                            .get(&node_id)
+                            .map(|node| (Some(node_id), &node.message))
+                    })
+                    .collect()
+            } else {
+                // Fall back to legacy linear messages
+                self.session
+                    .messages
+                    .iter()
+                    .map(|msg| (None, msg))
+                    .collect()
+            };
 
-        for message in &self.session.messages {
+        trace!("preparing {} messages for event", message_iter.len());
+
+        for (node_id, message) in message_iter {
             if message.is_compaction_summary {
                 let summary = match &message.content {
                     llm::MessageContent::Text(text) => text.trim().to_string(),
@@ -336,9 +359,12 @@ impl SessionInstance {
                         .trim()
                         .to_string(),
                 };
+
                 messages_data.push(MessageData {
                     role: MessageRole::User,
                     fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    node_id,
+                    branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
                 });
                 continue;
             }
@@ -373,7 +399,12 @@ impl SessionInstance {
                         llm::MessageRole::User => MessageRole::User,
                         llm::MessageRole::Assistant => MessageRole::Assistant,
                     };
-                    messages_data.push(MessageData { role, fragments });
+                    messages_data.push(MessageData {
+                        role,
+                        fragments,
+                        node_id,
+                        branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
+                    });
                 }
                 Err(e) => {
                     error!("Failed to extract fragments from message: {}", e);
@@ -388,7 +419,7 @@ impl SessionInstance {
     }
 
     /// Convert tool executions to UI tool result data
-    fn convert_tool_executions_to_ui_data(
+    pub fn convert_tool_executions_to_ui_data(
         &self,
     ) -> Result<Vec<crate::ui::ui_events::ToolResultData>, anyhow::Error> {
         use crate::tools::core::ResourcesTracker;

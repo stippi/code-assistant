@@ -265,7 +265,10 @@ impl SessionManager {
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
                 name,
-                messages: session_instance.messages().to_vec(),
+                message_nodes: session_instance.session.message_nodes.clone(),
+                active_path: session_instance.session.active_path.clone(),
+                next_node_id: session_instance.session.next_node_id,
+                messages: session_instance.session.get_active_messages_cloned(),
                 tool_executions: session_instance
                     .session
                     .tool_executions
@@ -577,7 +580,14 @@ impl SessionManager {
 
         // Update session with current state
         session.name = state.name;
-        session.messages = state.messages;
+
+        // Update tree structure
+        session.message_nodes = state.message_nodes;
+        session.active_path = state.active_path;
+        session.next_node_id = state.next_node_id;
+
+        // Clear legacy messages (tree is now authoritative)
+        session.messages.clear();
 
         session.tool_executions = state
             .tool_executions

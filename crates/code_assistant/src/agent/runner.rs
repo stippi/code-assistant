@@ -58,8 +58,24 @@ pub struct Agent {
 
     permission_handler: Option<Arc<dyn PermissionMediator>>,
     sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
-    // Store all messages exchanged
+
+    // ========================================================================
+    // Branching: Tree-based message storage
+    // ========================================================================
+    /// All message nodes in the session (tree structure)
+    message_nodes:
+        std::collections::BTreeMap<crate::persistence::NodeId, crate::persistence::MessageNode>,
+    /// The currently active path through the tree
+    active_path: crate::persistence::ConversationPath,
+    /// Counter for generating unique node IDs
+    next_node_id: crate::persistence::NodeId,
+
+    // ========================================================================
+    // Legacy: Linearized message history (derived from active_path)
+    // ========================================================================
+    /// Store all messages exchanged (kept in sync with active_path)
     message_history: Vec<Message>,
+
     // Store the history of tool executions
     tool_executions: Vec<crate::agent::types::ToolExecution>,
     // Cached system prompts keyed by model hint
@@ -129,6 +145,11 @@ impl Agent {
             state_persistence,
             permission_handler,
             sub_agent_runner,
+            // Branching tree structure
+            message_nodes: std::collections::BTreeMap::new(),
+            active_path: Vec::new(),
+            next_node_id: 1,
+            // Linearized message history
             message_history: Vec::new(),
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
@@ -295,14 +316,18 @@ impl Agent {
     /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
         trace!(
-            "saving {} messages to persistence",
-            self.message_history.len()
+            "saving {} messages to persistence (tree nodes: {})",
+            self.message_history.len(),
+            self.message_nodes.len()
         );
 
         if let Some(session_id) = &self.session_id {
             let session_state = crate::session::SessionState {
                 session_id: session_id.clone(),
                 name: self.session_name.clone(),
+                message_nodes: self.message_nodes.clone(),
+                active_path: self.active_path.clone(),
+                next_node_id: self.next_node_id,
                 messages: self.message_history.clone(),
                 tool_executions: self.tool_executions.clone(),
                 plan: self.plan.clone(),
@@ -329,9 +354,28 @@ impl Agent {
         Ok(())
     }
 
-    /// Adds a message to the history and saves the state
+    /// Adds a message to the history and saves the state.
+    /// This adds the message to both the tree structure and the linearized history.
     pub fn append_message(&mut self, message: Message) -> Result<()> {
+        // Add to tree structure
+        let parent_id = self.active_path.last().copied();
+        let node_id = self.next_node_id;
+        self.next_node_id += 1;
+
+        let node = crate::persistence::MessageNode {
+            id: node_id,
+            message: message.clone(),
+            parent_id,
+            created_at: std::time::SystemTime::now(),
+            plan_snapshot: None,
+        };
+
+        self.message_nodes.insert(node_id, node);
+        self.active_path.push(node_id);
+
+        // Also add to linearized history
         self.message_history.push(message);
+
         self.save_state()?;
         Ok(())
     }
@@ -438,17 +482,25 @@ impl Agent {
         }
     }
 
-    /// Load state from session state (for backward compatibility)
+    /// Load state from session state
     pub async fn load_from_session_state(
         &mut self,
         session_state: crate::session::SessionState,
     ) -> Result<()> {
         // Restore all state components
         self.session_id = Some(session_state.session_id);
+
+        // Load tree structure
+        self.message_nodes = session_state.message_nodes;
+        self.active_path = session_state.active_path;
+        self.next_node_id = session_state.next_node_id;
+
+        // Use the linearized messages from session state (derived from active_path)
         self.message_history = session_state.messages;
         debug!(
-            "loaded {} messages from session",
-            self.message_history.len()
+            "loaded {} messages from session (tree nodes: {})",
+            self.message_history.len(),
+            self.message_nodes.len()
         );
         self.tool_executions = session_state.tool_executions;
         self.plan = session_state.plan.clone();

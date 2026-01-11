@@ -58,6 +58,16 @@ pub enum BackendEvent {
         session_id: String,
         tool_id: String,
     },
+
+    // Session branching
+    StartMessageEdit {
+        session_id: String,
+        node_id: crate::persistence::NodeId,
+    },
+    SwitchBranch {
+        session_id: String,
+        new_node_id: crate::persistence::NodeId,
+    },
 }
 
 // Response from backend to UI
@@ -94,9 +104,24 @@ pub enum BackendResponse {
         session_id: String,
         policy: SandboxPolicy,
     },
+
     SubAgentCancelled {
         session_id: String,
         tool_id: String,
+    },
+
+    // Session branching responses
+    MessageEditReady {
+        session_id: String,
+        content: String,
+        attachments: Vec<DraftAttachment>,
+        branch_parent_id: Option<crate::persistence::NodeId>,
+    },
+    BranchSwitched {
+        session_id: String,
+        messages: Vec<crate::ui::ui_events::MessageData>,
+        tool_results: Vec<crate::ui::ui_events::ToolResultData>,
+        plan: crate::types::PlanState,
     },
 }
 
@@ -180,6 +205,18 @@ pub async fn handle_backend_events(
                 session_id,
                 tool_id,
             } => Some(handle_cancel_sub_agent(&multi_session_manager, &session_id, &tool_id).await),
+
+            BackendEvent::StartMessageEdit {
+                session_id,
+                node_id,
+            } => {
+                Some(handle_start_message_edit(&multi_session_manager, &session_id, node_id).await)
+            }
+
+            BackendEvent::SwitchBranch {
+                session_id,
+                new_node_id,
+            } => Some(handle_switch_branch(&multi_session_manager, &session_id, new_node_id).await),
         };
 
         // Send response back to UI only if there is one
@@ -599,6 +636,7 @@ async fn handle_cancel_sub_agent(
                 tool_id: tool_id.to_string(),
             }
         }
+
         Err(e) => {
             error!(
                 "Failed to cancel sub-agent {} for session {}: {}",
@@ -608,5 +646,144 @@ async fn handle_cancel_sub_agent(
                 message: format!("Failed to cancel sub-agent: {e}"),
             }
         }
+    }
+}
+
+// ============================================================================
+// Session Branching Handlers
+// ============================================================================
+
+async fn handle_start_message_edit(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    node_id: crate::persistence::NodeId,
+) -> BackendResponse {
+    debug!(
+        "Starting message edit for session {} node {}",
+        session_id, node_id
+    );
+
+    let result = {
+        let manager = multi_session_manager.lock().await;
+        if let Some(session_instance) = manager.get_session(session_id) {
+            // Get the message node
+            if let Some(node) = session_instance.session.message_nodes.get(&node_id) {
+                // Extract content from message
+                let content = match &node.message.content {
+                    llm::MessageContent::Text(text) => text.clone(),
+                    llm::MessageContent::Structured(blocks) => {
+                        // Extract text content from structured blocks
+                        blocks
+                            .iter()
+                            .filter_map(|block| match block {
+                                llm::ContentBlock::Text { text, .. } => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                };
+
+                // Extract attachments (images) from message
+                let attachments = match &node.message.content {
+                    llm::MessageContent::Structured(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            llm::ContentBlock::Image {
+                                media_type, data, ..
+                            } => Some(DraftAttachment::Image {
+                                content: data.clone(),
+                                mime_type: media_type.clone(),
+                            }),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+
+                // The branch parent is the parent of the node being edited
+                let branch_parent_id = node.parent_id;
+
+                Ok((content, attachments, branch_parent_id))
+            } else {
+                Err(anyhow::anyhow!("Message node {} not found", node_id))
+            }
+        } else {
+            Err(anyhow::anyhow!("Session {} not found", session_id))
+        }
+    };
+
+    match result {
+        Ok((content, attachments, branch_parent_id)) => BackendResponse::MessageEditReady {
+            session_id: session_id.to_string(),
+            content,
+            attachments,
+            branch_parent_id,
+        },
+        Err(e) => {
+            error!("Failed to start message edit: {}", e);
+            BackendResponse::Error {
+                message: format!("Failed to start message edit: {e}"),
+            }
+        }
+    }
+}
+
+async fn handle_switch_branch(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    new_node_id: crate::persistence::NodeId,
+) -> BackendResponse {
+    debug!(
+        "Switching branch for session {} to node {}",
+        session_id, new_node_id
+    );
+
+    let mut manager = multi_session_manager.lock().await;
+
+    let Some(session_instance) = manager.get_session_mut(session_id) else {
+        return BackendResponse::Error {
+            message: format!("Session {} not found", session_id),
+        };
+    };
+
+    // Perform the branch switch
+    if let Err(e) = session_instance.session.switch_branch(new_node_id) {
+        error!("Failed to switch branch: {}", e);
+        return BackendResponse::Error {
+            message: format!("Failed to switch branch: {e}"),
+        };
+    }
+
+    // Generate new messages for UI
+    let messages_data = match session_instance
+        .convert_messages_to_ui_data(session_instance.session.config.tool_syntax)
+    {
+        Ok(data) => data,
+        Err(e) => {
+            error!("Failed to convert messages: {}", e);
+            return BackendResponse::Error {
+                message: format!("Failed to convert messages: {e}"),
+            };
+        }
+    };
+
+    let tool_results = match session_instance.convert_tool_executions_to_ui_data() {
+        Ok(results) => results,
+        Err(e) => {
+            error!("Failed to convert tool results: {}", e);
+            return BackendResponse::Error {
+                message: format!("Failed to convert tool results: {e}"),
+            };
+        }
+    };
+
+    let plan = session_instance.session.plan.clone();
+
+    BackendResponse::BranchSwitched {
+        session_id: session_id.to_string(),
+        messages: messages_data,
+        tool_results,
+        plan,
     }
 }

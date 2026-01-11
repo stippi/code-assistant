@@ -1,4 +1,4 @@
-use crate::persistence::{ChatMetadata, DraftAttachment};
+use crate::persistence::{BranchInfo, ChatMetadata, DraftAttachment, NodeId};
 use crate::session::instance::SessionActivityState;
 use crate::types::PlanState;
 use crate::ui::gpui::elements::MessageRole;
@@ -11,6 +11,12 @@ use std::path::PathBuf;
 pub struct MessageData {
     pub role: MessageRole,
     pub fragments: Vec<DisplayFragment>,
+    /// Optional node ID for branching support
+    #[allow(dead_code)] // Will be used in Phase 4
+    pub node_id: Option<NodeId>,
+    /// Optional branch info if this message is part of a branch
+    #[allow(dead_code)] // Will be used in Phase 4
+    pub branch_info: Option<BranchInfo>,
 }
 
 /// Tool execution result data for UI updates
@@ -121,8 +127,51 @@ pub enum UiEvent {
     UpdateCurrentModel { model_name: String },
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
+
     /// Cancel a running sub-agent by its tool id
     CancelSubAgent { tool_id: String },
+
+    // === Session Branching Events ===
+    /// Request to start editing a message (creates a branch point)
+    /// UI should load the message content into the input area
+    #[allow(dead_code)] // Will be used in Phase 4
+    StartMessageEdit {
+        session_id: String,
+        /// The node ID of the message being edited
+        node_id: NodeId,
+    },
+
+    /// Switch to a different branch at a branch point
+    #[allow(dead_code)] // Will be used in Phase 4
+    SwitchBranch {
+        session_id: String,
+        /// The node ID to switch to (a sibling of the current node at a branch point)
+        new_node_id: NodeId,
+    },
+
+    /// Response: Message content loaded for editing
+    /// Sent in response to StartMessageEdit
+    #[allow(dead_code)] // Will be used in Phase 4
+    MessageEditReady {
+        /// The text content of the message
+        content: String,
+        /// Any attachments from the original message
+        attachments: Vec<DraftAttachment>,
+        /// The parent node ID where the new branch will be created
+        branch_parent_id: Option<NodeId>,
+    },
+
+    /// Response: Branch switch completed, new messages to display
+    #[allow(dead_code)] // Will be used in Phase 4
+    BranchSwitched {
+        session_id: String,
+        /// Full message list for the new active path
+        messages: Vec<MessageData>,
+        /// Tool results for the new path
+        tool_results: Vec<ToolResultData>,
+        /// Updated plan for the new path
+        plan: PlanState,
+    },
 
     // === Resource Events (for tool operations) ===
     /// A file was loaded/read by a tool

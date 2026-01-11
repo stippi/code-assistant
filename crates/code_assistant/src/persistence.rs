@@ -1,7 +1,7 @@
 use anyhow::Result;
 use llm::Message;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +10,59 @@ use tracing::{debug, info, warn};
 use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
 use crate::types::{PlanState, ToolSyntax};
+
+// ============================================================================
+// Session Branching Types
+// ============================================================================
+
+/// Unique identifier for a message node within a session
+pub type NodeId = u64;
+
+/// A path through the conversation tree (list of node IDs from root to leaf)
+pub type ConversationPath = Vec<NodeId>;
+
+/// A single message node in the conversation tree
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MessageNode {
+    /// Unique ID within this session
+    pub id: NodeId,
+
+    /// The actual message content
+    pub message: Message,
+
+    /// Parent node ID (None for root/first message)
+    pub parent_id: Option<NodeId>,
+
+    /// Creation timestamp (for ordering siblings)
+    pub created_at: SystemTime,
+
+    /// Plan state snapshot (only set if plan changed in this message's response)
+    /// Used for efficient plan reconstruction when switching branches
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_snapshot: Option<PlanState>,
+}
+
+/// Information about a branch point in the conversation (for UI)
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // Will be used by UI in Phase 4
+pub struct BranchInfo {
+    /// Node ID where the branch occurs (the node that has multiple children)
+    pub parent_node_id: Option<NodeId>,
+
+    /// All sibling node IDs at this branch point (different continuations)
+    pub sibling_ids: Vec<NodeId>,
+
+    /// Index of the currently active sibling (0-based)
+    pub active_index: usize,
+}
+
+impl BranchInfo {
+    /// Total number of branches at this point
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn total_branches(&self) -> usize {
+        self.sibling_ids.len()
+    }
+}
 
 /// Model configuration for a session
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -35,11 +88,34 @@ pub struct ChatSession {
     pub created_at: SystemTime,
     /// Last updated timestamp
     pub updated_at: SystemTime,
-    /// Message history
+
+    // ========================================================================
+    // Branching: Tree-based message storage
+    // ========================================================================
+    /// All message nodes in the session (tree structure)
+    /// Key: NodeId, Value: MessageNode
+    #[serde(default)]
+    pub message_nodes: BTreeMap<NodeId, MessageNode>,
+
+    /// The currently active path through the tree
+    /// This determines which messages are shown and sent to LLM
+    #[serde(default)]
+    pub active_path: ConversationPath,
+
+    /// Counter for generating unique node IDs
+    #[serde(default = "default_next_node_id")]
+    pub next_node_id: NodeId,
+
+    // ========================================================================
+    // Legacy: Linear message list (for migration from old sessions)
+    // ========================================================================
+    /// Legacy linear message history - migrated to message_nodes on first load
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<Message>,
+
     /// Serialized tool execution results
     pub tool_executions: Vec<SerializedToolExecution>,
-    /// Current session plan
+    /// Current session plan (for the active path)
     #[serde(default)]
     pub plan: PlanState,
     /// Persistent session configuration
@@ -79,6 +155,10 @@ pub struct ChatSession {
     _legacy_working_memory: serde_json::Value,
 }
 
+fn default_next_node_id() -> NodeId {
+    1
+}
+
 impl ChatSession {
     /// Merge any legacy top-level fields into the nested SessionConfig.
     pub fn ensure_config(&mut self) -> Result<()> {
@@ -96,6 +176,10 @@ impl ChatSession {
         if let Some(use_diff_blocks) = self.legacy_use_diff_blocks.take() {
             self.config.use_diff_blocks = use_diff_blocks;
         }
+
+        // Migrate linear messages to tree structure if needed
+        self.migrate_to_tree_structure();
+
         Ok(())
     }
 
@@ -111,6 +195,9 @@ impl ChatSession {
             name,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
+            message_nodes: BTreeMap::new(),
+            active_path: Vec::new(),
+            next_node_id: 1,
             messages: Vec::new(),
             tool_executions: Vec::new(),
             plan: PlanState::default(),
@@ -123,6 +210,299 @@ impl ChatSession {
             legacy_use_diff_blocks: None,
             _legacy_working_memory: serde_json::Value::Null,
         }
+    }
+
+    // ========================================================================
+    // Migration
+    // ========================================================================
+
+    /// Migrate legacy linear messages to tree structure.
+    /// Called automatically by ensure_config() on session load.
+    fn migrate_to_tree_structure(&mut self) {
+        if self.message_nodes.is_empty() && !self.messages.is_empty() {
+            debug!(
+                "Migrating session {} from linear to tree structure ({} messages)",
+                self.id,
+                self.messages.len()
+            );
+
+            let mut parent_id: Option<NodeId> = None;
+
+            for message in self.messages.drain(..) {
+                let node_id = self.next_node_id;
+                self.next_node_id += 1;
+
+                let node = MessageNode {
+                    id: node_id,
+                    message,
+                    parent_id,
+                    created_at: SystemTime::now(),
+                    plan_snapshot: None,
+                };
+
+                self.message_nodes.insert(node_id, node);
+                self.active_path.push(node_id);
+                parent_id = Some(node_id);
+            }
+
+            debug!(
+                "Migration complete: {} nodes, active_path length: {}",
+                self.message_nodes.len(),
+                self.active_path.len()
+            );
+        }
+    }
+
+    // ========================================================================
+    // Tree Navigation & Query
+    // ========================================================================
+
+    /// Get the linearized message history for the active path.
+    /// This is what gets sent to the LLM.
+    pub fn get_active_messages(&self) -> Vec<&Message> {
+        self.active_path
+            .iter()
+            .filter_map(|id| self.message_nodes.get(id))
+            .map(|node| &node.message)
+            .collect()
+    }
+
+    /// Get owned copies of messages for the active path.
+    pub fn get_active_messages_cloned(&self) -> Vec<Message> {
+        self.active_path
+            .iter()
+            .filter_map(|id| self.message_nodes.get(id))
+            .map(|node| node.message.clone())
+            .collect()
+    }
+
+    /// Get all direct children of a node.
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn get_children(&self, parent_id: Option<NodeId>) -> Vec<&MessageNode> {
+        self.message_nodes
+            .values()
+            .filter(|node| node.parent_id == parent_id)
+            .collect()
+    }
+
+    /// Get children sorted by creation time (oldest first).
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn get_children_sorted(&self, parent_id: Option<NodeId>) -> Vec<&MessageNode> {
+        let mut children = self.get_children(parent_id);
+        children.sort_by_key(|n| n.created_at);
+        children
+    }
+
+    /// Check if a node has multiple children (is a branch point).
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn is_branch_point(&self, node_id: NodeId) -> bool {
+        self.get_children(Some(node_id)).len() > 1
+    }
+
+    /// Get branch info for a specific node (if it's part of a branch).
+    /// Returns None if the node has no siblings (no branching at this point).
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn get_branch_info(&self, node_id: NodeId) -> Option<BranchInfo> {
+        let node = self.message_nodes.get(&node_id)?;
+        let siblings: Vec<NodeId> = self
+            .get_children_sorted(node.parent_id)
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+
+        if siblings.len() <= 1 {
+            return None; // No branching here
+        }
+
+        let active_index = siblings.iter().position(|&id| id == node_id)?;
+
+        Some(BranchInfo {
+            parent_node_id: node.parent_id,
+            sibling_ids: siblings,
+            active_index,
+        })
+    }
+
+    /// Get branch infos for all branch points in the active path.
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn get_all_branch_infos(&self) -> Vec<(NodeId, BranchInfo)> {
+        self.active_path
+            .iter()
+            .filter_map(|&node_id| self.get_branch_info(node_id).map(|info| (node_id, info)))
+            .collect()
+    }
+
+    /// Find the plan state for the active path by walking backwards
+    /// to find the most recent plan_snapshot.
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn get_plan_for_active_path(&self) -> PlanState {
+        for &node_id in self.active_path.iter().rev() {
+            if let Some(node) = self.message_nodes.get(&node_id) {
+                if let Some(plan) = &node.plan_snapshot {
+                    return plan.clone();
+                }
+            }
+        }
+        PlanState::default()
+    }
+
+    // ========================================================================
+    // Tree Modification
+    // ========================================================================
+
+    /// Add a new message as a child of the last node in the active path.
+    /// Updates active_path to include the new node.
+    /// Returns the new node ID.
+    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
+    pub fn add_message(&mut self, message: Message) -> NodeId {
+        self.add_message_with_parent(message, self.active_path.last().copied())
+    }
+
+    /// Add a new message as a child of a specific parent node.
+    /// Updates active_path to follow this new branch.
+    /// Returns the new node ID.
+    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
+    pub fn add_message_with_parent(
+        &mut self,
+        message: Message,
+        parent_id: Option<NodeId>,
+    ) -> NodeId {
+        let node_id = self.next_node_id;
+        self.next_node_id += 1;
+
+        let node = MessageNode {
+            id: node_id,
+            message,
+            parent_id,
+            created_at: SystemTime::now(),
+            plan_snapshot: None,
+        };
+
+        self.message_nodes.insert(node_id, node);
+
+        // Update active_path: truncate to parent and add new node
+        if let Some(parent) = parent_id {
+            if let Some(parent_pos) = self.active_path.iter().position(|&id| id == parent) {
+                self.active_path.truncate(parent_pos + 1);
+            }
+        } else {
+            // No parent means this is a root node
+            self.active_path.clear();
+        }
+        self.active_path.push(node_id);
+
+        self.updated_at = SystemTime::now();
+        node_id
+    }
+
+    /// Add a message and store a plan snapshot with it.
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn add_message_with_plan(&mut self, message: Message, plan: PlanState) -> NodeId {
+        let node_id = self.add_message(message);
+        if let Some(node) = self.message_nodes.get_mut(&node_id) {
+            node.plan_snapshot = Some(plan);
+        }
+        node_id
+    }
+
+    /// Update the plan snapshot for an existing node.
+    #[allow(dead_code)] // Will be used by UI in Phase 4
+    pub fn set_plan_snapshot(&mut self, node_id: NodeId, plan: PlanState) {
+        if let Some(node) = self.message_nodes.get_mut(&node_id) {
+            node.plan_snapshot = Some(plan);
+        }
+    }
+
+    /// Switch to a different branch by making a different sibling node active.
+    /// Updates active_path to follow the new branch to its deepest descendant.
+    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
+    pub fn switch_branch(&mut self, new_node_id: NodeId) -> Result<()> {
+        let node = self
+            .message_nodes
+            .get(&new_node_id)
+            .ok_or_else(|| anyhow::anyhow!("Node not found: {}", new_node_id))?;
+
+        // Find where in active_path the parent is
+        if let Some(parent_id) = node.parent_id {
+            if let Some(parent_pos) = self.active_path.iter().position(|&id| id == parent_id) {
+                // Truncate path after parent
+                self.active_path.truncate(parent_pos + 1);
+            } else {
+                // Parent not in active path - this shouldn't happen in normal use
+                // but we handle it by rebuilding the path from root
+                self.active_path = self.build_path_to_node(parent_id);
+            }
+        } else {
+            // Switching to a root node
+            self.active_path.clear();
+        }
+
+        // Extend path from new node to deepest descendant
+        self.extend_active_path_from(new_node_id);
+
+        // Update the plan to match the new active path
+        self.plan = self.get_plan_for_active_path();
+
+        Ok(())
+    }
+
+    /// Build the path from root to a specific node.
+    fn build_path_to_node(&self, target_id: NodeId) -> ConversationPath {
+        let mut path = Vec::new();
+        let mut current_id = Some(target_id);
+
+        // Walk up to root, collecting node IDs
+        while let Some(id) = current_id {
+            path.push(id);
+            current_id = self.message_nodes.get(&id).and_then(|n| n.parent_id);
+        }
+
+        // Reverse to get root-to-target order
+        path.reverse();
+        path
+    }
+
+    /// Extend active_path from a given node, following the most recent child at each step.
+    fn extend_active_path_from(&mut self, start_node_id: NodeId) {
+        self.active_path.push(start_node_id);
+
+        let mut current_id = start_node_id;
+        loop {
+            // Collect child IDs to avoid borrowing issues
+            let mut child_ids: Vec<(NodeId, SystemTime)> = self
+                .message_nodes
+                .values()
+                .filter(|node| node.parent_id == Some(current_id))
+                .map(|node| (node.id, node.created_at))
+                .collect();
+
+            if child_ids.is_empty() {
+                break;
+            }
+
+            // Sort by creation time and take the most recent (last)
+            child_ids.sort_by_key(|(_, created_at)| *created_at);
+            let next_id = child_ids.last().unwrap().0;
+
+            self.active_path.push(next_id);
+            current_id = next_id;
+        }
+    }
+
+    /// Get the total number of messages (nodes) in the session.
+    pub fn message_count(&self) -> usize {
+        self.message_nodes.len()
+    }
+
+    /// Check if the session has any branches.
+    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
+    pub fn has_branches(&self) -> bool {
+        // A session has branches if any node has more than one child
+        let mut child_counts: HashMap<Option<NodeId>, usize> = HashMap::new();
+        for node in self.message_nodes.values() {
+            *child_counts.entry(node.parent_id).or_insert(0) += 1;
+        }
+        child_counts.values().any(|&count| count > 1)
     }
 }
 
@@ -250,7 +630,7 @@ impl FileSessionPersistence {
             name: session.name.clone(),
             created_at: session.created_at,
             updated_at: session.updated_at,
-            message_count: session.messages.len(),
+            message_count: session.message_count(),
             total_usage,
             last_usage,
             tokens_limit,
@@ -383,7 +763,7 @@ impl FileSessionPersistence {
         for session_id in candidate_ids {
             // Safety check: load the session and verify it's actually empty
             match self.load_chat_session(&session_id) {
-                Ok(Some(session)) if session.messages.is_empty() => {
+                Ok(Some(session)) if session.message_count() == 0 => {
                     if let Err(e) = self.delete_chat_session(&session_id) {
                         warn!("Failed to delete empty session {}: {}", session_id, e);
                     } else {
@@ -458,7 +838,7 @@ impl FileSessionPersistence {
                         name: session.name.clone(),
                         created_at: session.created_at,
                         updated_at: session.updated_at,
-                        message_count: session.messages.len(),
+                        message_count: session.message_count(),
                         total_usage,
                         last_usage,
                         tokens_limit,
@@ -513,14 +893,22 @@ pub fn generate_session_id() -> String {
     format!("chat_{timestamp:x}_{random_part:x}")
 }
 
-/// Calculate usage information from session messages
+/// Calculate usage information from session messages.
+/// Uses tree structure (message_nodes) if available, falls back to legacy messages.
 fn calculate_session_usage(session: &ChatSession) -> (llm::Usage, llm::Usage, Option<u32>) {
     let mut total_usage = llm::Usage::zero();
     let mut last_usage = llm::Usage::zero();
     let tokens_limit = None;
 
+    // Get messages from tree structure (active path) or legacy list
+    let messages: Vec<&Message> = if !session.message_nodes.is_empty() {
+        session.get_active_messages()
+    } else {
+        session.messages.iter().collect()
+    };
+
     // Calculate total usage and find most recent assistant message usage
-    for message in &session.messages {
+    for message in messages {
         if let Some(usage) = &message.usage {
             // Add to total usage
             total_usage.input_tokens += usage.input_tokens;
@@ -861,5 +1249,241 @@ mod tests {
             .expect("delete empty sessions");
 
         assert_eq!(deleted_count, 0);
+    }
+
+    // ========================================================================
+    // Session Branching Tests
+    // ========================================================================
+
+    #[test]
+    fn test_add_message_creates_tree_structure() {
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        // Add first message
+        let node1 = session.add_message(Message::new_user("Hello"));
+        assert_eq!(node1, 1);
+        assert_eq!(session.active_path, vec![1]);
+        assert_eq!(session.message_nodes.len(), 1);
+
+        // Add second message
+        let node2 = session.add_message(Message::new_assistant("Hi there!"));
+        assert_eq!(node2, 2);
+        assert_eq!(session.active_path, vec![1, 2]);
+        assert_eq!(session.message_nodes.len(), 2);
+
+        // Verify parent relationships
+        assert_eq!(session.message_nodes.get(&1).unwrap().parent_id, None);
+        assert_eq!(session.message_nodes.get(&2).unwrap().parent_id, Some(1));
+    }
+
+    #[test]
+    fn test_add_message_with_parent_creates_branch() {
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        // Create initial conversation
+        let _node1 = session.add_message(Message::new_user("Hello"));
+        let _node2 = session.add_message(Message::new_assistant("Hi!"));
+        let _node3 = session.add_message(Message::new_user("How are you?"));
+
+        // Now create a branch from node 2 (after the first assistant response)
+        let branch_node = session.add_message_with_parent(
+            Message::new_user("What's the weather like?"),
+            Some(2), // Branch from node 2
+        );
+
+        assert_eq!(branch_node, 4);
+        // Active path should now follow the new branch
+        assert_eq!(session.active_path, vec![1, 2, 4]);
+
+        // Both node 3 and node 4 should have parent_id = 2
+        assert_eq!(session.message_nodes.get(&3).unwrap().parent_id, Some(2));
+        assert_eq!(session.message_nodes.get(&4).unwrap().parent_id, Some(2));
+
+        // Session should detect branches
+        assert!(session.has_branches());
+    }
+
+    #[test]
+    fn test_switch_branch() {
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        // Create initial conversation
+        session.add_message(Message::new_user("Hello")); // node 1
+        session.add_message(Message::new_assistant("Hi!")); // node 2
+        session.add_message(Message::new_user("Original followup")); // node 3
+
+        // Create a branch from node 2
+        session.add_message_with_parent(Message::new_user("Alternative followup"), Some(2)); // node 4
+
+        // Add continuation on the branch
+        session.add_message(Message::new_assistant("Alternative response")); // node 5
+
+        // Active path should be: 1 -> 2 -> 4 -> 5
+        assert_eq!(session.active_path, vec![1, 2, 4, 5]);
+
+        // Switch back to node 3 (the original branch)
+        session.switch_branch(3).expect("switch branch");
+
+        // Active path should now be: 1 -> 2 -> 3
+        assert_eq!(session.active_path, vec![1, 2, 3]);
+
+        // Verify linearized messages
+        let messages = session.get_active_messages();
+        assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn test_get_branch_info() {
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        // Create initial conversation
+        session.add_message(Message::new_user("Hello")); // node 1
+        session.add_message(Message::new_assistant("Hi!")); // node 2
+        session.add_message(Message::new_user("Followup A")); // node 3
+
+        // No branch info for node 3 yet (only child of node 2)
+        assert!(session.get_branch_info(3).is_none());
+
+        // Create branches from node 2
+        session.add_message_with_parent(Message::new_user("Followup B"), Some(2)); // node 4
+        session.add_message_with_parent(Message::new_user("Followup C"), Some(2)); // node 5
+
+        // Now node 3, 4, 5 are siblings
+        let info_3 = session.get_branch_info(3).expect("should have branch info");
+        assert_eq!(info_3.parent_node_id, Some(2));
+        assert_eq!(info_3.sibling_ids.len(), 3);
+        assert_eq!(info_3.total_branches(), 3);
+
+        let info_5 = session.get_branch_info(5).expect("should have branch info");
+        assert_eq!(info_5.parent_node_id, Some(2));
+        assert_eq!(info_5.active_index, 2); // node 5 is the third sibling
+    }
+
+    #[test]
+    fn test_migration_from_linear_messages() {
+        // Create a session with legacy linear messages
+        let mut session = ChatSession {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            created_at: SystemTime::now(),
+            updated_at: SystemTime::now(),
+            message_nodes: BTreeMap::new(),
+            active_path: Vec::new(),
+            next_node_id: 1,
+            messages: vec![
+                Message::new_user("Hello"),
+                Message::new_assistant("Hi!"),
+                Message::new_user("How are you?"),
+            ],
+            tool_executions: Vec::new(),
+            plan: PlanState::default(),
+            config: SessionConfig::default(),
+            next_request_id: 1,
+            model_config: None,
+            legacy_init_path: None,
+            legacy_initial_project: None,
+            legacy_tool_syntax: None,
+            legacy_use_diff_blocks: None,
+            _legacy_working_memory: serde_json::Value::Null,
+        };
+
+        // Run migration
+        session.ensure_config().expect("migration should succeed");
+
+        // Verify migration
+        assert_eq!(session.message_nodes.len(), 3);
+        assert_eq!(session.active_path, vec![1, 2, 3]);
+        assert!(session.messages.is_empty()); // Legacy messages should be cleared
+
+        // Verify tree structure
+        assert_eq!(session.message_nodes.get(&1).unwrap().parent_id, None);
+        assert_eq!(session.message_nodes.get(&2).unwrap().parent_id, Some(1));
+        assert_eq!(session.message_nodes.get(&3).unwrap().parent_id, Some(2));
+
+        // Verify messages are accessible
+        let messages = session.get_active_messages();
+        assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn test_get_active_messages_cloned() {
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        session.add_message(Message::new_user("Hello"));
+        session.add_message(Message::new_assistant("Hi!"));
+
+        let messages = session.get_active_messages_cloned();
+        assert_eq!(messages.len(), 2);
+
+        // Verify content
+        match &messages[0].content {
+            llm::MessageContent::Text(text) => assert_eq!(text, "Hello"),
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[test]
+    fn test_nested_branching() {
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        // Level 1: Initial message
+        session.add_message(Message::new_user("Start")); // 1
+
+        // Level 2: Two branches from node 1
+        session.add_message(Message::new_assistant("Response A")); // 2
+        session.add_message_with_parent(Message::new_assistant("Response B"), Some(1)); // 3
+
+        // Level 3: Two branches from node 2
+        session.switch_branch(2).unwrap();
+        session.add_message(Message::new_user("Follow A1")); // 4
+        session.add_message_with_parent(Message::new_user("Follow A2"), Some(2)); // 5
+
+        // Verify structure
+        assert_eq!(session.message_nodes.len(), 5);
+
+        // Check node 1 has two children (2 and 3)
+        let children_of_1 = session.get_children(Some(1));
+        assert_eq!(children_of_1.len(), 2);
+
+        // Check node 2 has two children (4 and 5)
+        let children_of_2 = session.get_children(Some(2));
+        assert_eq!(children_of_2.len(), 2);
+
+        // Navigate to different paths and verify
+        session.switch_branch(3).unwrap();
+        assert_eq!(session.active_path, vec![1, 3]);
+
+        session.switch_branch(5).unwrap();
+        assert_eq!(session.active_path, vec![1, 2, 5]);
     }
 }

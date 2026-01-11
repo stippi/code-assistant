@@ -713,7 +713,11 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateCurrentModel { .. }
             | UiEvent::UpdateSandboxPolicy { .. }
             | UiEvent::CancelSubAgent { .. }
-            | UiEvent::HiddenToolCompleted => {
+            | UiEvent::HiddenToolCompleted
+            | UiEvent::StartMessageEdit { .. }
+            | UiEvent::SwitchBranch { .. }
+            | UiEvent::MessageEditReady { .. }
+            | UiEvent::BranchSwitched { .. } => {
                 // These are UI management events, not relevant for ACP
             }
             UiEvent::DisplayError { message } => {

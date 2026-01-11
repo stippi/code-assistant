@@ -1020,6 +1020,7 @@ impl Gpui {
                     path.display()
                 );
             }
+
             UiEvent::CancelSubAgent { tool_id } => {
                 debug!("UI: CancelSubAgent event for tool_id: {}", tool_id);
                 // Forward to backend with current session ID
@@ -1033,6 +1034,82 @@ impl Gpui {
                 } else {
                     warn!("UI: CancelSubAgent requested but no active session");
                 }
+            }
+
+            // === Session Branching Events ===
+            UiEvent::StartMessageEdit {
+                session_id,
+                node_id,
+            } => {
+                debug!(
+                    "UI: StartMessageEdit event for session {} node {}",
+                    session_id, node_id
+                );
+                // Forward to backend to get message content
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::StartMessageEdit {
+                        session_id,
+                        node_id,
+                    });
+                }
+            }
+            UiEvent::SwitchBranch {
+                session_id,
+                new_node_id,
+            } => {
+                debug!(
+                    "UI: SwitchBranch event for session {} to node {}",
+                    session_id, new_node_id
+                );
+                // Forward to backend to perform branch switch
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::SwitchBranch {
+                        session_id,
+                        new_node_id,
+                    });
+                }
+            }
+            UiEvent::MessageEditReady {
+                content,
+                attachments,
+                branch_parent_id,
+            } => {
+                debug!(
+                    "UI: MessageEditReady event - content len: {}, attachments: {}, parent: {:?}",
+                    content.len(),
+                    attachments.len(),
+                    branch_parent_id
+                );
+                // TODO Phase 4: Load content into input area
+                // self.update_input_area(cx, |input, cx| {
+                //     input.set_content(content);
+                //     input.set_attachments(attachments);
+                //     input.set_branch_parent_id(branch_parent_id);
+                //     cx.notify();
+                // });
+            }
+            UiEvent::BranchSwitched {
+                session_id,
+                messages,
+                tool_results,
+                plan,
+            } => {
+                debug!(
+                    "UI: BranchSwitched event for session {} with {} messages",
+                    session_id,
+                    messages.len()
+                );
+                // TODO Phase 4: Update messages display with new branch content
+                // For now, we can reuse the SetMessages logic
+                self.process_ui_event_async(
+                    UiEvent::SetMessages {
+                        messages,
+                        session_id: Some(session_id),
+                        tool_results,
+                    },
+                    cx,
+                );
+                self.process_ui_event_async(UiEvent::UpdatePlan { plan }, cx);
             }
         }
     }
@@ -1286,7 +1363,7 @@ impl Gpui {
     }
 
     // Handle backend responses
-    fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
+    fn handle_backend_response(&self, response: BackendResponse, cx: &mut AsyncApp) {
         match response {
             BackendResponse::SessionCreated { session_id } => {
                 debug!("Received BackendResponse::SessionCreated");
@@ -1378,6 +1455,7 @@ impl Gpui {
                     );
                 }
             }
+
             BackendResponse::SubAgentCancelled {
                 session_id,
                 tool_id,
@@ -1388,6 +1466,54 @@ impl Gpui {
                 );
                 // The sub-agent will update its own UI state via the normal tool output mechanism
                 // No additional UI update needed here
+            }
+
+            // Session branching responses
+            BackendResponse::MessageEditReady {
+                session_id,
+                content,
+                attachments,
+                branch_parent_id,
+            } => {
+                debug!(
+                    "Received BackendResponse::MessageEditReady for session {} with {} chars, {} attachments",
+                    session_id,
+                    content.len(),
+                    attachments.len()
+                );
+
+                // Forward to UI as event
+                self.process_ui_event_async(
+                    UiEvent::MessageEditReady {
+                        content: content.clone(),
+                        attachments: attachments.clone(),
+
+                        branch_parent_id,
+                    },
+                    cx,
+                );
+            }
+            BackendResponse::BranchSwitched {
+                session_id,
+                messages,
+                tool_results,
+                plan,
+            } => {
+                debug!(
+                    "Received BackendResponse::BranchSwitched for session {} with {} messages",
+                    session_id,
+                    messages.len()
+                );
+                // Forward to UI as event
+                self.process_ui_event_async(
+                    UiEvent::BranchSwitched {
+                        session_id: session_id.clone(),
+                        messages: messages.clone(),
+                        tool_results: tool_results.clone(),
+                        plan: plan.clone(),
+                    },
+                    cx,
+                );
             }
         }
     }

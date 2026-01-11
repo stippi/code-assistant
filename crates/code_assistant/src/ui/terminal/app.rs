@@ -442,12 +442,17 @@ impl TerminalTuiApp {
                                 policy
                             )));
                         }
+
                         BackendResponse::SubAgentCancelled {
                             session_id: _,
                             tool_id: _,
                         } => {
                             // Sub-agent cancellation handled; the sub-agent will
                             // update its tool output via the normal mechanism
+                        }
+                        BackendResponse::MessageEditReady { .. }
+                        | BackendResponse::BranchSwitched { .. } => {
+                            // Session branching not supported in terminal UI
                         }
                     }
                 }
