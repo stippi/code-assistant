@@ -12,10 +12,8 @@ pub struct MessageData {
     pub role: MessageRole,
     pub fragments: Vec<DisplayFragment>,
     /// Optional node ID for branching support
-    #[allow(dead_code)] // Will be used in Phase 4
     pub node_id: Option<NodeId>,
     /// Optional branch info if this message is part of a branch
-    #[allow(dead_code)] // Will be used in Phase 4
     pub branch_info: Option<BranchInfo>,
 }
 
@@ -138,7 +136,6 @@ pub enum UiEvent {
     // === Session Branching Events ===
     /// Request to start editing a message (creates a branch point)
     /// UI should load the message content into the input area
-    #[allow(dead_code)] // Will be used in Phase 4
     StartMessageEdit {
         session_id: String,
         /// The node ID of the message being edited
@@ -146,7 +143,6 @@ pub enum UiEvent {
     },
 
     /// Switch to a different branch at a branch point
-    #[allow(dead_code)] // Will be used in Phase 4
     SwitchBranch {
         session_id: String,
         /// The node ID to switch to (a sibling of the current node at a branch point)
@@ -155,7 +151,6 @@ pub enum UiEvent {
 
     /// Response: Message content loaded for editing
     /// Sent in response to StartMessageEdit
-    #[allow(dead_code)] // Will be used in Phase 4
     MessageEditReady {
         /// The text content of the message
         content: String,
@@ -170,7 +165,6 @@ pub enum UiEvent {
     },
 
     /// Response: Branch switch completed, new messages to display
-    #[allow(dead_code)] // Will be used in Phase 4
     BranchSwitched {
         session_id: String,
         /// Full message list for the new active path
