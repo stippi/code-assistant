@@ -1693,6 +1693,7 @@ impl Gpui {
                     cx,
                 );
             }
+
             BackendResponse::BranchSwitched {
                 session_id,
                 messages,
@@ -1711,6 +1712,26 @@ impl Gpui {
                         messages: messages.clone(),
                         tool_results: tool_results.clone(),
                         plan: plan.clone(),
+                    },
+                    cx,
+                );
+            }
+            BackendResponse::MessageEditCancelled {
+                session_id,
+                messages,
+                tool_results,
+            } => {
+                debug!(
+                    "Received BackendResponse::MessageEditCancelled for session {} with {} messages",
+                    session_id,
+                    messages.len()
+                );
+                // Forward to UI as event - reuse SetMessages to restore the view
+                self.process_ui_event_async(
+                    UiEvent::SetMessages {
+                        messages: messages.clone(),
+                        session_id: Some(session_id.clone()),
+                        tool_results: tool_results.clone(),
                     },
                     cx,
                 );

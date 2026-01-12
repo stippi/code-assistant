@@ -70,6 +70,9 @@ pub enum BackendEvent {
         session_id: String,
         new_node_id: crate::persistence::NodeId,
     },
+    CancelMessageEdit {
+        session_id: String,
+    },
 }
 
 // Response from backend to UI
@@ -122,11 +125,17 @@ pub enum BackendResponse {
         messages: Vec<crate::ui::ui_events::MessageData>,
         tool_results: Vec<crate::ui::ui_events::ToolResultData>,
     },
+
     BranchSwitched {
         session_id: String,
         messages: Vec<crate::ui::ui_events::MessageData>,
         tool_results: Vec<crate::ui::ui_events::ToolResultData>,
         plan: crate::types::PlanState,
+    },
+    MessageEditCancelled {
+        session_id: String,
+        messages: Vec<crate::ui::ui_events::MessageData>,
+        tool_results: Vec<crate::ui::ui_events::ToolResultData>,
     },
 }
 
@@ -224,6 +233,10 @@ pub async fn handle_backend_events(
                 session_id,
                 new_node_id,
             } => Some(handle_switch_branch(&multi_session_manager, &session_id, new_node_id).await),
+
+            BackendEvent::CancelMessageEdit { session_id } => {
+                Some(handle_cancel_message_edit(&multi_session_manager, &session_id).await)
+            }
         };
 
         // Send response back to UI only if there is one
@@ -865,5 +878,49 @@ async fn handle_switch_branch(
         messages: messages_data,
         tool_results,
         plan,
+    }
+}
+
+async fn handle_cancel_message_edit(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+) -> BackendResponse {
+    debug!("Cancelling message edit for session {}", session_id);
+
+    let manager = multi_session_manager.lock().await;
+
+    let Some(session_instance) = manager.get_session(session_id) else {
+        return BackendResponse::Error {
+            message: format!("Session {} not found", session_id),
+        };
+    };
+
+    // Reload the current messages (restore full active path)
+    let messages_data = match session_instance
+        .convert_messages_to_ui_data(session_instance.session.config.tool_syntax)
+    {
+        Ok(data) => data,
+        Err(e) => {
+            error!("Failed to convert messages: {}", e);
+            return BackendResponse::Error {
+                message: format!("Failed to convert messages: {e}"),
+            };
+        }
+    };
+
+    let tool_results = match session_instance.convert_tool_executions_to_ui_data() {
+        Ok(results) => results,
+        Err(e) => {
+            error!("Failed to convert tool results: {}", e);
+            return BackendResponse::Error {
+                message: format!("Failed to convert tool results: {e}"),
+            };
+        }
+    };
+
+    BackendResponse::MessageEditCancelled {
+        session_id: session_id.to_string(),
+        messages: messages_data,
+        tool_results,
     }
 }

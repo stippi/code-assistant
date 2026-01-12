@@ -6,10 +6,10 @@ use crate::persistence::{DraftAttachment, NodeId};
 use base64::Engine;
 use gpui::{
     div, prelude::*, px, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseUpEvent, Render, Subscription, Window,
+    Focusable, MouseButton, MouseUpEvent, Render, SharedString, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState, Paste};
-use gpui_component::ActiveTheme;
+use gpui_component::{ActiveTheme, Icon};
 use sandbox::SandboxPolicy;
 
 /// Events emitted by the InputArea component
@@ -31,6 +31,8 @@ pub enum InputAreaEvent {
     FocusRequested,
     /// Cancel/stop requested (for agent cancellation)
     CancelRequested,
+    /// Cancel edit mode requested (restore original messages)
+    CancelEditRequested,
     /// Clear draft requested (before clearing input)
     ClearDraftRequested,
     /// Model selection changed
@@ -143,6 +145,20 @@ impl InputArea {
     /// Clear the edit mode state
     fn clear_edit_mode(&mut self) {
         self.branch_parent_id = None;
+    }
+
+    /// Check if we're currently in edit mode (editing an existing message)
+    pub fn is_editing(&self) -> bool {
+        self.branch_parent_id.is_some()
+    }
+
+    /// Cancel edit mode - clears input and emits event to restore original messages
+    pub fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.branch_parent_id.is_some() {
+            self.branch_parent_id = None;
+            self.clear(window, cx);
+            cx.emit(InputAreaEvent::CancelEditRequested);
+        }
     }
 
     /// Sync the dropdown with the current model selection
@@ -404,6 +420,7 @@ impl InputArea {
         let text_input_handle = self.text_input.read(cx).focus_handle(cx);
         let is_focused = text_input_handle.is_focused(window);
         let has_input_content = !self.text_input.read(cx).value().trim().is_empty();
+        let is_editing = self.branch_parent_id.is_some();
 
         div()
             .id("input-area")
@@ -411,6 +428,60 @@ impl InputArea {
             .flex()
             .flex_col() // Column to accommodate attachments area
             .gap_0()
+            // Edit mode banner - shows when editing an existing message
+            .when(is_editing, |parent| {
+                parent.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .bg(cx.theme().warning.opacity(0.1))
+                        .border_b_1()
+                        .border_color(cx.theme().warning.opacity(0.3))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    Icon::default()
+                                        .path(SharedString::from("icons/pencil.svg"))
+                                        .text_color(cx.theme().warning)
+                                        .size(px(14.)),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().warning)
+                                        .child("Editing message — this will create a new branch"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("cancel-edit-btn")
+                                .p_1()
+                                .rounded_sm()
+                                .cursor(CursorStyle::PointingHand)
+                                .hover(|s| s.bg(cx.theme().warning.opacity(0.15)))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.cancel_edit(window, cx);
+                                    }),
+                                )
+                                .child(
+                                    Icon::default()
+                                        .path(SharedString::from("icons/close.svg"))
+                                        .text_color(cx.theme().warning)
+                                        .size(px(14.)),
+                                ),
+                        ),
+                )
+            })
             // Attachments area - show image previews when available
             .when(!self.attachments.is_empty(), |parent| {
                 parent.child(

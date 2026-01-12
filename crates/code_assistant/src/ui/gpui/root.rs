@@ -193,6 +193,18 @@ impl RootView {
             InputAreaEvent::FocusRequested => {
                 // Handle focus request if needed
             }
+            InputAreaEvent::CancelEditRequested => {
+                // Cancel edit mode - reload original messages for this session
+                if let Some(session_id) = &self.current_session_id {
+                    if let Some(gpui) = cx.try_global::<Gpui>() {
+                        if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                            let _ = sender.try_send(BackendEvent::CancelMessageEdit {
+                                session_id: session_id.clone(),
+                            });
+                        }
+                    }
+                }
+            }
             InputAreaEvent::CancelRequested => {
                 // Handle cancel/stop request
                 if let Some(session_id) = &self.current_session_id {
