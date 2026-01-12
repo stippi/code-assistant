@@ -123,13 +123,6 @@ impl SessionInstance {
         }
     }
 
-    /// Add a message to the session (appends to active path)
-    #[allow(dead_code)] // Kept for backward compatibility / internal use
-    pub fn add_message(&mut self, message: Message) {
-        // Use the tree-based method which handles active_path correctly
-        self.session.add_message(message);
-    }
-
     /// Add a message with optional branching support.
     /// If `branch_parent_id` is Some, creates a new branch from that parent.
     /// If `branch_parent_id` is None, appends to the end of the active path.
@@ -152,12 +145,6 @@ impl SessionInstance {
         };
 
         Ok(node_id)
-    }
-
-    /// Get all messages in the session (linearized from active path)
-    #[allow(dead_code)] // Kept for backward compatibility
-    pub fn messages(&self) -> Vec<Message> {
-        self.session.get_active_messages_cloned()
     }
 
     /// Get the current context size (input tokens + cache reads from most recent assistant message)
