@@ -284,7 +284,7 @@ impl SessionManager {
 
     /// Start an agent for a session (message must already be added via add_user_message)
     /// This is the key method - agents run on-demand for specific messages
-
+    ///
     /// Convenience method that adds a user message and starts the agent in one call.
     /// This is for callers that don't need the node_id (e.g., ACP, initial task).
     #[allow(clippy::too_many_arguments)]
