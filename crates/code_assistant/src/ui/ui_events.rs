@@ -1,4 +1,4 @@
-use crate::persistence::{ChatMetadata, DraftAttachment};
+use crate::persistence::{BranchInfo, ChatMetadata, DraftAttachment, NodeId};
 use crate::session::instance::SessionActivityState;
 use crate::types::PlanState;
 use crate::ui::gpui::elements::MessageRole;
@@ -11,6 +11,10 @@ use std::path::PathBuf;
 pub struct MessageData {
     pub role: MessageRole,
     pub fragments: Vec<DisplayFragment>,
+    /// Optional node ID for branching support
+    pub node_id: Option<NodeId>,
+    /// Optional branch info if this message is part of a branch
+    pub branch_info: Option<BranchInfo>,
 }
 
 /// Tool execution result data for UI updates
@@ -29,6 +33,8 @@ pub enum UiEvent {
     DisplayUserInput {
         content: String,
         attachments: Vec<DraftAttachment>,
+        /// Node ID for this message (for edit button support)
+        node_id: Option<NodeId>,
     },
     /// Display a system-generated compaction divider message
     DisplayCompactionSummary { summary: String },
@@ -88,6 +94,8 @@ pub enum UiEvent {
         message: String,
         session_id: String,
         attachments: Vec<DraftAttachment>,
+        /// If set, creates a new branch from this parent node instead of appending to active path
+        branch_parent_id: Option<NodeId>,
     },
     /// Update metadata for a single session without refreshing the entire list
     UpdateSessionMetadata { metadata: ChatMetadata },
@@ -121,8 +129,60 @@ pub enum UiEvent {
     UpdateCurrentModel { model_name: String },
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
+
     /// Cancel a running sub-agent by its tool id
     CancelSubAgent { tool_id: String },
+
+    // === Session Branching Events ===
+    /// Request to start editing a message (creates a branch point)
+    /// UI should load the message content into the input area
+    StartMessageEdit {
+        session_id: String,
+        /// The node ID of the message being edited
+        node_id: NodeId,
+    },
+
+    /// Switch to a different branch at a branch point
+    SwitchBranch {
+        session_id: String,
+        /// The node ID to switch to (a sibling of the current node at a branch point)
+        new_node_id: NodeId,
+    },
+
+    /// Response: Message content loaded for editing
+    /// Sent in response to StartMessageEdit
+    MessageEditReady {
+        /// The text content of the message
+        content: String,
+        /// Any attachments from the original message
+        attachments: Vec<DraftAttachment>,
+        /// The parent node ID where the new branch will be created
+        branch_parent_id: Option<NodeId>,
+        /// Messages up to (but not including) the message being edited
+        messages: Vec<MessageData>,
+        /// Tool results for the truncated path
+        tool_results: Vec<ToolResultData>,
+    },
+
+    /// Response: Branch switch completed, new messages to display
+    BranchSwitched {
+        session_id: String,
+        /// Full message list for the new active path
+        messages: Vec<MessageData>,
+        /// Tool results for the new path
+        tool_results: Vec<ToolResultData>,
+        /// Updated plan for the new path
+        plan: PlanState,
+    },
+
+    /// Update the branch info for a specific message node
+    /// Used when a new branch is created to update the UI for the parent message
+    UpdateBranchInfo {
+        /// The node ID whose branch info should be updated
+        node_id: NodeId,
+        /// The updated branch info (siblings at this branch point)
+        branch_info: BranchInfo,
+    },
 
     // === Resource Events (for tool operations) ===
     /// A file was loaded/read by a tool

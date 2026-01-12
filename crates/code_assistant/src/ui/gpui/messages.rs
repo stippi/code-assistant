@@ -1,6 +1,10 @@
+use super::branch_switcher::BranchSwitcherElement;
 use super::elements::MessageContainer;
-use gpui::{div, prelude::*, px, rgb, App, Context, Entity, FocusHandle, Focusable, Window};
-use gpui_component::{v_flex, ActiveTheme};
+use gpui::{
+    div, prelude::*, px, rgb, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    MouseButton, SharedString, Window,
+};
+use gpui_component::{v_flex, ActiveTheme, Icon};
 use std::sync::{Arc, Mutex};
 
 /// MessagesView - Component responsible for displaying the message history
@@ -8,6 +12,7 @@ pub struct MessagesView {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     current_pending_message: Arc<Mutex<Option<String>>>,
     current_project: Arc<Mutex<String>>,
+    current_session_id: Arc<Mutex<Option<String>>>,
     focus_handle: FocusHandle,
 }
 
@@ -20,8 +25,19 @@ impl MessagesView {
             message_queue,
             current_pending_message: Arc::new(Mutex::new(None)),
             current_project: Arc::new(Mutex::new(String::new())),
+            current_session_id: Arc::new(Mutex::new(None)),
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Update the current session ID
+    pub fn set_current_session_id(&self, session_id: Option<String>) {
+        *self.current_session_id.lock().unwrap() = session_id;
+    }
+
+    /// Get the current session ID
+    fn get_current_session_id(&self) -> Option<String> {
+        self.current_session_id.lock().unwrap().clone()
     }
 
     /// Group consecutive image blocks into horizontal galleries for user messages
@@ -107,6 +123,7 @@ impl Render for MessagesView {
 
         // Get current project for parameter filtering
         let current_project = self.get_current_project();
+        let current_session_id = self.get_current_session_id();
 
         // Collect all message elements first
         let message_elements: Vec<_> = messages
@@ -114,10 +131,15 @@ impl Render for MessagesView {
             .map(|msg| {
                 // Update the message container with current project
                 msg.read(cx).set_current_project(current_project.clone());
+
+                let is_user_message = msg.read(cx).is_user_message();
+                let node_id = msg.read(cx).node_id();
+                let branch_info = msg.read(cx).branch_info();
+
                 // Create message container with appropriate styling based on role
                 let mut message_container = div().p_3();
 
-                if msg.read(cx).is_user_message() {
+                if is_user_message {
                     message_container = message_container
                         .m_3()
                         .bg(cx.theme().muted) // Use opaque muted color (darker than card background)
@@ -127,30 +149,77 @@ impl Render for MessagesView {
                         .shadow_xs();
                 }
 
-                // Create message container with user badge if needed
-                let message_container = if msg.read(cx).is_user_message() {
-                    message_container.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .children(vec![
-                                super::file_icons::render_icon_container(
-                                    &super::file_icons::get()
-                                        .get_type_icon(super::file_icons::TOOL_USER_INPUT),
-                                    16.0,
-                                    user_accent, // Use themed user accent color
-                                    "👤",
-                                )
-                                .into_any_element(),
-                                div()
-                                    .font_weight(gpui::FontWeight(600.0))
-                                    .text_color(user_accent) // Use themed user accent color
-                                    .child("You")
+                // Create message container with user badge and edit button if needed
+                let message_container = if is_user_message {
+                    // Build header row with user badge and edit button
+                    let session_id_for_edit = current_session_id.clone();
+                    let node_id_for_edit = node_id;
+
+                    let header_row = div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .w_full()
+                        .child(
+                            // Left side: User badge
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .children(vec![
+                                    super::file_icons::render_icon_container(
+                                        &super::file_icons::get()
+                                            .get_type_icon(super::file_icons::TOOL_USER_INPUT),
+                                        16.0,
+                                        user_accent,
+                                        "👤",
+                                    )
                                     .into_any_element(),
-                            ]),
-                    )
+                                    div()
+                                        .font_weight(gpui::FontWeight(600.0))
+                                        .text_color(user_accent)
+                                        .child("You")
+                                        .into_any_element(),
+                                ]),
+                        )
+                        .when(node_id.is_some(), |el| {
+                            // Right side: Edit button (only shown when node_id is present)
+                            el.child(
+                                div()
+                                    .id("edit-message-btn")
+                                    .p_1()
+                                    .rounded_sm()
+                                    .cursor(CursorStyle::PointingHand)
+                                    .hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
+                                    .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
+                                        if let (Some(session_id), Some(node_id)) =
+                                            (session_id_for_edit.clone(), node_id_for_edit)
+                                        {
+                                            // Send StartMessageEdit event
+                                            if let Some(sender) =
+                                                cx.try_global::<super::UiEventSender>()
+                                            {
+                                                let _ = sender.0.try_send(
+                                                    crate::ui::UiEvent::StartMessageEdit {
+                                                        session_id,
+                                                        node_id,
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    })
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from("icons/pencil.svg"))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .size_4(),
+                                    ),
+                            )
+                        });
+
+                    message_container.child(header_row)
                 } else {
                     message_container
                 };
@@ -158,7 +227,7 @@ impl Render for MessagesView {
                 // Render all block elements with special handling for user messages
                 let elements = msg.read(cx).elements();
 
-                if msg.read(cx).is_user_message() {
+                let message_container = if is_user_message {
                     // For user messages, group consecutive image blocks into horizontal galleries
                     let container_children = Self::group_user_message_elements(elements, cx);
                     message_container.children(container_children)
@@ -169,7 +238,23 @@ impl Render for MessagesView {
                         .map(|element| element.into_any_element())
                         .collect();
                     message_container.children(container_children)
+                };
+
+                // Add branch switcher if branch_info is present (only for user messages)
+                if is_user_message {
+                    if let (Some(branch_info), Some(session_id)) =
+                        (branch_info, current_session_id.clone())
+                    {
+                        // Only show if there are multiple siblings (actual branches)
+                        if branch_info.sibling_ids.len() > 1 {
+                            return message_container
+                                .child(BranchSwitcherElement::new(branch_info, session_id))
+                                .into_any_element();
+                        }
+                    }
                 }
+
+                message_container.into_any_element()
             })
             .collect();
 

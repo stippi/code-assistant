@@ -646,10 +646,12 @@ impl acp::Agent for ACPAgentImpl {
                     &arguments.session_id.0,
                     Some(session_model_config.clone()),
                 )?;
+
                 manager
                     .start_agent_for_message(
                         &arguments.session_id.0,
                         content_blocks,
+                        None, // ACP doesn't support branching yet
                         llm_client,
                         project_manager,
                         command_executor,

@@ -6,14 +6,14 @@ use tokio::task::JoinHandle;
 
 // Agent instances are created on-demand, no need to import
 use crate::agent::SubAgentCancellationRegistry;
-use crate::persistence::{ChatMetadata, ChatSession};
+use crate::persistence::{ChatMetadata, ChatSession, NodeId};
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
 use async_trait::async_trait;
 use sandbox::SandboxContext;
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 
 /// Represents the current activity state of a session
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -123,15 +123,28 @@ impl SessionInstance {
         }
     }
 
-    /// Add a message to the session
-    pub fn add_message(&mut self, message: Message) {
-        self.session.messages.push(message);
-        self.session.updated_at = std::time::SystemTime::now();
-    }
+    /// Add a message with optional branching support.
+    /// If `branch_parent_id` is Some, creates a new branch from that parent.
+    /// If `branch_parent_id` is None, appends to the end of the active path.
+    pub fn add_message_with_branch(
+        &mut self,
+        message: Message,
+        branch_parent_id: Option<NodeId>,
+    ) -> Result<NodeId> {
+        let node_id = if let Some(parent_id) = branch_parent_id {
+            // Branching: create new message as child of specified parent
+            debug!(
+                "Creating new branch from parent {} in session {}",
+                parent_id, self.session.id
+            );
+            self.session
+                .add_message_with_parent(message, Some(parent_id))
+        } else {
+            // Normal append: add to end of active path
+            self.session.add_message(message)
+        };
 
-    /// Get all messages in the session
-    pub fn messages(&self) -> &[Message] {
-        &self.session.messages
+        Ok(node_id)
     }
 
     /// Get the current context size (input tokens + cache reads from most recent assistant message)
@@ -229,6 +242,8 @@ impl SessionInstance {
             let incomplete_message = MessageData {
                 role: crate::ui::gpui::elements::MessageRole::Assistant,
                 fragments: buffered_fragments,
+                node_id: None,     // Streaming message doesn't have a node yet
+                branch_info: None, // No branch info for incomplete message
             };
             messages_data.push(incomplete_message);
         }
@@ -278,6 +293,17 @@ impl SessionInstance {
         &self,
         tool_syntax: crate::types::ToolSyntax,
     ) -> Result<Vec<MessageData>, anyhow::Error> {
+        self.convert_messages_to_ui_data_until(tool_syntax, None)
+    }
+
+    /// Convert session messages to UI MessageData format, stopping at a specific node
+    /// If `until_node_id` is Some, includes all messages up to and including that node.
+    /// If `until_node_id` is None, includes all messages (same as convert_messages_to_ui_data).
+    pub fn convert_messages_to_ui_data_until(
+        &self,
+        tool_syntax: crate::types::ToolSyntax,
+        until_node_id: Option<crate::persistence::NodeId>,
+    ) -> Result<Vec<MessageData>, anyhow::Error> {
         // Create dummy UI for stream processor
         struct DummyUI;
         #[async_trait::async_trait]
@@ -298,13 +324,8 @@ impl SessionInstance {
             fn should_streaming_continue(&self) -> bool {
                 true
             }
-            fn notify_rate_limit(&self, _seconds_remaining: u64) {
-                // No-op for dummy UI
-            }
-            fn clear_rate_limit(&self) {
-                // No-op for dummy UI
-            }
-
+            fn notify_rate_limit(&self, _seconds_remaining: u64) {}
+            fn clear_rate_limit(&self) {}
             fn as_any(&self) -> &dyn std::any::Any {
                 self
             }
@@ -315,12 +336,31 @@ impl SessionInstance {
 
         let mut messages_data = Vec::new();
 
-        trace!(
-            "preparing {} messages for event",
-            self.session.messages.len()
-        );
+        // Build message iterator from tree or legacy messages
+        let message_iter: Vec<(Option<crate::persistence::NodeId>, &llm::Message)> =
+            if !self.session.message_nodes.is_empty() {
+                // Use active path from tree, but stop at until_node_id
+                let mut iter = Vec::new();
+                for &node_id in &self.session.active_path {
+                    if let Some(node) = self.session.message_nodes.get(&node_id) {
+                        iter.push((Some(node_id), &node.message));
+                        // Stop after adding the until_node_id
+                        if until_node_id == Some(node_id) {
+                            break;
+                        }
+                    }
+                }
+                iter
+            } else {
+                // Fall back to legacy linear messages (no until_node_id support)
+                self.session
+                    .messages
+                    .iter()
+                    .map(|msg| (None, msg))
+                    .collect()
+            };
 
-        for message in &self.session.messages {
+        for (node_id, message) in message_iter {
             if message.is_compaction_summary {
                 let summary = match &message.content {
                     llm::MessageContent::Text(text) => text.trim().to_string(),
@@ -336,34 +376,29 @@ impl SessionInstance {
                         .trim()
                         .to_string(),
                 };
+
                 messages_data.push(MessageData {
                     role: MessageRole::User,
                     fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    node_id,
+                    branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
                 });
                 continue;
             }
-            // Filter out tool-result user messages (they have tool IDs in structured content)
+
+            // Filter out tool-result user messages
             if message.role == llm::MessageRole::User {
                 match &message.content {
-                    llm::MessageContent::Text(text) if text.trim().is_empty() => {
-                        // Skip empty user messages (legacy tool results in XML mode)
-                        continue;
-                    }
+                    llm::MessageContent::Text(text) if text.trim().is_empty() => continue,
                     llm::MessageContent::Structured(blocks) => {
-                        // Check if this is a tool-result message by looking for ToolResult blocks
                         let has_tool_results = blocks
                             .iter()
                             .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
-
                         if has_tool_results {
-                            // Skip tool-result user messages (they shouldn't be shown in UI)
                             continue;
                         }
-                        // Otherwise, this is a real structured user message, process it
                     }
-                    _ => {
-                        // This is a real user message, process it
-                    }
+                    _ => {}
                 }
             }
 
@@ -373,22 +408,24 @@ impl SessionInstance {
                         llm::MessageRole::User => MessageRole::User,
                         llm::MessageRole::Assistant => MessageRole::Assistant,
                     };
-                    messages_data.push(MessageData { role, fragments });
+                    messages_data.push(MessageData {
+                        role,
+                        fragments,
+                        node_id,
+                        branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
+                    });
                 }
                 Err(e) => {
                     error!("Failed to extract fragments from message: {}", e);
-                    // Continue with other messages even if one fails
                 }
             }
         }
-
-        trace!("prepared {} message data for event", messages_data.len());
 
         Ok(messages_data)
     }
 
     /// Convert tool executions to UI tool result data
-    fn convert_tool_executions_to_ui_data(
+    pub fn convert_tool_executions_to_ui_data(
         &self,
     ) -> Result<Vec<crate::ui::ui_events::ToolResultData>, anyhow::Error> {
         use crate::tools::core::ResourcesTracker;

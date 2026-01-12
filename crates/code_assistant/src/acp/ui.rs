@@ -556,6 +556,7 @@ impl UserInterface for ACPUserUI {
             UiEvent::DisplayUserInput {
                 content,
                 attachments,
+                node_id: _, // ACP doesn't use node_id for branching
             } => {
                 // Send user message content
                 self.send_session_update(acp::SessionUpdate::UserMessageChunk(
@@ -713,7 +714,12 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateCurrentModel { .. }
             | UiEvent::UpdateSandboxPolicy { .. }
             | UiEvent::CancelSubAgent { .. }
-            | UiEvent::HiddenToolCompleted => {
+            | UiEvent::HiddenToolCompleted
+            | UiEvent::StartMessageEdit { .. }
+            | UiEvent::SwitchBranch { .. }
+            | UiEvent::MessageEditReady { .. }
+            | UiEvent::BranchSwitched { .. }
+            | UiEvent::UpdateBranchInfo { .. } => {
                 // These are UI management events, not relevant for ACP
             }
             UiEvent::DisplayError { message } => {
@@ -1026,6 +1032,7 @@ mod tests {
         let send_future = ui.send_event(UiEvent::DisplayUserInput {
             content: "Hello".into(),
             attachments: vec![],
+            node_id: None,
         });
         let receive_future = async {
             let (notification, ack) = rx.recv().await.expect("session update");

@@ -1,3 +1,4 @@
+use crate::persistence::{BranchInfo, NodeId};
 use crate::ui::gpui::file_icons;
 use crate::ui::gpui::image;
 use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
@@ -82,6 +83,11 @@ pub struct MessageContainer {
     last_block_type_for_hidden_tool: Arc<Mutex<Option<HiddenToolBlockType>>>,
     /// Flag indicating a hidden tool completed and we may need a paragraph break
     needs_paragraph_break_after_hidden_tool: Arc<Mutex<bool>>,
+
+    /// Node ID for this message (for branching support)
+    node_id: Arc<Mutex<Option<NodeId>>>,
+    /// Branch info if this message is part of a branch point
+    branch_info: Arc<Mutex<Option<BranchInfo>>>,
 }
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -100,6 +106,8 @@ impl MessageContainer {
             current_project: Arc::new(Mutex::new(String::new())),
             last_block_type_for_hidden_tool: Arc::new(Mutex::new(None)),
             needs_paragraph_break_after_hidden_tool: Arc::new(Mutex::new(false)),
+            node_id: Arc::new(Mutex::new(None)),
+            branch_info: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -111,6 +119,26 @@ impl MessageContainer {
     /// Set the current project for parameter filtering
     pub fn set_current_project(&self, project: String) {
         *self.current_project.lock().unwrap() = project;
+    }
+
+    /// Set the node ID for this message (for branching support)
+    pub fn set_node_id(&self, node_id: Option<NodeId>) {
+        *self.node_id.lock().unwrap() = node_id;
+    }
+
+    /// Get the node ID for this message
+    pub fn node_id(&self) -> Option<NodeId> {
+        *self.node_id.lock().unwrap()
+    }
+
+    /// Set the branch info for this message
+    pub fn set_branch_info(&self, branch_info: Option<BranchInfo>) {
+        *self.branch_info.lock().unwrap() = branch_info;
+    }
+
+    /// Get the branch info for this message
+    pub fn branch_info(&self) -> Option<BranchInfo> {
+        self.branch_info.lock().unwrap().clone()
     }
 
     /// Mark that a hidden tool completed - paragraph break may be needed before next text

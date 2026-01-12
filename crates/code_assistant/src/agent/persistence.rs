@@ -137,7 +137,10 @@ impl AgentStatePersistence for FileStatePersistence {
         let SessionState {
             session_id,
             name,
-            messages,
+            message_nodes,
+            active_path,
+            next_node_id,
+            messages: _,
             tool_executions,
             plan,
             config,
@@ -152,7 +155,15 @@ impl AgentStatePersistence for FileStatePersistence {
 
         // Create a ChatSession with the current state
         let mut session = ChatSession::new_empty(session_id, name, config, model_config);
-        session.messages = messages;
+
+        // Store tree structure
+        session.message_nodes = message_nodes;
+        session.active_path = active_path;
+        session.next_node_id = next_node_id;
+
+        // Clear legacy messages (tree is authoritative)
+        session.messages.clear();
+
         session.tool_executions = serialized_executions;
         session.plan = plan;
         session.next_request_id = next_request_id.unwrap_or(0);

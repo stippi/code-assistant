@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod attachment;
 pub mod auto_scroll;
+pub mod branch_switcher;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
@@ -101,6 +102,17 @@ pub struct Gpui {
     current_model: Arc<Mutex<Option<String>>>,
     // Current sandbox selection
     current_sandbox_policy: Arc<Mutex<Option<SandboxPolicy>>>,
+
+    // Pending message edit state (for branching)
+    pending_edit: Arc<Mutex<Option<PendingEdit>>>,
+}
+
+/// State for a pending message edit (for branching)
+#[derive(Clone, Debug)]
+pub struct PendingEdit {
+    pub content: String,
+    pub attachments: Vec<crate::persistence::DraftAttachment>,
+    pub branch_parent_id: Option<crate::persistence::NodeId>,
 }
 
 fn init(cx: &mut App) {
@@ -303,6 +315,9 @@ impl Gpui {
             current_model: Arc::new(Mutex::new(None)),
             // Current sandbox selection
             current_sandbox_policy: Arc::new(Mutex::new(None)),
+
+            // Pending message edit state
+            pending_edit: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -471,10 +486,14 @@ impl Gpui {
             UiEvent::DisplayUserInput {
                 content,
                 attachments,
+                node_id,
             } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 let result = cx.new(|cx| {
                     let new_message = MessageContainer::with_role(MessageRole::User, cx);
+
+                    // Set node_id for edit button support
+                    new_message.set_node_id(node_id);
 
                     // Add text content if not empty
                     if !content.is_empty() {
@@ -618,9 +637,11 @@ impl Gpui {
 
                     warn!("Using initial project: '{}'", current_project);
 
-                    // Update MessagesView with current project
+                    // Update MessagesView with current project and session ID
+                    let session_id_for_messages = session_id.clone();
                     self.update_messages_view(cx, |messages_view, _cx| {
                         messages_view.set_current_project(current_project.clone());
+                        messages_view.set_current_session_id(Some(session_id_for_messages));
                     });
                 }
 
@@ -648,6 +669,8 @@ impl Gpui {
                         let mut queue = self.message_queue.lock().unwrap();
 
                         // Check if we can reuse the last container (same role)
+                        // Note: For user messages, we always create a new container to preserve
+                        // node_id and branch_info for each message
                         let needs_new_container = if let Some(last_container) = queue.last() {
                             let last_role = cx
                                 .update_entity(last_container, |container, _cx| {
@@ -658,6 +681,7 @@ impl Gpui {
                                     }
                                 })
                                 .expect("Failed to get container role");
+                            // User messages always get their own container (for branching)
                             last_role == MessageRole::User || last_role != message_data.role
                         } else {
                             true
@@ -666,12 +690,18 @@ impl Gpui {
                         if needs_new_container {
                             // Create new container for this role
                             let container = cx
-                                .new(|cx| MessageContainer::with_role(message_data.role, cx))
+                                .new(|cx| {
+                                    MessageContainer::with_role(message_data.role.clone(), cx)
+                                })
                                 .expect("Failed to create message container");
 
-                            // Set current project on the new container
+                            // Set current project, node_id, and branch_info on the new container
+                            let node_id = message_data.node_id;
+                            let branch_info = message_data.branch_info.clone();
                             self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
+                                container.set_node_id(node_id);
+                                container.set_branch_info(branch_info);
                             });
 
                             queue.push(container.clone());
@@ -804,16 +834,19 @@ impl Gpui {
                 queue.clear();
                 cx.refresh().expect("Failed to refresh windows");
             }
+
             UiEvent::SendUserMessage {
                 message,
                 session_id,
                 attachments,
+                branch_parent_id,
             } => {
                 debug!(
-                    "UI: SendUserMessage event for session {}: {} (with {} attachments)",
+                    "UI: SendUserMessage event for session {}: {} (with {} attachments, branch_parent: {:?})",
                     session_id,
                     message,
-                    attachments.len()
+                    attachments.len(),
+                    branch_parent_id
                 );
                 // Clear any existing error when user sends a new message
                 *self.current_error.lock().unwrap() = None;
@@ -823,6 +856,7 @@ impl Gpui {
                         session_id,
                         message,
                         attachments,
+                        branch_parent_id,
                     });
                 } else {
                     warn!("UI: No backend event sender available");
@@ -1020,6 +1054,7 @@ impl Gpui {
                     path.display()
                 );
             }
+
             UiEvent::CancelSubAgent { tool_id } => {
                 debug!("UI: CancelSubAgent event for tool_id: {}", tool_id);
                 // Forward to backend with current session ID
@@ -1033,6 +1068,234 @@ impl Gpui {
                 } else {
                     warn!("UI: CancelSubAgent requested but no active session");
                 }
+            }
+
+            // === Session Branching Events ===
+            UiEvent::StartMessageEdit {
+                session_id,
+                node_id,
+            } => {
+                debug!(
+                    "UI: StartMessageEdit event for session {} node {}",
+                    session_id, node_id
+                );
+                // Forward to backend to get message content
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::StartMessageEdit {
+                        session_id,
+                        node_id,
+                    });
+                }
+            }
+            UiEvent::SwitchBranch {
+                session_id,
+                new_node_id,
+            } => {
+                debug!(
+                    "UI: SwitchBranch event for session {} to node {}",
+                    session_id, new_node_id
+                );
+                // Forward to backend to perform branch switch
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::SwitchBranch {
+                        session_id,
+                        new_node_id,
+                    });
+                }
+            }
+
+            UiEvent::MessageEditReady {
+                content,
+                attachments,
+                branch_parent_id,
+                messages,
+                tool_results,
+            } => {
+                debug!(
+                    "UI: MessageEditReady event - content len: {}, attachments: {}, parent: {:?}, {} messages",
+                    content.len(),
+                    attachments.len(),
+                    branch_parent_id,
+                    messages.len()
+                );
+
+                // Get current session_id without holding lock during SetMessages processing
+                let session_id = self.current_session_id.lock().unwrap().clone();
+
+                // Get current project for new containers
+                let current_project = if let Some(ref session_id) = session_id {
+                    let sessions = self.chat_sessions.lock().unwrap();
+                    sessions
+                        .iter()
+                        .find(|s| s.id == *session_id)
+                        .map(|s| s.initial_project.clone())
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
+                // Clear existing messages and rebuild with truncated set
+                // (Inline version of SetMessages logic to avoid recursive call)
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+
+                // Update MessagesView with current project and session ID
+                if let Some(ref session_id) = session_id {
+                    let session_id_for_messages = session_id.clone();
+                    self.update_messages_view(cx, |messages_view, _cx| {
+                        messages_view.set_current_project(current_project.clone());
+                        messages_view.set_current_session_id(Some(session_id_for_messages));
+                    });
+                }
+
+                // Process message data
+                for message_data in messages {
+                    let current_container = {
+                        let mut queue = self.message_queue.lock().unwrap();
+
+                        let needs_new_container = if let Some(last_container) = queue.last() {
+                            let last_role = cx
+                                .update_entity(last_container, |container, _cx| {
+                                    if container.is_user_message() {
+                                        MessageRole::User
+                                    } else {
+                                        MessageRole::Assistant
+                                    }
+                                })
+                                .expect("Failed to get container role");
+                            last_role == MessageRole::User || last_role != message_data.role
+                        } else {
+                            true
+                        };
+
+                        if needs_new_container {
+                            let container = cx
+                                .new(|cx| {
+                                    MessageContainer::with_role(message_data.role.clone(), cx)
+                                })
+                                .expect("Failed to create message container");
+
+                            let node_id = message_data.node_id;
+                            let branch_info = message_data.branch_info.clone();
+                            self.update_container(&container, cx, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                                container.set_node_id(node_id);
+                                container.set_branch_info(branch_info);
+                            });
+
+                            queue.push(container.clone());
+                            container
+                        } else {
+                            let container = queue.last().unwrap().clone();
+                            self.update_container(&container, cx, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                            });
+                            container
+                        }
+                    };
+
+                    self.process_fragments_for_container(
+                        &current_container,
+                        message_data.fragments,
+                        cx,
+                    );
+                }
+
+                // Apply tool results
+                for tool_result in tool_results {
+                    self.update_all_messages(cx, |message_container, cx| {
+                        message_container.update_tool_status(
+                            &tool_result.tool_id,
+                            tool_result.status,
+                            tool_result.message.clone(),
+                            tool_result.output.clone(),
+                            cx,
+                        );
+                    });
+                }
+
+                // Ensure we end with an Assistant container for the edit response
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    let needs_assistant_container = if let Some(last) = queue.last() {
+                        cx.update_entity(last, |message, _cx| message.is_user_message())
+                            .expect("Failed to check container role")
+                    } else {
+                        true
+                    };
+
+                    if needs_assistant_container {
+                        let assistant_container = cx
+                            .new(|cx| MessageContainer::with_role(MessageRole::Assistant, cx))
+                            .expect("Failed to create assistant container");
+                        queue.push(assistant_container);
+                    }
+                }
+
+                // Store pending edit state for RootView to pick up on refresh
+                self.set_pending_edit(PendingEdit {
+                    content,
+                    attachments,
+                    branch_parent_id,
+                });
+
+                // Refresh UI to trigger RootView to process the pending edit
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::BranchSwitched {
+                session_id,
+                messages,
+                tool_results,
+                plan,
+            } => {
+                debug!(
+                    "UI: BranchSwitched event for session {} with {} messages",
+                    session_id,
+                    messages.len()
+                );
+                // TODO Phase 4: Update messages display with new branch content
+                // For now, we can reuse the SetMessages logic
+                self.process_ui_event_async(
+                    UiEvent::SetMessages {
+                        messages,
+                        session_id: Some(session_id),
+                        tool_results,
+                    },
+                    cx,
+                );
+                self.process_ui_event_async(UiEvent::UpdatePlan { plan }, cx);
+            }
+
+            UiEvent::UpdateBranchInfo {
+                node_id,
+                branch_info,
+            } => {
+                debug!(
+                    "UI: UpdateBranchInfo for node {} with {} siblings",
+                    node_id,
+                    branch_info.sibling_ids.len()
+                );
+
+                // Find the message container with this node_id and update its branch_info
+                let queue = self.message_queue.lock().unwrap();
+                for container in queue.iter() {
+                    let container_node_id = cx
+                        .update_entity(container, |c, _cx| c.node_id())
+                        .ok()
+                        .flatten();
+
+                    if container_node_id == Some(node_id) {
+                        let branch_info_clone = branch_info.clone();
+                        self.update_container(container, cx, |c, _cx| {
+                            c.set_branch_info(Some(branch_info_clone));
+                        });
+                        break;
+                    }
+                }
+
+                cx.refresh().expect("Failed to refresh windows");
             }
         }
     }
@@ -1176,6 +1439,16 @@ impl Gpui {
         self.current_sandbox_policy.lock().unwrap().clone()
     }
 
+    /// Get and clear pending edit (used by RootView to pick up edit state)
+    pub fn take_pending_edit(&self) -> Option<PendingEdit> {
+        self.pending_edit.lock().unwrap().take()
+    }
+
+    /// Set pending edit state
+    pub fn set_pending_edit(&self, edit: PendingEdit) {
+        *self.pending_edit.lock().unwrap() = Some(edit);
+    }
+
     // Extended draft management methods with attachments
     pub fn save_draft_for_session(
         &self,
@@ -1286,7 +1559,7 @@ impl Gpui {
     }
 
     // Handle backend responses
-    fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
+    fn handle_backend_response(&self, response: BackendResponse, cx: &mut AsyncApp) {
         match response {
             BackendResponse::SessionCreated { session_id } => {
                 debug!("Received BackendResponse::SessionCreated");
@@ -1378,6 +1651,7 @@ impl Gpui {
                     );
                 }
             }
+
             BackendResponse::SubAgentCancelled {
                 session_id,
                 tool_id,
@@ -1388,6 +1662,58 @@ impl Gpui {
                 );
                 // The sub-agent will update its own UI state via the normal tool output mechanism
                 // No additional UI update needed here
+            }
+
+            // Session branching responses
+            BackendResponse::MessageEditReady {
+                session_id,
+                content,
+                attachments,
+                branch_parent_id,
+                messages,
+                tool_results,
+            } => {
+                debug!(
+                    "Received BackendResponse::MessageEditReady for session {} with {} chars, {} attachments, {} messages",
+                    session_id,
+                    content.len(),
+                    attachments.len(),
+                    messages.len()
+                );
+
+                // Forward to UI as event
+                self.process_ui_event_async(
+                    UiEvent::MessageEditReady {
+                        content: content.clone(),
+                        attachments: attachments.clone(),
+                        branch_parent_id,
+                        messages: messages.clone(),
+                        tool_results: tool_results.clone(),
+                    },
+                    cx,
+                );
+            }
+            BackendResponse::BranchSwitched {
+                session_id,
+                messages,
+                tool_results,
+                plan,
+            } => {
+                debug!(
+                    "Received BackendResponse::BranchSwitched for session {} with {} messages",
+                    session_id,
+                    messages.len()
+                );
+                // Forward to UI as event
+                self.process_ui_event_async(
+                    UiEvent::BranchSwitched {
+                        session_id: session_id.clone(),
+                        messages: messages.clone(),
+                        tool_results: tool_results.clone(),
+                        plan: plan.clone(),
+                    },
+                    cx,
+                );
             }
         }
     }

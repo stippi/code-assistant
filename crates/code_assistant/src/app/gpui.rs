@@ -104,6 +104,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                         .start_agent_for_message(
                             &session_id,
                             vec![llm::ContentBlock::new_text(initial_task)],
+                            None, // Initial task is not a branch
                             llm_client,
                             project_manager,
                             command_executor,

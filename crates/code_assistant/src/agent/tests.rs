@@ -1977,16 +1977,12 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
     ])
     .with_request_id(1);
 
-    let session_state = SessionState {
-        session_id: "native-session".to_string(),
-        name: "Native Session".to_string(),
-        messages: vec![user_message, assistant_message],
-        tool_executions: Vec::new(),
-        plan: PlanState::default(),
-        config: session_config.clone(),
-        next_request_id: Some(2),
-        model_config: None,
-    };
+    let session_state = SessionState::from_messages(
+        "native-session",
+        "Native Session",
+        vec![user_message, assistant_message],
+        session_config.clone(),
+    );
 
     agent.load_from_session_state(session_state).await?;
 
@@ -2033,20 +2029,16 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
     .with_request_id(1);
     let followup_user_message = Message::new_user("Also check the contributing guide.");
 
-    let session_state = SessionState {
-        session_id: "native-session".to_string(),
-        name: "Native Session".to_string(),
-        messages: vec![
+    let session_state = SessionState::from_messages(
+        "native-session",
+        "Native Session",
+        vec![
             user_message.clone(),
             assistant_message,
             followup_user_message.clone(),
         ],
-        tool_executions: Vec::new(),
-        plan: PlanState::default(),
-        config: session_config.clone(),
-        next_request_id: Some(3),
-        model_config: None,
-    };
+        session_config.clone(),
+    );
 
     agent.load_from_session_state(session_state).await?;
 
@@ -2099,16 +2091,12 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
         Message::new_assistant_content(vec![ContentBlock::new_text(assistant_text)])
             .with_request_id(1);
 
-    let session_state = SessionState {
-        session_id: "xml-session".to_string(),
-        name: "XML Session".to_string(),
-        messages: vec![user_message, assistant_message],
-        tool_executions: Vec::new(),
-        plan: PlanState::default(),
-        config: session_config.clone(),
-        next_request_id: Some(2),
-        model_config: None,
-    };
+    let session_state = SessionState::from_messages(
+        "xml-session",
+        "XML Session",
+        vec![user_message, assistant_message],
+        session_config.clone(),
+    );
 
     agent.load_from_session_state(session_state).await?;
 
@@ -2143,16 +2131,12 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
     let user_message = Message::new_user("Summarize the repo.");
     let assistant_message = Message::new_assistant("Here is a summary of the repository.");
 
-    let session_state = SessionState {
-        session_id: "text-session".to_string(),
-        name: "Regular Session".to_string(),
-        messages: vec![user_message.clone(), assistant_message.clone()],
-        tool_executions: Vec::new(),
-        plan: PlanState::default(),
-        config: session_config.clone(),
-        next_request_id: Some(3),
-        model_config: None,
-    };
+    let session_state = SessionState::from_messages(
+        "text-session",
+        "Regular Session",
+        vec![user_message.clone(), assistant_message.clone()],
+        session_config.clone(),
+    );
 
     agent.load_from_session_state(session_state).await?;
 

@@ -2,7 +2,7 @@ use super::attachment::{AttachmentEvent, AttachmentView};
 use super::file_icons;
 use super::model_selector::{ModelSelector, ModelSelectorEvent};
 use super::sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
-use crate::persistence::DraftAttachment;
+use crate::persistence::{DraftAttachment, NodeId};
 use base64::Engine;
 use gpui::{
     div, prelude::*, px, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
@@ -19,6 +19,8 @@ pub enum InputAreaEvent {
     MessageSubmitted {
         content: String,
         attachments: Vec<DraftAttachment>,
+        /// If set, this message creates a new branch from this parent node
+        branch_parent_id: Option<NodeId>,
     },
     /// Content changed (for draft saving)
     ContentChanged {
@@ -51,6 +53,11 @@ pub struct InputArea {
     // Agent state for button rendering
     agent_is_running: bool,
     cancel_enabled: bool,
+
+    // Branch editing state
+    /// When editing a message, this is the parent node ID where the new branch will be created
+    branch_parent_id: Option<NodeId>,
+
     // Subscriptions
     _input_subscription: Subscription,
     _model_selector_subscription: Subscription,
@@ -92,6 +99,9 @@ impl InputArea {
 
             agent_is_running: false,
             cancel_enabled: false,
+
+            branch_parent_id: None,
+
             _input_subscription: input_subscription,
             _model_selector_subscription: model_selector_subscription,
             _sandbox_selector_subscription: sandbox_selector_subscription,
@@ -114,6 +124,25 @@ impl InputArea {
         // Update attachments
         self.attachments = attachments;
         self.rebuild_attachment_views(cx);
+    }
+
+    /// Set content for editing a message (creates a branch)
+    pub fn set_content_for_edit(
+        &mut self,
+        text: String,
+        attachments: Vec<DraftAttachment>,
+        branch_parent_id: Option<NodeId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_content(text, attachments, window, cx);
+        self.branch_parent_id = branch_parent_id;
+        cx.notify();
+    }
+
+    /// Clear the edit mode state
+    fn clear_edit_mode(&mut self) {
+        self.branch_parent_id = None;
     }
 
     /// Sync the dropdown with the current model selection
@@ -167,6 +196,9 @@ impl InputArea {
         // Clear attachments
         self.attachments.clear();
         self.attachment_views.clear();
+
+        // Clear edit mode
+        self.clear_edit_mode();
     }
 
     /// Get current content (text and attachments)
@@ -270,6 +302,7 @@ impl InputArea {
                 cx.emit(InputAreaEvent::FocusRequested);
             }
             InputEvent::Blur => {}
+
             InputEvent::PressEnter { secondary } => {
                 // Only send message on plain ENTER (not with modifiers)
                 if !secondary {
@@ -278,6 +311,9 @@ impl InputArea {
                     // Remove trailing newline if present (from ENTER key press)
                     let cleaned_text = current_text.trim_end_matches('\n').to_string();
 
+                    // Capture branch_parent_id before clearing
+                    let branch_parent_id = self.branch_parent_id;
+
                     // FIRST: Clear draft before doing anything else
                     cx.emit(InputAreaEvent::ClearDraftRequested);
 
@@ -285,6 +321,7 @@ impl InputArea {
                     cx.emit(InputAreaEvent::MessageSubmitted {
                         content: cleaned_text,
                         attachments: self.attachments.clone(),
+                        branch_parent_id,
                     });
 
                     // Clear the input and attachments
@@ -335,6 +372,9 @@ impl InputArea {
         let content = self.text_input.read(cx).value().to_string();
 
         if !content.trim().is_empty() || !self.attachments.is_empty() {
+            // Capture branch_parent_id before clearing
+            let branch_parent_id = self.branch_parent_id;
+
             // FIRST: Clear draft before doing anything else
             cx.emit(InputAreaEvent::ClearDraftRequested);
 
@@ -342,6 +382,7 @@ impl InputArea {
             cx.emit(InputAreaEvent::MessageSubmitted {
                 content: content.clone(),
                 attachments: self.attachments.clone(),
+                branch_parent_id,
             });
 
             // Clear the input and attachments

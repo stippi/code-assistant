@@ -222,13 +222,103 @@ impl SessionManager {
         Ok(ui_events)
     }
 
-    /// Start an agent for a session with a user message
+    /// Add a user message to a session and return the new node_id.
+    /// This is used to add the message before displaying it in the UI,
+    /// ensuring the node_id is available for the edit button.
+    pub fn add_user_message(
+        &mut self,
+        session_id: &str,
+        content_blocks: Vec<llm::ContentBlock>,
+        branch_parent_id: Option<crate::persistence::NodeId>,
+    ) -> Result<crate::persistence::NodeId> {
+        let session_instance = self
+            .active_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        // Make sure the session instance is not stale
+        session_instance.reload_from_persistence(&self.persistence)?;
+
+        // Add structured user message to session, optionally creating a branch
+        let node_id = session_instance
+            .add_message_with_branch(Message::new_user_content(content_blocks), branch_parent_id)?;
+
+        // Save the session state with the new message
+        self.persistence
+            .save_chat_session(&session_instance.session)?;
+
+        Ok(node_id)
+    }
+
+    /// Get branch info for all siblings of a given node.
+    /// Used after creating a new branch to update the UI for all sibling nodes.
+    pub fn get_sibling_branch_infos(
+        &self,
+        session_id: &str,
+        node_id: crate::persistence::NodeId,
+    ) -> Vec<(crate::persistence::NodeId, crate::persistence::BranchInfo)> {
+        let Some(session_instance) = self.active_sessions.get(session_id) else {
+            return Vec::new();
+        };
+
+        // Get the branch info for the new node (which contains all siblings)
+        let Some(branch_info) = session_instance.session.get_branch_info(node_id) else {
+            return Vec::new();
+        };
+
+        // Return branch info for each sibling (they all have the same siblings but different active_index)
+        branch_info
+            .sibling_ids
+            .iter()
+            .enumerate()
+            .map(|(idx, &sibling_id)| {
+                let sibling_branch_info = crate::persistence::BranchInfo {
+                    parent_node_id: branch_info.parent_node_id,
+                    sibling_ids: branch_info.sibling_ids.clone(),
+                    active_index: idx,
+                };
+                (sibling_id, sibling_branch_info)
+            })
+            .collect()
+    }
+
+    /// Start an agent for a session (message must already be added via add_user_message)
     /// This is the key method - agents run on-demand for specific messages
+    ///
+    /// Convenience method that adds a user message and starts the agent in one call.
+    /// This is for callers that don't need the node_id (e.g., ACP, initial task).
     #[allow(clippy::too_many_arguments)]
     pub async fn start_agent_for_message(
         &mut self,
         session_id: &str,
         content_blocks: Vec<llm::ContentBlock>,
+        branch_parent_id: Option<crate::persistence::NodeId>,
+        llm_provider: Box<dyn LLMProvider>,
+        project_manager: Box<dyn ProjectManager>,
+        command_executor: Box<dyn CommandExecutor>,
+        ui: Arc<dyn UserInterface>,
+        permission_handler: Option<Arc<dyn PermissionMediator>>,
+    ) -> Result<()> {
+        // Add the message first
+        self.add_user_message(session_id, content_blocks, branch_parent_id)?;
+
+        // Then start the agent
+        self.start_agent_for_session(
+            session_id,
+            llm_provider,
+            project_manager,
+            command_executor,
+            ui,
+            permission_handler,
+        )
+        .await
+    }
+
+    /// Start an agent for a session (message must already be added via add_user_message)
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_agent_for_session(
+        &mut self,
+        session_id: &str,
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
@@ -252,8 +342,7 @@ impl SessionManager {
             // Make sure the session instance is not stale
             session_instance.reload_from_persistence(&self.persistence)?;
 
-            // Add structured user message to session
-            session_instance.add_message(Message::new_user_content(content_blocks));
+            // Note: User message should already be added via add_user_message()
 
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
@@ -265,7 +354,10 @@ impl SessionManager {
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
                 name,
-                messages: session_instance.messages().to_vec(),
+                message_nodes: session_instance.session.message_nodes.clone(),
+                active_path: session_instance.session.active_path.clone(),
+                next_node_id: session_instance.session.next_node_id,
+                messages: session_instance.session.get_active_messages_cloned(),
                 tool_executions: session_instance
                     .session
                     .tool_executions
@@ -568,6 +660,17 @@ impl SessionManager {
         self.persistence.get_chat_session_metadata(session_id)
     }
 
+    /// Save the current state of an active session to persistence
+    pub fn save_session(&mut self, session_id: &str) -> Result<()> {
+        let session_instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
+        self.persistence
+            .save_chat_session(&session_instance.session)
+    }
+
     /// Save agent state to a specific session
     pub fn save_session_state(&mut self, state: SessionState) -> Result<()> {
         let mut session = self
@@ -577,7 +680,14 @@ impl SessionManager {
 
         // Update session with current state
         session.name = state.name;
-        session.messages = state.messages;
+
+        // Update tree structure
+        session.message_nodes = state.message_nodes;
+        session.active_path = state.active_path;
+        session.next_node_id = state.next_node_id;
+
+        // Clear legacy messages (tree is now authoritative)
+        session.messages.clear();
 
         session.tool_executions = state
             .tool_executions

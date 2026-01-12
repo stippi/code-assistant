@@ -170,9 +170,16 @@ impl RootView {
             InputAreaEvent::MessageSubmitted {
                 content,
                 attachments,
+                branch_parent_id,
             } => {
                 if let Some(session_id) = self.current_session_id.clone() {
-                    self.send_message(&session_id, content.clone(), attachments.clone(), cx);
+                    self.send_message(
+                        &session_id,
+                        content.clone(),
+                        attachments.clone(),
+                        *branch_parent_id,
+                        cx,
+                    );
                 }
             }
             InputAreaEvent::ContentChanged {
@@ -278,6 +285,7 @@ impl RootView {
         session_id: &str,
         content: String,
         attachments: Vec<crate::persistence::DraftAttachment>,
+        branch_parent_id: Option<crate::persistence::NodeId>,
         cx: &mut Context<Self>,
     ) {
         if content.trim().is_empty() && attachments.is_empty() {
@@ -299,6 +307,17 @@ impl RootView {
                 false
             };
 
+            // Log branch editing info
+            if branch_parent_id.is_some() {
+                tracing::info!(
+                    "RootView: Sending edited message (branch from {:?}) to session {}: {} (with {} attachments)",
+                    branch_parent_id,
+                    session_id,
+                    content,
+                    attachments.len()
+                );
+            }
+
             if agent_is_running {
                 // Queue the message for the running agent
                 tracing::info!(
@@ -315,18 +334,35 @@ impl RootView {
             } else {
                 // Send message normally (agent is idle)
                 tracing::info!(
-                    "RootView: Sending user message to session {}: {} (with {} attachments)",
+                    "RootView: Sending user message to session {}: {} (with {} attachments, branch_parent: {:?})",
                     session_id,
                     content,
-                    attachments.len()
+                    attachments.len(),
+                    branch_parent_id
                 );
                 let _ = sender.0.try_send(UiEvent::SendUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
                     attachments: attachments.clone(),
+                    branch_parent_id,
                 });
             }
         }
+    }
+
+    /// Handle message edit ready event - load content into input area
+    pub fn handle_message_edit_ready(
+        &mut self,
+        content: String,
+        attachments: Vec<crate::persistence::DraftAttachment>,
+        branch_parent_id: Option<crate::persistence::NodeId>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input_area.update(cx, |input_area, cx| {
+            input_area.set_content_for_edit(content, attachments, branch_parent_id, window, cx);
+        });
+        cx.notify();
     }
 
     fn save_draft_for_session(
@@ -650,6 +686,19 @@ impl Render for RootView {
                 self.handle_session_change(
                     previous_session_id,
                     current_session_id.clone(),
+                    window,
+                    cx,
+                );
+            }
+        }
+
+        // Check for pending edit (message editing for branching)
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            if let Some(pending_edit) = gpui.take_pending_edit() {
+                self.handle_message_edit_ready(
+                    pending_edit.content,
+                    pending_edit.attachments,
+                    pending_edit.branch_parent_id,
                     window,
                     cx,
                 );

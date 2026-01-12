@@ -171,9 +171,11 @@ impl UserInterface for TerminalTuiUI {
                     renderer_guard.clear_all_messages();
                 }
             }
+
             UiEvent::DisplayUserInput {
                 content,
                 attachments,
+                node_id: _, // Terminal UI doesn't support branching
             } => {
                 debug!("Displaying user input: {}", content);
 
