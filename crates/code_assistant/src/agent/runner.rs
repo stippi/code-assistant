@@ -380,6 +380,27 @@ impl Agent {
         Ok(())
     }
 
+    /// Save the current plan state as a snapshot on the last assistant message in the tree.
+    /// This is called after update_plan tool execution to enable correct plan reconstruction
+    /// when switching branches.
+    fn save_plan_snapshot_to_last_assistant_message(&mut self) {
+        // Find the last assistant message in the active path
+        for &node_id in self.active_path.iter().rev() {
+            if let Some(node) = self.message_nodes.get(&node_id) {
+                if node.message.role == llm::MessageRole::Assistant {
+                    // Found it - set the snapshot
+                    if let Some(node_mut) = self.message_nodes.get_mut(&node_id) {
+                        node_mut.plan_snapshot = Some(self.plan.clone());
+                        trace!("Saved plan snapshot to assistant message node {}", node_id);
+                    }
+                    return;
+                }
+            }
+        }
+        // No assistant message found - this shouldn't happen in normal flow
+        trace!("No assistant message found to save plan snapshot");
+    }
+
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
@@ -1796,6 +1817,12 @@ impl Agent {
 
                 // Store the execution record
                 self.tool_executions.push(tool_execution);
+
+                // If this was an update_plan tool, save plan snapshot to the last assistant message
+                // This enables correct plan reconstruction when switching branches
+                if tool_request.name == "update_plan" && success {
+                    self.save_plan_snapshot_to_last_assistant_message();
+                }
 
                 // Update message history if input was modified
                 if input_modified {

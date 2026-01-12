@@ -44,7 +44,6 @@ pub struct MessageNode {
 
 /// Information about a branch point in the conversation (for UI)
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Will be used by UI in Phase 4
 pub struct BranchInfo {
     /// Node ID where the branch occurs (the node that has multiple children)
     pub parent_node_id: Option<NodeId>,
@@ -54,14 +53,6 @@ pub struct BranchInfo {
 
     /// Index of the currently active sibling (0-based)
     pub active_index: usize,
-}
-
-impl BranchInfo {
-    /// Total number of branches at this point
-    #[allow(dead_code)] // Will be used by UI in Phase 4
-    pub fn total_branches(&self) -> usize {
-        self.sibling_ids.len()
-    }
 }
 
 /// Model configuration for a session
@@ -277,7 +268,6 @@ impl ChatSession {
     }
 
     /// Get all direct children of a node.
-    #[allow(dead_code)] // Will be used by UI in Phase 4
     pub fn get_children(&self, parent_id: Option<NodeId>) -> Vec<&MessageNode> {
         self.message_nodes
             .values()
@@ -286,22 +276,14 @@ impl ChatSession {
     }
 
     /// Get children sorted by creation time (oldest first).
-    #[allow(dead_code)] // Will be used by UI in Phase 4
     pub fn get_children_sorted(&self, parent_id: Option<NodeId>) -> Vec<&MessageNode> {
         let mut children = self.get_children(parent_id);
         children.sort_by_key(|n| n.created_at);
         children
     }
 
-    /// Check if a node has multiple children (is a branch point).
-    #[allow(dead_code)] // Will be used by UI in Phase 4
-    pub fn is_branch_point(&self, node_id: NodeId) -> bool {
-        self.get_children(Some(node_id)).len() > 1
-    }
-
     /// Get branch info for a specific node (if it's part of a branch).
     /// Returns None if the node has no siblings (no branching at this point).
-    #[allow(dead_code)] // Will be used by UI in Phase 4
     pub fn get_branch_info(&self, node_id: NodeId) -> Option<BranchInfo> {
         let node = self.message_nodes.get(&node_id)?;
         let siblings: Vec<NodeId> = self
@@ -323,18 +305,8 @@ impl ChatSession {
         })
     }
 
-    /// Get branch infos for all branch points in the active path.
-    #[allow(dead_code)] // Will be used by UI in Phase 4
-    pub fn get_all_branch_infos(&self) -> Vec<(NodeId, BranchInfo)> {
-        self.active_path
-            .iter()
-            .filter_map(|&node_id| self.get_branch_info(node_id).map(|info| (node_id, info)))
-            .collect()
-    }
-
     /// Find the plan state for the active path by walking backwards
     /// to find the most recent plan_snapshot.
-    #[allow(dead_code)] // Will be used by UI in Phase 4
     pub fn get_plan_for_active_path(&self) -> PlanState {
         for &node_id in self.active_path.iter().rev() {
             if let Some(node) = self.message_nodes.get(&node_id) {
@@ -353,7 +325,6 @@ impl ChatSession {
     /// Add a new message as a child of the last node in the active path.
     /// Updates active_path to include the new node.
     /// Returns the new node ID.
-    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
     pub fn add_message(&mut self, message: Message) -> NodeId {
         self.add_message_with_parent(message, self.active_path.last().copied())
     }
@@ -361,7 +332,6 @@ impl ChatSession {
     /// Add a new message as a child of a specific parent node.
     /// Updates active_path to follow this new branch.
     /// Returns the new node ID.
-    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
     pub fn add_message_with_parent(
         &mut self,
         message: Message,
@@ -400,27 +370,8 @@ impl ChatSession {
         node_id
     }
 
-    /// Add a message and store a plan snapshot with it.
-    #[allow(dead_code)] // Will be used by UI in Phase 4
-    pub fn add_message_with_plan(&mut self, message: Message, plan: PlanState) -> NodeId {
-        let node_id = self.add_message(message);
-        if let Some(node) = self.message_nodes.get_mut(&node_id) {
-            node.plan_snapshot = Some(plan);
-        }
-        node_id
-    }
-
-    /// Update the plan snapshot for an existing node.
-    #[allow(dead_code)] // Will be used by UI in Phase 4
-    pub fn set_plan_snapshot(&mut self, node_id: NodeId, plan: PlanState) {
-        if let Some(node) = self.message_nodes.get_mut(&node_id) {
-            node.plan_snapshot = Some(plan);
-        }
-    }
-
     /// Switch to a different branch by making a different sibling node active.
     /// Updates active_path to follow the new branch to its deepest descendant.
-    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
     pub fn switch_branch(&mut self, new_node_id: NodeId) -> Result<()> {
         let node = self
             .message_nodes
@@ -1377,7 +1328,6 @@ mod tests {
         let info_3 = session.get_branch_info(3).expect("should have branch info");
         assert_eq!(info_3.parent_node_id, Some(2));
         assert_eq!(info_3.sibling_ids.len(), 3);
-        assert_eq!(info_3.total_branches(), 3);
 
         let info_5 = session.get_branch_info(5).expect("should have branch info");
         assert_eq!(info_5.parent_node_id, Some(2));
