@@ -13,7 +13,7 @@ use crate::ui::ui_events::{MessageData, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
 use async_trait::async_trait;
 use sandbox::SandboxContext;
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 
 /// Represents the current activity state of a session
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -306,141 +306,7 @@ impl SessionInstance {
         &self,
         tool_syntax: crate::types::ToolSyntax,
     ) -> Result<Vec<MessageData>, anyhow::Error> {
-        // Create dummy UI for stream processor
-        struct DummyUI;
-        #[async_trait::async_trait]
-        impl crate::ui::UserInterface for DummyUI {
-            async fn send_event(
-                &self,
-                _event: crate::ui::UiEvent,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-
-            fn display_fragment(
-                &self,
-                _fragment: &crate::ui::DisplayFragment,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            fn should_streaming_continue(&self) -> bool {
-                true
-            }
-            fn notify_rate_limit(&self, _seconds_remaining: u64) {
-                // No-op for dummy UI
-            }
-            fn clear_rate_limit(&self) {
-                // No-op for dummy UI
-            }
-
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-        }
-
-        let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
-        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
-
-        let mut messages_data = Vec::new();
-
-        // Use tree structure if available, otherwise fall back to legacy messages
-        let message_iter: Vec<(Option<crate::persistence::NodeId>, &llm::Message)> =
-            if !self.session.message_nodes.is_empty() {
-                // Use active path from tree
-                self.session
-                    .active_path
-                    .iter()
-                    .filter_map(|&node_id| {
-                        self.session
-                            .message_nodes
-                            .get(&node_id)
-                            .map(|node| (Some(node_id), &node.message))
-                    })
-                    .collect()
-            } else {
-                // Fall back to legacy linear messages
-                self.session
-                    .messages
-                    .iter()
-                    .map(|msg| (None, msg))
-                    .collect()
-            };
-
-        trace!("preparing {} messages for event", message_iter.len());
-
-        for (node_id, message) in message_iter {
-            if message.is_compaction_summary {
-                let summary = match &message.content {
-                    llm::MessageContent::Text(text) => text.trim().to_string(),
-                    llm::MessageContent::Structured(blocks) => blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_string(),
-                };
-
-                messages_data.push(MessageData {
-                    role: MessageRole::User,
-                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
-                    node_id,
-                    branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
-                });
-                continue;
-            }
-            // Filter out tool-result user messages (they have tool IDs in structured content)
-            if message.role == llm::MessageRole::User {
-                match &message.content {
-                    llm::MessageContent::Text(text) if text.trim().is_empty() => {
-                        // Skip empty user messages (legacy tool results in XML mode)
-                        continue;
-                    }
-                    llm::MessageContent::Structured(blocks) => {
-                        // Check if this is a tool-result message by looking for ToolResult blocks
-                        let has_tool_results = blocks
-                            .iter()
-                            .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
-
-                        if has_tool_results {
-                            // Skip tool-result user messages (they shouldn't be shown in UI)
-                            continue;
-                        }
-                        // Otherwise, this is a real structured user message, process it
-                    }
-                    _ => {
-                        // This is a real user message, process it
-                    }
-                }
-            }
-
-            match processor.extract_fragments_from_message(message) {
-                Ok(fragments) => {
-                    let role = match message.role {
-                        llm::MessageRole::User => MessageRole::User,
-                        llm::MessageRole::Assistant => MessageRole::Assistant,
-                    };
-                    messages_data.push(MessageData {
-                        role,
-                        fragments,
-                        node_id,
-                        branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
-                    });
-                }
-                Err(e) => {
-                    error!("Failed to extract fragments from message: {}", e);
-                    // Continue with other messages even if one fails
-                }
-            }
-        }
-
-        trace!("prepared {} message data for event", messages_data.len());
-
-        Ok(messages_data)
+        self.convert_messages_to_ui_data_until(tool_syntax, None)
     }
 
     /// Convert session messages to UI MessageData format, stopping at a specific node
