@@ -623,6 +623,7 @@ impl Agent {
    - `MessageEditReady` loads content into InputArea via `PendingEdit` state
    - `BranchSwitched` updates messages display
 
+
 ### Phase 5: Testing & Polish 🔄 PENDING
 
 1. **Integrationstests**
@@ -641,7 +642,7 @@ impl Agent {
    - Tiefe Verschachtelung
 
 4. **Additional Work Needed**
-   - Backend support for creating new branches from edited messages (when `branch_parent_id` is set)
+   - ~~Backend support for creating new branches from edited messages (when `branch_parent_id` is set)~~ ✅ DONE
    - Terminal UI support for branching (currently ignores branch events)
 
 ## Datei-Änderungen Übersicht

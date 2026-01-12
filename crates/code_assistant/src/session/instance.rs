@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 
 // Agent instances are created on-demand, no need to import
 use crate::agent::SubAgentCancellationRegistry;
-use crate::persistence::{ChatMetadata, ChatSession};
+use crate::persistence::{ChatMetadata, ChatSession, NodeId};
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, UiEvent};
@@ -123,10 +123,35 @@ impl SessionInstance {
         }
     }
 
-    /// Add a message to the session
+    /// Add a message to the session (appends to active path)
+    #[allow(dead_code)] // Kept for backward compatibility / internal use
     pub fn add_message(&mut self, message: Message) {
-        self.session.messages.push(message);
-        self.session.updated_at = std::time::SystemTime::now();
+        // Use the tree-based method which handles active_path correctly
+        self.session.add_message(message);
+    }
+
+    /// Add a message with optional branching support.
+    /// If `branch_parent_id` is Some, creates a new branch from that parent.
+    /// If `branch_parent_id` is None, appends to the end of the active path.
+    pub fn add_message_with_branch(
+        &mut self,
+        message: Message,
+        branch_parent_id: Option<NodeId>,
+    ) -> Result<NodeId> {
+        let node_id = if let Some(parent_id) = branch_parent_id {
+            // Branching: create new message as child of specified parent
+            debug!(
+                "Creating new branch from parent {} in session {}",
+                parent_id, self.session.id
+            );
+            self.session
+                .add_message_with_parent(message, Some(parent_id))
+        } else {
+            // Normal append: add to end of active path
+            self.session.add_message(message)
+        };
+
+        Ok(node_id)
     }
 
     /// Get all messages in the session (linearized from active path)
@@ -414,6 +439,134 @@ impl SessionInstance {
         }
 
         trace!("prepared {} message data for event", messages_data.len());
+
+        Ok(messages_data)
+    }
+
+    /// Convert session messages to UI MessageData format, stopping at a specific node
+    /// If `until_node_id` is Some, includes all messages up to and including that node.
+    /// If `until_node_id` is None, includes all messages (same as convert_messages_to_ui_data).
+    pub fn convert_messages_to_ui_data_until(
+        &self,
+        tool_syntax: crate::types::ToolSyntax,
+        until_node_id: Option<crate::persistence::NodeId>,
+    ) -> Result<Vec<MessageData>, anyhow::Error> {
+        // Create dummy UI for stream processor
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn send_event(
+                &self,
+                _event: crate::ui::UiEvent,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+
+            fn display_fragment(
+                &self,
+                _fragment: &crate::ui::DisplayFragment,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn should_streaming_continue(&self) -> bool {
+                true
+            }
+            fn notify_rate_limit(&self, _seconds_remaining: u64) {}
+            fn clear_rate_limit(&self) {}
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
+
+        let mut messages_data = Vec::new();
+
+        // Build message iterator from tree or legacy messages
+        let message_iter: Vec<(Option<crate::persistence::NodeId>, &llm::Message)> =
+            if !self.session.message_nodes.is_empty() {
+                // Use active path from tree, but stop at until_node_id
+                let mut iter = Vec::new();
+                for &node_id in &self.session.active_path {
+                    if let Some(node) = self.session.message_nodes.get(&node_id) {
+                        iter.push((Some(node_id), &node.message));
+                        // Stop after adding the until_node_id
+                        if until_node_id == Some(node_id) {
+                            break;
+                        }
+                    }
+                }
+                iter
+            } else {
+                // Fall back to legacy linear messages (no until_node_id support)
+                self.session
+                    .messages
+                    .iter()
+                    .map(|msg| (None, msg))
+                    .collect()
+            };
+
+        for (node_id, message) in message_iter {
+            if message.is_compaction_summary {
+                let summary = match &message.content {
+                    llm::MessageContent::Text(text) => text.trim().to_string(),
+                    llm::MessageContent::Structured(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string(),
+                };
+
+                messages_data.push(MessageData {
+                    role: MessageRole::User,
+                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    node_id,
+                    branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
+                });
+                continue;
+            }
+
+            // Filter out tool-result user messages
+            if message.role == llm::MessageRole::User {
+                match &message.content {
+                    llm::MessageContent::Text(text) if text.trim().is_empty() => continue,
+                    llm::MessageContent::Structured(blocks) => {
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
+                        if has_tool_results {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    messages_data.push(MessageData {
+                        role,
+                        fragments,
+                        node_id,
+                        branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to extract fragments from message: {}", e);
+                }
+            }
+        }
 
         Ok(messages_data)
     }

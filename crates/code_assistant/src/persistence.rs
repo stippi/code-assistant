@@ -380,10 +380,15 @@ impl ChatSession {
 
         self.message_nodes.insert(node_id, node);
 
-        // Update active_path: truncate to parent and add new node
+        // Update active_path: build path to parent and add new node
         if let Some(parent) = parent_id {
             if let Some(parent_pos) = self.active_path.iter().position(|&id| id == parent) {
+                // Parent is in current active path - just truncate
                 self.active_path.truncate(parent_pos + 1);
+            } else {
+                // Parent is NOT in current active path (we're branching from a different branch)
+                // Rebuild the path from root to parent
+                self.active_path = self.build_path_to_node(parent);
             }
         } else {
             // No parent means this is a root node
@@ -1485,5 +1490,49 @@ mod tests {
 
         session.switch_branch(5).unwrap();
         assert_eq!(session.active_path, vec![1, 2, 5]);
+    }
+
+    #[test]
+    fn test_branch_from_different_branch() {
+        // This tests the scenario where we create a branch while on a different branch
+        // i.e., the parent_id is NOT in the current active_path
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        // Create initial conversation on main branch
+        session.add_message(Message::new_user("User 1")); // node 1
+        session.add_message(Message::new_assistant("Asst 1")); // node 2
+        session.add_message(Message::new_user("User 2")); // node 3
+        session.add_message(Message::new_assistant("Asst 2")); // node 4
+
+        // active_path: [1, 2, 3, 4]
+        assert_eq!(session.active_path, vec![1, 2, 3, 4]);
+
+        // Create branch 2 from node 2 (alternative User 2)
+        session.add_message_with_parent(Message::new_user("User 2 alt"), Some(2)); // node 5
+        session.add_message(Message::new_assistant("Asst 2 alt")); // node 6
+
+        // active_path: [1, 2, 5, 6] (we're now on branch 2)
+        assert_eq!(session.active_path, vec![1, 2, 5, 6]);
+
+        // Now while on branch 2, create a new branch from node 4 (which is on branch 1)
+        // This should properly switch to branch 1's path and then add the new node
+        let new_node =
+            session.add_message_with_parent(Message::new_user("User 3 on branch 1"), Some(4)); // node 7
+
+        assert_eq!(new_node, 7);
+        // active_path should be: [1, 2, 3, 4, 7] - NOT [1, 2, 5, 6, 7]
+        assert_eq!(session.active_path, vec![1, 2, 3, 4, 7]);
+
+        // Verify parent relationship
+        assert_eq!(session.message_nodes.get(&7).unwrap().parent_id, Some(4));
+
+        // Verify we can still switch back to branch 2
+        session.switch_branch(6).unwrap();
+        assert_eq!(session.active_path, vec![1, 2, 5, 6]);
     }
 }

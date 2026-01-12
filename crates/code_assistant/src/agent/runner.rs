@@ -394,6 +394,7 @@ impl Agent {
                     .send_event(UiEvent::DisplayUserInput {
                         content: pending_message,
                         attachments: Vec::new(),
+                        node_id: None, // Pending messages don't have node_id yet
                     })
                     .await?;
             }
@@ -996,6 +997,7 @@ impl Agent {
             .send_event(UiEvent::DisplayUserInput {
                 content: task.clone(),
                 attachments: Vec::new(),
+                node_id: None, // Initial task message
             })
             .await?;
 

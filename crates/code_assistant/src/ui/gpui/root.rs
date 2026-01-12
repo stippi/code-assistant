@@ -333,19 +333,18 @@ impl RootView {
                 });
             } else {
                 // Send message normally (agent is idle)
-                // TODO: When branch_parent_id is set, we need to create a new branch
-                // For now, we send as a regular message - full branching requires
-                // additional backend support to create the branch
                 tracing::info!(
-                    "RootView: Sending user message to session {}: {} (with {} attachments)",
+                    "RootView: Sending user message to session {}: {} (with {} attachments, branch_parent: {:?})",
                     session_id,
                     content,
-                    attachments.len()
+                    attachments.len(),
+                    branch_parent_id
                 );
                 let _ = sender.0.try_send(UiEvent::SendUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
                     attachments: attachments.clone(),
+                    branch_parent_id,
                 });
             }
         }

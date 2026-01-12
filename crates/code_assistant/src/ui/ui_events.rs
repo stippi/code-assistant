@@ -35,6 +35,8 @@ pub enum UiEvent {
     DisplayUserInput {
         content: String,
         attachments: Vec<DraftAttachment>,
+        /// Node ID for this message (for edit button support)
+        node_id: Option<NodeId>,
     },
     /// Display a system-generated compaction divider message
     DisplayCompactionSummary { summary: String },
@@ -94,6 +96,8 @@ pub enum UiEvent {
         message: String,
         session_id: String,
         attachments: Vec<DraftAttachment>,
+        /// If set, creates a new branch from this parent node instead of appending to active path
+        branch_parent_id: Option<NodeId>,
     },
     /// Update metadata for a single session without refreshing the entire list
     UpdateSessionMetadata { metadata: ChatMetadata },
@@ -159,6 +163,10 @@ pub enum UiEvent {
         attachments: Vec<DraftAttachment>,
         /// The parent node ID where the new branch will be created
         branch_parent_id: Option<NodeId>,
+        /// Messages up to (but not including) the message being edited
+        messages: Vec<MessageData>,
+        /// Tool results for the truncated path
+        tool_results: Vec<ToolResultData>,
     },
 
     /// Response: Branch switch completed, new messages to display
@@ -171,6 +179,15 @@ pub enum UiEvent {
         tool_results: Vec<ToolResultData>,
         /// Updated plan for the new path
         plan: PlanState,
+    },
+
+    /// Update the branch info for a specific message node
+    /// Used when a new branch is created to update the UI for the parent message
+    UpdateBranchInfo {
+        /// The node ID whose branch info should be updated
+        node_id: NodeId,
+        /// The updated branch info (siblings at this branch point)
+        branch_info: BranchInfo,
     },
 
     // === Resource Events (for tool operations) ===

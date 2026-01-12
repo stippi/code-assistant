@@ -33,6 +33,8 @@ pub enum BackendEvent {
         session_id: String,
         message: String,
         attachments: Vec<DraftAttachment>,
+        /// If set, creates a new branch from this parent node instead of appending to active path
+        branch_parent_id: Option<crate::persistence::NodeId>,
     },
     QueueUserMessage {
         session_id: String,
@@ -116,6 +118,9 @@ pub enum BackendResponse {
         content: String,
         attachments: Vec<DraftAttachment>,
         branch_parent_id: Option<crate::persistence::NodeId>,
+        /// Messages up to (but not including) the message being edited
+        messages: Vec<crate::ui::ui_events::MessageData>,
+        tool_results: Vec<crate::ui::ui_events::ToolResultData>,
     },
     BranchSwitched {
         session_id: String,
@@ -163,12 +168,14 @@ pub async fn handle_backend_events(
                 session_id,
                 message,
                 attachments,
+                branch_parent_id,
             } => {
                 handle_send_user_message(
                     &multi_session_manager,
                     &session_id,
                     &message,
                     &attachments,
+                    branch_parent_id,
                     runtime_options.as_ref(),
                     &ui,
                 )
@@ -341,31 +348,69 @@ async fn handle_send_user_message(
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
+    branch_parent_id: Option<crate::persistence::NodeId>,
     runtime_options: &BackendRuntimeOptions,
     ui: &Arc<dyn UserInterface>,
 ) -> Option<BackendResponse> {
     debug!(
-        "User message for session {}: {} (with {} attachments)",
+        "User message for session {}: {} (with {} attachments, branch_parent: {:?})",
         session_id,
         message,
-        attachments.len()
+        attachments.len(),
+        branch_parent_id
     );
 
     // Convert DraftAttachments to ContentBlocks
     let content_blocks = content_blocks_from(message, attachments);
 
-    // Display the user message with attachments in the UI
+    // First, add the user message to the session and get the new node_id
+    let (new_node_id, branch_info_updates) = {
+        let mut manager = multi_session_manager.lock().await;
+        match manager.add_user_message(session_id, content_blocks.clone(), branch_parent_id) {
+            Ok(node_id) => {
+                // If we created a branch, get branch info updates for all siblings
+                let updates = if branch_parent_id.is_some() {
+                    manager.get_sibling_branch_infos(session_id, node_id)
+                } else {
+                    Vec::new()
+                };
+                (Some(node_id), updates)
+            }
+            Err(e) => {
+                error!("Failed to add user message to session: {}", e);
+                return Some(BackendResponse::Error {
+                    message: format!("Failed to add user message: {e}"),
+                });
+            }
+        }
+    };
+
+    // Now display the user message with the correct node_id
     if let Err(e) = ui
         .send_event(crate::ui::UiEvent::DisplayUserInput {
             content: message.to_string(),
             attachments: attachments.to_vec(),
+            node_id: new_node_id,
         })
         .await
     {
         error!("Failed to display user message with attachments: {}", e);
     }
 
-    // Start the agent with structured content
+    // Send branch info updates for all siblings (so they show the branch switcher)
+    for (sibling_node_id, branch_info) in branch_info_updates {
+        if let Err(e) = ui
+            .send_event(crate::ui::UiEvent::UpdateBranchInfo {
+                node_id: sibling_node_id,
+                branch_info,
+            })
+            .await
+        {
+            error!("Failed to send branch info update: {}", e);
+        }
+    }
+
+    // Start the agent (message already added)
     let result = {
         let project_manager = Box::new(DefaultProjectManager::new());
         let command_executor = Box::new(DefaultCommandExecutor);
@@ -405,10 +450,10 @@ async fn handle_send_user_message(
                     );
                     Err(e)
                 } else {
+                    // Message already added via add_user_message above
                     manager
-                        .start_agent_for_message(
+                        .start_agent_for_session(
                             session_id,
-                            content_blocks,
                             client,
                             project_manager,
                             command_executor,
@@ -704,7 +749,25 @@ async fn handle_start_message_edit(
                 // The branch parent is the parent of the node being edited
                 let branch_parent_id = node.parent_id;
 
-                Ok((content, attachments, branch_parent_id))
+                // Generate truncated messages (up to but not including the message being edited)
+                let messages = session_instance
+                    .convert_messages_to_ui_data_until(
+                        session_instance.session.config.tool_syntax,
+                        branch_parent_id,
+                    )
+                    .unwrap_or_default();
+
+                let tool_results = session_instance
+                    .convert_tool_executions_to_ui_data()
+                    .unwrap_or_default();
+
+                Ok((
+                    content,
+                    attachments,
+                    branch_parent_id,
+                    messages,
+                    tool_results,
+                ))
             } else {
                 Err(anyhow::anyhow!("Message node {} not found", node_id))
             }
@@ -714,12 +777,16 @@ async fn handle_start_message_edit(
     };
 
     match result {
-        Ok((content, attachments, branch_parent_id)) => BackendResponse::MessageEditReady {
-            session_id: session_id.to_string(),
-            content,
-            attachments,
-            branch_parent_id,
-        },
+        Ok((content, attachments, branch_parent_id, messages, tool_results)) => {
+            BackendResponse::MessageEditReady {
+                session_id: session_id.to_string(),
+                content,
+                attachments,
+                branch_parent_id,
+                messages,
+                tool_results,
+            }
+        }
         Err(e) => {
             error!("Failed to start message edit: {}", e);
             BackendResponse::Error {
@@ -754,6 +821,19 @@ async fn handle_switch_branch(
             message: format!("Failed to switch branch: {e}"),
         };
     }
+
+    // Persist the updated active_path
+    if let Err(e) = manager.save_session(session_id) {
+        error!("Failed to save session after branch switch: {}", e);
+        // Continue anyway - the switch worked in memory
+    }
+
+    // Re-get session reference after save (borrow checker)
+    let Some(session_instance) = manager.get_session(session_id) else {
+        return BackendResponse::Error {
+            message: format!("Session {} not found after save", session_id),
+        };
+    };
 
     // Generate new messages for UI
     let messages_data = match session_instance

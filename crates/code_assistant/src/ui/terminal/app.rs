@@ -137,6 +137,7 @@ async fn event_loop(
                                             session_id,
                                             message,
                                             attachments: Vec::new(),
+                                            branch_parent_id: None, // Terminal UI doesn't support branching yet
                                         }
                                     }
                                     _ => BackendEvent::QueueUserMessage {
@@ -513,6 +514,7 @@ impl TerminalTuiApp {
                 session_id: session_id.clone(),
                 message: task.clone(),
                 attachments: Vec::new(),
+                branch_parent_id: None,
             });
         }
 
