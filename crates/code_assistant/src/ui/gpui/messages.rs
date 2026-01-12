@@ -242,13 +242,13 @@ impl Render for MessagesView {
 
                 // Add branch switcher if branch_info is present (only for user messages)
                 if is_user_message {
-                    if let (Some(branch_info), Some(node_id), Some(session_id)) =
-                        (branch_info, node_id, current_session_id.clone())
+                    if let (Some(branch_info), Some(session_id)) =
+                        (branch_info, current_session_id.clone())
                     {
                         // Only show if there are multiple siblings (actual branches)
                         if branch_info.sibling_ids.len() > 1 {
                             return message_container
-                                .child(BranchSwitcherElement::new(branch_info, session_id, node_id))
+                                .child(BranchSwitcherElement::new(branch_info, session_id))
                                 .into_any_element();
                         }
                     }
