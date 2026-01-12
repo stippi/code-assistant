@@ -420,7 +420,6 @@ impl InputArea {
         let text_input_handle = self.text_input.read(cx).focus_handle(cx);
         let is_focused = text_input_handle.is_focused(window);
         let has_input_content = !self.text_input.read(cx).value().trim().is_empty();
-        let is_editing = self.branch_parent_id.is_some();
 
         div()
             .id("input-area")
@@ -429,7 +428,7 @@ impl InputArea {
             .flex_col() // Column to accommodate attachments area
             .gap_0()
             // Edit mode banner - shows when editing an existing message
-            .when(is_editing, |parent| {
+            .when(self.is_editing(), |parent| {
                 parent.child(
                     div()
                         .px_3()
