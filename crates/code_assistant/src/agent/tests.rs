@@ -1978,14 +1978,10 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
     .with_request_id(1);
 
     let session_state = SessionState::from_messages(
-        "native-session".to_string(),
-        "Native Session".to_string(),
+        "native-session",
+        "Native Session",
         vec![user_message, assistant_message],
-        Vec::new(),
-        PlanState::default(),
         session_config.clone(),
-        Some(2),
-        None,
     );
 
     agent.load_from_session_state(session_state).await?;
@@ -2034,18 +2030,14 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
     let followup_user_message = Message::new_user("Also check the contributing guide.");
 
     let session_state = SessionState::from_messages(
-        "native-session".to_string(),
-        "Native Session".to_string(),
+        "native-session",
+        "Native Session",
         vec![
             user_message.clone(),
             assistant_message,
             followup_user_message.clone(),
         ],
-        Vec::new(),
-        PlanState::default(),
         session_config.clone(),
-        Some(3),
-        None,
     );
 
     agent.load_from_session_state(session_state).await?;
@@ -2100,14 +2092,10 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
             .with_request_id(1);
 
     let session_state = SessionState::from_messages(
-        "xml-session".to_string(),
-        "XML Session".to_string(),
+        "xml-session",
+        "XML Session",
         vec![user_message, assistant_message],
-        Vec::new(),
-        PlanState::default(),
         session_config.clone(),
-        Some(2),
-        None,
     );
 
     agent.load_from_session_state(session_state).await?;
@@ -2144,14 +2132,10 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
     let assistant_message = Message::new_assistant("Here is a summary of the repository.");
 
     let session_state = SessionState::from_messages(
-        "text-session".to_string(),
-        "Regular Session".to_string(),
+        "text-session",
+        "Regular Session",
         vec![user_message.clone(), assistant_message.clone()],
-        Vec::new(),
-        PlanState::default(),
         session_config.clone(),
-        Some(3),
-        None,
     );
 
     agent.load_from_session_state(session_state).await?;

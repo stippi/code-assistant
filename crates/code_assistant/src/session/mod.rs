@@ -103,21 +103,23 @@ impl SessionState {
     /// This is primarily for tests and backward compatibility.
     /// The messages are converted to a tree structure with a single linear path.
     #[allow(dead_code)] // Used by tests
-    #[allow(clippy::too_many_arguments)]
     pub fn from_messages(
-        session_id: String,
-        name: String,
+        session_id: impl Into<String>,
+        name: impl Into<String>,
         messages: Vec<Message>,
-        tool_executions: Vec<ToolExecution>,
-        plan: PlanState,
         config: SessionConfig,
-        next_request_id: Option<u64>,
-        model_config: Option<SessionModelConfig>,
     ) -> Self {
         let mut message_nodes = BTreeMap::new();
         let mut active_path = Vec::new();
         let mut next_node_id: NodeId = 1;
         let mut parent_id: Option<NodeId> = None;
+
+        // Infer next_request_id from messages
+        let max_request_id = messages
+            .iter()
+            .filter_map(|m| m.request_id)
+            .max()
+            .unwrap_or(0);
 
         for message in &messages {
             let node_id = next_node_id;
@@ -137,17 +139,17 @@ impl SessionState {
         }
 
         Self {
-            session_id,
-            name,
+            session_id: session_id.into(),
+            name: name.into(),
             message_nodes,
             active_path,
             next_node_id,
             messages,
-            tool_executions,
-            plan,
+            tool_executions: Vec::new(),
+            plan: PlanState::default(),
             config,
-            next_request_id,
-            model_config,
+            next_request_id: Some(max_request_id + 1),
+            model_config: None,
         }
     }
 }
