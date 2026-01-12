@@ -140,18 +140,6 @@ impl InputArea {
         cx.notify();
     }
 
-    /// Get the current branch parent ID (for editing)
-    #[allow(dead_code)]
-    pub fn branch_parent_id(&self) -> Option<NodeId> {
-        self.branch_parent_id
-    }
-
-    /// Check if we're currently in edit mode (have a branch parent)
-    #[allow(dead_code)] // Will be used for edit mode visual indicator
-    pub fn is_editing(&self) -> bool {
-        self.branch_parent_id.is_some()
-    }
-
     /// Clear the edit mode state
     fn clear_edit_mode(&mut self) {
         self.branch_parent_id = None;
