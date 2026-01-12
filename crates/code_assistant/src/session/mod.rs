@@ -80,29 +80,11 @@ pub struct SessionState {
     pub model_config: Option<SessionModelConfig>,
 }
 
+#[cfg(test)]
 impl SessionState {
-    /// Get the linearized message history for the active path.
-    /// This returns cloned messages from the tree structure.
-    #[allow(dead_code)] // Will be used more extensively in Phase 4
-    pub fn get_active_messages(&self) -> Vec<Message> {
-        self.active_path
-            .iter()
-            .filter_map(|id| self.message_nodes.get(id))
-            .map(|node| node.message.clone())
-            .collect()
-    }
-
-    /// Ensure the messages vec is in sync with the tree.
-    /// Call this after modifying the tree structure.
-    #[allow(dead_code)] // Will be used more extensively in Phase 4
-    pub fn sync_messages_from_tree(&mut self) {
-        self.messages = self.get_active_messages();
-    }
-
     /// Create a SessionState from a linear list of messages.
     /// This is primarily for tests and backward compatibility.
     /// The messages are converted to a tree structure with a single linear path.
-    #[allow(dead_code)] // Used by tests
     pub fn from_messages(
         session_id: impl Into<String>,
         name: impl Into<String>,
