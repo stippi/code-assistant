@@ -2,9 +2,9 @@ use super::branch_switcher::BranchSwitcherElement;
 use super::elements::MessageContainer;
 use gpui::{
     div, prelude::*, px, rgb, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, Window,
+    MouseButton, SharedString, Window,
 };
-use gpui_component::{v_flex, ActiveTheme};
+use gpui_component::{v_flex, ActiveTheme, Icon};
 use std::sync::{Arc, Mutex};
 
 /// MessagesView - Component responsible for displaying the message history
@@ -189,15 +189,10 @@ impl Render for MessagesView {
                             el.child(
                                 div()
                                     .id("edit-message-btn")
-                                    .px_2()
-                                    .py_1()
+                                    .p_1()
                                     .rounded_sm()
                                     .cursor(CursorStyle::PointingHand)
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .hover(|s| {
-                                        s.bg(cx.theme().muted).text_color(cx.theme().foreground)
-                                    })
+                                    .hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
                                     .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
                                         if let (Some(session_id), Some(node_id)) =
                                             (session_id_for_edit.clone(), node_id_for_edit)
@@ -215,7 +210,12 @@ impl Render for MessagesView {
                                             }
                                         }
                                     })
-                                    .child("Edit"),
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from("icons/pencil.svg"))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .size_4(),
+                                    ),
                             )
                         });
 
