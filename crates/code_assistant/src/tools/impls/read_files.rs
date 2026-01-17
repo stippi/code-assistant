@@ -8,11 +8,29 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Prefix each line of content with its line number (1-indexed).
+/// Format: "  N | line content" where N is right-aligned based on max line number width.
+fn prefix_lines_with_numbers(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    let width = total_lines.to_string().len();
+
+    lines
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| format!("{:>width$} | {}", idx + 1, line, width = width))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 // Input type for the read_files tool
 #[derive(Deserialize, Serialize)]
 pub struct ReadFilesInput {
     pub project: String,
     pub paths: Vec<String>,
+    /// If true, prefix each line with its line number (1-indexed)
+    #[serde(default)]
+    pub prefix_line_numbers: bool,
 }
 
 // Output type
@@ -21,6 +39,9 @@ pub struct ReadFilesOutput {
     pub project: String,
     pub loaded_files: HashMap<PathBuf, String>,
     pub failed_files: Vec<(PathBuf, String)>,
+    /// If true, prefix each line with its line number when rendering
+    #[serde(default)]
+    pub prefix_line_numbers: bool,
 }
 
 // Render implementation for output formatting
@@ -62,10 +83,15 @@ impl Render for ReadFilesOutput {
 
                 if !tracker.is_rendered(&resource_id) {
                     // This file hasn't been rendered yet
+                    let display_content = if self.prefix_line_numbers {
+                        prefix_lines_with_numbers(content)
+                    } else {
+                        content.clone()
+                    };
                     formatted.push_str(&format!(
                         ">>>>> FILE: {}\n{}\n<<<<< END FILE\n",
                         path.display(),
-                        content
+                        display_content
                     ));
 
                     // Mark as rendered
@@ -126,6 +152,11 @@ impl Tool for ReadFilesTool {
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "prefix_line_numbers": {
+                        "type": "boolean",
+                        "description": "If true, prefix each line with its line number (1-indexed). Line number and true content are separated by ' | '. Default is false.",
+                        "default": false
                     }
                 },
                 "required": ["project", "paths"]
@@ -233,6 +264,7 @@ impl Tool for ReadFilesTool {
             project: input.project.clone(),
             loaded_files,
             failed_files,
+            prefix_line_numbers: input.prefix_line_numbers,
         })
     }
 }
@@ -255,6 +287,7 @@ mod tests {
             project: "test-project".to_string(),
             loaded_files,
             failed_files,
+            prefix_line_numbers: false,
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -332,5 +365,145 @@ mod tests {
         assert!(has_test2_txt, "Expected ResourceLoaded event for test2.txt");
 
         Ok(())
+    }
+
+    #[test]
+    fn test_prefix_lines_with_numbers_basic() {
+        let content = "line one\nline two\nline three";
+        let result = prefix_lines_with_numbers(content);
+        assert_eq!(result, "1 | line one\n2 | line two\n3 | line three");
+    }
+
+    #[test]
+    fn test_prefix_lines_with_numbers_double_digits() {
+        // Create content with 12 lines to test padding
+        let lines: Vec<&str> = (1..=12).map(|_| "content").collect();
+        let content = lines.join("\n");
+        let result = prefix_lines_with_numbers(&content);
+
+        // Lines 1-9 should be padded with a space
+        assert!(result.contains(" 1 | content"));
+        assert!(result.contains(" 9 | content"));
+        // Lines 10-12 should not have extra padding
+        assert!(result.contains("10 | content"));
+        assert!(result.contains("12 | content"));
+    }
+
+    #[test]
+    fn test_prefix_lines_with_numbers_empty_lines() {
+        let content = "first\n\nthird";
+        let result = prefix_lines_with_numbers(content);
+        assert_eq!(result, "1 | first\n2 | \n3 | third");
+    }
+
+    #[test]
+    fn test_prefix_lines_with_numbers_single_line() {
+        let content = "only line";
+        let result = prefix_lines_with_numbers(content);
+        assert_eq!(result, "1 | only line");
+    }
+
+    #[tokio::test]
+    async fn test_read_files_with_prefix_line_numbers() -> Result<()> {
+        // Create a tool registry
+        let registry = ToolRegistry::global();
+
+        // Get the read_files tool
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        // Create test fixture with files
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.txt".to_string(),
+            "Line 1\nLine 2\nLine 3".to_string(),
+        )]);
+        let mut context = fixture.context();
+
+        // Parameters for read_files with prefix_line_numbers enabled
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["test.txt"],
+            "prefix_line_numbers": true
+        });
+
+        // Execute the tool
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        // Format the output
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        // Check that line numbers are prefixed
+        assert!(output.contains("1 | Line 1"));
+        assert!(output.contains("2 | Line 2"));
+        assert!(output.contains("3 | Line 3"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_files_without_prefix_line_numbers() -> Result<()> {
+        // Create a tool registry
+        let registry = ToolRegistry::global();
+
+        // Get the read_files tool
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        // Create test fixture with files
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.txt".to_string(),
+            "Line 1\nLine 2\nLine 3".to_string(),
+        )]);
+        let mut context = fixture.context();
+
+        // Parameters for read_files without prefix_line_numbers (default)
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["test.txt"]
+        });
+
+        // Execute the tool
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        // Format the output
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        // Check that line numbers are NOT prefixed
+        assert!(!output.contains("1 | Line 1"));
+        assert!(output.contains("Line 1"));
+        assert!(output.contains("Line 2"));
+        assert!(output.contains("Line 3"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_files_output_rendering_with_line_numbers() {
+        // Create output with some test data
+        let mut loaded_files = HashMap::new();
+        loaded_files.insert(
+            PathBuf::from("test.txt"),
+            "first\nsecond\nthird".to_string(),
+        );
+
+        let output = ReadFilesOutput {
+            project: "test-project".to_string(),
+            loaded_files,
+            failed_files: vec![],
+            prefix_line_numbers: true,
+        };
+
+        let mut tracker = ResourcesTracker::new();
+        let rendered = output.render(&mut tracker);
+
+        // Verify rendering with line numbers
+        assert!(rendered.contains(">>>>> FILE: test.txt"));
+        assert!(rendered.contains("1 | first"));
+        assert!(rendered.contains("2 | second"));
+        assert!(rendered.contains("3 | third"));
     }
 }
