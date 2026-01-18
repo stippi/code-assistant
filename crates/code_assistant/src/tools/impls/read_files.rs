@@ -8,17 +8,19 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Prefix each line of content with its line number (1-indexed).
+/// Prefix each line of content with its line number.
 /// Format: "  N | line content" where N is right-aligned based on max line number width.
-fn prefix_lines_with_numbers(content: &str) -> String {
+/// The `start_line` parameter specifies the 1-indexed line number to start from (default 1).
+fn prefix_lines_with_numbers(content: &str, start_line: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
-    let width = total_lines.to_string().len();
+    let max_line_number = start_line + total_lines.saturating_sub(1);
+    let width = max_line_number.to_string().len();
 
     lines
         .iter()
         .enumerate()
-        .map(|(idx, line)| format!("{:>width$} | {}", idx + 1, line, width = width))
+        .map(|(idx, line)| format!("{:>width$} | {}", start_line + idx, line, width = width))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -33,11 +35,19 @@ pub struct ReadFilesInput {
     pub prefix_line_numbers: bool,
 }
 
+/// Content of a loaded file with optional line offset information
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LoadedFileContent {
+    pub content: String,
+    /// The 1-indexed line number where this content starts (for line range reads)
+    pub start_line: usize,
+}
+
 // Output type
 #[derive(Serialize, Deserialize)]
 pub struct ReadFilesOutput {
     pub project: String,
-    pub loaded_files: HashMap<PathBuf, String>,
+    pub loaded_files: HashMap<PathBuf, LoadedFileContent>,
     pub failed_files: Vec<(PathBuf, String)>,
     /// If true, prefix each line with its line number when rendering
     #[serde(default)]
@@ -75,18 +85,18 @@ impl Render for ReadFilesOutput {
         if !self.loaded_files.is_empty() {
             formatted.push_str("Successfully loaded the following file(s):\n");
 
-            for (path, content) in &self.loaded_files {
+            for (path, file_content) in &self.loaded_files {
                 // Generate a unique resource ID for this file with content hash
-                let content_hash = format!("{:x}", md5::compute(content));
+                let content_hash = format!("{:x}", md5::compute(&file_content.content));
                 let resource_id =
                     format!("file:{}:{}:{}", self.project, path.display(), content_hash);
 
                 if !tracker.is_rendered(&resource_id) {
                     // This file hasn't been rendered yet
                     let display_content = if self.prefix_line_numbers {
-                        prefix_lines_with_numbers(content)
+                        prefix_lines_with_numbers(&file_content.content, file_content.start_line)
                     } else {
-                        content.clone()
+                        file_content.content.clone()
                     };
                     formatted.push_str(&format!(
                         ">>>>> FILE: {}\n{}\n<<<<< END FILE\n",
@@ -219,6 +229,10 @@ impl Tool for ReadFilesTool {
             // Join with root_dir to get full path
             let full_path = explorer.root_dir().join(path);
 
+            // Determine the start line for line numbering
+            // If a start_line is specified, use it; otherwise default to 1
+            let start_line = parsed_path.start_line.unwrap_or(1);
+
             // Use either read_file_range or read_file based on whether we have line range info
             let read_result = if parsed_path.start_line.is_some() || parsed_path.end_line.is_some()
             {
@@ -233,7 +247,13 @@ impl Tool for ReadFilesTool {
 
             match read_result {
                 Ok(content) => {
-                    loaded_files.insert(PathBuf::from(&path_str), content);
+                    loaded_files.insert(
+                        PathBuf::from(&path_str),
+                        LoadedFileContent {
+                            content,
+                            start_line,
+                        },
+                    );
                 }
                 Err(e) => {
                     failed_files.push((PathBuf::from(&path_str), e.to_string()));
@@ -279,7 +299,13 @@ mod tests {
     async fn test_read_files_output_rendering() {
         // Create output with some test data
         let mut loaded_files = HashMap::new();
-        loaded_files.insert(PathBuf::from("test.txt"), "Test file content".to_string());
+        loaded_files.insert(
+            PathBuf::from("test.txt"),
+            LoadedFileContent {
+                content: "Test file content".to_string(),
+                start_line: 1,
+            },
+        );
 
         let failed_files = vec![(PathBuf::from("missing.txt"), "File not found".to_string())];
 
@@ -370,7 +396,7 @@ mod tests {
     #[test]
     fn test_prefix_lines_with_numbers_basic() {
         let content = "line one\nline two\nline three";
-        let result = prefix_lines_with_numbers(content);
+        let result = prefix_lines_with_numbers(content, 1);
         assert_eq!(result, "1 | line one\n2 | line two\n3 | line three");
     }
 
@@ -379,7 +405,7 @@ mod tests {
         // Create content with 12 lines to test padding
         let lines: Vec<&str> = (1..=12).map(|_| "content").collect();
         let content = lines.join("\n");
-        let result = prefix_lines_with_numbers(&content);
+        let result = prefix_lines_with_numbers(&content, 1);
 
         // Lines 1-9 should be padded with a space
         assert!(result.contains(" 1 | content"));
@@ -392,15 +418,41 @@ mod tests {
     #[test]
     fn test_prefix_lines_with_numbers_empty_lines() {
         let content = "first\n\nthird";
-        let result = prefix_lines_with_numbers(content);
+        let result = prefix_lines_with_numbers(content, 1);
         assert_eq!(result, "1 | first\n2 | \n3 | third");
     }
 
     #[test]
     fn test_prefix_lines_with_numbers_single_line() {
         let content = "only line";
-        let result = prefix_lines_with_numbers(content);
+        let result = prefix_lines_with_numbers(content, 1);
         assert_eq!(result, "1 | only line");
+    }
+
+    #[test]
+    fn test_prefix_lines_with_numbers_with_offset() {
+        // Simulate reading lines 30-32 of a file
+        let content = "line thirty\nline thirty-one\nline thirty-two";
+        let result = prefix_lines_with_numbers(content, 30);
+        assert_eq!(
+            result,
+            "30 | line thirty\n31 | line thirty-one\n32 | line thirty-two"
+        );
+    }
+
+    #[test]
+    fn test_prefix_lines_with_numbers_offset_padding() {
+        // Test that padding works correctly with offset (e.g., lines 95-105)
+        let lines: Vec<&str> = (0..11).map(|_| "content").collect();
+        let content = lines.join("\n");
+        let result = prefix_lines_with_numbers(&content, 95);
+
+        // Lines 95-99 should be padded with a space
+        assert!(result.contains(" 95 | content"));
+        assert!(result.contains(" 99 | content"));
+        // Lines 100-105 should not have extra padding
+        assert!(result.contains("100 | content"));
+        assert!(result.contains("105 | content"));
     }
 
     #[tokio::test]
@@ -487,7 +539,10 @@ mod tests {
         let mut loaded_files = HashMap::new();
         loaded_files.insert(
             PathBuf::from("test.txt"),
-            "first\nsecond\nthird".to_string(),
+            LoadedFileContent {
+                content: "first\nsecond\nthird".to_string(),
+                start_line: 1,
+            },
         );
 
         let output = ReadFilesOutput {
@@ -505,5 +560,78 @@ mod tests {
         assert!(rendered.contains("1 | first"));
         assert!(rendered.contains("2 | second"));
         assert!(rendered.contains("3 | third"));
+    }
+
+    #[tokio::test]
+    async fn test_read_files_output_rendering_with_line_numbers_and_offset() {
+        // Create output simulating a line range read (lines 30-32)
+        let mut loaded_files = HashMap::new();
+        loaded_files.insert(
+            PathBuf::from("test.txt:30-32"),
+            LoadedFileContent {
+                content: "line thirty\nline thirty-one\nline thirty-two".to_string(),
+                start_line: 30,
+            },
+        );
+
+        let output = ReadFilesOutput {
+            project: "test-project".to_string(),
+            loaded_files,
+            failed_files: vec![],
+            prefix_line_numbers: true,
+        };
+
+        let mut tracker = ResourcesTracker::new();
+        let rendered = output.render(&mut tracker);
+
+        // Verify rendering with line numbers starting at 30
+        assert!(rendered.contains(">>>>> FILE: test.txt:30-32"));
+        assert!(rendered.contains("30 | line thirty"));
+        assert!(rendered.contains("31 | line thirty-one"));
+        assert!(rendered.contains("32 | line thirty-two"));
+    }
+
+    #[tokio::test]
+    async fn test_read_files_with_line_range_and_prefix() -> Result<()> {
+        // Create a tool registry
+        let registry = ToolRegistry::global();
+
+        // Get the read_files tool
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        // Create test fixture with a file that has 10 lines
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.txt".to_string(),
+            "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10"
+                .to_string(),
+        )]);
+        let mut context = fixture.context();
+
+        // Parameters for read_files with line range and prefix_line_numbers enabled
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["test.txt:3-5"],
+            "prefix_line_numbers": true
+        });
+
+        // Execute the tool
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        // Format the output
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        // Check that line numbers start at 3 (the line range start)
+        assert!(output.contains("3 | Line 3"));
+        assert!(output.contains("4 | Line 4"));
+        assert!(output.contains("5 | Line 5"));
+
+        // Make sure we don't have line 1 or 2
+        assert!(!output.contains("1 | "));
+        assert!(!output.contains("2 | "));
+
+        Ok(())
     }
 }
