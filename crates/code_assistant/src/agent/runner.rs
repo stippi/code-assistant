@@ -1645,7 +1645,7 @@ impl Agent {
             }
         }
 
-        // Now rebuild the message history
+        // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
         let active_msgs: Vec<_> = self.active_messages().to_vec();
         for (idx, msg) in active_msgs.iter().enumerate() {
             match &msg.content {
