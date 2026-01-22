@@ -1606,8 +1606,14 @@ impl Agent {
         Ok(())
     }
 
-    /// Prepare messages for LLM request, dynamically rendering tool outputs
-    fn render_tool_results_in_messages(&self) -> Vec<Message> {
+    /// Prepare messages for LLM request, dynamically rendering tool outputs.
+    ///
+    /// This function also handles cancelled tool executions: if an assistant message
+    /// contains `ToolUse` blocks but there's no corresponding `ToolResult` in the
+    /// following user message (or no following user message at all), we generate
+    /// a synthetic "user cancelled" `ToolResult` to satisfy the API requirement that
+    /// every `tool_use` must have a corresponding `tool_result`.
+    pub fn render_tool_results_in_messages(&self) -> Vec<Message> {
         // Start with a clean slate
         let mut messages = Vec::new();
 
@@ -1625,11 +1631,95 @@ impl Agent {
             tool_outputs.insert(tool_use_id.clone(), rendered_output);
         }
 
-        // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
+        // Build a set of all tool_use_ids that have corresponding tool_results in the message history
+        let mut tool_ids_with_results: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
         for msg in self.active_messages() {
+            if let MessageContent::Structured(blocks) = &msg.content {
+                for block in blocks {
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        tool_ids_with_results.insert(tool_use_id.clone());
+                    }
+                }
+            }
+        }
+
+        // Now rebuild the message history
+        let active_msgs: Vec<_> = self.active_messages().to_vec();
+        for (idx, msg) in active_msgs.iter().enumerate() {
             match &msg.content {
                 MessageContent::Structured(blocks) => {
-                    // Look for ToolResult blocks
+                    if msg.role == MessageRole::Assistant {
+                        // Check for ToolUse blocks that need synthetic ToolResults
+                        let tool_use_ids: Vec<String> = blocks
+                            .iter()
+                            .filter_map(|block| {
+                                if let ContentBlock::ToolUse { id, .. } = block {
+                                    Some(id.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        // Find tool_use_ids without corresponding tool_results
+                        let missing_results: Vec<&String> = tool_use_ids
+                            .iter()
+                            .filter(|id| !tool_ids_with_results.contains(*id))
+                            .collect();
+
+                        if !missing_results.is_empty() {
+                            // We need to add the assistant message first, then add a synthetic
+                            // user message with cancelled tool results
+                            messages.push(msg.clone());
+
+                            // Generate synthetic ToolResult blocks for cancelled tools
+                            let cancelled_blocks: Vec<ContentBlock> = missing_results
+                                .iter()
+                                .map(|tool_id| {
+                                    debug!(
+                                        "Generating synthetic 'cancelled' tool result for tool_use_id: {}",
+                                        tool_id
+                                    );
+                                    ContentBlock::ToolResult {
+                                        tool_use_id: (*tool_id).clone(),
+                                        content: "Tool execution was cancelled by user.".to_string(),
+                                        is_error: Some(true),
+                                        start_time: None,
+                                        end_time: None,
+                                    }
+                                })
+                                .collect();
+
+                            // Check if the next message is already a user message with tool results
+                            // In that case, we need to merge the cancelled results
+                            let next_msg = active_msgs.get(idx + 1);
+                            let should_create_new_message = match next_msg {
+                                Some(next) if next.role == MessageRole::User => {
+                                    // Check if this user message has tool results
+                                    match &next.content {
+                                        MessageContent::Structured(next_blocks) => !next_blocks
+                                            .iter()
+                                            .any(|b| matches!(b, ContentBlock::ToolResult { .. })),
+                                        _ => true,
+                                    }
+                                }
+                                _ => true,
+                            };
+
+                            if should_create_new_message {
+                                // Insert a new user message with the cancelled tool results
+                                let cancelled_msg =
+                                    Message::new_user_content(cancelled_blocks.clone());
+                                messages.push(cancelled_msg);
+                            }
+                            // If next message already has tool results, we'll handle merging when we process it
+                            continue;
+                        }
+                    }
+
+                    // Look for ToolResult blocks and update with rendered output
                     let mut new_blocks = Vec::new();
                     let mut need_update = false;
 
