@@ -2153,3 +2153,302 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_render_tool_results_generates_cancelled_results_for_missing_executions() -> Result<()>
+{
+    // This test verifies that when an assistant message contains ToolUse blocks
+    // but there's no corresponding ToolResult in the message history (because the
+    // user cancelled the tool execution), we generate synthetic "user cancelled"
+    // ToolResult blocks to satisfy the API requirement.
+
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    // Simulate a scenario where:
+    // 1. User asks a question
+    // 2. Assistant responds with a tool call
+    // 3. User cancels the tool execution (no ToolResult message added)
+    // 4. User asks a follow-up question
+
+    // Add user message
+    agent.append_message(Message::new_user("Please run the tests."))?;
+
+    // Add assistant message with a tool call (simulating what LLM returned)
+    agent.append_message(
+        Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll run the tests for you."),
+            ContentBlock::new_tool_use(
+                "tool-1-1",
+                "execute_command",
+                serde_json::json!({
+                    "project": "test",
+                    "command_line": "cargo test"
+                }),
+            ),
+        ])
+        .with_request_id(1),
+    )?;
+
+    // Note: We do NOT add a ToolResult message - simulating user cancellation
+
+    // Add another user message (user continues the conversation)
+    agent.append_message(Message::new_user("Never mind, let's do something else."))?;
+
+    // Now call render_tool_results_in_messages - this is what gets sent to the LLM
+    let rendered_messages = agent.render_tool_results_in_messages();
+
+    // We should have:
+    // 1. Original user message
+    // 2. Assistant message with tool call
+    // 3. Synthetic user message with cancelled tool result
+    // 4. Follow-up user message
+    assert_eq!(
+        rendered_messages.len(),
+        4,
+        "Expected 4 messages: user, assistant, cancelled tool result, follow-up user"
+    );
+
+    // Verify the synthetic cancelled tool result was inserted
+    let cancelled_message = &rendered_messages[2];
+    assert_eq!(cancelled_message.role, MessageRole::User);
+
+    if let MessageContent::Structured(blocks) = &cancelled_message.content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "tool-1-1");
+            assert!(content.contains("cancelled"));
+            assert!(is_error.unwrap_or(false));
+        } else {
+            panic!("Expected ToolResult block");
+        }
+    } else {
+        panic!("Expected Structured content for cancelled tool result");
+    }
+
+    // Verify the follow-up user message is still present
+    let followup_message = &rendered_messages[3];
+    assert_eq!(followup_message.role, MessageRole::User);
+    if let MessageContent::Text(text) = &followup_message.content {
+        assert_eq!(text, "Never mind, let's do something else.");
+    } else {
+        panic!("Expected Text content for follow-up message");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()> {
+    // This test verifies that when tool results already exist, we don't add
+    // synthetic cancelled results for them.
+
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    // Simulate a normal scenario where tool execution completed successfully
+
+    // Add user message
+    agent.append_message(Message::new_user("Read the README."))?;
+
+    // Add assistant message with a tool call
+    agent.append_message(
+        Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll read the README file."),
+            ContentBlock::new_tool_use(
+                "tool-1-1",
+                "read_files",
+                serde_json::json!({
+                    "project": "test",
+                    "paths": ["README.md"]
+                }),
+            ),
+        ])
+        .with_request_id(1),
+    )?;
+
+    // Add the tool result (normal execution completed)
+    agent.append_message(Message::new_user_content(vec![ContentBlock::ToolResult {
+        tool_use_id: "tool-1-1".to_string(),
+        content: "File contents here".to_string(),
+        is_error: None,
+        start_time: None,
+        end_time: None,
+    }]))?;
+
+    // Now call render_tool_results_in_messages
+    let rendered_messages = agent.render_tool_results_in_messages();
+
+    // We should have exactly 3 messages - no synthetic cancelled results added
+    assert_eq!(
+        rendered_messages.len(),
+        3,
+        "Expected 3 messages: user, assistant, tool result"
+    );
+
+    // Verify the tool result is the original one (not a cancelled one)
+    let result_message = &rendered_messages[2];
+    if let MessageContent::Structured(blocks) = &result_message.content {
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "tool-1-1");
+            // Content should be the original, not "cancelled"
+            assert!(content.contains("File contents") || content.is_empty());
+            // Should not be marked as error
+            assert!(!is_error.unwrap_or(false));
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<()> {
+    // This test verifies that multiple cancelled tool calls are all handled correctly.
+
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    // Add user message
+    agent.append_message(Message::new_user("Check the project."))?;
+
+    // Add assistant message with multiple tool calls (all cancelled)
+    agent.append_message(
+        Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll check multiple things."),
+            ContentBlock::new_tool_use(
+                "tool-1-1",
+                "read_files",
+                serde_json::json!({
+                    "project": "test",
+                    "paths": ["file1.txt"]
+                }),
+            ),
+            ContentBlock::new_tool_use(
+                "tool-1-2",
+                "execute_command",
+                serde_json::json!({
+                    "project": "test",
+                    "command_line": "ls -la"
+                }),
+            ),
+        ])
+        .with_request_id(1),
+    )?;
+
+    // No tool results added - both cancelled
+
+    // Now call render_tool_results_in_messages
+    let rendered_messages = agent.render_tool_results_in_messages();
+
+    // We should have:
+    // 1. Original user message
+    // 2. Assistant message with tool calls
+    // 3. Synthetic user message with both cancelled tool results
+    assert_eq!(
+        rendered_messages.len(),
+        3,
+        "Expected 3 messages: user, assistant, cancelled tool results"
+    );
+
+    // Verify the synthetic cancelled results
+    let cancelled_message = &rendered_messages[2];
+    assert_eq!(cancelled_message.role, MessageRole::User);
+
+    if let MessageContent::Structured(blocks) = &cancelled_message.content {
+        assert_eq!(blocks.len(), 2, "Should have 2 cancelled tool results");
+
+        // Check first cancelled result
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "tool-1-1");
+            assert!(content.contains("cancelled"));
+            assert!(is_error.unwrap_or(false));
+        } else {
+            panic!("Expected ToolResult block for first cancelled tool");
+        }
+
+        // Check second cancelled result
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[1]
+        {
+            assert_eq!(tool_use_id, "tool-1-2");
+            assert!(content.contains("cancelled"));
+            assert!(is_error.unwrap_or(false));
+        } else {
+            panic!("Expected ToolResult block for second cancelled tool");
+        }
+    } else {
+        panic!("Expected Structured content for cancelled tool results");
+    }
+
+    Ok(())
+}
