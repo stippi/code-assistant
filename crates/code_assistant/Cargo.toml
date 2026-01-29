@@ -24,11 +24,15 @@ crossterm = "0.27.0"
 unicode-width = "0.1"
 ratatui = "0.29"
 tui-textarea = "0.7"
-tui-markdown = "0.3.6"
+# Pin to 0.3.6 to avoid incompatibility with ratatui 0.29 (0.3.7 requires ratatui-core)
+tui-markdown = "=0.3.6"
 
 # GPUI related
 gpui = "0.2.2"
 gpui-component = "0.4.0"
+# Pin core-text to avoid version conflict with zed-font-kit
+# See: https://github.com/zed-industries/zed/issues/46966
+core-text = "=21.0.0"
 smallvec = "1.15"
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
