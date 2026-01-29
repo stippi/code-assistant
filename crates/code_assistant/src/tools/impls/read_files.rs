@@ -36,11 +36,79 @@ pub struct ReadFilesInput {
 }
 
 /// Content of a loaded file with optional line offset information
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Clone)]
 pub struct LoadedFileContent {
     pub content: String,
     /// The 1-indexed line number where this content starts (for line range reads)
     pub start_line: usize,
+}
+
+// Custom deserializer for backward compatibility with old sessions
+// that stored loaded_files as HashMap<PathBuf, String>
+impl<'de> Deserialize<'de> for LoadedFileContent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+
+        struct LoadedFileContentVisitor;
+
+        impl<'de> Visitor<'de> for LoadedFileContentVisitor {
+            type Value = LoadedFileContent;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or a LoadedFileContent struct")
+            }
+
+            // Old format: just a string
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(LoadedFileContent {
+                    content: value.to_string(),
+                    start_line: 1,
+                })
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(LoadedFileContent {
+                    content: value,
+                    start_line: 1,
+                })
+            }
+
+            // New format: struct with content and start_line
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut content = None;
+                let mut start_line = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "content" => content = Some(map.next_value()?),
+                        "start_line" => start_line = Some(map.next_value()?),
+                        _ => {
+                            let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                Ok(LoadedFileContent {
+                    content: content.ok_or_else(|| de::Error::missing_field("content"))?,
+                    start_line: start_line.unwrap_or(1),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(LoadedFileContentVisitor)
+    }
 }
 
 // Output type
@@ -294,6 +362,51 @@ mod tests {
     use super::*;
     use crate::tests::mocks::ToolTestFixture;
     use crate::tools::core::ToolRegistry;
+
+    #[test]
+    fn test_loaded_file_content_deserialize_backward_compat() {
+        // Old format: just a string value in the HashMap
+        let old_json = r#"{
+            "project": "test",
+            "loaded_files": {
+                "file.txt": "file content here"
+            },
+            "failed_files": []
+        }"#;
+
+        let output: ReadFilesOutput = serde_json::from_str(old_json).unwrap();
+        assert_eq!(output.loaded_files.len(), 1);
+        let content = output.loaded_files.get(&PathBuf::from("file.txt")).unwrap();
+        assert_eq!(content.content, "file content here");
+        assert_eq!(content.start_line, 1);
+        assert!(!output.prefix_line_numbers);
+    }
+
+    #[test]
+    fn test_loaded_file_content_deserialize_new_format() {
+        // New format: struct with content and start_line
+        let new_json = r#"{
+            "project": "test",
+            "loaded_files": {
+                "file.txt:10-20": {
+                    "content": "file content here",
+                    "start_line": 10
+                }
+            },
+            "failed_files": [],
+            "prefix_line_numbers": true
+        }"#;
+
+        let output: ReadFilesOutput = serde_json::from_str(new_json).unwrap();
+        assert_eq!(output.loaded_files.len(), 1);
+        let content = output
+            .loaded_files
+            .get(&PathBuf::from("file.txt:10-20"))
+            .unwrap();
+        assert_eq!(content.content, "file content here");
+        assert_eq!(content.start_line, 10);
+        assert!(output.prefix_line_numbers);
+    }
 
     #[tokio::test]
     async fn test_read_files_output_rendering() {
