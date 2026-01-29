@@ -149,7 +149,7 @@ fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Res
     use ignore::WalkBuilder;
 
     // Default directories and files to ignore (same as in explorer.rs)
-    const DEFAULT_IGNORE_PATTERNS: [&str; 12] = [
+    const DEFAULT_IGNORE_PATTERNS: [&str; 13] = [
         "target",
         "node_modules",
         "build",
@@ -162,6 +162,7 @@ fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Res
         "*.class",
         ".DS_Store",
         "Thumbs.db",
+        ".Trash", // macOS Trash folder requires special permissions
     ];
 
     let glob_pattern =

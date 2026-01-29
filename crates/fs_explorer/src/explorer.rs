@@ -49,7 +49,7 @@ pub fn is_path_gitignored(root_dir: &Path, path: &Path) -> bool {
 }
 
 // Default directories and files to ignore during file operations
-const DEFAULT_IGNORE_PATTERNS: [&str; 12] = [
+const DEFAULT_IGNORE_PATTERNS: [&str; 13] = [
     "target",
     "node_modules",
     "build",
@@ -62,6 +62,7 @@ const DEFAULT_IGNORE_PATTERNS: [&str; 12] = [
     "*.class",
     ".DS_Store",
     "Thumbs.db",
+    ".Trash", // macOS Trash folder requires special permissions
 ];
 
 /// Helper struct for grouping search matches into sections
@@ -240,7 +241,14 @@ impl Explorer {
             .build();
 
         for result in walker {
-            let dir_entry = result?;
+            // Skip entries we can't access (e.g., due to permission errors)
+            let dir_entry = match result {
+                Ok(entry) => entry,
+                Err(e) => {
+                    debug!("Skipping inaccessible entry in {}: {}", path.display(), e);
+                    continue;
+                }
+            };
             let entry_path = dir_entry.path();
 
             // Skip the directory itself
@@ -267,7 +275,20 @@ impl Explorer {
             };
 
             if is_dir {
-                Self::expand_directory(entry_path, &mut child_entry, current_depth + 1, max_depth)?;
+                // Don't fail the entire tree if a subdirectory can't be expanded
+                if let Err(e) = Self::expand_directory(
+                    entry_path,
+                    &mut child_entry,
+                    current_depth + 1,
+                    max_depth,
+                ) {
+                    debug!(
+                        "Skipping inaccessible directory {}: {}",
+                        entry_path.display(),
+                        e
+                    );
+                    continue;
+                }
             }
 
             entry.children.insert(child_entry.name.clone(), child_entry);
