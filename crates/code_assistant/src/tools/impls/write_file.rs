@@ -28,14 +28,10 @@ pub struct WriteFileOutput {
 // Render implementation for output formatting
 impl Render for WriteFileOutput {
     fn status(&self) -> String {
-        if self.error.is_none() {
-            format!("Successfully wrote to file: {}", self.path.display())
+        if let Some(error) = &self.error {
+            format!("Failed to write to file {}: {}", self.path.display(), error)
         } else {
-            format!(
-                "Failed to write to file {}: {}",
-                self.path.display(),
-                self.error.as_ref().unwrap()
-            )
+            format!("Successfully wrote to file: {}", self.path.display())
         }
     }
 
