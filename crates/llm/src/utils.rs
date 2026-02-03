@@ -133,7 +133,7 @@ pub async fn handle_retryable_error<
             }
             ApiError::ServiceError(_) | ApiError::NetworkError(_) | ApiError::Overloaded(_) => {
                 if attempts < max_retries {
-                    let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                    let delay = Duration::from_secs(2u64.pow(attempts.saturating_sub(1)));
                     warn!(
                         "Error: {} (attempt {}/{}), retrying in {} seconds",
                         error,
