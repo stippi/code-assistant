@@ -93,10 +93,10 @@ async fn main() -> Result<()> {
             };
 
             if args.ui {
-                app::gpui::run(config)
-            } else {
-                app::terminal::run(config).await
+                return app::gpui::run(config);
             }
+
+            app::terminal::run(config).await
         }
     }
 }
