@@ -90,6 +90,17 @@ impl SessionManager {
         model_config: Option<SessionModelConfig>,
     ) -> Result<String> {
         let session_id = generate_session_id();
+        self.create_session_with_id(session_id, name, session_config_override, model_config)
+    }
+
+    /// Create a new session with a specific ID (used for deferred session creation in ACP)
+    pub fn create_session_with_id(
+        &mut self,
+        session_id: String,
+        name: Option<String>,
+        session_config_override: Option<SessionConfig>,
+        model_config: Option<SessionModelConfig>,
+    ) -> Result<String> {
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
         let session = ChatSession::new_empty(

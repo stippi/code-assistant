@@ -20,6 +20,13 @@ use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 
+/// Pending session that hasn't been persisted yet (deferred until first prompt).
+#[derive(Clone)]
+struct PendingSession {
+    config: SessionConfig,
+    model_config: SessionModelConfig,
+}
+
 /// Global connection to the ACP client
 /// Since there's only one connection per agent process, this is acceptable
 static ACP_CLIENT_CONNECTION: OnceLock<Arc<acp::AgentSideConnection>> = OnceLock::new();
@@ -47,6 +54,8 @@ pub struct ACPAgentImpl {
     /// Used to signal cancellation to the prompt() wait loop
     active_uis: Arc<Mutex<HashMap<String, Arc<ACPUserUI>>>>,
     client_capabilities: Arc<Mutex<Option<acp::ClientCapabilities>>>,
+    /// Sessions created in new_session() but not yet persisted (deferred until first prompt)
+    pending_sessions: Arc<Mutex<HashMap<String, PendingSession>>>,
 }
 
 struct ModelStateInfo {
@@ -68,6 +77,7 @@ impl ACPAgentImpl {
             session_manager,
             session_config_template,
             model_name,
+            pending_sessions: Arc::new(Mutex::new(HashMap::new())),
             playback_path,
             fast_playback,
             session_update_tx,
@@ -311,54 +321,41 @@ impl acp::Agent for ACPAgentImpl {
         Self: 'async_trait,
         'life0: 'async_trait,
     {
-        let session_manager = self.session_manager.clone();
         let model_name = self.model_name.clone();
         let session_config_template = self.session_config_template.clone();
+        let pending_sessions = self.pending_sessions.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
 
-            // Update the agent config to use the provided cwd
+            let session_id = crate::persistence::generate_session_id();
+
             let mut session_config = session_config_template.clone();
             session_config.init_path = Some(arguments.cwd.clone());
 
-            let session_id = {
-                let mut manager = session_manager.lock().await;
-                let session_model_config = SessionModelConfig::new(model_name.clone());
-                manager
-                    .create_session_with_config(
-                        None,
-                        Some(session_config),
-                        Some(session_model_config),
-                    )
-                    .map_err(|e| {
-                        tracing::error!("Failed to create session: {}", e);
-                        to_acp_error(&e)
-                    })?
-            };
-
-            tracing::info!("ACP: Created session: {}", session_id);
-
-            let mut models_state = None;
-            if let Some(model_info) =
+            let selected_model_name =
                 ACPAgentImpl::compute_model_state(&model_name, Some(model_name.as_str()))
+                    .map(|info| info.selected_model_name.clone())
+                    .unwrap_or_else(|| model_name.clone());
+
+            let session_model_config = SessionModelConfig::new(selected_model_name);
+
             {
-                if model_info.selection_changed {
-                    let mut manager = session_manager.lock().await;
-                    let fallback_model_config =
-                        SessionModelConfig::new(model_info.selected_model_name.clone());
-                    if let Err(err) =
-                        manager.set_session_model_config(&session_id, Some(fallback_model_config))
-                    {
-                        tracing::error!(
-                            error = ?err,
-                            "ACP: Failed to persist fallback model selection for session {}",
-                            session_id
-                        );
-                    }
-                }
-                models_state = Some(model_info.state);
+                let mut pending = pending_sessions.lock().await;
+                pending.insert(
+                    session_id.clone(),
+                    PendingSession {
+                        config: session_config,
+                        model_config: session_model_config,
+                    },
+                );
             }
+
+            tracing::info!("ACP: Created pending session: {}", session_id);
+
+            let models_state =
+                ACPAgentImpl::compute_model_state(&model_name, Some(model_name.as_str()))
+                    .map(|info| info.state);
 
             Ok(acp::NewSessionResponse::new(session_id).models(models_state))
         })
@@ -484,12 +481,37 @@ impl acp::Agent for ACPAgentImpl {
         let active_uis = self.active_uis.clone();
         let client_capabilities = self.client_capabilities.clone();
         let client_connection = get_acp_client_connection();
+        let pending_sessions = self.pending_sessions.clone();
 
         Box::pin(async move {
             tracing::info!(
                 "ACP: Received prompt for session: {}",
                 arguments.session_id.0
             );
+
+            // Materialize pending session on first prompt
+            if let Some(pending) = pending_sessions
+                .lock()
+                .await
+                .remove(arguments.session_id.0.as_ref())
+            {
+                tracing::info!(
+                    "ACP: Persisting session {} on first prompt",
+                    arguments.session_id.0
+                );
+                let mut manager = session_manager.lock().await;
+                manager
+                    .create_session_with_id(
+                        arguments.session_id.0.to_string(),
+                        None,
+                        Some(pending.config),
+                        Some(pending.model_config),
+                    )
+                    .map_err(|e| {
+                        tracing::error!("Failed to create session: {}", e);
+                        to_acp_error(&e)
+                    })?;
+            }
 
             let terminal_supported = {
                 let caps = client_capabilities.lock().await;
