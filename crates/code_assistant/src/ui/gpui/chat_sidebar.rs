@@ -2,9 +2,10 @@ use super::file_icons;
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use gpui::{
-    div, prelude::*, px, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, MouseButton, MouseUpEvent, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Window,
+    bounce, div, ease_in_out, percentage, prelude::*, px, Animation, AnimationExt, AppContext,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, MouseButton,
+    MouseUpEvent, SharedString, StatefulInteractiveElement, Styled, Subscription, Transformation,
+    Window,
 };
 use gpui_component::scroll::ScrollbarAxis;
 
@@ -139,9 +140,9 @@ impl Render for ChatListItem {
             SessionActivityState::Idle => cx.theme().muted,
         };
 
-        // Indent to align with project name text:
-        // px_2(8) + folder(14) + gap(4) = 26px
-        let left_indent = px(26.);
+        // Left column width: folder icon area (aligned with project headers)
+        // px_2(8) + folder(14) + gap(4) = 26px, minus mx(2) = 24px internal
+        let left_col_width = px(24.);
 
         // Fixed-width right column so trash + date don't shift around
         let date_col_width = px(50.);
@@ -152,12 +153,10 @@ impl Render for ChatListItem {
                 self.metadata.id
             )))
             .mx(px(2.))
-            .pl(left_indent - px(2.)) // compensate mx so text stays aligned
             .pr_1()
             .py(px(5.))
             .flex()
             .items_center()
-            .gap_1()
             .cursor_pointer()
             .rounded_md()
             .border_1()
@@ -176,16 +175,37 @@ impl Render for ChatListItem {
                 el.hover(|s| s.bg(cx.theme().muted.opacity(0.4)))
             })
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_session_click))
-            // Activity dot
-            .when(is_active, |el| {
-                el.child(
-                    div()
-                        .flex_none()
-                        .size(px(6.))
-                        .rounded_full()
-                        .bg(activity_color),
-                )
-            })
+            // Left column: fixed width, shows spinning icon when active
+            .child(
+                div()
+                    .flex_none()
+                    .w(left_col_width)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(is_active, |el| {
+                        el.child(
+                            gpui::svg()
+                                .size(px(12.))
+                                .path("icons/arrow_circle.svg")
+                                .text_color(activity_color)
+                                .with_animation(
+                                    SharedString::from(format!(
+                                        "activity-spin-{}",
+                                        self.metadata.id
+                                    )),
+                                    Animation::new(std::time::Duration::from_secs(2))
+                                        .repeat()
+                                        .with_easing(bounce(ease_in_out)),
+                                    |svg, delta| {
+                                        svg.with_transformation(Transformation::rotate(percentage(
+                                            delta,
+                                        )))
+                                    },
+                                ),
+                        )
+                    }),
+            )
             // Session name (truncated — shrinks when trash icon appears)
             .child(
                 div()
