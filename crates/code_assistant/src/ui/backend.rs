@@ -20,8 +20,10 @@ pub enum BackendEvent {
     LoadSession {
         session_id: String,
     },
+
     CreateNewSession {
         name: Option<String>,
+        initial_project: Option<String>,
     },
     DeleteSession {
         session_id: String,
@@ -161,9 +163,10 @@ pub async fn handle_backend_events(
         let response = match event {
             BackendEvent::ListSessions => Some(handle_list_sessions(&multi_session_manager).await),
 
-            BackendEvent::CreateNewSession { name } => {
-                Some(handle_create_session(&multi_session_manager, name).await)
-            }
+            BackendEvent::CreateNewSession {
+                name,
+                initial_project,
+            } => Some(handle_create_session(&multi_session_manager, name, initial_project).await),
 
             BackendEvent::LoadSession { session_id } => {
                 handle_load_session(&multi_session_manager, &session_id, &ui).await
@@ -275,10 +278,18 @@ async fn handle_list_sessions(
 async fn handle_create_session(
     multi_session_manager: &Arc<Mutex<SessionManager>>,
     name: Option<String>,
+    initial_project: Option<String>,
 ) -> BackendResponse {
     let create_result = {
         let mut manager = multi_session_manager.lock().await;
-        manager.create_session(name.clone())
+        if let Some(project) = initial_project {
+            // Create a session config override with the specified project
+            let mut config = manager.session_config_template().clone();
+            config.initial_project = project;
+            manager.create_session_with_config(name.clone(), Some(config), None)
+        } else {
+            manager.create_session(name.clone())
+        }
     };
 
     match create_result {

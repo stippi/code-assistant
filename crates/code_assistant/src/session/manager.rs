@@ -70,6 +70,11 @@ impl SessionManager {
         }
     }
 
+    /// Returns the session config template.
+    pub fn session_config_template(&self) -> &SessionConfig {
+        &self.session_config_template
+    }
+
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         // Always create sessions with a default model config

@@ -283,8 +283,14 @@ impl RootView {
                         session_id: session_id.clone(),
                     });
                 }
-                ChatSidebarEvent::NewSessionRequested { name } => {
-                    let _ = sender.try_send(BackendEvent::CreateNewSession { name: name.clone() });
+                ChatSidebarEvent::NewSessionRequested {
+                    name,
+                    initial_project,
+                } => {
+                    let _ = sender.try_send(BackendEvent::CreateNewSession {
+                        name: name.clone(),
+                        initial_project: initial_project.clone(),
+                    });
                 }
             }
         } else {

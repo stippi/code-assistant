@@ -333,8 +333,12 @@ impl TerminalTuiApp {
         // Create new session if we don't have one yet
         if session_id.is_none() {
             debug!("Creating new session");
+
             backend_event_tx
-                .send(BackendEvent::CreateNewSession { name: None })
+                .send(BackendEvent::CreateNewSession {
+                    name: None,
+                    initial_project: None,
+                })
                 .await?;
 
             match backend_response_rx.recv().await? {
