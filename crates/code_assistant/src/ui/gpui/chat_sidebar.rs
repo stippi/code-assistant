@@ -3,9 +3,8 @@ use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, Animation, AnimationExt, AppContext,
-    Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, MouseButton,
-    MouseUpEvent, SharedString, StatefulInteractiveElement, Styled, Subscription, Transformation,
-    Window,
+    ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
 };
 use gpui_component::scroll::ScrollbarAxis;
 
@@ -102,13 +101,13 @@ impl ChatListItem {
         }
     }
 
-    fn on_session_click(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_session_click(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(ChatListItemEvent::SessionClicked {
             session_id: self.metadata.id.clone(),
         });
     }
 
-    fn on_session_delete(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_session_delete(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(ChatListItemEvent::DeleteClicked {
             session_id: self.metadata.id.clone(),
         });
@@ -174,7 +173,7 @@ impl Render for ChatListItem {
             .when(!self.is_selected, |el| {
                 el.hover(|s| s.bg(cx.theme().muted.opacity(0.4)))
             })
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_session_click))
+            .on_click(cx.listener(Self::on_session_click))
             // Left column: fixed width, shows spinning icon when active
             .child(
                 div()
@@ -250,10 +249,7 @@ impl Render for ChatListItem {
                                         .path("icons/trash.svg")
                                         .text_color(cx.theme().danger),
                                 )
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(Self::on_session_delete),
-                                ),
+                                .on_click(cx.listener(Self::on_session_delete)),
                         )
                     })
                     // Date
@@ -478,7 +474,7 @@ impl ChatSidebar {
 
     fn on_new_chat_click(
         &mut self,
-        _: &MouseUpEvent,
+        _: &ClickEvent,
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
@@ -559,17 +555,14 @@ impl ChatSidebar {
                     }
                 }
             }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    if let Some(g) = this.groups.get_mut(group_idx) {
-                        g.is_expanded = !g.is_expanded;
-                        this.group_ui_state
-                            .insert(g.name.clone(), (g.is_expanded, g.show_all));
-                        cx.notify();
-                    }
-                }),
-            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(g) = this.groups.get_mut(group_idx) {
+                    g.is_expanded = !g.is_expanded;
+                    this.group_ui_state
+                        .insert(g.name.clone(), (g.is_expanded, g.show_all));
+                    cx.notify();
+                }
+            }))
             // Folder icon
             .child(
                 gpui::svg()
@@ -617,9 +610,10 @@ impl ChatSidebar {
                             cx.theme().transparent
                         },
                     ))
-                    .on_mouse_up(MouseButton::Left, {
+                    .on_click({
                         let project = group.name.clone();
                         cx.listener(move |_this, _, _, cx| {
+                            cx.stop_propagation();
                             debug!("New session in project: {}", project);
                             cx.emit(ChatSidebarEvent::NewSessionRequested {
                                 name: None,
@@ -645,17 +639,14 @@ impl ChatSidebar {
             .cursor_pointer()
             .rounded_sm()
             .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    if let Some(g) = this.groups.get_mut(group_idx) {
-                        g.show_all = true;
-                        this.group_ui_state
-                            .insert(g.name.clone(), (g.is_expanded, g.show_all));
-                        cx.notify();
-                    }
-                }),
-            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(g) = this.groups.get_mut(group_idx) {
+                    g.show_all = true;
+                    this.group_ui_state
+                        .insert(g.name.clone(), (g.is_expanded, g.show_all));
+                    cx.notify();
+                }
+            }))
             .child(
                 div()
                     .text_xs()
@@ -691,6 +682,7 @@ impl Render for ChatSidebar {
                 .py_2()
                 .child(
                     div()
+                        .id("new-chat-btn-collapsed")
                         .size(px(28.))
                         .rounded_sm()
                         .flex()
@@ -704,7 +696,7 @@ impl Render for ChatSidebar {
                                 .with_size(Size::Small)
                                 .text_color(cx.theme().muted_foreground),
                         )
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_new_chat_click)),
+                        .on_click(cx.listener(Self::on_new_chat_click)),
                 );
         }
 
@@ -763,6 +755,7 @@ impl Render for ChatSidebar {
                     )
                     .child(
                         div()
+                            .id("new-chat-btn")
                             .size(px(24.))
                             .rounded_sm()
                             .flex()
@@ -776,7 +769,7 @@ impl Render for ChatSidebar {
                                 cx.theme().muted_foreground,
                                 "+",
                             ))
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_new_chat_click)),
+                            .on_click(cx.listener(Self::on_new_chat_click)),
                     ),
             )
             // Scrollable list
