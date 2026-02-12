@@ -5,8 +5,8 @@ use super::sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
 use crate::persistence::{DraftAttachment, NodeId};
 use base64::Engine;
 use gpui::{
-    div, prelude::*, px, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseUpEvent, Render, SharedString, Subscription, Window,
+    div, prelude::*, px, ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
+    FocusHandle, Focusable, Render, SharedString, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState, Paste};
 use gpui_component::{ActiveTheme, Icon};
@@ -384,7 +384,7 @@ impl InputArea {
     }
 
     /// Handle submit button click
-    fn on_submit_click(&mut self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_submit_click(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let content = self.text_input.read(cx).value().to_string();
 
         if !content.trim().is_empty() || !self.attachments.is_empty() {
@@ -407,7 +407,7 @@ impl InputArea {
     }
 
     /// Handle cancel button click
-    fn on_cancel_click(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_cancel_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         cx.emit(InputAreaEvent::CancelRequested);
     }
 
@@ -466,12 +466,9 @@ impl InputArea {
                                 .rounded_sm()
                                 .cursor(CursorStyle::PointingHand)
                                 .hover(|s| s.bg(cx.theme().warning.opacity(0.15)))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.cancel_edit(window, cx);
-                                    }),
-                                )
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.cancel_edit(window, cx);
+                                }))
                                 .child(
                                     Icon::default()
                                         .path(SharedString::from("icons/close.svg"))
@@ -525,7 +522,9 @@ impl InputArea {
                         // Show both send and cancel buttons
                         // Send button - enabled when input has content
                         let send_enabled = has_input_content;
+
                         let mut send_button = div()
+                            .id("send-btn")
                             .size(px(40.))
                             .rounded_sm()
                             .flex()
@@ -550,12 +549,14 @@ impl InputArea {
                         if send_enabled {
                             send_button = send_button
                                 .hover(|s| s.bg(cx.theme().muted))
-                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit_click));
+                                .on_click(cx.listener(Self::on_submit_click));
                         }
                         buttons.push(send_button);
 
                         // Cancel button - always visible, but enabled/disabled based on agent state
+
                         let mut cancel_button = div()
+                            .id("cancel-btn")
                             .size(px(40.))
                             .rounded_sm()
                             .flex()
@@ -580,7 +581,7 @@ impl InputArea {
                         if self.cancel_enabled {
                             cancel_button = cancel_button
                                 .hover(|s| s.bg(cx.theme().muted))
-                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_cancel_click));
+                                .on_click(cx.listener(Self::on_cancel_click));
                         }
 
                         buttons.push(cancel_button);

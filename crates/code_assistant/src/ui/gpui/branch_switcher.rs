@@ -1,5 +1,5 @@
 use crate::persistence::BranchInfo;
-use gpui::{div, prelude::*, px, App, CursorStyle, MouseButton, SharedString, Window};
+use gpui::{div, prelude::*, px, App, CursorStyle, SharedString, Window};
 use gpui_component::{ActiveTheme, Icon};
 
 /// A stateless branch navigation component styled as a bubble on the message border.
@@ -93,7 +93,7 @@ impl RenderOnce for BranchSwitcherElement {
 
                         if has_prev {
                             base.hover(|s| s.bg(cx.theme().accent.opacity(0.15)))
-                                .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
+                                .on_click(move |_event, _window, cx| {
                                     if let Some(node_id) = prev_node_id {
                                         if let Some(sender) =
                                             cx.try_global::<super::UiEventSender>()
@@ -141,7 +141,7 @@ impl RenderOnce for BranchSwitcherElement {
 
                         if has_next {
                             base.hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
-                                .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
+                                .on_click(move |_event, _window, cx| {
                                     if let Some(node_id) = next_node_id {
                                         if let Some(sender) =
                                             cx.try_global::<super::UiEventSender>()

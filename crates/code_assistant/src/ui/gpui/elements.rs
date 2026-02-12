@@ -4,9 +4,9 @@ use crate::ui::gpui::image;
 use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, Bounds, Context,
-    Entity, ImageSource, IntoElement, MouseButton, ObjectFit, Pixels, SharedString, Styled, Task,
-    Timer, Transformation,
+    bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, Bounds,
+    ClickEvent, Context, Entity, ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled,
+    Task, Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{label::Label, text::TextView, ActiveTheme};
@@ -1072,6 +1072,7 @@ impl Render for BlockView {
                                     .cursor_pointer()
                                     .size(px(24.))
                                     .rounded_full()
+                                    .id("thinking-toggle")
                                     .hover(|s| s.bg(blue_base.opacity(0.1)))
                                     .child(file_icons::render_icon(
                                         &chevron_icon,
@@ -1079,12 +1080,11 @@ impl Render for BlockView {
                                         chevron_color,
                                         chevron_text,
                                     ))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |view, _event, _window, cx| {
+                                    .on_click(cx.listener(
+                                        move |view, _event: &ClickEvent, _window, cx| {
                                             view.toggle_thinking_collapsed(cx);
-                                        }),
-                                    )
+                                        },
+                                    ))
                                     .into_any(),
                             ])
                             .into_any(),
@@ -1281,15 +1281,15 @@ impl Render for BlockView {
 
                                 // First row: Tool header with icon, name, and regular parameters
                                 elements.push(
+
                                     div()
+                                        .id("tool-header-toggle")
                                         .flex()
                                         .flex_row()
-                                        .justify_between() // Space between header and chevron
-                                        .cursor_pointer() // Make entire header clickable
-                                        //.hover(|s| s.bg(border_color.opacity(0.1))) // Hover effect
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _event, _window, cx| {
+                                        .justify_between()
+                                        .cursor_pointer()
+                                        .on_click(
+                                            cx.listener(move |view, _event: &ClickEvent, _window, cx| {
                                                 view.toggle_tool_collapsed(cx);
                                             }),
                                         )
@@ -1607,12 +1607,13 @@ impl Render for BlockView {
                                     .border_t_1()
                                     .border_color(cx.theme().border)
                                     .bg(tool_bg)
+
+                                    .id("tool-footer-toggle")
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().border.opacity(0.5)))
                                     .opacity(footer_opacity)
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |view, _event, _window, cx| {
+                                    .on_click(
+                                        cx.listener(move |view, _event: &ClickEvent, _window, cx| {
                                             view.toggle_tool_collapsed(cx);
                                         }),
                                     )
@@ -1669,15 +1670,13 @@ impl Render for BlockView {
                             ])
                             .into_any_element(),
                         div()
+                            .id("compaction-toggle")
                             .text_sm()
                             .text_color(cx.theme().link)
                             .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|view, _event, _window, cx| {
-                                    view.toggle_compaction(cx);
-                                }),
-                            )
+                            .on_click(cx.listener(|view, _event: &ClickEvent, _window, cx| {
+                                view.toggle_compaction(cx);
+                            }))
                             .child(toggle_label)
                             .into_any_element(),
                     ])

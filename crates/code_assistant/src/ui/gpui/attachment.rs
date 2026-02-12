@@ -1,9 +1,10 @@
 use super::file_icons;
 use super::image;
 use crate::persistence::DraftAttachment;
+
 use gpui::{
-    div, img, prelude::*, px, Context, FocusHandle, Focusable, ImageSource, InteractiveElement,
-    MouseButton, ObjectFit, SharedString, Window,
+    div, img, prelude::*, px, ClickEvent, Context, FocusHandle, Focusable, ImageSource,
+    InteractiveElement, ObjectFit, SharedString, Window,
 };
 use gpui_component::ActiveTheme;
 
@@ -140,6 +141,7 @@ impl Render for AttachmentView {
                 container.child(
                     // Remove button - only visible on hover
                     div()
+                        .id("remove-attachment-btn")
                         .absolute()
                         .top(px(4.))
                         .right(px(4.))
@@ -156,13 +158,9 @@ impl Render for AttachmentView {
                             cx.theme().danger,
                             "🗑",
                         ))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |_view, _event, _window, cx| {
-                                // Emit a custom event that the parent can listen to
-                                cx.emit(AttachmentEvent::Remove(index));
-                            }),
-                        ),
+                        .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                            cx.emit(AttachmentEvent::Remove(index));
+                        })),
                 )
             })
     }

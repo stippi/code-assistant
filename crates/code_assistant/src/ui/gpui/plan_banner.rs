@@ -1,7 +1,7 @@
 use super::file_icons;
 use crate::types::{PlanItemPriority, PlanItemStatus, PlanState};
 use gpui::prelude::*;
-use gpui::{div, px, Context, EventEmitter, MouseButton, MouseUpEvent, Render, Window};
+use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
 use gpui_component::{text::TextView, ActiveTheme};
 
 #[derive(Clone)]
@@ -26,7 +26,7 @@ impl PlanBanner {
         cx.notify();
     }
 
-    fn on_toggle(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_toggle(&mut self, _event: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.collapsed = !self.collapsed;
         cx.emit(PlanBannerEvent::Toggle {
             collapsed: self.collapsed,
@@ -96,7 +96,8 @@ impl Render for PlanBanner {
                         cx.theme().muted_foreground,
                         chevron_fallback,
                     ))
-                    .on_mouse_up(MouseButton::Left, toggle),
+                    .id("plan-toggle-btn")
+                    .on_click(toggle),
             );
 
         let mut container = div()

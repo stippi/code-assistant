@@ -11,7 +11,7 @@ use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
-    Context, Entity, FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Subscription,
+    ClickEvent, Context, Entity, FocusHandle, Focusable, SharedString, Subscription,
     Transformation,
 };
 
@@ -93,7 +93,7 @@ impl RootView {
 
     pub fn on_toggle_chat_sidebar(
         &mut self,
-        _: &MouseUpEvent,
+        _: &ClickEvent,
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
@@ -137,7 +137,7 @@ impl RootView {
 
     fn on_toggle_theme(
         &mut self,
-        _: &MouseUpEvent,
+        _: &ClickEvent,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
@@ -148,7 +148,7 @@ impl RootView {
     #[allow(dead_code)]
     fn on_reset_click(
         &mut self,
-        _: &MouseUpEvent,
+        _: &ClickEvent,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
@@ -487,6 +487,7 @@ impl RootView {
                         .child(
                             // Add a close button
                             div()
+                                .id("error-close-btn")
                                 .flex_none()
                                 .size(px(20.))
                                 .rounded_sm()
@@ -494,15 +495,14 @@ impl RootView {
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().muted.opacity(0.3))) // Match other icon button hover effects
+                                .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
                                 .child(
                                     svg()
                                         .size(px(12.))
                                         .path(SharedString::from("icons/close.svg"))
                                         .text_color(text_color),
                                 )
-                                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
-                                    // Clear the error when close button is clicked
+                                .on_click(|_, _, cx| {
                                     if let Some(sender) = cx.try_global::<UiEventSender>() {
                                         let _ = sender.0.try_send(UiEvent::ClearError);
                                     }
@@ -812,6 +812,7 @@ impl Render for RootView {
                             // Chat sidebar toggle button
                             .child(
                                 div()
+                                    .id("toggle-sidebar-btn")
                                     .size(px(28.))
                                     .rounded_sm()
                                     .flex()
@@ -829,14 +830,12 @@ impl Render for RootView {
                                             .with_size(Size::Small)
                                             .text_color(cx.theme().muted_foreground),
                                     )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_toggle_chat_sidebar),
-                                    ),
+                                    .on_click(cx.listener(Self::on_toggle_chat_sidebar)),
                             )
                             // Theme toggle button
                             .child(
                                 div()
+                                    .id("toggle-theme-btn")
                                     .size(px(28.))
                                     .rounded_sm()
                                     .flex()
@@ -854,10 +853,7 @@ impl Render for RootView {
                                             .with_size(Size::Small)
                                             .text_color(cx.theme().muted_foreground),
                                     )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_toggle_theme),
-                                    ),
+                                    .on_click(cx.listener(Self::on_toggle_theme)),
                             ),
                     ),
             )

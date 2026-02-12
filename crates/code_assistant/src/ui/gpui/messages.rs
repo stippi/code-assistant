@@ -2,7 +2,7 @@ use super::branch_switcher::BranchSwitcherElement;
 use super::elements::MessageContainer;
 use gpui::{
     div, prelude::*, px, rgb, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, SharedString, Window,
+    SharedString, Window,
 };
 use gpui_component::{v_flex, ActiveTheme, Icon};
 use std::sync::{Arc, Mutex};
@@ -193,7 +193,7 @@ impl Render for MessagesView {
                                     .rounded_sm()
                                     .cursor(CursorStyle::PointingHand)
                                     .hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
-                                    .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
+                                    .on_click(move |_event, _window, cx| {
                                         if let (Some(session_id), Some(node_id)) =
                                             (session_id_for_edit.clone(), node_id_for_edit)
                                         {
