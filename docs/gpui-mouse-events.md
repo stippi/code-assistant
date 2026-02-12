@@ -7,18 +7,18 @@ This document provides a comprehensive overview of mouse event handling in GPUI,
 GPUI provides several mouse event types, all defined in `interactive.rs`:
 
 1. **MouseDownEvent** - When a mouse button is pressed
-2. **MouseUpEvent** - When a mouse button is released  
+2. **MouseUpEvent** - When a mouse button is released
 3. **MouseMoveEvent** - When the mouse is moved
 4. **ScrollWheelEvent** - When the mouse wheel is scrolled
 5. **MouseExitEvent** - When the mouse leaves the window
-6. **ClickEvent** - A composite event combining MouseDown + MouseUp
+6. **ClickEvent** - A composite event combining MouseDown + MouseUp on the same element
 7. **FileDropEvent** - When files are dragged and dropped
 
 ## Mouse Buttons Supported
 
 The `MouseButton` enum supports:
 - `Left` - Left mouse button
-- `Right` - Right mouse button  
+- `Right` - Right mouse button
 - `Middle` - Middle mouse button
 - `Navigate(NavigationDirection)` - Back/Forward navigation buttons
 
@@ -28,7 +28,7 @@ The `MouseButton` enum supports:
 
 **Mouse Down Events:**
 - `on_mouse_down(button, listener)` - Listen for specific button press (bubble phase)
-- `on_any_mouse_down(listener)` - Listen for any button press (bubble phase)  
+- `on_any_mouse_down(listener)` - Listen for any button press (bubble phase)
 - `capture_any_mouse_down(listener)` - Listen for any button press (capture phase)
 - `on_mouse_down_out(listener)` - Listen for mouse down outside element bounds
 
@@ -44,10 +44,24 @@ The `MouseButton` enum supports:
 
 ### StatefulInteractiveElement Trait Methods
 
-**StatefulInteractiveElement** trait adds:
-- `on_click(listener)` - Listen for click events (mouse down + up)
-- `on_hover(listener)` - Listen for hover start/end events  
+**StatefulInteractiveElement** trait adds (requires `.id()` on the element):
+- `on_click(listener)` - Listen for click events (mouse down + up on the same element)
+- `on_hover(listener)` - Listen for hover start/end events
 - `on_drag<T, W>(value, constructor)` - Handle drag initiation
+
+## on_click vs on_mouse_up
+
+**Prefer `on_click` for button-like interactions.** The key difference:
+
+- **`on_click`** tracks mouse-down/mouse-up pairing per element. It only fires when
+  the mouse was both pressed *and* released on the same element. This prevents
+  accidental activations (e.g., user starts selecting text in the chat, drags the
+  mouse over a button, and releases — `on_click` will NOT fire, but `on_mouse_up`
+  would). Requires a stateful element (`.id()`).
+
+- **`on_mouse_up`** fires whenever the mouse button is released over the element,
+  regardless of where the press originated. Use it only for low-level interactions
+  like ending a drag operation or right-click context menus.
 
 ## Event Phases
 
@@ -56,38 +70,16 @@ GPUI uses a two-phase event system:
 1. **Capture Phase** (`DispatchPhase::Capture`) - Events flow from root to target
 2. **Bubble Phase** (`DispatchPhase::Bubble`) - Events flow from target back to root
 
-## Mouse Up Event Handling
-
-To be notified of "mouse up" events, you have several options:
-
-### For Specific Button Release
-```rust
-element.on_mouse_up(MouseButton::Left, |event, window, cx| {
-    // Handle left mouse button release
-    println!("Left mouse button released at {:?}", event.position);
-})
-```
-
-### For Any Button Release (Capture Phase)
-```rust
-element.capture_any_mouse_up(|event, window, cx| {
-    // Handle any mouse button release during capture phase
-    println!("Mouse button released: {:?}", event.button);
-})
-```
-
-### For Mouse Up Outside Element
-```rust
-element.on_mouse_up_out(MouseButton::Left, |event, window, cx| {
-    // Handle left mouse button release outside element bounds
-})
-```
-
 ## Event Properties
+
+### ClickEvent
+An enum with two variants:
+- `ClickEvent::Mouse(MouseClickEvent)` - contains both the `down: MouseDownEvent` and `up: MouseUpEvent`
+- `ClickEvent::Keyboard(KeyboardClickEvent)` - triggered by Enter/Space on a focused element
 
 ### MouseUpEvent Properties
 - `button: MouseButton` - Which button was released
-- `position: Point<Pixels>` - Mouse position in window coordinates  
+- `position: Point<Pixels>` - Mouse position in window coordinates
 - `modifiers: Modifiers` - Keyboard modifiers held during release
 - `click_count: usize` - Number of consecutive clicks
 
@@ -112,16 +104,28 @@ element.on_mouse_up_out(MouseButton::Left, |event, window, cx| {
 
 ## Common Usage Patterns
 
-### Basic Click Handling
+### Basic Click Handling (preferred)
 ```rust
+// Use on_click for buttons and clickable items.
+// Requires .id() on the element.
 div()
+    .id("my-button")
     .on_click(|event, window, cx| {
-        println!("Clicked at {:?}", event.up.position);
+        println!("Clicked!");
     })
+
+// With cx.listener to access entity state:
+div()
+    .id("my-button")
+    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+        this.handle_click(cx);
+    }))
 ```
 
 ### Drag and Drop
 ```rust
+// on_mouse_down / on_mouse_up are appropriate here because we're
+// tracking a drag gesture, not a simple click.
 div()
     .on_mouse_down(MouseButton::Left, |event, window, cx| {
         // Start drag operation
@@ -150,6 +154,8 @@ div()
 
 ### Right-Click Context Menu
 ```rust
+// on_mouse_up is appropriate for right-click because on_click
+// only handles left-click / keyboard activation.
 div()
     .on_mouse_up(MouseButton::Right, |event, window, cx| {
         // Show context menu at event.position
