@@ -20,10 +20,6 @@ pub struct TerminalTuiUI {
 }
 
 impl TerminalTuiUI {
-    pub fn new() -> Self {
-        Self::new_with_state(Arc::new(Mutex::new(AppState::new())))
-    }
-
     pub fn new_with_state(app_state: Arc<Mutex<AppState>>) -> Self {
         Self {
             app_state,

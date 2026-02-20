@@ -10,8 +10,9 @@ use std::io;
 use tui_markdown as md;
 use tui_textarea::TextArea;
 
-use super::history_insert;
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
+use super::terminal_core::TerminalCore;
+use super::transcript::TranscriptState;
 use crate::types::{PlanItemStatus, PlanState};
 use crate::ui::ToolStatus;
 use std::time::Instant;
@@ -74,15 +75,10 @@ struct StatusEntry {
 
 /// Handles the terminal display and rendering using ratatui
 pub struct TerminalRenderer<B: Backend> {
+    terminal_core: TerminalCore<B>,
     pub terminal: Terminal<B>,
-    /// Factory function to create new terminal instances (used for resizing)
-    terminal_factory: Box<dyn Fn() -> Result<Terminal<B>> + Send + Sync>,
-    /// Finalized messages (as complete message structures)
-    pub finalized_messages: Vec<LiveMessage>,
-    /// Number of finalized messages already inserted into terminal history
-    committed_finalized_count: usize,
-    /// Current live message being streamed
-    pub live_message: Option<LiveMessage>,
+    /// Transcript model with committed history and one active streaming message.
+    pub transcript: TranscriptState,
     /// Optional pending user message (displayed between input and live content while streaming)
     pending_user_message: Option<String>,
     /// Current error message to display
@@ -119,13 +115,12 @@ impl<B: Backend> TerminalRenderer<B> {
     where
         F: Fn() -> Result<Terminal<B>> + Send + Sync + 'static,
     {
-        let terminal = factory()?;
+        let terminal_core = TerminalCore::with_factory(factory);
+        let terminal = terminal_core.create_terminal()?;
         Ok(Self {
+            terminal_core,
             terminal,
-            terminal_factory: Box::new(factory),
-            finalized_messages: Vec::new(),
-            committed_finalized_count: 0,
-            live_message: None,
+            transcript: TranscriptState::new(),
             pending_user_message: None,
             current_error: None,
             info_message: None,
@@ -141,19 +136,19 @@ impl<B: Backend> TerminalRenderer<B> {
 
     /// Setup terminal for ratatui usage
     pub fn setup_terminal(&mut self) -> Result<()> {
-        ratatui::crossterm::terminal::enable_raw_mode()?;
+        self.terminal_core.setup_terminal()?;
         Ok(())
     }
 
     /// Cleanup terminal when exiting
     pub fn cleanup_terminal(&mut self) -> Result<()> {
-        ratatui::crossterm::terminal::disable_raw_mode()?;
+        self.terminal_core.cleanup_terminal()?;
         Ok(())
     }
 
     /// Update terminal size and adjust viewport (recreate terminal using factory)
     pub fn update_size(&mut self, _input_height: u16) -> Result<()> {
-        self.terminal = (self.terminal_factory)()?;
+        self.terminal = self.terminal_core.create_terminal()?;
         Ok(())
     }
 
@@ -163,16 +158,7 @@ impl<B: Backend> TerminalRenderer<B> {
         self.spinner_state = SpinnerState::Loading {
             start_time: Instant::now(),
         };
-        // Finalize current message if any
-        if let Some(mut current_message) = self.live_message.take() {
-            current_message.finalized = true;
-            if current_message.has_content() {
-                self.finalized_messages.push(current_message);
-            }
-        }
-
-        // Start new live message
-        self.live_message = Some(LiveMessage::new());
+        self.transcript.start_active_message();
     }
 
     /// Start a new tool use block within the current message
@@ -181,8 +167,8 @@ impl<B: Backend> TerminalRenderer<B> {
         self.hide_loading_spinner_if_active();
 
         let live_message = self
-            .live_message
-            .as_mut()
+            .transcript
+            .active_message_mut()
             .expect("start_tool_use_block called without an active live message");
 
         live_message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
@@ -206,7 +192,7 @@ impl<B: Backend> TerminalRenderer<B> {
             {
                 if last_type == current_type {
                     // Same type as before the hidden tool - insert paragraph break
-                    if let Some(live_message) = self.live_message.as_mut() {
+                    if let Some(live_message) = self.transcript.active_message_mut() {
                         if let Some(last_block) = live_message.blocks.last_mut() {
                             match last_block {
                                 MessageBlock::PlainText(text_block) => {
@@ -229,7 +215,9 @@ impl<B: Backend> TerminalRenderer<B> {
             self.last_block_type_for_hidden_tool = Some(block_type);
         }
 
-        let live_message = self.live_message.as_mut()
+        let live_message = self
+            .transcript
+            .active_message_mut()
             .expect("ensure_last_block_type called without an active live message - call start_new_message first");
 
         // Check if we need a new block of the specified type
@@ -282,8 +270,8 @@ impl<B: Backend> TerminalRenderer<B> {
         self.hide_loading_spinner_if_active();
 
         let live_message = self
-            .live_message
-            .as_mut()
+            .transcript
+            .active_message_mut()
             .expect("append_to_live_block called without an active live message");
 
         if let Some(last_block) = live_message.get_last_block_mut() {
@@ -294,8 +282,8 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Add or update a tool parameter in the current message
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
         let live_message = self
-            .live_message
-            .as_mut()
+            .transcript
+            .active_message_mut()
             .expect("add_or_update_tool_parameter called without an active live message");
 
         if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
@@ -312,8 +300,8 @@ impl<B: Backend> TerminalRenderer<B> {
         output: Option<String>,
     ) {
         let live_message = self
-            .live_message
-            .as_mut()
+            .transcript
+            .active_message_mut()
             .expect("update_tool_status called without an active live message");
 
         if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
@@ -332,7 +320,7 @@ impl<B: Backend> TerminalRenderer<B> {
         user_message.add_block(MessageBlock::PlainText(text_block));
         user_message.finalized = true;
 
-        self.finalized_messages.push(user_message);
+        self.transcript.push_committed_message(user_message);
         self.pending_user_message = None; // Clear pending message when it becomes finalized
         Ok(())
     }
@@ -346,15 +334,13 @@ impl<B: Backend> TerminalRenderer<B> {
         instruction_message.add_block(MessageBlock::PlainText(text_block));
         instruction_message.finalized = true;
 
-        self.finalized_messages.push(instruction_message);
+        self.transcript.push_committed_message(instruction_message);
         Ok(())
     }
 
     /// Clear all messages and reset state
     pub fn clear_all_messages(&mut self) {
-        self.finalized_messages.clear();
-        self.committed_finalized_count = 0;
-        self.live_message = None;
+        self.transcript.clear();
         self.spinner_state = SpinnerState::Hidden;
     }
 
@@ -379,84 +365,23 @@ impl<B: Backend> TerminalRenderer<B> {
     }
 
     fn flush_new_finalized_messages(&mut self, _width: u16) -> Result<()> {
-        if self.committed_finalized_count >= self.finalized_messages.len() {
+        let unrendered = self.transcript.unrendered_committed_messages();
+        if unrendered.is_empty() {
             return Ok(());
         }
 
         let mut lines = Vec::new();
-        for message in self
-            .finalized_messages
-            .iter()
-            .skip(self.committed_finalized_count)
-        {
+        for message in unrendered {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            lines.extend(Self::message_to_history_lines(message));
+            lines.extend(TranscriptState::as_history_lines(message));
         }
 
-        history_insert::insert_history_lines(&mut self.terminal, &lines)?;
-        self.committed_finalized_count = self.finalized_messages.len();
+        self.terminal_core
+            .insert_history_lines(&mut self.terminal, &lines)?;
+        self.transcript.mark_committed_as_rendered();
         Ok(())
-    }
-
-    fn message_to_history_lines(message: &LiveMessage) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-
-        for block in &message.blocks {
-            match block {
-                MessageBlock::PlainText(text) => {
-                    if text.content.is_empty() {
-                        continue;
-                    }
-                    for line in text.content.lines() {
-                        lines.push(Line::from(line.to_string()));
-                    }
-                }
-                MessageBlock::Thinking(thinking) => {
-                    if thinking.content.trim().is_empty() {
-                        continue;
-                    }
-                    for line in thinking.content.lines() {
-                        lines.push(Line::styled(
-                            line.to_string(),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::ITALIC),
-                        ));
-                    }
-                }
-                MessageBlock::ToolUse(tool) => {
-                    lines.push(Line::styled(
-                        format!("tool: {}", tool.name),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                    for (param_name, param_value) in &tool.parameters {
-                        for line in param_value.value.lines() {
-                            lines.push(Line::from(format!("  {param_name}: {line}")));
-                        }
-                    }
-                    if let Some(status_message) = &tool.status_message {
-                        lines.push(Line::styled(
-                            format!("  status: {status_message}"),
-                            Style::default().fg(match tool.status {
-                                ToolStatus::Pending => Color::Gray,
-                                ToolStatus::Running => Color::Blue,
-                                ToolStatus::Success => Color::Green,
-                                ToolStatus::Error => Color::Red,
-                            }),
-                        ));
-                    }
-                    if let Some(output) = &tool.output {
-                        for line in output.lines() {
-                            lines.push(Line::from(format!("  {line}")));
-                        }
-                    }
-                }
-            }
-        }
-
-        lines
     }
 
     /// Render the complete UI: live content + status + input.
@@ -578,7 +503,7 @@ impl<B: Backend> TerminalRenderer<B> {
         }
 
         // 2) Render current live message (so it is closest to the input)
-        if let Some(ref live_message) = self.live_message {
+        if let Some(live_message) = self.transcript.active_message() {
             if live_message.has_content() && cursor_y > 0 {
                 self.render_message_to_buffer(live_message, &mut scratch, &mut cursor_y, width);
                 // Add gap after live message
@@ -993,9 +918,8 @@ mod tests {
         #[test]
         fn test_basic_renderer_creation_and_state() {
             let renderer = create_default_test_renderer();
-            assert_eq!(renderer.finalized_messages.len(), 0);
-            assert!(renderer.live_message.is_none());
-            assert_eq!(renderer.last_overflow, 0);
+            assert_eq!(renderer.transcript.committed_messages().len(), 0);
+            assert!(renderer.transcript.active_message().is_none());
             assert!(!renderer.has_error());
         }
 
@@ -1005,15 +929,15 @@ mod tests {
 
             // Start a new message
             renderer.start_new_message(1);
-            assert!(renderer.live_message.is_some());
-            assert_eq!(renderer.finalized_messages.len(), 0);
+            assert!(renderer.transcript.active_message().is_some());
+            assert_eq!(renderer.transcript.committed_messages().len(), 0);
 
             // Add content to live message
             renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
             renderer.append_to_live_block("Test content");
 
             // Verify live message has content
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert!(live_message.has_content());
             assert!(!live_message.finalized);
 
@@ -1021,12 +945,12 @@ mod tests {
             renderer.start_new_message(2);
 
             // Previous message should be finalized
-            assert_eq!(renderer.finalized_messages.len(), 1);
-            assert!(renderer.finalized_messages[0].finalized);
-            assert!(renderer.finalized_messages[0].has_content());
+            assert_eq!(renderer.transcript.committed_messages().len(), 1);
+            assert!(renderer.transcript.committed_messages()[0].finalized);
+            assert!(renderer.transcript.committed_messages()[0].has_content());
 
             // New live message should be empty
-            let new_live = renderer.live_message.as_ref().unwrap();
+            let new_live = renderer.transcript.active_message().unwrap();
             assert!(!new_live.has_content());
             assert!(!new_live.finalized);
         }
@@ -1061,7 +985,7 @@ mod tests {
             );
 
             // Verify we have 2 blocks now
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert_eq!(live_message.blocks.len(), 2);
         }
 
@@ -1078,7 +1002,7 @@ mod tests {
             renderer.append_to_live_block("world!");
 
             // Verify content was appended
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert_eq!(live_message.blocks.len(), 1);
 
             if let MessageBlock::PlainText(text_block) = &live_message.blocks[0] {
@@ -1444,7 +1368,7 @@ mod tests {
             // Add some finalized messages
             for i in 0..3 {
                 let message = create_text_message(&format!("Message {i}"));
-                renderer.finalized_messages.push(message);
+                renderer.transcript.committed_messages_mut().push(message);
             }
 
             // Add live message
@@ -1453,16 +1377,14 @@ mod tests {
             renderer.append_to_live_block("Live content");
 
             // Set some state
-            renderer.last_overflow = 10;
             renderer.show_rate_limit_spinner(30);
 
             // Clear all messages
             renderer.clear_all_messages();
 
             // Everything should be reset
-            assert_eq!(renderer.last_overflow, 0);
-            assert!(renderer.finalized_messages.is_empty());
-            assert!(renderer.live_message.is_none());
+            assert!(renderer.transcript.committed_messages().is_empty());
+            assert!(renderer.transcript.active_message().is_none());
             assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
         }
 
@@ -1483,7 +1405,7 @@ mod tests {
             );
 
             // Verify tool block was updated
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert_eq!(live_message.blocks.len(), 1);
 
             if let MessageBlock::ToolUse(tool_block) = &live_message.blocks[0] {
@@ -1823,8 +1745,8 @@ mod tests {
 
             // 5. Finalize message by starting new one
             renderer.start_new_message(2);
-            assert_eq!(renderer.finalized_messages.len(), 1);
-            assert!(renderer.finalized_messages[0].finalized);
+            assert_eq!(renderer.transcript.committed_messages().len(), 1);
+            assert!(renderer.transcript.committed_messages()[0].finalized);
         }
 
         #[test]
@@ -1836,7 +1758,7 @@ mod tests {
             // Add exactly 3 finalized messages with predictable single-line content
             for i in 0..3 {
                 let message = create_text_message(&format!("Message {i}"));
-                renderer.finalized_messages.push(message);
+                renderer.transcript.committed_messages_mut().push(message);
             }
 
             // Add a live message that will push content into scrollback
@@ -1891,12 +1813,10 @@ mod tests {
             for line in &scrollback_lines {
                 println!("  {line}");
             }
-            println!("last_overflow: {}", renderer.last_overflow);
-
             // Now add more content to force more overflow
             for i in 3..6 {
                 let message = create_text_message(&format!("Additional message {i}"));
-                renderer.finalized_messages.push(message);
+                renderer.transcript.committed_messages_mut().push(message);
             }
 
             // Second render - should push more content to scrollback
@@ -1943,8 +1863,6 @@ mod tests {
             for line in &scrollback_lines_2 {
                 println!("  {line}");
             }
-            println!("last_overflow: {}", renderer.last_overflow);
-
             // Specific assertions to catch duplication bugs:
 
             // 1. Live message should be visible in viewport (closest to input)
@@ -2022,10 +1940,7 @@ mod tests {
                 "Should have content in scrollback"
             );
 
-            // 5. Verify overflow tracking is reasonable
-            assert!(renderer.last_overflow > 0, "Should track overflow amount");
-
-            // 6. Total unique messages should equal what we added
+            // 5. Total unique messages should equal what we added
             let total_unique_messages = viewport_messages.len() + scrollback_messages.len();
             assert!(
                 total_unique_messages <= 6,
@@ -2046,7 +1961,7 @@ mod tests {
 
             // Add one finalized message first
             let message = create_text_message("Previous message");
-            renderer.finalized_messages.push(message);
+            renderer.transcript.committed_messages_mut().push(message);
 
             // Start a live message with a tool that will be tall
             renderer.start_new_message(1);
@@ -2192,7 +2107,7 @@ mod tests {
             // Add some finalized messages
             for i in 0..2 {
                 let message = create_text_message(&format!("Finalized message {i}"));
-                renderer.finalized_messages.push(message);
+                renderer.transcript.committed_messages_mut().push(message);
             }
 
             // Start a live message
