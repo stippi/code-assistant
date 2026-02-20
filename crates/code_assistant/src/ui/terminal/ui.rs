@@ -21,8 +21,12 @@ pub struct TerminalTuiUI {
 
 impl TerminalTuiUI {
     pub fn new() -> Self {
+        Self::new_with_state(Arc::new(Mutex::new(AppState::new())))
+    }
+
+    pub fn new_with_state(app_state: Arc<Mutex<AppState>>) -> Self {
         Self {
-            app_state: Arc::new(Mutex::new(AppState::new())),
+            app_state,
             redraw_tx: Arc::new(Mutex::new(None)),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             renderer: Arc::new(Mutex::new(None)),

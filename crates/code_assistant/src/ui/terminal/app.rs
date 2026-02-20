@@ -234,18 +234,15 @@ async fn event_loop(
     Ok(())
 }
 
-pub struct TerminalTuiApp {
-    app_state: Arc<Mutex<AppState>>,
-}
+pub struct TerminalTuiApp {}
 
 impl TerminalTuiApp {
     pub fn new() -> Self {
-        Self {
-            app_state: Arc::new(Mutex::new(AppState::new())),
-        }
+        Self {}
     }
 
     pub async fn run(&self, config: &AgentRunConfig) -> Result<()> {
+        let app_state = Arc::new(Mutex::new(AppState::new()));
         let root_path = config.path.canonicalize()?;
 
         // Create session persistence
@@ -273,7 +270,7 @@ impl TerminalTuiApp {
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
         // Create terminal UI and wrap as UserInterface
-        let terminal_ui = TerminalTuiUI::new();
+        let terminal_ui = TerminalTuiUI::new_with_state(app_state.clone());
         let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui.clone());
 
         // Setup UI event channel for display fragments
@@ -364,7 +361,7 @@ impl TerminalTuiApp {
 
         // Immediately set current_session_id so first Enter can send
         {
-            let mut state = self.app_state.lock().await;
+            let mut state = app_state.lock().await;
             state.current_session_id = Some(session_id.clone());
         }
 
@@ -384,7 +381,7 @@ impl TerminalTuiApp {
         // Spawn a background task to translate backend responses into UiEvents
         {
             let ui_clone = ui.clone();
-            let app_state_clone = self.app_state.clone();
+            let app_state_clone = app_state.clone();
             tokio::spawn(async move {
                 while let Ok(resp) = backend_response_rx.recv().await {
                     match resp {
@@ -524,7 +521,7 @@ impl TerminalTuiApp {
         let mut event_loop_handle = tokio::spawn(event_loop(
             input_manager,
             renderer.clone(),
-            self.app_state.clone(),
+            app_state,
             terminal_ui.cancel_flag.clone(),
             backend_event_tx,
         ));

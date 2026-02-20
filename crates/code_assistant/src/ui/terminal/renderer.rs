@@ -10,6 +10,7 @@ use std::io;
 use tui_markdown as md;
 use tui_textarea::TextArea;
 
+use super::history_insert;
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
 use crate::types::{PlanItemStatus, PlanState};
 use crate::ui::ToolStatus;
@@ -78,6 +79,8 @@ pub struct TerminalRenderer<B: Backend> {
     terminal_factory: Box<dyn Fn() -> Result<Terminal<B>> + Send + Sync>,
     /// Finalized messages (as complete message structures)
     pub finalized_messages: Vec<LiveMessage>,
+    /// Number of finalized messages already inserted into terminal history
+    committed_finalized_count: usize,
     /// Current live message being streamed
     pub live_message: Option<LiveMessage>,
     /// Optional pending user message (displayed between input and live content while streaming)
@@ -90,8 +93,6 @@ pub struct TerminalRenderer<B: Backend> {
     plan_state: Option<PlanState>,
     /// Whether to render the expanded plan view
     plan_expanded: bool,
-    /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
-    pub last_overflow: u16,
 
     /// Maximum rows for input area (including 1 for content min + border)
     pub max_input_rows: u16,
@@ -123,6 +124,7 @@ impl<B: Backend> TerminalRenderer<B> {
             terminal,
             terminal_factory: Box::new(factory),
             finalized_messages: Vec::new(),
+            committed_finalized_count: 0,
             live_message: None,
             pending_user_message: None,
             current_error: None,
@@ -130,7 +132,6 @@ impl<B: Backend> TerminalRenderer<B> {
 
             plan_state: None,
             plan_expanded: false,
-            last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
             spinner_state: SpinnerState::Hidden,
             last_block_type_for_hidden_tool: None,
@@ -172,7 +173,6 @@ impl<B: Backend> TerminalRenderer<B> {
 
         // Start new live message
         self.live_message = Some(LiveMessage::new());
-        self.last_overflow = 0;
     }
 
     /// Start a new tool use block within the current message
@@ -353,8 +353,8 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Clear all messages and reset state
     pub fn clear_all_messages(&mut self) {
         self.finalized_messages.clear();
+        self.committed_finalized_count = 0;
         self.live_message = None;
-        self.last_overflow = 0;
         self.spinner_state = SpinnerState::Hidden;
     }
 
@@ -378,23 +378,101 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
-    /// Render the complete UI: composed finalized content + live content + 1-line gap + input
+    fn flush_new_finalized_messages(&mut self, _width: u16) -> Result<()> {
+        if self.committed_finalized_count >= self.finalized_messages.len() {
+            return Ok(());
+        }
+
+        let mut lines = Vec::new();
+        for message in self
+            .finalized_messages
+            .iter()
+            .skip(self.committed_finalized_count)
+        {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            lines.extend(Self::message_to_history_lines(message));
+        }
+
+        history_insert::insert_history_lines(&mut self.terminal, &lines)?;
+        self.committed_finalized_count = self.finalized_messages.len();
+        Ok(())
+    }
+
+    fn message_to_history_lines(message: &LiveMessage) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        for block in &message.blocks {
+            match block {
+                MessageBlock::PlainText(text) => {
+                    if text.content.is_empty() {
+                        continue;
+                    }
+                    for line in text.content.lines() {
+                        lines.push(Line::from(line.to_string()));
+                    }
+                }
+                MessageBlock::Thinking(thinking) => {
+                    if thinking.content.trim().is_empty() {
+                        continue;
+                    }
+                    for line in thinking.content.lines() {
+                        lines.push(Line::styled(
+                            line.to_string(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::ITALIC),
+                        ));
+                    }
+                }
+                MessageBlock::ToolUse(tool) => {
+                    lines.push(Line::styled(
+                        format!("tool: {}", tool.name),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    for (param_name, param_value) in &tool.parameters {
+                        for line in param_value.value.lines() {
+                            lines.push(Line::from(format!("  {param_name}: {line}")));
+                        }
+                    }
+                    if let Some(status_message) = &tool.status_message {
+                        lines.push(Line::styled(
+                            format!("  status: {status_message}"),
+                            Style::default().fg(match tool.status {
+                                ToolStatus::Pending => Color::Gray,
+                                ToolStatus::Running => Color::Blue,
+                                ToolStatus::Success => Color::Green,
+                                ToolStatus::Error => Color::Red,
+                            }),
+                        ));
+                    }
+                    if let Some(output) = &tool.output {
+                        for line in output.lines() {
+                            lines.push(Line::from(format!("  {line}")));
+                        }
+                    }
+                }
+            }
+        }
+
+        lines
+    }
+
+    /// Render the complete UI: live content + status + input.
     pub fn render(&mut self, textarea: &TextArea) -> Result<()> {
-        // Phase 1: compute layout and promotion outside of draw
         let term_size = self.terminal.size()?;
         let input_height = self.calculate_input_height(textarea);
         let available = term_size.height.saturating_sub(input_height);
         let width = term_size.width;
+        self.flush_new_finalized_messages(width)?;
 
-        // Compose scratch buffer: render 1 blank line (gap), then live_message, then finalized tail above
         let headroom: u16 = 200; // keep small to reduce work per frame
         let scratch_height = available.saturating_add(headroom).max(available);
         let mut scratch = Buffer::empty(Rect::new(0, 0, width, scratch_height));
 
-        // We pack from bottom up: bottom = gap, above it pending user msg (if any), above it live, above that finalized tail
         let mut cursor_y = scratch_height; // one past last line
 
-        // Reserve one blank line as gap above input (at the very bottom)
         cursor_y = cursor_y.saturating_sub(1);
 
         let mut status_entries: Vec<StatusEntry> = Vec::new();
@@ -508,50 +586,9 @@ impl<B: Backend> TerminalRenderer<B> {
             }
         }
 
-        // 3) Render finalized messages from newest to oldest above live until we filled enough
-        for message in self.finalized_messages.iter().rev() {
-            if cursor_y == 0 {
-                break;
-            }
-            // stop if we already filled enough (available + headroom)
-            let filled = scratch_height - cursor_y;
-            if filled >= available + headroom {
-                break;
-            }
-
-            self.render_message_to_buffer(message, &mut scratch, &mut cursor_y, width);
-            // Add gap after each message
-            cursor_y = cursor_y.saturating_sub(1);
-        }
-
-        // Now composed content occupies rows [cursor_y .. scratch_height)
+        // Composed content occupies rows [cursor_y .. scratch_height)
         let total_height = scratch_height.saturating_sub(cursor_y);
-        let overflow = total_height.saturating_sub(available);
 
-        // Promote only the delta that has not yet been promoted
-        if overflow > self.last_overflow {
-            let new_to_promote = overflow - self.last_overflow;
-            let promote_start = cursor_y + self.last_overflow;
-            let term_width = width;
-            self.terminal
-                .insert_before(new_to_promote, |buf: &mut Buffer| {
-                    for y in 0..new_to_promote {
-                        for x in 0..term_width {
-                            let row = promote_start + y;
-                            let src = scratch
-                                .cell((x, row))
-                                .cloned()
-                                .unwrap_or_else(ratatui::buffer::Cell::default);
-                            if let Some(dst) = buf.cell_mut((x, y)) {
-                                *dst = src;
-                            }
-                        }
-                    }
-                })?;
-            self.last_overflow = overflow;
-        }
-
-        // Phase 2: draw bottom `available` rows, pending message, and input
         self.terminal.draw(|f| {
             let full = f.area();
 
@@ -564,7 +601,7 @@ impl<B: Backend> TerminalRenderer<B> {
 
             let visible_total = total_height.min(content_area.height);
             let top_blank = content_area.height - visible_total; // rows to leave blank at top
-            let visible_start = cursor_y.saturating_add(overflow);
+            let visible_start = scratch_height.saturating_sub(visible_total);
             let dst = f.buffer_mut();
 
             // Top blank area (if any)
