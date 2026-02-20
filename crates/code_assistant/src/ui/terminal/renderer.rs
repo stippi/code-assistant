@@ -90,6 +90,10 @@ pub struct TerminalRenderer<B: Backend> {
     plan_state: Option<PlanState>,
     /// Whether to render the expanded plan view
     plan_expanded: bool,
+    /// When overlay is active, history commits are deferred and flushed on close.
+    overlay_active: bool,
+    /// Buffered history lines emitted while overlay is active.
+    deferred_history_lines: Vec<Line<'static>>,
 
     /// Bottom composer rendering and sizing.
     composer: Composer,
@@ -130,6 +134,8 @@ impl<B: Backend> TerminalRenderer<B> {
 
             plan_state: None,
             plan_expanded: false,
+            overlay_active: false,
+            deferred_history_lines: Vec::new(),
             composer: Composer::new(5),
             streaming_controller: StreamingController::new(),
             spinner_state: SpinnerState::Hidden,
@@ -272,6 +278,7 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Toggle whether the expanded plan view should be rendered
     pub fn set_plan_expanded(&mut self, expanded: bool) {
         self.plan_expanded = expanded;
+        self.overlay_active = expanded;
     }
 
     /// Append text to the last block in the current message
@@ -369,6 +376,7 @@ impl<B: Backend> TerminalRenderer<B> {
     pub fn clear_all_messages(&mut self) {
         self.transcript.clear();
         self.streaming_controller.clear();
+        self.deferred_history_lines.clear();
         self.spinner_state = SpinnerState::Hidden;
     }
 
@@ -392,7 +400,18 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
-    fn flush_new_finalized_messages(&mut self, _width: u16) -> Result<()> {
+    fn flush_deferred_history_lines(&mut self) -> Result<()> {
+        if self.deferred_history_lines.is_empty() {
+            return Ok(());
+        }
+
+        self.terminal_core
+            .insert_history_lines(&mut self.terminal, &self.deferred_history_lines)?;
+        self.deferred_history_lines.clear();
+        Ok(())
+    }
+
+    fn flush_new_finalized_messages(&mut self) -> Result<()> {
         let unrendered = self.transcript.unrendered_committed_messages();
         if unrendered.is_empty() {
             return Ok(());
@@ -406,8 +425,12 @@ impl<B: Backend> TerminalRenderer<B> {
             lines.extend(TranscriptState::as_history_lines(message));
         }
 
-        self.terminal_core
-            .insert_history_lines(&mut self.terminal, &lines)?;
+        if self.overlay_active {
+            self.deferred_history_lines.extend(lines);
+        } else {
+            self.terminal_core
+                .insert_history_lines(&mut self.terminal, &lines)?;
+        }
         self.transcript.mark_committed_as_rendered();
         Ok(())
     }
@@ -444,7 +467,10 @@ impl<B: Backend> TerminalRenderer<B> {
         let input_height = self.composer.calculate_input_height(textarea);
         let available = term_size.height.saturating_sub(input_height);
         let width = term_size.width;
-        self.flush_new_finalized_messages(width)?;
+        if !self.overlay_active {
+            self.flush_deferred_history_lines()?;
+        }
+        self.flush_new_finalized_messages()?;
 
         let headroom: u16 = 200; // keep small to reduce work per frame
         let scratch_height = available.saturating_add(headroom).max(available);
@@ -899,6 +925,11 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Clear the current info message
     pub fn clear_info(&mut self) {
         self.info_message = None;
+    }
+
+    #[cfg(test)]
+    fn deferred_history_line_count(&self) -> usize {
+        self.deferred_history_lines.len()
     }
 }
 
@@ -1367,6 +1398,32 @@ mod tests {
                 !found_error_after_clear,
                 "Error message should be cleared from rendering"
             );
+        }
+
+        #[test]
+        fn test_overlay_defers_and_flushes_committed_history_lines() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            renderer.start_new_message(1);
+            renderer.queue_text_delta("deferred line\n".to_string());
+            renderer.render(&textarea).unwrap();
+
+            renderer.set_plan_expanded(true);
+            renderer.start_new_message(2);
+            renderer.render(&textarea).unwrap();
+
+            assert_eq!(renderer.transcript.committed_messages().len(), 1);
+            assert_eq!(renderer.transcript.committed_rendered_count(), 1);
+            assert!(
+                renderer.deferred_history_line_count() > 0,
+                "History commits should be buffered while overlay is active"
+            );
+            renderer.set_plan_expanded(false);
+            renderer.render(&textarea).unwrap();
+
+            assert_eq!(renderer.deferred_history_line_count(), 0);
+            assert_eq!(renderer.transcript.committed_rendered_count(), 1);
         }
 
         #[test]
