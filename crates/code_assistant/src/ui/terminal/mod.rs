@@ -6,7 +6,7 @@ pub mod input;
 pub mod message;
 pub mod renderer;
 pub mod state;
-pub mod streaming_controller;
+pub mod streaming;
 pub mod terminal_core;
 pub mod tool_widget;
 pub mod transcript;

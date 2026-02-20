@@ -289,6 +289,11 @@ impl UserInterface for TerminalTuiUI {
 
                 self.cancel_flag.store(false, Ordering::SeqCst);
 
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.flush_streaming_pending();
+                }
+
                 // Don't finalize the message yet - keep it live for tool status updates
                 // It will be finalized when the next StreamingStarted event arrives
             }

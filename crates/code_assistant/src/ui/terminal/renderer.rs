@@ -11,7 +11,7 @@ use tui_textarea::TextArea;
 
 use super::composer::Composer;
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
-use super::streaming_controller::{StreamKind, StreamingController};
+use super::streaming::controller::{StreamDelta, StreamKind, StreamingController};
 use super::terminal_core::TerminalCore;
 use super::transcript::TranscriptState;
 use crate::types::{PlanItemStatus, PlanState};
@@ -158,6 +158,11 @@ impl<B: Backend> TerminalRenderer<B> {
 
     /// Start a new message (called on StreamingStarted)
     pub fn start_new_message(&mut self, _request_id: u64) {
+        // Flush any buffered tail chunks into the currently active message before
+        // rotating the transcript lifecycle.
+        let pending = self.streaming_controller.flush_pending();
+        self.apply_stream_deltas(pending);
+
         // Show loading spinner
         self.spinner_state = SpinnerState::Loading {
             start_time: Instant::now(),
@@ -295,6 +300,12 @@ impl<B: Backend> TerminalRenderer<B> {
             .push(StreamKind::Thinking, content);
     }
 
+    /// Force-flush pending stream tails and queued chunks.
+    pub fn flush_streaming_pending(&mut self) {
+        let flushed = self.streaming_controller.flush_pending();
+        self.apply_stream_deltas(flushed);
+    }
+
     /// Add or update a tool parameter in the current message
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
         let live_message = self
@@ -403,6 +414,10 @@ impl<B: Backend> TerminalRenderer<B> {
 
     fn apply_streaming_commit_tick(&mut self) {
         let drained = self.streaming_controller.drain_commit_tick();
+        self.apply_stream_deltas(drained);
+    }
+
+    fn apply_stream_deltas(&mut self, drained: Vec<StreamDelta>) {
         for delta in drained {
             match delta.kind {
                 StreamKind::Text => {
