@@ -1,15 +1,15 @@
 use anyhow::Result;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::Position,
     prelude::*,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Terminal, TerminalOptions, Viewport,
 };
 use std::io;
 use tui_markdown as md;
 use tui_textarea::TextArea;
 
+use super::composer::Composer;
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
 use super::terminal_core::TerminalCore;
 use super::transcript::TranscriptState;
@@ -90,8 +90,8 @@ pub struct TerminalRenderer<B: Backend> {
     /// Whether to render the expanded plan view
     plan_expanded: bool,
 
-    /// Maximum rows for input area (including 1 for content min + border)
-    pub max_input_rows: u16,
+    /// Bottom composer rendering and sizing.
+    composer: Composer,
     /// Spinner state for loading indication
     spinner_state: SpinnerState,
     /// Tracks the last block type for hidden tool paragraph breaks
@@ -127,7 +127,7 @@ impl<B: Backend> TerminalRenderer<B> {
 
             plan_state: None,
             plan_expanded: false,
-            max_input_rows: 5, // max input height (content lines + border line)
+            composer: Composer::new(5),
             spinner_state: SpinnerState::Hidden,
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
@@ -387,7 +387,7 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Render the complete UI: live content + status + input.
     pub fn render(&mut self, textarea: &TextArea) -> Result<()> {
         let term_size = self.terminal.size()?;
-        let input_height = self.calculate_input_height(textarea);
+        let input_height = self.composer.calculate_input_height(textarea);
         let available = term_size.height.saturating_sub(input_height);
         let width = term_size.width;
         self.flush_new_finalized_messages(width)?;
@@ -563,7 +563,7 @@ impl<B: Backend> TerminalRenderer<B> {
             }
 
             // Render input area (block + textarea)
-            Self::render_input_area_static(f, input_area, textarea);
+            self.composer.render(f, input_area, textarea);
         })?;
 
         Ok(())
@@ -777,29 +777,12 @@ impl<B: Backend> TerminalRenderer<B> {
 
     /// Calculate the height needed for the input area based on textarea content
     pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
-        let lines = textarea.lines().len() as u16;
-        // Add 1 for border, then clamp to reasonable bounds
-        let height_with_border = lines + 1;
-        height_with_border.clamp(2, self.max_input_rows + 1)
+        self.composer.calculate_input_height(textarea)
     }
 
-    /// Render the input area with textarea (static version)
-    fn render_input_area_static(f: &mut Frame, area: Rect, textarea: &TextArea) {
-        // Create a block with border for the input area
-        let input_block = Block::default()
-            .borders(Borders::TOP)
-            .title("Input (Enter=send, Shift+Enter=newline, Ctrl+C=quit)");
-
-        // Render the textarea widget inside the block
-        let inner_area = input_block.inner(area);
-        f.render_widget(input_block, area);
-        f.render_widget(textarea, inner_area);
-
-        // Set cursor position for the textarea
-        let cursor_pos = textarea.cursor();
-        let cursor_x = inner_area.x + cursor_pos.1 as u16;
-        let cursor_y = inner_area.y + cursor_pos.0 as u16;
-        f.set_cursor_position(Position::new(cursor_x, cursor_y));
+    #[cfg(test)]
+    fn max_input_rows(&self) -> u16 {
+        self.composer.max_input_rows()
     }
 
     /// Render pending user message with dimmed and italic styling
@@ -1594,7 +1577,7 @@ mod tests {
             let height = renderer.calculate_input_height(&textarea);
             assert_eq!(
                 height,
-                renderer.max_input_rows + 1,
+                renderer.max_input_rows() + 1,
                 "Should be capped at max_input_rows + border"
             );
         }
@@ -1617,7 +1600,7 @@ mod tests {
             textarea.insert_str(&excessive_lines);
             let height = renderer.calculate_input_height(&textarea);
             assert!(
-                height <= renderer.max_input_rows + 1,
+                height <= renderer.max_input_rows() + 1,
                 "Height should never exceed max_input_rows + 1"
             );
         }
