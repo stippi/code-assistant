@@ -468,14 +468,6 @@ impl TerminalTuiApp {
         let input_manager = InputManager::new();
         let mut renderer = ProductionTerminalRenderer::new()?;
 
-        // Setup panic hook to ensure terminal is cleaned up on panic
-        let original_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |panic_info| {
-            // Try to disable raw mode on panic
-            let _ = ratatui::crossterm::terminal::disable_raw_mode();
-            original_hook(panic_info);
-        }));
-
         // Setup terminal AFTER printing instructions
         renderer.setup_terminal()?;
 
@@ -529,7 +521,7 @@ impl TerminalTuiApp {
         ));
 
         // Handle redraw notifications in main loop
-        loop {
+        let loop_result: Result<()> = loop {
             tokio::select! {
                 // Handle redraw notifications
                 _ = redraw_rx.changed() => {
@@ -539,22 +531,34 @@ impl TerminalTuiApp {
                 // Check if event loop finished (on Ctrl+C)
                 result = &mut event_loop_handle => {
                     match result {
-                        Ok(Ok(())) => break,
-                        Ok(Err(e)) => return Err(e),
-                        Err(e) => return Err(e.into()),
+                        Ok(Ok(())) => break Ok(()),
+                        Ok(Err(e)) => break Err(e),
+                        Err(e) => break Err(e.into()),
                     }
                 }
             }
-        }
+        };
 
         // Cleanup terminal
-        {
+        let cleanup_result = {
             let mut renderer_guard = renderer.lock().await;
-            renderer_guard.cleanup_terminal()?;
-        }
+            renderer_guard.cleanup_terminal()
+        };
 
         // Cancel the backend task
         backend_task.abort();
+
+        if let Err(cleanup_error) = cleanup_result {
+            if loop_result.is_ok() {
+                return Err(cleanup_error);
+            }
+            tracing::warn!(
+                "Terminal cleanup failed after loop error: {}",
+                cleanup_error
+            );
+        }
+
+        loop_result?;
 
         println!("\nGoodbye!");
         Ok(())
