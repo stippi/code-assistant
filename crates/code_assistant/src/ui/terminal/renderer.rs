@@ -278,7 +278,11 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Toggle whether the expanded plan view should be rendered
     pub fn set_plan_expanded(&mut self, expanded: bool) {
         self.plan_expanded = expanded;
-        self.overlay_active = expanded;
+    }
+
+    /// Toggle whether an overlay is active (drives deferred history behavior).
+    pub fn set_overlay_active(&mut self, active: bool) {
+        self.overlay_active = active;
     }
 
     /// Append text to the last block in the current message
@@ -1410,6 +1414,7 @@ mod tests {
             renderer.render(&textarea).unwrap();
 
             renderer.set_plan_expanded(true);
+            renderer.set_overlay_active(true);
             renderer.start_new_message(2);
             renderer.render(&textarea).unwrap();
 
@@ -1420,10 +1425,74 @@ mod tests {
                 "History commits should be buffered while overlay is active"
             );
             renderer.set_plan_expanded(false);
+            renderer.set_overlay_active(false);
             renderer.render(&textarea).unwrap();
 
             assert_eq!(renderer.deferred_history_line_count(), 0);
             assert_eq!(renderer.transcript.committed_rendered_count(), 1);
+        }
+
+        #[test]
+        fn test_overlay_deferral_survives_resize_until_close() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            renderer.start_new_message(1);
+            renderer.queue_text_delta("resize defer\n".to_string());
+            renderer.render(&textarea).unwrap();
+
+            renderer.set_overlay_active(true);
+            renderer.start_new_message(2);
+            renderer.render(&textarea).unwrap();
+
+            assert!(renderer.deferred_history_line_count() > 0);
+
+            let input_height = renderer.calculate_input_height(&textarea);
+            renderer.update_size(input_height).unwrap();
+            renderer.render(&textarea).unwrap();
+
+            assert!(
+                renderer.deferred_history_line_count() > 0,
+                "Resize must not flush deferred history while overlay is active"
+            );
+
+            renderer.set_overlay_active(false);
+            renderer.render(&textarea).unwrap();
+            assert_eq!(renderer.deferred_history_line_count(), 0);
+        }
+
+        #[test]
+        fn test_overlay_defers_tool_event_history_and_flushes_on_close() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            renderer.start_new_message(1);
+            renderer.start_tool_use_block("shell".to_string(), "tool-1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool-1",
+                "command".to_string(),
+                "echo hi".to_string(),
+            );
+            renderer.update_tool_status(
+                "tool-1",
+                ToolStatus::Success,
+                Some("done".to_string()),
+                Some("hi".to_string()),
+            );
+
+            renderer.set_overlay_active(true);
+            renderer.start_new_message(2);
+            renderer.render(&textarea).unwrap();
+
+            assert_eq!(renderer.transcript.committed_messages().len(), 1);
+            assert!(
+                renderer.deferred_history_line_count() > 0,
+                "Tool history should be deferred while overlay is active"
+            );
+
+            renderer.set_overlay_active(false);
+            renderer.render(&textarea).unwrap();
+            assert_eq!(renderer.deferred_history_line_count(), 0);
         }
 
         #[test]

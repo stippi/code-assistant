@@ -110,6 +110,7 @@ impl UserInterface for TerminalTuiUI {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.set_plan_state(Some(plan_clone));
                     renderer_guard.set_plan_expanded(state.plan_expanded);
+                    renderer_guard.set_overlay_active(state.is_overlay_active());
                 }
             }
             UiEvent::UpdateChatList { sessions } => {

@@ -48,6 +48,7 @@ async fn event_loop(
                 state.plan_dirty = false;
             }
             renderer_guard.set_plan_expanded(state.plan_expanded);
+            renderer_guard.set_overlay_active(state.is_overlay_active());
 
             drop(state); // Release the lock before rendering
             renderer_guard.render(&input_manager.textarea)?;
@@ -201,10 +202,10 @@ async fn event_loop(
                             state.set_info_message(Some(message));
                         }
                         KeyEventResult::TogglePlan => {
-                            let (plan_state, expanded) = {
+                            let (plan_state, expanded, overlay_active) = {
                                 let mut state = app_state.lock().await;
                                 let expanded = state.toggle_plan_expanded();
-                                (state.plan.clone(), expanded)
+                                (state.plan.clone(), expanded, state.is_overlay_active())
                             };
 
                             let mut renderer_guard = renderer.lock().await;
@@ -214,6 +215,7 @@ async fn event_loop(
                                 debug!("TogglePlan invoked with no plan available; renderer state unchanged");
                             }
                             renderer_guard.set_plan_expanded(expanded);
+                            renderer_guard.set_overlay_active(overlay_active);
                         }
                     }
                 }
