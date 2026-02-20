@@ -231,10 +231,7 @@ impl UserInterface for TerminalTuiUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.ensure_last_block_type(super::message::MessageBlock::PlainText(
-                        super::message::PlainTextBlock::new(),
-                    ));
-                    renderer_guard.append_to_live_block(&content);
+                    renderer_guard.queue_text_delta(content);
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
@@ -242,13 +239,7 @@ impl UserInterface for TerminalTuiUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.ensure_last_block_type(super::message::MessageBlock::Thinking(
-                        super::message::ThinkingBlock::new(),
-                    ));
-
-                    if !content.trim().is_empty() {
-                        renderer_guard.append_to_live_block(&content);
-                    }
+                    renderer_guard.queue_thinking_delta(content);
                 }
             }
             UiEvent::StartTool { name, id } => {

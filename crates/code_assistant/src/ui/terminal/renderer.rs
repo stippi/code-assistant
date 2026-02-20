@@ -11,6 +11,7 @@ use tui_textarea::TextArea;
 
 use super::composer::Composer;
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
+use super::streaming_controller::{StreamKind, StreamingController};
 use super::terminal_core::TerminalCore;
 use super::transcript::TranscriptState;
 use crate::types::{PlanItemStatus, PlanState};
@@ -92,6 +93,8 @@ pub struct TerminalRenderer<B: Backend> {
 
     /// Bottom composer rendering and sizing.
     composer: Composer,
+    /// Queue of incoming stream deltas, drained on render commit ticks.
+    streaming_controller: StreamingController,
     /// Spinner state for loading indication
     spinner_state: SpinnerState,
     /// Tracks the last block type for hidden tool paragraph breaks
@@ -128,6 +131,7 @@ impl<B: Backend> TerminalRenderer<B> {
             plan_state: None,
             plan_expanded: false,
             composer: Composer::new(5),
+            streaming_controller: StreamingController::new(),
             spinner_state: SpinnerState::Hidden,
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
@@ -158,6 +162,7 @@ impl<B: Backend> TerminalRenderer<B> {
         self.spinner_state = SpinnerState::Loading {
             start_time: Instant::now(),
         };
+        self.streaming_controller.clear();
         self.transcript.start_active_message();
     }
 
@@ -279,6 +284,17 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
+    /// Queue a text delta for commit-tick-based streaming.
+    pub fn queue_text_delta(&mut self, content: String) {
+        self.streaming_controller.push(StreamKind::Text, content);
+    }
+
+    /// Queue a thinking delta for commit-tick-based streaming.
+    pub fn queue_thinking_delta(&mut self, content: String) {
+        self.streaming_controller
+            .push(StreamKind::Thinking, content);
+    }
+
     /// Add or update a tool parameter in the current message
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
         let live_message = self
@@ -341,6 +357,7 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Clear all messages and reset state
     pub fn clear_all_messages(&mut self) {
         self.transcript.clear();
+        self.streaming_controller.clear();
         self.spinner_state = SpinnerState::Hidden;
     }
 
@@ -384,8 +401,30 @@ impl<B: Backend> TerminalRenderer<B> {
         Ok(())
     }
 
+    fn apply_streaming_commit_tick(&mut self) {
+        let drained = self.streaming_controller.drain_commit_tick();
+        for delta in drained {
+            match delta.kind {
+                StreamKind::Text => {
+                    self.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+                    self.append_to_live_block(&delta.content);
+                }
+                StreamKind::Thinking => {
+                    if delta.content.trim().is_empty() {
+                        continue;
+                    }
+                    self.ensure_last_block_type(MessageBlock::Thinking(
+                        super::message::ThinkingBlock::new(),
+                    ));
+                    self.append_to_live_block(&delta.content);
+                }
+            }
+        }
+    }
+
     /// Render the complete UI: live content + status + input.
     pub fn render(&mut self, textarea: &TextArea) -> Result<()> {
+        self.apply_streaming_commit_tick();
         let term_size = self.terminal.size()?;
         let input_height = self.composer.calculate_input_height(textarea);
         let available = term_size.height.saturating_sub(input_height);
