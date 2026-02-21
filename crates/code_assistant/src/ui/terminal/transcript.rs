@@ -75,7 +75,14 @@ impl TranscriptState {
 
     pub fn as_history_lines(message: &LiveMessage, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let render_width = if width > 0 { Some(width as usize) } else { None };
+        // Account for 2-char indent when computing render width
+        let render_width = if width > 2 {
+            Some((width - 2) as usize)
+        } else if width > 0 {
+            Some(width as usize)
+        } else {
+            None
+        };
 
         for block in &message.blocks {
             match block {
@@ -85,7 +92,10 @@ impl TranscriptState {
                     }
                     // Use the same buffer-rendering approach as the streaming path
                     // to preserve full markdown styling (bold, code, etc.)
-                    lines.extend(render_markdown_lines(&text.content, render_width));
+                    for mut line in render_markdown_lines(&text.content, render_width) {
+                        line.spans.insert(0, Span::raw("  ".to_string()));
+                        lines.push(line);
+                    }
                 }
                 MessageBlock::Thinking(thinking) => {
                     if thinking.content.trim().is_empty() {
@@ -95,15 +105,13 @@ impl TranscriptState {
                     // then apply Yellow+Italic as base style to all spans.
                     let rendered = render_markdown_lines(&thinking.content, render_width);
                     for line in rendered {
-                        let styled_spans: Vec<Span<'static>> = line
-                            .spans
-                            .into_iter()
-                            .map(|span| {
-                                let mut style = span.style;
-                                style = style.fg(Color::Yellow).add_modifier(Modifier::ITALIC);
-                                Span::styled(span.content.to_string(), style)
-                            })
-                            .collect();
+                        let mut styled_spans: Vec<Span<'static>> =
+                            vec![Span::raw("  ".to_string())];
+                        styled_spans.extend(line.spans.into_iter().map(|span| {
+                            let mut style = span.style;
+                            style = style.fg(Color::Yellow).add_modifier(Modifier::ITALIC);
+                            Span::styled(span.content.to_string(), style)
+                        }));
                         lines.push(Line::from(styled_spans));
                     }
                 }
@@ -128,31 +136,7 @@ impl TranscriptState {
                     lines.push(Line::from(""));
                 }
                 MessageBlock::ToolUse(tool) => {
-                    lines.push(Line::styled(
-                        format!("tool: {}", tool.name),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                    for (param_name, param_value) in &tool.parameters {
-                        for line in param_value.value.lines() {
-                            lines.push(Line::from(format!("  {param_name}: {line}")));
-                        }
-                    }
-                    if let Some(status_message) = &tool.status_message {
-                        lines.push(Line::styled(
-                            format!("  status: {status_message}"),
-                            Style::default().fg(match tool.status {
-                                ToolStatus::Pending => Color::Gray,
-                                ToolStatus::Running => Color::Blue,
-                                ToolStatus::Success => Color::Green,
-                                ToolStatus::Error => Color::Red,
-                            }),
-                        ));
-                    }
-                    if let Some(output) = &tool.output {
-                        for line in output.lines() {
-                            lines.push(Line::from(format!("  {line}")));
-                        }
-                    }
+                    Self::push_tool_history_lines(tool, &mut lines);
                 }
             }
         }
@@ -195,35 +179,52 @@ impl TranscriptState {
                     lines.push(Line::from(""));
                 }
                 MessageBlock::ToolUse(tool) => {
-                    lines.push(Line::styled(
-                        format!("tool: {}", tool.name),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                    for (param_name, param_value) in &tool.parameters {
-                        for line in param_value.value.lines() {
-                            lines.push(Line::from(format!("  {param_name}: {line}")));
-                        }
-                    }
-                    if let Some(status_message) = &tool.status_message {
-                        lines.push(Line::styled(
-                            format!("  status: {status_message}"),
-                            Style::default().fg(match tool.status {
-                                ToolStatus::Pending => Color::Gray,
-                                ToolStatus::Running => Color::Blue,
-                                ToolStatus::Success => Color::Green,
-                                ToolStatus::Error => Color::Red,
-                            }),
-                        ));
-                    }
-                    if let Some(output) = &tool.output {
-                        for line in output.lines() {
-                            lines.push(Line::from(format!("  {line}")));
-                        }
-                    }
+                    Self::push_tool_history_lines(tool, &mut lines);
                 }
             }
         }
 
         lines
+    }
+
+    /// Render a ToolUse block as history lines with "● name" format.
+    /// Dot at col 0, name at col 2 — aligned with user "› " prefix.
+    fn push_tool_history_lines(
+        tool: &super::message::ToolUseBlock,
+        lines: &mut Vec<Line<'static>>,
+    ) {
+        let status_color = match tool.status {
+            ToolStatus::Pending => Color::Yellow,
+            ToolStatus::Running => Color::Blue,
+            ToolStatus::Success => Color::Green,
+            ToolStatus::Error => Color::Red,
+        };
+        lines.push(Line::from(vec![
+            Span::styled("● ", Style::default().fg(status_color)),
+            Span::styled(
+                tool.name.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        for (param_name, param_value) in &tool.parameters {
+            for line in param_value.value.lines() {
+                lines.push(Line::from(format!("  {param_name}: {line}")));
+            }
+        }
+        if let Some(status_message) = &tool.status_message {
+            if tool.status == ToolStatus::Error {
+                lines.push(Line::styled(
+                    format!("  {status_message}"),
+                    Style::default().fg(Color::LightRed),
+                ));
+            }
+        }
+        if let Some(output) = &tool.output {
+            for line in output.lines() {
+                lines.push(Line::from(format!("  {line}")));
+            }
+        }
     }
 }

@@ -87,20 +87,29 @@ impl MessageBlock {
         }
     }
 
+    /// Width reserved for the left indent on text/thinking/tool blocks,
+    /// aligning content with the user's "› " prefix.
+    const INDENT: u16 = 2;
+
     /// Calculate the height needed to render this block
     pub fn calculate_height(&self, width: u16) -> u16 {
+        let inner_width = if width > Self::INDENT {
+            width - Self::INDENT
+        } else {
+            width
+        };
         match self {
             MessageBlock::PlainText(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
-                measure_markdown_height(&block.content, width)
+                measure_markdown_height(&block.content, inner_width)
             }
             MessageBlock::Thinking(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
-                measure_markdown_height(&block.content, width)
+                measure_markdown_height(&block.content, inner_width)
             }
             MessageBlock::UserText(block) => {
                 if block.content.trim().is_empty() {
@@ -205,13 +214,24 @@ fn measure_markdown_height(content: &str, width: u16) -> u16 {
 
 impl Widget for MessageBlock {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let indent = if area.width > Self::INDENT {
+            Self::INDENT
+        } else {
+            0
+        };
+        let inner = Rect {
+            x: area.x + indent,
+            y: area.y,
+            width: area.width.saturating_sub(indent),
+            height: area.height,
+        };
         match self {
             MessageBlock::PlainText(block) => {
                 if !block.content.trim().is_empty() {
                     let text = md::from_str(&block.content);
                     let paragraph = ratatui::widgets::Paragraph::new(text)
                         .wrap(ratatui::widgets::Wrap { trim: false });
-                    paragraph.render(area, buf);
+                    paragraph.render(inner, buf);
                 }
             }
             MessageBlock::Thinking(block) => {
@@ -224,7 +244,7 @@ impl Widget for MessageBlock {
                                 .add_modifier(Modifier::ITALIC),
                         )
                         .wrap(ratatui::widgets::Wrap { trim: false });
-                    paragraph.render(area, buf);
+                    paragraph.render(inner, buf);
                 }
             }
             MessageBlock::UserText(block) => {
@@ -250,6 +270,8 @@ impl Widget for MessageBlock {
                 }
             }
             MessageBlock::ToolUse(block) => {
+                // ToolWidget renders its own "● name" layout starting at area.x,
+                // so it uses the full area (dot at col 0, text at col 2).
                 let tool_widget = ToolWidget::new(&block);
                 tool_widget.render(area, buf);
             }

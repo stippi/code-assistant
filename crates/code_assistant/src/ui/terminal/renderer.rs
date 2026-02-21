@@ -309,7 +309,7 @@ impl TerminalRenderer {
             let flushed_thinking = self.streaming_controller.flush_kind(StreamKind::Thinking);
             if !flushed_thinking.is_empty() {
                 let lines = style_thinking_lines(flushed_thinking);
-                self.insert_or_defer_history_lines(lines);
+                self.insert_or_defer_history_lines(indent_lines(lines));
                 if let Some(msg) = self.transcript.active_message_mut() {
                     msg.streamed_to_scrollback = true;
                 }
@@ -337,7 +337,7 @@ impl TerminalRenderer {
         if self.last_stream_kind == Some(StreamKind::Text) {
             let flushed_text = self.streaming_controller.flush_kind(StreamKind::Text);
             if !flushed_text.is_empty() {
-                self.insert_or_defer_history_lines(flushed_text);
+                self.insert_or_defer_history_lines(indent_lines(flushed_text));
                 if let Some(msg) = self.transcript.active_message_mut() {
                     msg.streamed_to_scrollback = true;
                 }
@@ -524,12 +524,12 @@ impl TerminalRenderer {
         let has_lines = !drained.text.is_empty() || !drained.thinking.is_empty();
 
         if !drained.text.is_empty() {
-            self.insert_or_defer_history_lines(drained.text);
+            self.insert_or_defer_history_lines(indent_lines(drained.text));
         }
 
         if !drained.thinking.is_empty() {
             let lines = style_thinking_lines(drained.thinking);
-            self.insert_or_defer_history_lines(lines);
+            self.insert_or_defer_history_lines(indent_lines(lines));
         }
 
         // Mark the active message so flush_new_finalized_messages() won't
@@ -612,8 +612,9 @@ impl TerminalRenderer {
     pub fn prepare(&mut self, width: u16, screen_height: u16) {
         let _ = screen_height; // Reserved for future partial-scrollback support
         self.last_known_width = width;
-        self.streaming_controller
-            .set_width(Some(width.max(1) as usize));
+        // Account for 2-char indent when computing streaming wrap width
+        let stream_width = width.saturating_sub(2).max(1) as usize;
+        self.streaming_controller.set_width(Some(stream_width));
         self.apply_streaming_commit_tick();
         if !self.overlay_active {
             self.flush_deferred_history_lines();
@@ -1175,6 +1176,19 @@ fn style_thinking_lines(thinking: Vec<Line<'static>>) -> Vec<Line<'static>> {
                 })
                 .collect();
             Line::from(styled_spans)
+        })
+        .collect()
+}
+
+/// Prepend a 2-space indent to each line so scrollback content aligns with
+/// the user's "› " prefix.
+fn indent_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|mut line| {
+            line.spans
+                .insert(0, Span::raw("  ".to_string()));
+            line
         })
         .collect()
 }
@@ -2032,15 +2046,15 @@ mod tests {
                 "Three lines should have height 3"
             );
 
-            // Test line wrapping
-            let long_line = "a".repeat(160); // Should wrap to 2 lines with width 80
+            // Test line wrapping (effective width is 78 due to 2-char indent)
+            let long_line = "a".repeat(160); // Should wrap to 3 lines with inner width 78
             let mut wrap_block = PlainTextBlock::new();
             wrap_block.content = long_line;
             let message_block = MessageBlock::PlainText(wrap_block);
             assert_eq!(
                 message_block.calculate_height(width),
-                2,
-                "Long line should wrap to 2 lines"
+                3,
+                "Long line should wrap to 3 lines at inner width 78"
             );
         }
 
@@ -2312,7 +2326,7 @@ mod tests {
                 }
                 // Look for the tool name line
                 if line_text.contains("write_file") {
-                    // Check if the status symbol (first character) is green (success)
+                    // Check if the status symbol (at col 0, no indent) is green (success)
                     let status_cell = buffer.cell((0, y)).unwrap();
                     if status_cell.fg == Color::Green && status_cell.symbol() == "●" {
                         found_success_status = true;
