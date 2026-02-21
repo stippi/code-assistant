@@ -116,24 +116,7 @@ impl TranscriptState {
                     }
                 }
                 MessageBlock::UserText(text) => {
-                    if text.content.is_empty() {
-                        continue;
-                    }
-                    lines.push(Line::from(""));
-                    for (i, line) in text.content.lines().enumerate() {
-                        let prefix = if i == 0 {
-                            Span::styled(
-                                "› ",
-                                Style::default()
-                                    .add_modifier(Modifier::BOLD)
-                                    .add_modifier(Modifier::DIM),
-                            )
-                        } else {
-                            Span::raw("  ")
-                        };
-                        lines.push(Line::from(vec![prefix, Span::raw(line.to_string())]));
-                    }
-                    lines.push(Line::from(""));
+                    Self::push_user_text_history_lines(&text.content, width, &mut lines);
                 }
                 MessageBlock::ToolUse(tool) => {
                     Self::push_tool_history_lines(tool, &mut lines);
@@ -149,7 +132,7 @@ impl TranscriptState {
     /// scrollback during streaming.
     pub fn as_history_lines_non_streamed_only(
         message: &LiveMessage,
-        _width: u16,
+        width: u16,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
@@ -159,24 +142,7 @@ impl TranscriptState {
                     // Already sent to scrollback during streaming — skip.
                 }
                 MessageBlock::UserText(text) => {
-                    if text.content.is_empty() {
-                        continue;
-                    }
-                    lines.push(Line::from(""));
-                    for (i, line) in text.content.lines().enumerate() {
-                        let prefix = if i == 0 {
-                            Span::styled(
-                                "› ",
-                                Style::default()
-                                    .add_modifier(Modifier::BOLD)
-                                    .add_modifier(Modifier::DIM),
-                            )
-                        } else {
-                            Span::raw("  ")
-                        };
-                        lines.push(Line::from(vec![prefix, Span::raw(line.to_string())]));
-                    }
-                    lines.push(Line::from(""));
+                    Self::push_user_text_history_lines(&text.content, width, &mut lines);
                 }
                 MessageBlock::ToolUse(tool) => {
                     Self::push_tool_history_lines(tool, &mut lines);
@@ -185,6 +151,67 @@ impl TranscriptState {
         }
 
         lines
+    }
+
+    /// Render a UserText block as history lines with "› " prefix and word wrapping.
+    /// Uses `textwrap` with `FirstFit` algorithm to match the input textarea's wrapping.
+    /// Text wraps at `width - 2` to account for the 2-char prefix.
+    fn push_user_text_history_lines(
+        content: &str,
+        width: u16,
+        lines: &mut Vec<Line<'static>>,
+    ) {
+        if content.is_empty() {
+            return;
+        }
+        lines.push(Line::from(""));
+
+        let wrap_width = if width > 2 {
+            (width - 2) as usize
+        } else {
+            width.max(1) as usize
+        };
+
+        let opts = textwrap::Options::new(wrap_width)
+            .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
+
+        // Split content into logical lines (from actual newlines in the input),
+        // then word-wrap each logical line at wrap_width.
+        let mut is_first_visual_line = true;
+        for logical_line in content.split('\n') {
+            if logical_line.is_empty() {
+                let prefix = if is_first_visual_line {
+                    is_first_visual_line = false;
+                    Span::styled(
+                        "› ",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .add_modifier(Modifier::DIM),
+                    )
+                } else {
+                    Span::raw("  ")
+                };
+                lines.push(Line::from(vec![prefix]));
+                continue;
+            }
+
+            for wrapped in textwrap::wrap(logical_line, &opts) {
+                let prefix = if is_first_visual_line {
+                    is_first_visual_line = false;
+                    Span::styled(
+                        "› ",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .add_modifier(Modifier::DIM),
+                    )
+                } else {
+                    Span::raw("  ")
+                };
+                lines.push(Line::from(vec![prefix, Span::raw(wrapped.into_owned())]));
+            }
+        }
+
+        lines.push(Line::from(""));
     }
 
     /// Render a ToolUse block as history lines with "● name" format.
