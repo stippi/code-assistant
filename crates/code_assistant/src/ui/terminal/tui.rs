@@ -30,6 +30,10 @@ pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
 
 /// Initialize the terminal (inline viewport; history stays in normal scrollback).
 pub fn init() -> io::Result<Tui> {
+    // Query the terminal background color before entering raw mode.
+    // Uses OSC 11 to detect the actual bg color for composer overlay blending.
+    super::terminal_color::init();
+
     enable_raw_mode()?;
     let _ = execute!(stdout(), EnableBracketedPaste);
 
