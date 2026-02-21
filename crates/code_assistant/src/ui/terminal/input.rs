@@ -1,10 +1,7 @@
-use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
-    style::{Style, Stylize},
-};
-use tui_textarea::TextArea;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::commands::{CommandProcessor, CommandResult};
+use super::textarea::TextArea;
 
 /// Result of handling a key event
 #[derive(Debug, PartialEq)]
@@ -27,9 +24,9 @@ pub enum KeyEventResult {
     TogglePlan,
 }
 
-/// Manages the input area using tui-textarea
+/// Manages the input area using the custom TextArea widget
 pub struct InputManager {
-    pub textarea: TextArea<'static>,
+    pub textarea: TextArea,
     command_processor: Option<CommandProcessor>,
 }
 
@@ -37,7 +34,7 @@ impl InputManager {
     pub fn new() -> Self {
         let command_processor = CommandProcessor::new().ok();
         Self {
-            textarea: Self::create_text_area(),
+            textarea: TextArea::new(),
             command_processor,
         }
     }
@@ -60,7 +57,7 @@ impl InputManager {
                 modifiers: KeyModifiers::SHIFT,
                 ..
             } => {
-                self.textarea.insert_newline();
+                self.textarea.insert_str("\n");
                 KeyEventResult::Continue
             }
             KeyEvent {
@@ -102,7 +99,7 @@ impl InputManager {
                 }
             }
             _ => {
-                // Forward the key event directly to tui-textarea
+                // Forward the key event directly to our custom TextArea
                 self.textarea.input(key_event);
                 KeyEventResult::Continue
             }
@@ -111,19 +108,12 @@ impl InputManager {
 
     /// Get the current content of the textarea
     pub fn get_content(&self) -> String {
-        self.textarea.lines().join("\n")
-    }
-
-    fn create_text_area() -> TextArea<'static> {
-        let mut textarea = TextArea::default();
-        textarea.set_placeholder_text("Type your message...");
-        textarea.set_placeholder_style(Style::default().dim());
-        textarea
+        self.textarea.text().to_string()
     }
 
     /// Clear the textarea content
     pub fn clear(&mut self) {
-        self.textarea = Self::create_text_area()
+        self.textarea.clear();
     }
 }
 

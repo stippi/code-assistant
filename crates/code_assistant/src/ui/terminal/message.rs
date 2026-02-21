@@ -55,6 +55,7 @@ pub enum MessageBlock {
     PlainText(PlainTextBlock),
     Thinking(ThinkingBlock),
     ToolUse(ToolUseBlock),
+    UserText(PlainTextBlock),
 }
 
 impl MessageBlock {
@@ -64,6 +65,7 @@ impl MessageBlock {
             MessageBlock::PlainText(block) => !block.content.trim().is_empty(),
             MessageBlock::Thinking(block) => !block.content.trim().is_empty(),
             MessageBlock::ToolUse(block) => !block.name.is_empty(),
+            MessageBlock::UserText(block) => !block.content.trim().is_empty(),
         }
     }
 
@@ -76,6 +78,7 @@ impl MessageBlock {
                 // Tool use blocks don't support general content appending
                 // Parameter updates are handled separately
             }
+            MessageBlock::UserText(block) => block.content.push_str(content),
         }
     }
 
@@ -92,8 +95,15 @@ impl MessageBlock {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
-                let formatted = format!("*{}*", block.content);
-                measure_markdown_height(&formatted, width)
+                measure_markdown_height(&block.content, width)
+            }
+            MessageBlock::UserText(block) => {
+                if block.content.trim().is_empty() {
+                    return 0;
+                }
+                // Empty line before + content lines + empty line after
+                let content_lines = block.content.lines().count().max(1) as u16;
+                2 + content_lines // 1 blank before + content + 1 blank after
             }
             MessageBlock::ToolUse(block) => {
                 let mut height = 1; // Tool name line
@@ -201,8 +211,7 @@ impl Widget for MessageBlock {
             }
             MessageBlock::Thinking(block) => {
                 if !block.content.trim().is_empty() {
-                    let formatted = format!("*{}*", block.content);
-                    let text = md::from_str(&formatted);
+                    let text = md::from_str(&block.content);
                     let paragraph = ratatui::widgets::Paragraph::new(text)
                         .style(
                             Style::default()
@@ -210,6 +219,28 @@ impl Widget for MessageBlock {
                                 .add_modifier(Modifier::ITALIC),
                         )
                         .wrap(ratatui::widgets::Wrap { trim: false });
+                    paragraph.render(area, buf);
+                }
+            }
+            MessageBlock::UserText(block) => {
+                if !block.content.trim().is_empty() {
+                    let mut lines = Vec::new();
+                    lines.push(Line::from(""));
+                    for (i, line) in block.content.lines().enumerate() {
+                        let prefix = if i == 0 {
+                            Span::styled(
+                                "› ",
+                                Style::default()
+                                    .add_modifier(Modifier::BOLD)
+                                    .add_modifier(Modifier::DIM),
+                            )
+                        } else {
+                            Span::raw("  ")
+                        };
+                        lines.push(Line::from(vec![prefix, Span::raw(line.to_string())]));
+                    }
+                    lines.push(Line::from(""));
+                    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
                     paragraph.render(area, buf);
                 }
             }

@@ -4,7 +4,8 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 use tui_markdown as md;
-use tui_textarea::TextArea;
+
+use super::textarea::TextArea;
 
 use super::composer::Composer;
 use super::custom_terminal;
@@ -365,13 +366,27 @@ impl TerminalRenderer {
         }
     }
 
-    /// Add a user message as finalized message and clear any pending user message
+    /// Add a user message as finalized message and clear any pending user message.
+    /// Before adding, finalizes any active streaming message so it appears in
+    /// scrollback history BEFORE this user message (correct chronological order).
     pub fn add_user_message(&mut self, content: &str) -> Result<()> {
-        // Create a finalized message with a single plain text block
+        // Finalize any active streaming message first so it gets committed
+        // to history BEFORE this user message
+        self.flush_streaming_pending();
+        self.transcript.finalize_active_if_content();
+        // Clear stale stream state so prepare()/sync_live_stream_tails() won't
+        // re-create a phantom active message from leftover committed stream lines.
+        self.streaming_controller.clear();
+        self.active_committed_stream_lines.clear();
+        self.last_stream_kind = None;
+        // Flush the now-finalized agent response into scrollback
+        self.flush_new_finalized_messages();
+
+        // Create a finalized message with a UserText block for proper styling
         let mut user_message = LiveMessage::new();
         let mut text_block = PlainTextBlock::new();
         text_block.content = content.to_string();
-        user_message.add_block(MessageBlock::PlainText(text_block));
+        user_message.add_block(MessageBlock::UserText(text_block));
         user_message.finalized = true;
 
         self.transcript.push_committed_message(user_message);
@@ -599,7 +614,7 @@ impl TerminalRenderer {
 
     /// Compute the desired viewport height for the current content.
     pub fn desired_viewport_height(&self, textarea: &TextArea, screen_width: u16) -> u16 {
-        let input_height = self.composer.calculate_input_height(textarea);
+        let input_height = self.composer.calculate_input_height(textarea, screen_width);
         let mut content_height: u16 = 0;
 
         // Live message height
@@ -666,7 +681,7 @@ impl TerminalRenderer {
     pub fn paint(&mut self, f: &mut custom_terminal::Frame, textarea: &TextArea) {
         let full = f.area();
         let width = full.width;
-        let input_height = self.composer.calculate_input_height(textarea);
+        let input_height = self.composer.calculate_input_height(textarea, width);
         let available = full.height.saturating_sub(input_height);
 
         let headroom: u16 = 200;
@@ -1050,8 +1065,8 @@ impl TerminalRenderer {
 
     /// Calculate the height needed for the input area based on textarea content
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
-        self.composer.calculate_input_height(textarea)
+    pub fn calculate_input_height(&self, textarea: &TextArea, width: u16) -> u16 {
+        self.composer.calculate_input_height(textarea, width)
     }
 
     #[cfg(test)]
@@ -1161,7 +1176,7 @@ fn stream_kind_for_block(block: &MessageBlock) -> Option<StreamKind> {
     match block {
         MessageBlock::PlainText(_) => Some(StreamKind::Text),
         MessageBlock::Thinking(_) => Some(StreamKind::Thinking),
-        MessageBlock::ToolUse(_) => None,
+        MessageBlock::ToolUse(_) | MessageBlock::UserText(_) => None,
     }
 }
 
@@ -1252,11 +1267,9 @@ fn merge_blocks_preserving_stream_slots(
 ) -> Vec<MessageBlock> {
     let mut rebuilt = Vec::with_capacity(existing_blocks.len().max(stream_blocks.len()));
     let mut stream_iter = stream_blocks.into_iter();
-    let mut consumed_any_stream_slot = false;
 
     for block in existing_blocks {
         if stream_kind_for_block(block).is_some() {
-            consumed_any_stream_slot = true;
             if let Some(next_stream_block) = stream_iter.next() {
                 rebuilt.push(next_stream_block);
             }
@@ -1265,9 +1278,9 @@ fn merge_blocks_preserving_stream_slots(
         rebuilt.push(block.clone());
     }
 
-    if !consumed_any_stream_slot {
-        rebuilt.extend(stream_iter);
-    }
+    // Append any remaining stream blocks (e.g. new stream types that didn't
+    // exist in the previous set of blocks).
+    rebuilt.extend(stream_iter);
 
     rebuilt
 }
@@ -1454,7 +1467,7 @@ mod tests {
         #[test]
         fn test_pending_message_rendering() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // Initially no pending message - should render only input area
             renderer.render(&textarea);
@@ -1527,7 +1540,7 @@ mod tests {
         #[test]
         fn test_plan_collapsed_summary_rendering() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             let plan_state = PlanState {
                 entries: vec![
@@ -1578,7 +1591,7 @@ mod tests {
         fn test_plan_expanded_rendering_limits_entries() {
             let mut renderer = create_default_test_harness();
             renderer.set_plan_expanded(true);
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             let plan_state = PlanState {
                 entries: vec![
@@ -1692,7 +1705,7 @@ mod tests {
         #[test]
         fn test_error_message_rendering() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // Initially no error - should render cleanly
             renderer.render(&textarea);
@@ -1774,7 +1787,7 @@ mod tests {
         #[test]
         fn test_overlay_defers_and_flushes_committed_history_lines() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             renderer.set_plan_expanded(true);
             renderer.set_overlay_active(true);
@@ -1799,7 +1812,7 @@ mod tests {
         #[test]
         fn test_overlay_deferral_survives_resize_until_close() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             renderer.set_overlay_active(true);
             renderer.start_new_message(1);
@@ -1827,7 +1840,7 @@ mod tests {
         #[test]
         fn test_overlay_defers_tool_event_history_and_flushes_on_close() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             renderer.start_new_message(1);
             renderer.start_tool_use_block("shell".to_string(), "tool-1".to_string());
@@ -1861,7 +1874,7 @@ mod tests {
         #[test]
         fn test_late_stream_delta_after_stop_is_ignored() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             renderer.start_new_message(1);
             renderer.flush_streaming_pending();
@@ -1878,7 +1891,7 @@ mod tests {
         #[test]
         fn test_pre_start_delta_recovers_streaming_state() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             renderer.queue_text_delta("hello before start".to_string());
             renderer.render(&textarea);
@@ -2118,38 +2131,39 @@ mod tests {
         #[test]
         fn test_input_height_calculation() {
             let renderer = create_default_test_harness();
+            let width = 80;
 
             // Test empty textarea
-            let textarea = tui_textarea::TextArea::default();
-            let height = renderer.calculate_input_height(&textarea);
+            let textarea = TextArea::new();
+            let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
                 height, 2,
                 "Empty textarea should have minimum height (1 content + 1 border)"
             );
 
             // Test single line content
-            let mut textarea = tui_textarea::TextArea::default();
+            let mut textarea = TextArea::new();
             textarea.insert_str("Hello");
-            let height = renderer.calculate_input_height(&textarea);
+            let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(height, 2, "Single line should still be minimum height");
 
             // Test multiple lines
-            let mut textarea = tui_textarea::TextArea::default();
+            let mut textarea = TextArea::new();
             textarea.insert_str("Line 1\nLine 2\nLine 3");
-            let height = renderer.calculate_input_height(&textarea);
+            let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
                 height, 4,
                 "Three lines should give height 4 (3 content + 1 border)"
             );
 
             // Test max height constraint
-            let mut textarea = tui_textarea::TextArea::default();
+            let mut textarea = TextArea::new();
             let many_lines = (0..10)
                 .map(|i| format!("Line {i}"))
                 .collect::<Vec<_>>()
                 .join("\n");
             textarea.insert_str(&many_lines);
-            let height = renderer.calculate_input_height(&textarea);
+            let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
                 height,
                 renderer.max_input_rows() + 1,
@@ -2160,20 +2174,21 @@ mod tests {
         #[test]
         fn test_input_height_constraints() {
             let renderer = create_default_test_harness();
+            let width = 80;
 
             // Test that height is always at least 2 (content + border)
-            let textarea = tui_textarea::TextArea::default();
-            let height = renderer.calculate_input_height(&textarea);
+            let textarea = TextArea::new();
+            let height = renderer.calculate_input_height(&textarea, width);
             assert!(height >= 2, "Height should always be at least 2");
 
             // Test that height never exceeds max_input_rows + 1
-            let mut textarea = tui_textarea::TextArea::default();
+            let mut textarea = TextArea::new();
             let excessive_lines = (0..100)
                 .map(|i| format!("Line {i}"))
                 .collect::<Vec<_>>()
                 .join("\n");
             textarea.insert_str(&excessive_lines);
-            let height = renderer.calculate_input_height(&textarea);
+            let height = renderer.calculate_input_height(&textarea, width);
             assert!(
                 height <= renderer.max_input_rows() + 1,
                 "Height should never exceed max_input_rows + 1"
@@ -2187,7 +2202,7 @@ mod tests {
         #[test]
         fn test_complete_message_workflow_rendering() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // 1. Start streaming - should show spinner
             renderer.start_new_message(1);
@@ -2310,7 +2325,7 @@ mod tests {
         #[test]
         fn test_finalized_messages_produce_pending_history_lines() {
             let mut renderer = create_test_harness(80, 10);
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // Add finalized messages
             for i in 0..3 {
@@ -2354,7 +2369,7 @@ mod tests {
         #[test]
         fn test_live_message_not_in_pending_history() {
             let mut renderer = create_test_harness(80, 10);
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // Start live message
             renderer.start_new_message(1);
@@ -2385,7 +2400,7 @@ mod tests {
         #[test]
         fn test_live_message_rendering_priority() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // Add some finalized messages
             for i in 0..2 {
@@ -2438,7 +2453,7 @@ mod tests {
         #[test]
         fn test_spinner_rendering_states() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // Test loading spinner
             renderer.start_new_message(1);
@@ -2517,7 +2532,7 @@ mod tests {
         #[test]
         fn test_error_takes_priority_over_pending_message_in_rendering() {
             let mut renderer = create_default_test_harness();
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             // Set both pending message and error
             renderer.set_pending_user_message(Some("User is typing...".to_string()));

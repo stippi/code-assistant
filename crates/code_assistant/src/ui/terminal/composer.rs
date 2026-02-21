@@ -2,9 +2,9 @@ use ratatui::{
     layout::{Position, Rect},
     widgets::{Block, Borders},
 };
-use tui_textarea::TextArea;
 
 use super::custom_terminal;
+use super::textarea::TextArea;
 
 pub struct Composer {
     max_input_rows: u16,
@@ -20,8 +20,8 @@ impl Composer {
         self.max_input_rows
     }
 
-    pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
-        let lines = textarea.lines().len() as u16;
+    pub fn calculate_input_height(&self, textarea: &TextArea, width: u16) -> u16 {
+        let lines = textarea.desired_height(width);
         let height_with_border = lines + 1;
         height_with_border.clamp(2, self.max_input_rows + 1)
     }
@@ -33,11 +33,14 @@ impl Composer {
 
         let inner_area = input_block.inner(area);
         f.render_widget(input_block, area);
-        f.render_widget(textarea, inner_area);
 
-        let cursor_pos = textarea.cursor();
-        let cursor_x = inner_area.x + cursor_pos.1 as u16;
-        let cursor_y = inner_area.y + cursor_pos.0 as u16;
-        f.set_cursor_position(Position::new(cursor_x, cursor_y));
+        // Render textarea using WidgetRef
+        use ratatui::widgets::WidgetRef;
+        (&textarea).render_ref(inner_area, f.buffer_mut());
+
+        // Set cursor position
+        if let Some((cursor_x, cursor_y)) = textarea.cursor_position(inner_area) {
+            f.set_cursor_position(Position::new(cursor_x, cursor_y));
+        }
     }
 }

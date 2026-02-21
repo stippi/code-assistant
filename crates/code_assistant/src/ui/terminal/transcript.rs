@@ -1,10 +1,21 @@
 use ratatui::{
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
 };
+use tui_markdown as md;
 
 use super::message::{LiveMessage, MessageBlock};
 use crate::ui::ToolStatus;
+
+/// Convert a `Line<'_>` to `Line<'static>` by owning all span content.
+fn line_to_static(line: Line<'_>) -> Line<'static> {
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(span.content.to_string(), span.style))
+            .collect::<Vec<_>>(),
+    )
+}
 
 pub struct TranscriptState {
     committed_messages: Vec<LiveMessage>,
@@ -81,22 +92,51 @@ impl TranscriptState {
                     if text.content.is_empty() {
                         continue;
                     }
-                    for line in text.content.lines() {
-                        lines.push(Line::from(line.to_string()));
+                    let rendered = md::from_str(&text.content);
+                    for line in rendered.lines {
+                        lines.push(line_to_static(line));
                     }
                 }
                 MessageBlock::Thinking(thinking) => {
                     if thinking.content.trim().is_empty() {
                         continue;
                     }
-                    for line in thinking.content.lines() {
-                        lines.push(Line::styled(
-                            line.to_string(),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::ITALIC),
-                        ));
+                    // Render through markdown for inline formatting (code, etc.)
+                    // but apply Yellow+Italic as base style to all spans.
+                    // Don't wrap in *...* — multi-line italic doesn't work in markdown.
+                    let rendered = md::from_str(&thinking.content);
+                    for line in rendered.lines {
+                        let styled_spans: Vec<Span<'static>> = line
+                            .spans
+                            .into_iter()
+                            .map(|span| {
+                                let mut style = span.style;
+                                style = style.fg(Color::Yellow).add_modifier(Modifier::ITALIC);
+                                Span::styled(span.content.to_string(), style)
+                            })
+                            .collect();
+                        lines.push(Line::from(styled_spans));
                     }
+                }
+                MessageBlock::UserText(text) => {
+                    if text.content.is_empty() {
+                        continue;
+                    }
+                    lines.push(Line::from(""));
+                    for (i, line) in text.content.lines().enumerate() {
+                        let prefix = if i == 0 {
+                            Span::styled(
+                                "› ",
+                                Style::default()
+                                    .add_modifier(Modifier::BOLD)
+                                    .add_modifier(Modifier::DIM),
+                            )
+                        } else {
+                            Span::raw("  ")
+                        };
+                        lines.push(Line::from(vec![prefix, Span::raw(line.to_string())]));
+                    }
+                    lines.push(Line::from(""));
                 }
                 MessageBlock::ToolUse(tool) => {
                     lines.push(Line::styled(

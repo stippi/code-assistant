@@ -8,6 +8,7 @@ pub mod message;
 pub mod renderer;
 pub mod state;
 pub mod streaming;
+pub mod textarea;
 pub mod tool_widget;
 pub mod transcript;
 pub mod tui;

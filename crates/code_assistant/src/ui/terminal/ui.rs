@@ -196,8 +196,7 @@ impl UserInterface for TerminalTuiUI {
                     let mut renderer_guard = renderer.lock().await;
                     // Clear any existing error when user sends a message
                     renderer_guard.clear_error();
-                    let formatted = format!("\n\n**User:** {content}\n");
-                    let _ = renderer_guard.add_user_message(&formatted);
+                    let _ = renderer_guard.add_user_message(&content);
 
                     for attachment in &attachments {
                         match attachment {
