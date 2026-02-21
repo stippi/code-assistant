@@ -73,6 +73,23 @@ impl StreamingController {
         self.state(kind).collector.current_tail().to_string()
     }
 
+    /// Returns true if any deltas were pushed to the streaming controller
+    /// since the last clear.
+    pub fn has_seen_any_delta(&self) -> bool {
+        self.text_state.has_seen_delta || self.thinking_state.has_seen_delta
+    }
+
+    /// Finalize and drain a single stream kind (e.g. when switching from
+    /// thinking to text). Returns the flushed lines for that kind only.
+    pub fn flush_kind(&mut self, kind: StreamKind) -> Vec<Line<'static>> {
+        let state = self.state_mut(kind);
+        let remaining = state.collector.finalize_and_drain();
+        if !remaining.is_empty() {
+            state.enqueue(remaining);
+        }
+        state.drain_all()
+    }
+
     fn drain_commit_tick_at(&mut self, now: Instant) -> DrainedLines {
         let output = run_commit_tick(
             &mut self.policy,

@@ -285,34 +285,117 @@ fn wrap_lines_for_width_styled(lines: &[Line<'_>], width: usize) -> Vec<Line<'st
 
     let mut out = Vec::new();
     for line in lines {
-        let plain = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
+        // Build a list of (char, display_width, span_index) tuples to track
+        // which span each character belongs to during wrapping.
+        struct CharInfo {
+            ch: char,
+            display_width: usize,
+            span_idx: usize,
+        }
 
-        for segment in plain.split('\n') {
-            if segment.is_empty() {
-                out.push(Line::styled(String::new(), line.style));
+        let mut chars: Vec<CharInfo> = Vec::new();
+        for (span_idx, span) in line.spans.iter().enumerate() {
+            for ch in span.content.chars() {
+                chars.push(CharInfo {
+                    ch,
+                    display_width: UnicodeWidthChar::width(ch).unwrap_or(0),
+                    span_idx,
+                });
+            }
+        }
+
+        if chars.is_empty() {
+            out.push(Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans: vec![Span::raw(String::new())],
+            });
+            continue;
+        }
+
+        // Walk through chars, splitting into wrapped lines while preserving
+        // per-span styles.
+        let mut current_spans: Vec<Span<'static>> = Vec::new();
+        let mut current_span_text = String::new();
+        let mut current_span_idx: Option<usize> = None;
+        let mut current_width = 0usize;
+
+        for ci in &chars {
+            // Handle embedded newlines: emit current line and start new one
+            if ci.ch == '\n' {
+                if let Some(idx) = current_span_idx {
+                    current_spans.push(Span::styled(
+                        std::mem::take(&mut current_span_text),
+                        line.spans[idx].style,
+                    ));
+                }
+                out.push(Line {
+                    style: line.style,
+                    alignment: line.alignment,
+                    spans: std::mem::take(&mut current_spans),
+                });
+                current_span_idx = None;
+                current_width = 0;
                 continue;
             }
 
-            let mut current = String::new();
-            let mut current_width = 0usize;
-            for ch in segment.chars() {
-                let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-                if ch_width == 0 {
-                    current.push(ch);
-                    continue;
+            // Wrap: if adding this char would exceed width, emit the current line
+            if ci.display_width > 0
+                && current_width + ci.display_width > width
+                && current_width > 0
+            {
+                if let Some(idx) = current_span_idx {
+                    current_spans.push(Span::styled(
+                        std::mem::take(&mut current_span_text),
+                        line.spans[idx].style,
+                    ));
                 }
-                if current_width + ch_width > width && !current.is_empty() {
-                    out.push(Line::styled(std::mem::take(&mut current), line.style));
-                    current_width = 0;
-                }
-                current.push(ch);
-                current_width += ch_width;
+                out.push(Line {
+                    style: line.style,
+                    alignment: line.alignment,
+                    spans: std::mem::take(&mut current_spans),
+                });
+                current_span_idx = None;
+                current_width = 0;
             }
-            out.push(Line::styled(current, line.style));
+
+            // If the span changed, flush the accumulated span text
+            if current_span_idx != Some(ci.span_idx) {
+                if let Some(idx) = current_span_idx {
+                    current_spans.push(Span::styled(
+                        std::mem::take(&mut current_span_text),
+                        line.spans[idx].style,
+                    ));
+                }
+                current_span_idx = Some(ci.span_idx);
+            }
+
+            current_span_text.push(ci.ch);
+            current_width += ci.display_width;
+        }
+
+        // Flush remaining
+        if let Some(idx) = current_span_idx {
+            if !current_span_text.is_empty() {
+                current_spans.push(Span::styled(
+                    std::mem::take(&mut current_span_text),
+                    line.spans[idx].style,
+                ));
+            }
+        }
+        if !current_spans.is_empty() {
+            out.push(Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans: current_spans,
+            });
+        } else if current_width == 0 {
+            // Empty trailing line (e.g. from trailing newline)
+            out.push(Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans: vec![Span::raw(String::new())],
+            });
         }
     }
     out

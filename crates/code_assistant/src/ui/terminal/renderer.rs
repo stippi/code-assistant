@@ -302,6 +302,19 @@ impl TerminalRenderer {
                 return;
             }
         }
+        // When switching from thinking to text, flush the thinking stream
+        // so its tail goes to scrollback immediately rather than lingering
+        // in the viewport.
+        if self.last_stream_kind == Some(StreamKind::Thinking) {
+            let flushed_thinking = self.streaming_controller.flush_kind(StreamKind::Thinking);
+            if !flushed_thinking.is_empty() {
+                let lines = style_thinking_lines(flushed_thinking);
+                self.insert_or_defer_history_lines(lines);
+                if let Some(msg) = self.transcript.active_message_mut() {
+                    msg.streamed_to_scrollback = true;
+                }
+            }
+        }
         self.last_stream_kind = Some(StreamKind::Text);
         self.streaming_controller.push(StreamKind::Text, content);
     }
@@ -317,6 +330,17 @@ impl TerminalRenderer {
             } else {
                 tracing::warn!("Dropping thinking delta while no active stream is open");
                 return;
+            }
+        }
+        // When switching from text to thinking, flush the text stream
+        // so its tail goes to scrollback immediately.
+        if self.last_stream_kind == Some(StreamKind::Text) {
+            let flushed_text = self.streaming_controller.flush_kind(StreamKind::Text);
+            if !flushed_text.is_empty() {
+                self.insert_or_defer_history_lines(flushed_text);
+                if let Some(msg) = self.transcript.active_message_mut() {
+                    msg.streamed_to_scrollback = true;
+                }
             }
         }
         self.last_stream_kind = Some(StreamKind::Thinking);
@@ -528,7 +552,19 @@ impl TerminalRenderer {
             thinking_tail_len = thinking_tail.len(),
             "sync live tails (tail-only)"
         );
+
         if text_tail.is_empty() && thinking_tail.is_empty() {
+            // All content has been drained to scrollback. Only remove stream
+            // blocks when the streaming controller actually managed the content
+            // (has_seen_any_delta). If blocks were added directly via
+            // append_to_live_block, they should not be stripped.
+            if self.streaming_controller.has_seen_any_delta() {
+                if let Some(live_message) = self.transcript.active_message_mut() {
+                    live_message
+                        .blocks
+                        .retain(|block| stream_kind_for_block(block).is_none());
+                }
+            }
             return;
         }
 
