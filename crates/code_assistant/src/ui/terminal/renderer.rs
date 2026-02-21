@@ -2134,28 +2134,28 @@ mod tests {
             let width = 80;
 
             // Test empty textarea
-            // Layout: 1 top padding + 1 textarea + 1 footer = 3
+            // Layout: 1 top + 1 textarea + 1 bottom padding + 1 footer = 4
             let textarea = TextArea::new();
             let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
-                height, 3,
-                "Empty textarea should have minimum height (1 padding + 1 content + 1 footer)"
+                height, 4,
+                "Empty textarea should have minimum height (1 top + 1 content + 1 bottom + 1 footer)"
             );
 
             // Test single line content
             let mut textarea = TextArea::new();
             textarea.insert_str("Hello");
             let height = renderer.calculate_input_height(&textarea, width);
-            assert_eq!(height, 3, "Single line should still be minimum height");
+            assert_eq!(height, 4, "Single line should still be minimum height");
 
             // Test multiple lines
-            // Layout: 1 top padding + 3 textarea + 1 footer = 5
+            // Layout: 1 top + 3 textarea + 1 bottom padding + 1 footer = 6
             let mut textarea = TextArea::new();
             textarea.insert_str("Line 1\nLine 2\nLine 3");
             let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
-                height, 5,
-                "Three lines should give height 5 (1 padding + 3 content + 1 footer)"
+                height, 6,
+                "Three lines should give height 6 (1 top + 3 content + 1 bottom + 1 footer)"
             );
 
             // Test max height constraint
@@ -2168,8 +2168,8 @@ mod tests {
             let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
                 height,
-                renderer.max_input_rows() + 2,
-                "Should be capped at max_input_rows + padding + footer"
+                renderer.max_input_rows() + 3,
+                "Should be capped at max_input_rows + top + bottom + footer"
             );
         }
 
@@ -2178,12 +2178,12 @@ mod tests {
             let renderer = create_default_test_harness();
             let width = 80;
 
-            // Test that height is always at least 3 (padding + content + footer)
+            // Test that height is always at least 4 (top + content + bottom + footer)
             let textarea = TextArea::new();
             let height = renderer.calculate_input_height(&textarea, width);
-            assert!(height >= 3, "Height should always be at least 3");
+            assert!(height >= 4, "Height should always be at least 4");
 
-            // Test that height never exceeds max_input_rows + 2
+            // Test that height never exceeds max_input_rows + 3
             let mut textarea = TextArea::new();
             let excessive_lines = (0..100)
                 .map(|i| format!("Line {i}"))
@@ -2192,8 +2192,8 @@ mod tests {
             textarea.insert_str(&excessive_lines);
             let height = renderer.calculate_input_height(&textarea, width);
             assert!(
-                height <= renderer.max_input_rows() + 2,
-                "Height should never exceed max_input_rows + 2"
+                height <= renderer.max_input_rows() + 3,
+                "Height should never exceed max_input_rows + 3"
             );
         }
     }

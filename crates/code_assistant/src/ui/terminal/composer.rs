@@ -31,30 +31,38 @@ impl Composer {
         self.max_input_rows
     }
 
-    /// Calculate total height: 1 (empty top row) + textarea lines + 1 (footer).
+    /// Calculate total height:
+    ///   1 (top padding) + textarea lines + 1 (bottom padding) + 1 (footer hints).
     pub fn calculate_input_height(&self, textarea: &TextArea, width: u16) -> u16 {
         let textarea_width = width.saturating_sub(PREFIX_COLS + 1); // prefix + 1 right margin
         let lines = textarea.desired_height(textarea_width);
-        let total = lines + 2; // 1 top padding + textarea + 1 footer
-        total.clamp(3, self.max_input_rows + 2)
+        let total = lines + 3; // 1 top + textarea + 1 bottom padding + 1 footer
+        total.clamp(4, self.max_input_rows + 3)
     }
 
     pub fn render(&self, f: &mut custom_terminal::Frame, area: Rect, textarea: &TextArea) {
-        let bg_style = Style::default().bg(composer_bg());
-
-        // Fill entire area with background
-        Block::default().style(bg_style).render(area, f.buffer_mut());
-
         // Layout:
-        //   Row 0:          empty (top padding)
-        //   Row 1..N:       › textarea content
-        //   Row N (last):   footer hints
-        if area.height < 3 || area.width < PREFIX_COLS + 2 {
+        //   Row 0:          empty (top padding, bg)
+        //   Row 1..N:       › textarea content (bg)
+        //   Row N+1:        empty (bottom padding, bg)
+        //   Row N+2 (last): footer hints (no bg, dimmed)
+        if area.height < 4 || area.width < PREFIX_COLS + 2 {
             return;
         }
 
+        let bg_style = Style::default().bg(composer_bg());
         let footer_y = area.y + area.height - 1;
-        let textarea_height = area.height.saturating_sub(2); // minus top padding and footer
+        let bg_height = area.height - 1; // everything except the footer row
+        let textarea_height = bg_height.saturating_sub(2); // minus top and bottom padding
+
+        // Fill the background area (excludes footer row)
+        let bg_rect = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: bg_height,
+        };
+        Block::default().style(bg_style).render(bg_rect, f.buffer_mut());
 
         // Textarea area: inset from left by PREFIX_COLS, from right by 1
         let textarea_rect = Rect {
@@ -90,60 +98,22 @@ impl Composer {
             }
         }
 
-        // Render footer: hints line
+        // Render footer hints below the background area (dimmed, no bg)
+        let action_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM);
+        let mapping_style = Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::DIM);
         let footer_line = Line::from(vec![
-            Span::styled(
-                "  Enter",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .bg(composer_bg()),
-            ),
-            Span::styled(
-                " send  ",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM)
-                    .bg(composer_bg()),
-            ),
-            Span::styled(
-                "Shift+Enter",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .bg(composer_bg()),
-            ),
-            Span::styled(
-                " newline  ",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM)
-                    .bg(composer_bg()),
-            ),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .bg(composer_bg()),
-            ),
-            Span::styled(
-                " dismiss  ",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM)
-                    .bg(composer_bg()),
-            ),
-            Span::styled(
-                "/help",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .bg(composer_bg()),
-            ),
-            Span::styled(
-                " commands",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM)
-                    .bg(composer_bg()),
-            ),
+            Span::styled("  Enter", action_style),
+            Span::styled(" send  ", mapping_style),
+            Span::styled("Shift+Enter", action_style),
+            Span::styled(" newline  ", mapping_style),
+            Span::styled("Esc", action_style),
+            Span::styled(" dismiss  ", mapping_style),
+            Span::styled("/help", action_style),
+            Span::styled(" commands", mapping_style),
         ]);
         let footer_rect = Rect {
             x: area.x,
