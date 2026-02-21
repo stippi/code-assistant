@@ -2,20 +2,10 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use tui_markdown as md;
 
 use super::message::{LiveMessage, MessageBlock};
+use super::streaming::markdown_stream::render_markdown_lines;
 use crate::ui::ToolStatus;
-
-/// Convert a `Line<'_>` to `Line<'static>` by owning all span content.
-fn line_to_static(line: Line<'_>) -> Line<'static> {
-    Line::from(
-        line.spans
-            .into_iter()
-            .map(|span| Span::styled(span.content.to_string(), span.style))
-            .collect::<Vec<_>>(),
-    )
-}
 
 pub struct TranscriptState {
     committed_messages: Vec<LiveMessage>,
@@ -83,8 +73,9 @@ impl TranscriptState {
         self.committed_rendered_count = self.committed_messages.len();
     }
 
-    pub fn as_history_lines(message: &LiveMessage) -> Vec<Line<'static>> {
+    pub fn as_history_lines(message: &LiveMessage, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
+        let render_width = if width > 0 { Some(width as usize) } else { None };
 
         for block in &message.blocks {
             match block {
@@ -92,20 +83,18 @@ impl TranscriptState {
                     if text.content.is_empty() {
                         continue;
                     }
-                    let rendered = md::from_str(&text.content);
-                    for line in rendered.lines {
-                        lines.push(line_to_static(line));
-                    }
+                    // Use the same buffer-rendering approach as the streaming path
+                    // to preserve full markdown styling (bold, code, etc.)
+                    lines.extend(render_markdown_lines(&text.content, render_width));
                 }
                 MessageBlock::Thinking(thinking) => {
                     if thinking.content.trim().is_empty() {
                         continue;
                     }
-                    // Render through markdown for inline formatting (code, etc.)
-                    // but apply Yellow+Italic as base style to all spans.
-                    // Don't wrap in *...* — multi-line italic doesn't work in markdown.
-                    let rendered = md::from_str(&thinking.content);
-                    for line in rendered.lines {
+                    // Render through buffer for inline formatting (code, etc.)
+                    // then apply Yellow+Italic as base style to all spans.
+                    let rendered = render_markdown_lines(&thinking.content, render_width);
+                    for line in rendered {
                         let styled_spans: Vec<Span<'static>> = line
                             .spans
                             .into_iter()
@@ -117,6 +106,73 @@ impl TranscriptState {
                             .collect();
                         lines.push(Line::from(styled_spans));
                     }
+                }
+                MessageBlock::UserText(text) => {
+                    if text.content.is_empty() {
+                        continue;
+                    }
+                    lines.push(Line::from(""));
+                    for (i, line) in text.content.lines().enumerate() {
+                        let prefix = if i == 0 {
+                            Span::styled(
+                                "› ",
+                                Style::default()
+                                    .add_modifier(Modifier::BOLD)
+                                    .add_modifier(Modifier::DIM),
+                            )
+                        } else {
+                            Span::raw("  ")
+                        };
+                        lines.push(Line::from(vec![prefix, Span::raw(line.to_string())]));
+                    }
+                    lines.push(Line::from(""));
+                }
+                MessageBlock::ToolUse(tool) => {
+                    lines.push(Line::styled(
+                        format!("tool: {}", tool.name),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    for (param_name, param_value) in &tool.parameters {
+                        for line in param_value.value.lines() {
+                            lines.push(Line::from(format!("  {param_name}: {line}")));
+                        }
+                    }
+                    if let Some(status_message) = &tool.status_message {
+                        lines.push(Line::styled(
+                            format!("  status: {status_message}"),
+                            Style::default().fg(match tool.status {
+                                ToolStatus::Pending => Color::Gray,
+                                ToolStatus::Running => Color::Blue,
+                                ToolStatus::Success => Color::Green,
+                                ToolStatus::Error => Color::Red,
+                            }),
+                        ));
+                    }
+                    if let Some(output) = &tool.output {
+                        for line in output.lines() {
+                            lines.push(Line::from(format!("  {line}")));
+                        }
+                    }
+                }
+            }
+        }
+
+        lines
+    }
+
+    /// Render only non-streamed blocks (ToolUse, UserText) to history lines.
+    /// Used when PlainText/Thinking blocks were already progressively sent to
+    /// scrollback during streaming.
+    pub fn as_history_lines_non_streamed_only(
+        message: &LiveMessage,
+        _width: u16,
+    ) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        for block in &message.blocks {
+            match block {
+                MessageBlock::PlainText(_) | MessageBlock::Thinking(_) => {
+                    // Already sent to scrollback during streaming — skip.
                 }
                 MessageBlock::UserText(text) => {
                     if text.content.is_empty() {

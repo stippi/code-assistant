@@ -11,6 +11,10 @@ use crate::ui::ToolStatus;
 pub struct LiveMessage {
     pub blocks: Vec<MessageBlock>,
     pub finalized: bool,
+    /// When true, the committed stream lines for this message were progressively
+    /// sent to scrollback during streaming. Only the final tail needs to be sent
+    /// on finalization — the bulk of the content is already in scrollback.
+    pub streamed_to_scrollback: bool,
 }
 
 impl LiveMessage {
@@ -18,6 +22,7 @@ impl LiveMessage {
         Self {
             blocks: Vec::new(),
             finalized: false,
+            streamed_to_scrollback: false,
         }
     }
 

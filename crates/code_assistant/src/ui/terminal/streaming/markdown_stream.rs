@@ -88,7 +88,7 @@ impl MarkdownStreamCollector {
     }
 }
 
-fn render_markdown_lines(source: &str, width: Option<usize>) -> Vec<Line<'static>> {
+pub fn render_markdown_lines(source: &str, width: Option<usize>) -> Vec<Line<'static>> {
     let Some(width) = width.filter(|w| *w > 0) else {
         let text = md::from_str(source);
         let mut lines = text.lines.iter().map(line_to_static).collect::<Vec<_>>();

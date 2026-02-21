@@ -14,7 +14,6 @@ use super::streaming::controller::{DrainedLines, StreamKind, StreamingController
 use super::transcript::TranscriptState;
 use crate::types::{PlanItemStatus, PlanState};
 use crate::ui::ToolStatus;
-use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
@@ -102,8 +101,6 @@ pub struct TerminalRenderer {
     streaming_controller: StreamingController,
     /// True while actively receiving stream deltas for the current assistant turn.
     streaming_open: bool,
-    /// Stable already-committed lines for each active stream kind.
-    active_committed_stream_lines: HashMap<StreamKind, Vec<Line<'static>>>,
     /// Last stream kind seen from incoming deltas (used as ordering tiebreaker).
     last_stream_kind: Option<StreamKind>,
     /// Spinner state for loading indication
@@ -112,6 +109,8 @@ pub struct TerminalRenderer {
     last_block_type_for_hidden_tool: Option<LastBlockType>,
     /// Flag indicating a hidden tool completed and we may need a paragraph break
     needs_paragraph_break_after_hidden_tool: bool,
+    /// Last known terminal width (updated in prepare(), used for history rendering).
+    last_known_width: u16,
 }
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -140,11 +139,11 @@ impl TerminalRenderer {
             composer: Composer::new(5),
             streaming_controller: StreamingController::new(),
             streaming_open: false,
-            active_committed_stream_lines: HashMap::new(),
             last_stream_kind: None,
             spinner_state: SpinnerState::Hidden,
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
+            last_known_width: 80,
         })
     }
 
@@ -161,7 +160,6 @@ impl TerminalRenderer {
             start_time: Instant::now(),
         };
         self.streaming_controller.clear();
-        self.active_committed_stream_lines.clear();
         self.last_stream_kind = None;
         self.transcript.start_active_message();
         self.streaming_open = true;
@@ -375,12 +373,11 @@ impl TerminalRenderer {
         self.flush_streaming_pending();
         self.transcript.finalize_active_if_content();
         // Clear stale stream state so prepare()/sync_live_stream_tails() won't
-        // re-create a phantom active message from leftover committed stream lines.
+        // re-create a phantom active message from leftover tail text.
         self.streaming_controller.clear();
-        self.active_committed_stream_lines.clear();
         self.last_stream_kind = None;
         // Flush the now-finalized agent response into scrollback
-        self.flush_new_finalized_messages();
+        self.flush_new_finalized_messages(self.last_known_width);
 
         // Create a finalized message with a UserText block for proper styling
         let mut user_message = LiveMessage::new();
@@ -412,7 +409,6 @@ impl TerminalRenderer {
         self.transcript.clear();
         self.streaming_controller.clear();
         self.streaming_open = false;
-        self.active_committed_stream_lines.clear();
         self.last_stream_kind = None;
         self.deferred_history_lines.clear();
         self.pending_history_lines.clear();
@@ -448,7 +444,7 @@ impl TerminalRenderer {
         self.insert_or_defer_history_lines(lines);
     }
 
-    fn flush_new_finalized_messages(&mut self) {
+    fn flush_new_finalized_messages(&mut self, width: u16) {
         let unrendered = self.transcript.unrendered_committed_messages();
         if unrendered.is_empty() {
             return;
@@ -456,10 +452,24 @@ impl TerminalRenderer {
 
         let mut lines = Vec::new();
         for message in unrendered {
+            if message.streamed_to_scrollback {
+                // PlainText and Thinking blocks were already progressively sent
+                // to scrollback during streaming. Only send non-streamed blocks
+                // (ToolUse, UserText) that were added directly to the message.
+                let tool_lines =
+                    TranscriptState::as_history_lines_non_streamed_only(message, width);
+                if !tool_lines.is_empty() {
+                    if !lines.is_empty() {
+                        lines.push(Line::from(""));
+                    }
+                    lines.extend(tool_lines);
+                }
+                continue;
+            }
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            lines.extend(TranscriptState::as_history_lines(message));
+            lines.extend(TranscriptState::as_history_lines(message, width));
         }
 
         self.insert_or_defer_history_lines(lines);
@@ -479,75 +489,46 @@ impl TerminalRenderer {
                 text_lines = drained.text.len(),
                 thinking_lines = drained.thinking.len(),
                 overlay_active = self.overlay_active,
+                streaming_open = self.streaming_open,
                 "apply drained lines"
             );
         }
-        if self.streaming_open {
-            match self.last_stream_kind {
-                Some(StreamKind::Text) => {
-                    self.append_committed_stream_lines(StreamKind::Thinking, drained.thinking);
-                    self.append_committed_stream_lines(StreamKind::Text, drained.text);
-                }
-                Some(StreamKind::Thinking) => {
-                    self.append_committed_stream_lines(StreamKind::Text, drained.text);
-                    self.append_committed_stream_lines(StreamKind::Thinking, drained.thinking);
-                }
-                None => {
-                    self.append_committed_stream_lines(StreamKind::Text, drained.text);
-                    self.append_committed_stream_lines(StreamKind::Thinking, drained.thinking);
-                }
-            }
-            return;
-        }
+
+        // Drained lines always go to scrollback — both during streaming and after.
+        // During streaming, the viewport shows ONLY the undrained tail (via
+        // sync_live_stream_tails), so there is no duplication.
+        let has_lines = !drained.text.is_empty() || !drained.thinking.is_empty();
 
         if !drained.text.is_empty() {
             self.insert_or_defer_history_lines(drained.text);
         }
 
         if !drained.thinking.is_empty() {
-            let lines = drained
-                .thinking
-                .into_iter()
-                .map(|line| {
-                    Line::styled(
-                        line.spans
-                            .iter()
-                            .map(|span| span.content.clone())
-                            .collect::<String>(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::ITALIC),
-                    )
-                })
-                .collect::<Vec<_>>();
+            let lines = style_thinking_lines(drained.thinking);
             self.insert_or_defer_history_lines(lines);
+        }
+
+        // Mark the active message so flush_new_finalized_messages() won't
+        // re-send text/thinking content that was already sent to scrollback.
+        if self.streaming_open && has_lines {
+            if let Some(msg) = self.transcript.active_message_mut() {
+                msg.streamed_to_scrollback = true;
+            }
         }
     }
 
     fn sync_live_stream_tails(&mut self) {
+        // The viewport shows ONLY the undrained tail — all committed (drained)
+        // content has already been sent to scrollback.
         let text_tail = self.streaming_controller.tail_text(StreamKind::Text);
         let thinking_tail = self.streaming_controller.tail_text(StreamKind::Thinking);
         trace!(
             target: "tui_scrollback",
             text_tail_len = text_tail.len(),
             thinking_tail_len = thinking_tail.len(),
-            "sync live tails"
+            "sync live tails (tail-only)"
         );
-        let text_head = self
-            .active_committed_stream_lines
-            .get(&StreamKind::Text)
-            .map(|lines| lines_to_plain_text(lines))
-            .unwrap_or_default();
-        let thinking_head = self
-            .active_committed_stream_lines
-            .get(&StreamKind::Thinking)
-            .map(|lines| lines_to_plain_text(lines))
-            .unwrap_or_default();
-        if text_head.is_empty()
-            && thinking_head.is_empty()
-            && text_tail.is_empty()
-            && thinking_tail.is_empty()
-        {
+        if text_tail.is_empty() && thinking_tail.is_empty() {
             return;
         }
 
@@ -556,8 +537,8 @@ impl TerminalRenderer {
             return;
         };
 
-        let text_content = merge_committed_with_tail(&text_head, &text_tail);
-        let thinking_content = merge_committed_with_tail(&thinking_head, &thinking_tail);
+        let text_content = text_tail.to_string();
+        let thinking_content = thinking_tail.to_string();
         let stream_blocks = build_stream_blocks_for_live_message(
             &live_message.blocks,
             text_content,
@@ -570,16 +551,6 @@ impl TerminalRenderer {
 
         live_message.blocks =
             merge_blocks_preserving_stream_slots(&live_message.blocks, stream_blocks);
-    }
-
-    fn append_committed_stream_lines(&mut self, kind: StreamKind, lines: Vec<Line<'static>>) {
-        if lines.is_empty() {
-            return;
-        }
-        self.active_committed_stream_lines
-            .entry(kind)
-            .or_default()
-            .extend(lines);
     }
 
     fn insert_or_defer_history_lines(&mut self, lines: Vec<Line<'static>>) {
@@ -602,14 +573,16 @@ impl TerminalRenderer {
 
     /// Prepare for the next frame: flush streaming data, commit finalized messages.
     /// Must be called before `paint()` each frame.
-    pub fn prepare(&mut self, width: u16) {
+    pub fn prepare(&mut self, width: u16, screen_height: u16) {
+        let _ = screen_height; // Reserved for future partial-scrollback support
+        self.last_known_width = width;
         self.streaming_controller
             .set_width(Some(width.max(1) as usize));
         self.apply_streaming_commit_tick();
         if !self.overlay_active {
             self.flush_deferred_history_lines();
         }
-        self.flush_new_finalized_messages();
+        self.flush_new_finalized_messages(width);
     }
 
     /// Compute the desired viewport height for the current content.
@@ -1149,27 +1122,25 @@ impl TerminalRenderer {
     }
 }
 
-fn lines_to_plain_text(lines: &[Line<'_>]) -> String {
-    lines
-        .iter()
+/// Apply Yellow+Italic style to thinking lines while preserving per-span markdown styling.
+fn style_thinking_lines(thinking: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    thinking
+        .into_iter()
         .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
+            let styled_spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    let style = span
+                        .style
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC);
+                    Span::styled(span.content.to_string(), style)
+                })
+                .collect();
+            Line::from(styled_spans)
         })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn merge_committed_with_tail(committed: &str, tail: &str) -> String {
-    if committed.is_empty() {
-        return tail.to_string();
-    }
-    if tail.is_empty() {
-        return committed.to_string();
-    }
-    format!("{committed}\n{tail}")
+        .collect()
 }
 
 fn stream_kind_for_block(block: &MessageBlock) -> Option<StreamKind> {
@@ -1317,7 +1288,7 @@ mod tests {
         fn render(&mut self, textarea: &TextArea) -> &Buffer {
             let area = Rect::new(0, 0, self.width, self.height);
             self.buffer = Buffer::empty(area);
-            self.renderer.prepare(self.width);
+            self.renderer.prepare(self.width, self.height);
             let mut frame = custom_terminal::Frame {
                 cursor_position: None,
                 viewport_area: area,

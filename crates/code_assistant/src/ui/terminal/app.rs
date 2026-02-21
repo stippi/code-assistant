@@ -57,7 +57,7 @@ async fn event_loop(
             let screen_size = tui.size()?;
 
             // Prepare renderer state (streaming tick, flush finalized messages)
-            renderer_guard.prepare(screen_size.width);
+            renderer_guard.prepare(screen_size.width, screen_size.height);
 
             // Drain pending history lines and insert them into scrollback
             let pending_lines = renderer_guard.drain_pending_history_lines();
