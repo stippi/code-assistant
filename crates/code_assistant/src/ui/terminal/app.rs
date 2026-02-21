@@ -9,6 +9,7 @@ use crate::ui::terminal::{
     input::{InputManager, KeyEventResult},
     renderer::ProductionTerminalRenderer,
     state::AppState,
+    tui,
     ui::TerminalTuiUI,
 };
 use crate::ui::UserInterface;
@@ -29,6 +30,7 @@ async fn event_loop(
     app_state: Arc<Mutex<AppState>>,
     cancel_flag: Arc<AtomicBool>,
     backend_event_tx: async_channel::Sender<BackendEvent>,
+    mut tui: tui::Tui,
 ) -> Result<()> {
     loop {
         // Sync state and render the UI
@@ -51,7 +53,24 @@ async fn event_loop(
             renderer_guard.set_overlay_active(state.is_overlay_active());
 
             drop(state); // Release the lock before rendering
-            renderer_guard.render(&input_manager.textarea)?;
+
+            let screen_size = tui.size()?;
+
+            // Prepare renderer state (streaming tick, flush finalized messages)
+            renderer_guard.prepare(screen_size.width);
+
+            // Drain pending history lines and insert them into scrollback
+            let pending_lines = renderer_guard.drain_pending_history_lines();
+            if !pending_lines.is_empty() {
+                tui.insert_history_lines(pending_lines);
+            }
+
+            // Compute desired viewport height and draw
+            let desired_height =
+                renderer_guard.desired_viewport_height(&input_manager.textarea, screen_size.width);
+            tui.draw(desired_height, |frame| {
+                renderer_guard.paint(frame, &input_manager.textarea);
+            })?;
         }
 
         // Check for events with a timeout
@@ -220,11 +239,7 @@ async fn event_loop(
                     }
                 }
                 Event::Resize(_, _) => {
-                    // Ratatui handles resize automatically, but we might need to update viewport
-                    let mut renderer_guard = renderer.lock().await;
-                    let input_height =
-                        renderer_guard.calculate_input_height(&input_manager.textarea);
-                    renderer_guard.update_size(input_height)?;
+                    // Resize is handled automatically by Tui::draw() via pending_viewport_area()
                 }
                 _ => {
                     // Ignore other events
@@ -466,10 +481,10 @@ impl TerminalTuiApp {
 
         // Initialize components
         let input_manager = InputManager::new();
-        let mut renderer = ProductionTerminalRenderer::new()?;
+        let renderer = ProductionTerminalRenderer::new()?;
 
-        // Setup terminal AFTER printing instructions
-        renderer.setup_terminal()?;
+        // Initialize the Tui (raw mode, custom terminal, panic hook)
+        let tui = tui::init()?;
 
         let renderer = Arc::new(Mutex::new(renderer));
 
@@ -518,6 +533,7 @@ impl TerminalTuiApp {
             app_state,
             terminal_ui.cancel_flag.clone(),
             backend_event_tx,
+            tui,
         ));
 
         // Handle redraw notifications in main loop
@@ -539,18 +555,15 @@ impl TerminalTuiApp {
             }
         };
 
-        // Cleanup terminal
-        let cleanup_result = {
-            let mut renderer_guard = renderer.lock().await;
-            renderer_guard.cleanup_terminal()
-        };
+        // Restore terminal state (disable raw mode)
+        let cleanup_result = tui::restore();
 
         // Cancel the backend task
         backend_task.abort();
 
         if let Err(cleanup_error) = cleanup_result {
             if loop_result.is_ok() {
-                return Err(cleanup_error);
+                return Err(cleanup_error.into());
             }
             tracing::warn!(
                 "Terminal cleanup failed after loop error: {}",

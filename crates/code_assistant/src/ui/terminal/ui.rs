@@ -76,14 +76,13 @@ impl TerminalTuiUI {
 #[async_trait]
 impl UserInterface for TerminalTuiUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
-        let mut state = self.app_state.lock().await;
-
         match event {
             UiEvent::SetMessages {
                 messages: _,
                 session_id,
                 tool_results,
             } => {
+                let mut state = self.app_state.lock().await;
                 debug!("Setting messages for session {:?}", session_id);
 
                 if let Some(session_id) = session_id {
@@ -104,17 +103,22 @@ impl UserInterface for TerminalTuiUI {
             UiEvent::UpdatePlan { plan } => {
                 debug!("Updating plan");
                 let plan_clone = plan.clone();
-                state.set_plan(Some(plan));
+                let (plan_expanded, overlay_active) = {
+                    let mut state = self.app_state.lock().await;
+                    state.set_plan(Some(plan));
+                    (state.plan_expanded, state.is_overlay_active())
+                };
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.set_plan_state(Some(plan_clone));
-                    renderer_guard.set_plan_expanded(state.plan_expanded);
-                    renderer_guard.set_overlay_active(state.is_overlay_active());
+                    renderer_guard.set_plan_expanded(plan_expanded);
+                    renderer_guard.set_overlay_active(overlay_active);
                 }
             }
             UiEvent::UpdateChatList { sessions } => {
                 debug!("Updating chat list with {} sessions", sessions.len());
+                let mut state = self.app_state.lock().await;
                 state.update_sessions(sessions);
             }
             UiEvent::UpdateSessionActivityState {
@@ -125,6 +129,7 @@ impl UserInterface for TerminalTuiUI {
                     "Updating activity state for session {}: {:?}",
                     session_id, activity_state
                 );
+                let mut state = self.app_state.lock().await;
                 state.update_session_activity_state(session_id.clone(), activity_state.clone());
                 let is_idle = matches!(
                     &activity_state,
@@ -141,7 +146,10 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("Updating pending message: {:?}", message);
-                state.update_pending_message(message.clone());
+                {
+                    let mut state = self.app_state.lock().await;
+                    state.update_pending_message(message.clone());
+                }
 
                 // Set pending message in renderer if available
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
@@ -156,7 +164,10 @@ impl UserInterface for TerminalTuiUI {
                 output,
             } => {
                 debug!("Updating tool status for {}: {:?}", tool_id, status);
-                state.tool_statuses.insert(tool_id.clone(), status);
+                {
+                    let mut state = self.app_state.lock().await;
+                    state.tool_statuses.insert(tool_id.clone(), status);
+                }
 
                 // Update tool status in renderer - can now update any tool in current message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {

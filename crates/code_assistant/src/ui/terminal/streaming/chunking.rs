@@ -1,47 +1,51 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const ENTER_QUEUE_DEPTH_LINES: usize = 8;
+const ENTER_OLDEST_AGE: Duration = Duration::from_millis(120);
+const EXIT_QUEUE_DEPTH_LINES: usize = 2;
+const EXIT_OLDEST_AGE: Duration = Duration::from_millis(40);
+const EXIT_HOLD: Duration = Duration::from_millis(250);
+const REENTER_CATCH_UP_HOLD: Duration = Duration::from_millis(250);
+const SEVERE_QUEUE_DEPTH_LINES: usize = 64;
+const SEVERE_OLDEST_AGE: Duration = Duration::from_millis(300);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkingMode {
+    #[default]
     Smooth,
     CatchUp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrainPlan {
-    Single,
-    Batch(usize),
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QueueSnapshot {
     pub queued_lines: usize,
     pub oldest_age: Option<Duration>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChunkingDecision {
-    pub mode: ChunkingMode,
-    pub drain_plan: DrainPlan,
-    pub entered_catch_up: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrainPlan {
+    Single,
+    Batch(usize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkingDecision {
+    pub mode: ChunkingMode,
+    pub entered_catch_up: bool,
+    pub drain_plan: DrainPlan,
+}
+
+#[derive(Debug, Default)]
 pub struct AdaptiveChunkingPolicy {
     mode: ChunkingMode,
-    catch_up_below_threshold_since: Option<Instant>,
+    below_exit_threshold_since: Option<Instant>,
+    last_catch_up_exit_at: Option<Instant>,
 }
 
 impl AdaptiveChunkingPolicy {
-    const ENTER_LINES: usize = 8;
-    const ENTER_AGE: Duration = Duration::from_millis(120);
-    const EXIT_LINES: usize = 2;
-    const EXIT_AGE: Duration = Duration::from_millis(40);
-    const EXIT_HOLD: Duration = Duration::from_millis(250);
-
     pub fn new() -> Self {
-        Self {
-            mode: ChunkingMode::Smooth,
-            catch_up_below_threshold_since: None,
-        }
+        Self::default()
     }
 
     #[cfg(test)]
@@ -51,77 +55,123 @@ impl AdaptiveChunkingPolicy {
 
     pub fn reset(&mut self) {
         self.mode = ChunkingMode::Smooth;
-        self.catch_up_below_threshold_since = None;
+        self.below_exit_threshold_since = None;
+        self.last_catch_up_exit_at = None;
     }
 
     pub fn decide(&mut self, snapshot: QueueSnapshot, now: Instant) -> ChunkingDecision {
         if snapshot.queued_lines == 0 {
-            self.reset();
+            self.note_catch_up_exit(now);
+            self.mode = ChunkingMode::Smooth;
+            self.below_exit_threshold_since = None;
             return ChunkingDecision {
                 mode: self.mode,
-                drain_plan: DrainPlan::Single,
                 entered_catch_up: false,
+                drain_plan: DrainPlan::Single,
             };
         }
 
-        let enter_catch_up = snapshot.queued_lines >= Self::ENTER_LINES
-            || snapshot
-                .oldest_age
-                .is_some_and(|age| age >= Self::ENTER_AGE);
-
-        let exit_candidate = snapshot.queued_lines <= Self::EXIT_LINES
-            && snapshot.oldest_age.is_some_and(|age| age <= Self::EXIT_AGE);
-
-        let prior_mode = self.mode;
-        match self.mode {
-            ChunkingMode::Smooth => {
-                if enter_catch_up {
-                    self.mode = ChunkingMode::CatchUp;
-                    self.catch_up_below_threshold_since = None;
-                }
-            }
+        let entered_catch_up = match self.mode {
+            ChunkingMode::Smooth => self.maybe_enter_catch_up(snapshot, now),
             ChunkingMode::CatchUp => {
-                if exit_candidate {
-                    let since = self.catch_up_below_threshold_since.get_or_insert(now);
-                    if now.saturating_duration_since(*since) >= Self::EXIT_HOLD {
-                        self.mode = ChunkingMode::Smooth;
-                        self.catch_up_below_threshold_since = None;
-                    }
-                } else {
-                    self.catch_up_below_threshold_since = None;
-                }
+                self.maybe_exit_catch_up(snapshot, now);
+                false
             }
-        }
+        };
 
         let drain_plan = match self.mode {
             ChunkingMode::Smooth => DrainPlan::Single,
-            ChunkingMode::CatchUp => DrainPlan::Batch(snapshot.queued_lines),
+            ChunkingMode::CatchUp => DrainPlan::Batch(snapshot.queued_lines.max(1)),
         };
 
         ChunkingDecision {
             mode: self.mode,
+            entered_catch_up,
             drain_plan,
-            entered_catch_up: prior_mode != ChunkingMode::CatchUp
-                && self.mode == ChunkingMode::CatchUp,
         }
     }
+
+    fn maybe_enter_catch_up(&mut self, snapshot: QueueSnapshot, now: Instant) -> bool {
+        if !should_enter_catch_up(snapshot) {
+            return false;
+        }
+        if self.reentry_hold_active(now) && !is_severe_backlog(snapshot) {
+            return false;
+        }
+        self.mode = ChunkingMode::CatchUp;
+        self.below_exit_threshold_since = None;
+        self.last_catch_up_exit_at = None;
+        true
+    }
+
+    fn maybe_exit_catch_up(&mut self, snapshot: QueueSnapshot, now: Instant) {
+        if !should_exit_catch_up(snapshot) {
+            self.below_exit_threshold_since = None;
+            return;
+        }
+
+        match self.below_exit_threshold_since {
+            Some(since) if now.saturating_duration_since(since) >= EXIT_HOLD => {
+                self.mode = ChunkingMode::Smooth;
+                self.below_exit_threshold_since = None;
+                self.last_catch_up_exit_at = Some(now);
+            }
+            Some(_) => {}
+            None => {
+                self.below_exit_threshold_since = Some(now);
+            }
+        }
+    }
+
+    fn note_catch_up_exit(&mut self, now: Instant) {
+        if self.mode == ChunkingMode::CatchUp {
+            self.last_catch_up_exit_at = Some(now);
+        }
+    }
+
+    fn reentry_hold_active(&self, now: Instant) -> bool {
+        self.last_catch_up_exit_at
+            .is_some_and(|exit| now.saturating_duration_since(exit) < REENTER_CATCH_UP_HOLD)
+    }
+}
+
+fn should_enter_catch_up(snapshot: QueueSnapshot) -> bool {
+    snapshot.queued_lines >= ENTER_QUEUE_DEPTH_LINES
+        || snapshot
+            .oldest_age
+            .is_some_and(|oldest| oldest >= ENTER_OLDEST_AGE)
+}
+
+fn should_exit_catch_up(snapshot: QueueSnapshot) -> bool {
+    snapshot.queued_lines <= EXIT_QUEUE_DEPTH_LINES
+        && snapshot
+            .oldest_age
+            .is_some_and(|oldest| oldest <= EXIT_OLDEST_AGE)
+}
+
+fn is_severe_backlog(snapshot: QueueSnapshot) -> bool {
+    snapshot.queued_lines >= SEVERE_QUEUE_DEPTH_LINES
+        || snapshot
+            .oldest_age
+            .is_some_and(|oldest| oldest >= SEVERE_OLDEST_AGE)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn snapshot(queued_lines: usize, oldest_age_ms: u64) -> QueueSnapshot {
+        QueueSnapshot {
+            queued_lines,
+            oldest_age: Some(Duration::from_millis(oldest_age_ms)),
+        }
+    }
+
     #[test]
-    fn enters_catch_up_when_queue_grows() {
+    fn enters_catch_up_on_depth_threshold() {
         let mut policy = AdaptiveChunkingPolicy::new();
         let now = Instant::now();
-        let decision = policy.decide(
-            QueueSnapshot {
-                queued_lines: 8,
-                oldest_age: Some(Duration::from_millis(10)),
-            },
-            now,
-        );
+        let decision = policy.decide(snapshot(8, 10), now);
         assert_eq!(decision.mode, ChunkingMode::CatchUp);
         assert_eq!(decision.drain_plan, DrainPlan::Batch(8));
     }
@@ -130,31 +180,13 @@ mod tests {
     fn exits_catch_up_after_hold_window() {
         let mut policy = AdaptiveChunkingPolicy::new();
         let t0 = Instant::now();
-        let _ = policy.decide(
-            QueueSnapshot {
-                queued_lines: 9,
-                oldest_age: Some(Duration::from_millis(10)),
-            },
-            t0,
-        );
+        let _ = policy.decide(snapshot(9, 10), t0);
         assert_eq!(policy.mode(), ChunkingMode::CatchUp);
 
-        let _ = policy.decide(
-            QueueSnapshot {
-                queued_lines: 1,
-                oldest_age: Some(Duration::from_millis(10)),
-            },
-            t0 + Duration::from_millis(50),
-        );
+        let _ = policy.decide(snapshot(1, 10), t0 + Duration::from_millis(50));
         assert_eq!(policy.mode(), ChunkingMode::CatchUp);
 
-        let _ = policy.decide(
-            QueueSnapshot {
-                queued_lines: 1,
-                oldest_age: Some(Duration::from_millis(10)),
-            },
-            t0 + Duration::from_millis(350),
-        );
+        let _ = policy.decide(snapshot(1, 10), t0 + Duration::from_millis(350));
         assert_eq!(policy.mode(), ChunkingMode::Smooth);
     }
 }

@@ -2,3 +2,7 @@
 members = ["crates/code_assistant", "crates/command_executor", "crates/fs_explorer", "crates/llm", "crates/sandbox", "crates/web"]
 
 resolver = "2"
+
+[patch.crates-io]
+crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
+ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }

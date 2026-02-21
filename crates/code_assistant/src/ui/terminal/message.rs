@@ -1,4 +1,5 @@
 use ratatui::prelude::*;
+use ratatui::widgets::{Paragraph, Wrap};
 use std::collections::HashMap;
 use tui_markdown as md;
 
@@ -85,34 +86,14 @@ impl MessageBlock {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
-                // Account for text wrapping
-                let mut total_lines = 0u16;
-                for line in block.content.lines() {
-                    if line.is_empty() {
-                        total_lines += 1;
-                    } else {
-                        let wrapped_lines = (line.len() as u16 + width - 1) / width.max(1);
-                        total_lines += wrapped_lines.max(1);
-                    }
-                }
-                total_lines.max(1)
+                measure_markdown_height(&block.content, width)
             }
             MessageBlock::Thinking(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
                 let formatted = format!("*{}*", block.content);
-                // Account for text wrapping
-                let mut total_lines = 0u16;
-                for line in formatted.lines() {
-                    if line.is_empty() {
-                        total_lines += 1;
-                    } else {
-                        let wrapped_lines = (line.len() as u16 + width - 1) / width.max(1);
-                        total_lines += wrapped_lines.max(1);
-                    }
-                }
-                total_lines.max(1)
+                measure_markdown_height(&formatted, width)
             }
             MessageBlock::ToolUse(block) => {
                 let mut height = 1; // Tool name line
@@ -172,6 +153,39 @@ impl MessageBlock {
             }
         }
     }
+}
+
+fn measure_markdown_height(content: &str, width: u16) -> u16 {
+    if content.trim().is_empty() || width == 0 {
+        return 0;
+    }
+
+    let base_lines = content.lines().count().max(1) as u16;
+    let rough_wrap = (content.chars().count() as u16 / width.max(1)).saturating_add(base_lines);
+    let max_height = rough_wrap.saturating_add(16).clamp(16, 2048);
+
+    let text = md::from_str(content);
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+    let mut tmp = ratatui::buffer::Buffer::empty(Rect::new(0, 0, width, max_height));
+    paragraph.render(Rect::new(0, 0, width, max_height), &mut tmp);
+
+    for y in (0..max_height).rev() {
+        let mut row_empty = true;
+        for x in 0..width {
+            let Some(cell) = tmp.cell((x, y)) else {
+                continue;
+            };
+            if !cell.symbol().is_empty() && cell.symbol() != " " {
+                row_empty = false;
+                break;
+            }
+        }
+        if !row_empty {
+            return y + 1;
+        }
+    }
+
+    0
 }
 
 impl Widget for MessageBlock {

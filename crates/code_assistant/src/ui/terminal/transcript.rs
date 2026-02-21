@@ -72,11 +72,6 @@ impl TranscriptState {
         self.committed_rendered_count = self.committed_messages.len();
     }
 
-    #[cfg(test)]
-    pub fn committed_rendered_count(&self) -> usize {
-        self.committed_rendered_count
-    }
-
     pub fn as_history_lines(message: &LiveMessage) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 

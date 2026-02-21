@@ -20,12 +20,18 @@ tempfile = "3.23"
 
 # Terminal UI
 rustyline = "12.0.0"
-crossterm = "0.27.0"
+crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }
 unicode-width = "0.1"
-ratatui = "0.29"
+ratatui = { version = "0.29", features = [
+    "scrolling-regions",
+    "unstable-backend-writer",
+    "unstable-rendered-line-info",
+    "unstable-widget-ref",
+] }
 tui-textarea = "0.7"
 # Pin to 0.3.6 to avoid incompatibility with ratatui 0.29 (0.3.7 requires ratatui-core)
 tui-markdown = "=0.3.6"
+derive_more = { version = "2", features = ["is_variant"] }
 
 # GPUI related
 gpui = "0.2.2"

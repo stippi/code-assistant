@@ -1,9 +1,10 @@
 use ratatui::{
     layout::{Position, Rect},
-    prelude::Frame,
     widgets::{Block, Borders},
 };
 use tui_textarea::TextArea;
+
+use super::custom_terminal;
 
 pub struct Composer {
     max_input_rows: u16,
@@ -25,7 +26,7 @@ impl Composer {
         height_with_border.clamp(2, self.max_input_rows + 1)
     }
 
-    pub fn render(&self, f: &mut Frame, area: Rect, textarea: &TextArea) {
+    pub fn render(&self, f: &mut custom_terminal::Frame, area: Rect, textarea: &TextArea) {
         let input_block = Block::default()
             .borders(Borders::TOP)
             .title("Input (Enter=send, Shift+Enter=newline, Ctrl+C=quit)");
