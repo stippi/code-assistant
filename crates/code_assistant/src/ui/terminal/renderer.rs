@@ -803,7 +803,7 @@ impl TerminalRenderer {
         let total_height = scratch_height.saturating_sub(cursor_y);
 
         let [content_area, status_area, input_area] = Layout::vertical([
-            Constraint::Min(1),
+            Constraint::Min(0),
             Constraint::Length(status_height),
             Constraint::Length(input_height),
         ])
