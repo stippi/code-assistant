@@ -16,7 +16,7 @@ pub struct TerminalTuiUI {
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<AtomicBool>,
     pub renderer: Arc<Mutex<Option<Arc<Mutex<ProductionTerminalRenderer>>>>>,
-    event_sender: Arc<Mutex<Option<async_channel::Sender<UiEvent>>>>,
+    event_sender: Arc<std::sync::Mutex<Option<async_channel::Sender<UiEvent>>>>,
 }
 
 impl TerminalTuiUI {
@@ -26,7 +26,7 @@ impl TerminalTuiUI {
             redraw_tx: Arc::new(Mutex::new(None)),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             renderer: Arc::new(Mutex::new(None)),
-            event_sender: Arc::new(Mutex::new(None)),
+            event_sender: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -55,21 +55,21 @@ impl TerminalTuiUI {
     }
 
     /// Set the event sender for pushing events
-    pub async fn set_event_sender(&self, sender: async_channel::Sender<UiEvent>) {
-        *self.event_sender.lock().await = Some(sender);
+    pub fn set_event_sender(&self, sender: async_channel::Sender<UiEvent>) {
+        *self.event_sender.lock().expect("event_sender lock poisoned") = Some(sender);
     }
 
-    /// Helper to push an event to the queue
+    /// Helper to push an event to the queue.
+    /// Uses synchronous `try_send` on an unbounded channel to guarantee FIFO
+    /// ordering.  The previous implementation spawned a Tokio task per event,
+    /// which could reorder events when two tasks raced for the async mutex.
     fn push_event(&self, event: UiEvent) {
-        let rt = tokio::runtime::Handle::current();
-        let event_sender = self.event_sender.clone();
-        rt.spawn(async move {
-            if let Some(sender) = event_sender.lock().await.as_ref() {
-                if let Err(err) = sender.send(event).await {
-                    warn!("Failed to send event via channel: {}", err);
-                }
+        let guard = self.event_sender.lock().expect("event_sender lock poisoned");
+        if let Some(sender) = guard.as_ref() {
+            if let Err(err) = sender.try_send(event) {
+                warn!("Failed to send event via channel: {}", err);
             }
-        });
+        }
     }
 }
 

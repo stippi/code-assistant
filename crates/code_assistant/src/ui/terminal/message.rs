@@ -1,6 +1,6 @@
+use indexmap::IndexMap;
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Wrap};
-use std::collections::HashMap;
 use tui_markdown as md;
 
 use super::tool_widget::ToolWidget;
@@ -326,7 +326,7 @@ impl ThinkingBlock {
 pub struct ToolUseBlock {
     pub name: String,
     pub id: String,
-    pub parameters: HashMap<String, ParameterValue>,
+    pub parameters: IndexMap<String, ParameterValue>,
     pub status: ToolStatus,
     pub status_message: Option<String>,
     pub output: Option<String>,
@@ -337,7 +337,7 @@ impl ToolUseBlock {
         Self {
             name,
             id,
-            parameters: HashMap::new(),
+            parameters: IndexMap::new(),
             status: ToolStatus::Pending,
             status_message: None,
             output: None,

@@ -1351,6 +1351,7 @@ dependencies = [
  "gpui-component",
  "ignore",
  "image",
+ "indexmap",
  "llm",
  "md5",
  "percent-encoding",

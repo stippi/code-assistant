@@ -292,7 +292,7 @@ impl TerminalTuiApp {
 
         // Setup UI event channel for display fragments
         let (ui_event_tx, ui_event_rx) = async_channel::unbounded::<crate::ui::UiEvent>();
-        terminal_ui.set_event_sender(ui_event_tx).await;
+        terminal_ui.set_event_sender(ui_event_tx);
 
         // Setup backend communication channels
         let (backend_event_tx, backend_event_rx) = async_channel::unbounded::<BackendEvent>();
