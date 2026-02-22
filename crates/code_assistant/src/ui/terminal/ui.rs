@@ -206,9 +206,9 @@ impl UserInterface for TerminalUI {
                     let mut display_content = content.clone();
                     let attachment_lines: Vec<String> = attachments
                         .iter()
-                        .filter_map(|attachment| match attachment {
+                        .map(|attachment| match attachment {
                             crate::persistence::DraftAttachment::Text { .. } => {
-                                Some("[text attachment]".to_string())
+                                "[text attachment]".to_string()
                             }
                             crate::persistence::DraftAttachment::Image {
                                 mime_type,
@@ -220,10 +220,10 @@ impl UserInterface for TerminalUI {
                                     (Some(w), Some(h)) => format!("{w}x{h} "),
                                     _ => String::new(),
                                 };
-                                Some(format!("[image {dims}({mime_type})]"))
+                                format!("[image {dims}({mime_type})]")
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
-                                Some(format!("[file ({filename})]"))
+                                format!("[file ({filename})]")
                             }
                         })
                         .collect();
