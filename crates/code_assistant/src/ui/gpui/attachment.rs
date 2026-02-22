@@ -37,7 +37,7 @@ impl AttachmentView {
 
     fn render_content(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         match &self.attachment {
-            DraftAttachment::Image { mime_type, content } => {
+            DraftAttachment::Image { mime_type, content, .. } => {
                 // Try to parse and render the actual image
                 let parsed_image = image::parse_base64_image(mime_type, content);
 

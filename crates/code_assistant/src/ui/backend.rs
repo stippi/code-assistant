@@ -752,6 +752,8 @@ async fn handle_start_message_edit(
                             } => Some(DraftAttachment::Image {
                                 content: data.clone(),
                                 mime_type: media_type.clone(),
+                                width: None,
+                                height: None,
                             }),
                             _ => None,
                         })

@@ -196,26 +196,39 @@ impl UserInterface for TerminalUI {
                     let mut renderer_guard = renderer.lock().await;
                     // Clear any existing error when user sends a message
                     renderer_guard.clear_error();
-                    let _ = renderer_guard.add_user_message(&content);
-
-                    for attachment in &attachments {
-                        match attachment {
-                            crate::persistence::DraftAttachment::Text { content } => {
-                                let attachment_text = format!("  [attachment: text]\n{content}\n");
-                                let _ = renderer_guard.add_user_message(&attachment_text);
+                    // Build combined content with attachment info merged in
+                    let mut display_content = content.clone();
+                    let attachment_lines: Vec<String> = attachments
+                        .iter()
+                        .filter_map(|attachment| match attachment {
+                            crate::persistence::DraftAttachment::Text { .. } => {
+                                Some("[text attachment]".to_string())
                             }
-                            crate::persistence::DraftAttachment::Image { mime_type, .. } => {
-                                let attachment_text =
-                                    format!("  [attachment: image ({mime_type})]\n");
-                                let _ = renderer_guard.add_user_message(&attachment_text);
+                            crate::persistence::DraftAttachment::Image {
+                                mime_type,
+                                width,
+                                height,
+                                ..
+                            } => {
+                                let dims = match (width, height) {
+                                    (Some(w), Some(h)) => format!("{w}x{h} "),
+                                    _ => String::new(),
+                                };
+                                Some(format!("[image {dims}({mime_type})]"))
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
-                                let attachment_text =
-                                    format!("  [attachment: file ({filename})]\n");
-                                let _ = renderer_guard.add_user_message(&attachment_text);
+                                Some(format!("[file ({filename})]"))
                             }
+                        })
+                        .collect();
+                    if !attachment_lines.is_empty() {
+                        display_content.push('\n');
+                        for line in &attachment_lines {
+                            display_content.push('\n');
+                            display_content.push_str(line);
                         }
                     }
+                    let _ = renderer_guard.add_user_message(&display_content);
                 }
             }
             UiEvent::DisplayCompactionSummary { summary } => {

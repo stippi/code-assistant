@@ -892,7 +892,15 @@ pub enum DraftAttachment {
     #[serde(rename = "text")]
     Text { content: String },
     #[serde(rename = "image")]
-    Image { content: String, mime_type: String }, // Base64 encoded
+    Image {
+        content: String,
+        mime_type: String,
+        /// Image dimensions (optional, for display purposes)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+    },
     #[serde(rename = "file")]
     File {
         content: String,

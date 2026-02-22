@@ -11,7 +11,7 @@ pub fn content_blocks_from(message: &str, attachments: &[DraftAttachment]) -> Ve
 
     for attachment in attachments {
         match attachment {
-            DraftAttachment::Image { content, mime_type } => {
+            DraftAttachment::Image { content, mime_type, .. } => {
                 blocks.push(ContentBlock::Image {
                     media_type: mime_type.clone(),
                     data: content.clone(),

@@ -13,14 +13,17 @@ use super::textarea::TextArea;
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 200;
 
 /// Result of handling a key event
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum KeyEventResult {
     /// Continue processing normally
     Continue,
     /// Quit the application
     Quit,
-    /// Submit a message
-    SendMessage(String),
+    /// Submit a message with optional attachments
+    SendMessage {
+        message: String,
+        attachments: Vec<DraftAttachment>,
+    },
     /// Escape key was pressed - main loop decides what to do
     Escape,
     /// Display information message
@@ -102,12 +105,17 @@ impl InputManager {
                 // Submit input
                 let content = self.build_submit_content();
                 if !content.is_empty() {
+                    // Take attachments before clearing, so they're not lost.
+                    let attachments = self.take_attachments();
                     self.clear();
 
                     // Check if this is a slash command
                     if let Some(ref processor) = self.command_processor {
                         match processor.process_command(&content) {
-                            CommandResult::Continue => KeyEventResult::SendMessage(content),
+                            CommandResult::Continue => KeyEventResult::SendMessage {
+                                message: content,
+                                attachments,
+                            },
                             CommandResult::Help(help_text) => KeyEventResult::ShowInfo(help_text),
                             CommandResult::ListModels => {
                                 KeyEventResult::ShowInfo(processor.get_models_list())
@@ -126,7 +134,10 @@ impl InputManager {
                         }
                     } else {
                         // Command processor not available, treat as regular message
-                        KeyEventResult::SendMessage(content)
+                        KeyEventResult::SendMessage {
+                            message: content,
+                            attachments,
+                        }
                     }
                 } else {
                     KeyEventResult::Continue
@@ -197,6 +208,8 @@ impl InputManager {
                 self.attachments.push(DraftAttachment::Image {
                     content: base64_content,
                     mime_type: "image/png".to_string(),
+                    width: Some(w),
+                    height: Some(h),
                 });
 
                 self.textarea.insert_element(&placeholder);
@@ -270,11 +283,11 @@ mod tests {
         // Test character input
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert_eq!(result, KeyEventResult::Continue);
+        assert!(matches!(result, KeyEventResult::Continue));
 
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert_eq!(result, KeyEventResult::Continue);
+        assert!(matches!(result, KeyEventResult::Continue));
 
         // Content should contain the typed characters
         let content = input_manager.textarea.text();
@@ -283,7 +296,13 @@ mod tests {
         // Test submission
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(result, KeyEventResult::SendMessage("hi".to_string()));
+        match result {
+            KeyEventResult::SendMessage { message, attachments } => {
+                assert_eq!(message, "hi");
+                assert!(attachments.is_empty());
+            }
+            other => panic!("Expected SendMessage, got {:?}", other),
+        }
 
         // Content should be cleared after submission
         assert_eq!(input_manager.textarea.text(), "");
@@ -295,7 +314,7 @@ mod tests {
 
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert_eq!(result, KeyEventResult::Quit);
+        assert!(matches!(result, KeyEventResult::Quit));
     }
 
     #[test]
@@ -304,7 +323,7 @@ mod tests {
 
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(result, KeyEventResult::Escape);
+        assert!(matches!(result, KeyEventResult::Escape));
     }
 
     #[test]
@@ -318,7 +337,7 @@ mod tests {
         // Shift+Enter should add newline without submitting
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::SHIFT));
-        assert_eq!(result, KeyEventResult::Continue);
+        assert!(matches!(result, KeyEventResult::Continue));
 
         // Add more text
         input_manager.handle_key_event(create_key_event(KeyCode::Char('b'), KeyModifiers::NONE));
@@ -332,7 +351,12 @@ mod tests {
         // Regular Enter should submit
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(result, KeyEventResult::SendMessage("hi\nbye".to_string()));
+        match result {
+            KeyEventResult::SendMessage { message, .. } => {
+                assert_eq!(message, "hi\nbye");
+            }
+            other => panic!("Expected SendMessage, got {:?}", other),
+        }
     }
 
     #[test]
@@ -391,6 +415,8 @@ mod tests {
         input_manager.attachments.push(DraftAttachment::Image {
             content: "abc".to_string(),
             mime_type: "image/png".to_string(),
+            width: None,
+            height: None,
         });
 
         input_manager.clear();

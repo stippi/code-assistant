@@ -503,7 +503,7 @@ impl Gpui {
                     // Add attachments
                     for attachment in attachments {
                         match attachment {
-                            crate::persistence::DraftAttachment::Image { content, mime_type } => {
+                            crate::persistence::DraftAttachment::Image { content, mime_type, .. } => {
                                 new_message.add_image_block(&mime_type, &content, cx);
                             }
                             crate::persistence::DraftAttachment::Text { content } => {

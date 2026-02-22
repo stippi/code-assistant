@@ -137,8 +137,7 @@ async fn event_loop(
                                 }
                             }
                         }
-                        KeyEventResult::SendMessage(message) => {
-                            let attachments = input_manager.take_attachments();
+                        KeyEventResult::SendMessage { message, attachments } => {
                             let current_session_id = {
                                 let state = app_state.lock().await;
                                 state.current_session_id.clone()
