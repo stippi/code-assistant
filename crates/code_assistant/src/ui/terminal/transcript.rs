@@ -205,6 +205,8 @@ impl TranscriptState {
             Line::from(all_spans).style(bg_style)
         };
 
+        // Blank line for visual separation before the user message block
+        lines.push(Line::from(""));
         // Top padding line (full-width background)
         lines.push(make_bg_line(vec![]));
 

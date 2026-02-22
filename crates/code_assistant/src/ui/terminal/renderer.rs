@@ -789,7 +789,7 @@ impl TerminalRenderer {
                 cursor_y = cursor_y.saturating_sub(1);
 
                 scratch.set_string(
-                    0,
+                    2,
                     cursor_y,
                     spinner_char.to_string(),
                     Style::default().fg(spinner_color),
@@ -797,7 +797,7 @@ impl TerminalRenderer {
 
                 if let Some(status_text) = self.spinner_state.get_status_text() {
                     scratch.set_string(
-                        2,
+                        4,
                         cursor_y,
                         &status_text,
                         Style::default().fg(Color::LightRed),
