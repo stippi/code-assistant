@@ -78,6 +78,9 @@ base64 = "0.22"
 # Image processing
 image = "0.25"
 
+# Clipboard access for paste
+arboard = "3"
+
 # Agent Client Protocol
 agent-client-protocol = { version = "0.9", features = ["unstable"] }
 tokio-util = { version = "0.7", features = ["compat"] }

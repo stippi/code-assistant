@@ -6,7 +6,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::WidgetRef;
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -35,6 +35,13 @@ fn is_altgr(_mods: KeyModifiers) -> bool {
     false
 }
 
+/// An atomic inline element (e.g. paste placeholder or image indicator).
+/// The cursor cannot be placed inside an element; it jumps over it as a unit.
+#[derive(Debug, Clone)]
+struct TextElement {
+    range: Range<usize>,
+}
+
 #[derive(Debug)]
 pub struct TextArea {
     text: String,
@@ -42,6 +49,7 @@ pub struct TextArea {
     wrap_cache: RefCell<Option<WrapCache>>,
     preferred_col: Option<usize>,
     kill_buffer: String,
+    elements: Vec<TextElement>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +66,7 @@ impl TextArea {
             wrap_cache: RefCell::new(None),
             preferred_col: None,
             kill_buffer: String::new(),
+            elements: Vec::new(),
         }
     }
 
@@ -67,6 +76,7 @@ impl TextArea {
         self.wrap_cache.replace(None);
         self.preferred_col = None;
         self.kill_buffer.clear();
+        self.elements.clear();
     }
 
     pub fn text(&self) -> &str {
@@ -82,16 +92,43 @@ impl TextArea {
     }
 
     pub fn insert_str_at(&mut self, pos: usize, text: &str) {
-        let pos = self.clamp_pos_to_char_boundary(pos).min(self.text.len());
+        let pos = self.clamp_pos_for_insertion(pos);
         self.text.insert_str(pos, text);
         self.wrap_cache.replace(None);
         if pos <= self.cursor_pos {
             self.cursor_pos += text.len();
         }
+        self.shift_elements(pos, 0, text.len());
         self.preferred_col = None;
     }
 
+    /// Insert an atomic element at the cursor. The element text is inserted into the
+    /// buffer but treated as a single unit for cursor movement and deletion.
+    pub fn insert_element(&mut self, text: &str) {
+        let start = self.clamp_pos_for_insertion(self.cursor_pos);
+        // Insert raw text
+        self.text.insert_str(start, text);
+        self.wrap_cache.replace(None);
+        let end = start + text.len();
+        // Shift existing elements
+        self.shift_elements(start, 0, text.len());
+        // Register the new element
+        self.elements.push(TextElement {
+            range: start..end,
+        });
+        self.elements.sort_by_key(|e| e.range.start);
+        // Place cursor after element
+        self.cursor_pos = end;
+        self.preferred_col = None;
+    }
+
+    /// Returns true if the textarea has any elements (paste placeholders, image indicators).
+    pub fn has_elements(&self) -> bool {
+        !self.elements.is_empty()
+    }
+
     pub fn replace_range(&mut self, range: std::ops::Range<usize>, text: &str) {
+        let range = self.expand_range_to_element_boundaries(range);
         let start = range.start.clamp(0, self.text.len());
         let end = range.end.clamp(0, self.text.len());
         if start > end {
@@ -104,6 +141,7 @@ impl TextArea {
         self.text.replace_range(start..end, text);
         self.wrap_cache.replace(None);
         self.preferred_col = None;
+        self.update_elements_after_replace(start, end, inserted_len);
 
         self.cursor_pos = if self.cursor_pos < start {
             self.cursor_pos
@@ -113,6 +151,8 @@ impl TextArea {
             ((self.cursor_pos as isize) + diff) as usize
         }
         .min(self.text.len());
+
+        self.cursor_pos = self.clamp_pos_to_nearest_boundary(self.cursor_pos);
     }
 
     pub fn cursor(&self) -> usize {
@@ -120,7 +160,7 @@ impl TextArea {
     }
 
     pub fn set_cursor(&mut self, pos: usize) {
-        self.cursor_pos = pos.clamp(0, self.text.len());
+        self.cursor_pos = self.clamp_pos_to_nearest_boundary(pos.clamp(0, self.text.len()));
         self.preferred_col = None;
     }
 
@@ -338,7 +378,7 @@ impl TextArea {
         }
         let mut target = self.cursor_pos;
         for _ in 0..n {
-            target = self.prev_grapheme_boundary(target);
+            target = self.prev_atomic_boundary(target);
             if target == 0 {
                 break;
             }
@@ -352,7 +392,7 @@ impl TextArea {
         }
         let mut target = self.cursor_pos;
         for _ in 0..n {
-            target = self.next_grapheme_boundary(target);
+            target = self.next_atomic_boundary(target);
             if target >= self.text.len() {
                 break;
             }
@@ -409,6 +449,7 @@ impl TextArea {
     }
 
     fn kill_range(&mut self, range: Range<usize>) {
+        let range = self.expand_range_to_element_boundaries(range);
         if range.start >= range.end {
             return;
         }
@@ -423,12 +464,12 @@ impl TextArea {
     // ####### Cursor Movement #######
 
     pub fn move_cursor_left(&mut self) {
-        self.cursor_pos = self.prev_grapheme_boundary(self.cursor_pos);
+        self.cursor_pos = self.prev_atomic_boundary(self.cursor_pos);
         self.preferred_col = None;
     }
 
     pub fn move_cursor_right(&mut self) {
-        self.cursor_pos = self.next_grapheme_boundary(self.cursor_pos);
+        self.cursor_pos = self.next_atomic_boundary(self.cursor_pos);
         self.preferred_col = None;
     }
 
@@ -584,7 +625,7 @@ impl TextArea {
             }
             start = idx;
         }
-        start
+        self.adjust_pos_out_of_elements(start, true)
     }
 
     fn end_of_next_word(&self) -> usize {
@@ -605,7 +646,7 @@ impl TextArea {
                 break;
             }
         }
-        end
+        self.adjust_pos_out_of_elements(end, false)
     }
 
     // ####### Internal Helpers #######
@@ -631,6 +672,7 @@ impl TextArea {
             width_so_far += g.width();
             if width_so_far > target_col {
                 self.cursor_pos = line_start + i;
+                self.cursor_pos = self.clamp_pos_to_nearest_boundary(self.cursor_pos);
                 return;
             }
         }
@@ -668,25 +710,49 @@ impl TextArea {
         prev
     }
 
-    fn prev_grapheme_boundary(&self, pos: usize) -> usize {
+    /// Like prev_grapheme_boundary but jumps over elements atomically.
+    fn prev_atomic_boundary(&self, pos: usize) -> usize {
         if pos == 0 {
             return 0;
         }
+        // If at or inside an element, jump to its start.
+        if let Some(idx) = self.elements.iter().position(|e| pos > e.range.start && pos <= e.range.end) {
+            return self.elements[idx].range.start;
+        }
         let mut gc = unicode_segmentation::GraphemeCursor::new(pos, self.text.len(), false);
         match gc.prev_boundary(&self.text, 0) {
-            Ok(Some(b)) => b,
+            Ok(Some(b)) => {
+                // If we landed inside an element, jump to its start.
+                if let Some(idx) = self.find_element_containing(b) {
+                    self.elements[idx].range.start
+                } else {
+                    b
+                }
+            }
             Ok(None) => 0,
             Err(_) => pos.saturating_sub(1),
         }
     }
 
-    fn next_grapheme_boundary(&self, pos: usize) -> usize {
+    /// Like next_grapheme_boundary but jumps over elements atomically.
+    fn next_atomic_boundary(&self, pos: usize) -> usize {
         if pos >= self.text.len() {
             return self.text.len();
         }
+        // If at start or inside an element, jump to its end.
+        if let Some(idx) = self.elements.iter().position(|e| pos >= e.range.start && pos < e.range.end) {
+            return self.elements[idx].range.end;
+        }
         let mut gc = unicode_segmentation::GraphemeCursor::new(pos, self.text.len(), false);
         match gc.next_boundary(&self.text, 0) {
-            Ok(Some(b)) => b,
+            Ok(Some(b)) => {
+                // If we landed inside an element, jump to its end.
+                if let Some(idx) = self.find_element_containing(b) {
+                    self.elements[idx].range.end
+                } else {
+                    b
+                }
+            }
             Ok(None) => self.text.len(),
             Err(_) => pos.saturating_add(1),
         }
@@ -713,6 +779,116 @@ impl TextArea {
         let cache = self.wrap_cache.borrow();
         Ref::map(cache, |c| &c.as_ref().unwrap().lines)
     }
+
+    // ===== Element support =====
+
+    fn find_element_containing(&self, pos: usize) -> Option<usize> {
+        self.elements
+            .iter()
+            .position(|e| pos > e.range.start && pos < e.range.end)
+    }
+
+    /// Clamp position to the nearest element boundary if it falls inside one.
+    fn clamp_pos_to_nearest_boundary(&self, pos: usize) -> usize {
+        let pos = self.clamp_pos_to_char_boundary(pos);
+        if let Some(idx) = self.find_element_containing(pos) {
+            let e = &self.elements[idx];
+            let dist_start = pos.saturating_sub(e.range.start);
+            let dist_end = e.range.end.saturating_sub(pos);
+            if dist_start <= dist_end {
+                e.range.start
+            } else {
+                e.range.end
+            }
+        } else {
+            pos
+        }
+    }
+
+    /// Clamp position for insertion: never insert into the middle of an element.
+    fn clamp_pos_for_insertion(&self, pos: usize) -> usize {
+        let pos = self.clamp_pos_to_char_boundary(pos).min(self.text.len());
+        if let Some(idx) = self.find_element_containing(pos) {
+            let e = &self.elements[idx];
+            let dist_start = pos.saturating_sub(e.range.start);
+            let dist_end = e.range.end.saturating_sub(pos);
+            if dist_start <= dist_end {
+                e.range.start
+            } else {
+                e.range.end
+            }
+        } else {
+            pos
+        }
+    }
+
+    /// If `pos` falls inside an element, snap to start or end.
+    fn adjust_pos_out_of_elements(&self, pos: usize, prefer_start: bool) -> usize {
+        if let Some(idx) = self.find_element_containing(pos) {
+            let e = &self.elements[idx];
+            if prefer_start {
+                e.range.start
+            } else {
+                e.range.end
+            }
+        } else {
+            pos
+        }
+    }
+
+    /// Expand a range to include any intersecting elements fully.
+    fn expand_range_to_element_boundaries(&self, mut range: Range<usize>) -> Range<usize> {
+        loop {
+            let mut changed = false;
+            for e in &self.elements {
+                if e.range.start < range.end && e.range.end > range.start {
+                    let new_start = range.start.min(e.range.start);
+                    let new_end = range.end.max(e.range.end);
+                    if new_start != range.start || new_end != range.end {
+                        range = new_start..new_end;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        range
+    }
+
+    fn shift_elements(&mut self, at: usize, removed: usize, inserted: usize) {
+        let end = at + removed;
+        let diff = inserted as isize - removed as isize;
+        // Remove elements fully deleted by the operation
+        self.elements.retain(|e| !(e.range.start >= at && e.range.end <= end));
+        for e in &mut self.elements {
+            if e.range.end <= at {
+                // before edit - no change
+            } else if e.range.start >= end {
+                // after edit - shift
+                e.range.start = ((e.range.start as isize) + diff) as usize;
+                e.range.end = ((e.range.end as isize) + diff) as usize;
+            } else {
+                // Overlap: snap to new bounds
+                let new_start = at.min(e.range.start);
+                let new_end = at + inserted.max(e.range.end.saturating_sub(end));
+                e.range.start = new_start;
+                e.range.end = new_end;
+            }
+        }
+    }
+
+    fn update_elements_after_replace(&mut self, start: usize, end: usize, inserted_len: usize) {
+        self.shift_elements(start, end.saturating_sub(start), inserted_len);
+    }
+}
+
+/// Style used for highlighted element placeholders in the textarea.
+fn element_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
 }
 
 impl WidgetRef for &TextArea {
@@ -725,8 +901,22 @@ impl WidgetRef for &TextArea {
             let r = &lines[idx];
             let y = area.y + row as u16;
             let line_range = r.start..r.end.saturating_sub(1);
-            if let Some(text_slice) = self.text.get(line_range) {
+            if let Some(text_slice) = self.text.get(line_range.clone()) {
+                // Draw the base line with default style.
                 buf.set_string(area.x, y, text_slice, Style::default());
+
+                // Overlay styled segments for elements that intersect this line.
+                for elem in &self.elements {
+                    let overlap_start = elem.range.start.max(line_range.start);
+                    let overlap_end = elem.range.end.min(line_range.end);
+                    if overlap_start >= overlap_end {
+                        continue;
+                    }
+                    if let Some(elem_slice) = self.text.get(overlap_start..overlap_end) {
+                        let col_offset = self.text[line_range.start..overlap_start].width() as u16;
+                        buf.set_string(area.x + col_offset, y, elem_slice, element_style());
+                    }
+                }
             }
         }
     }
@@ -858,5 +1048,65 @@ mod tests {
         ta.set_cursor(5);
         ta.yank();
         assert_eq!(ta.text(), "hello world");
+    }
+
+    #[test]
+    fn test_insert_element() {
+        let mut ta = TextArea::new();
+        ta.insert_str("before ");
+        ta.insert_element("[Pasted 100 chars]");
+        ta.insert_str(" after");
+        assert_eq!(ta.text(), "before [Pasted 100 chars] after");
+        // Cursor should be after the element + " after"
+        assert_eq!(ta.cursor(), ta.text().len());
+        // There should be one element
+        assert_eq!(ta.elements.len(), 1);
+        assert_eq!(ta.elements[0].range, 7..25);
+    }
+
+    #[test]
+    fn test_element_cursor_skips() {
+        let mut ta = TextArea::new();
+        ta.insert_str("a");
+        ta.insert_element("[IMG]");
+        ta.insert_str("b");
+        // Text: "a[IMG]b", cursor at end (7)
+        assert_eq!(ta.text(), "a[IMG]b");
+        assert_eq!(ta.cursor(), 7);
+
+        // Move left: should skip from 'b' over element to 'a'
+        ta.move_cursor_left(); // to end of element = 6 -> actually to start of 'b' which is 6
+        // move_cursor_left goes to prev_atomic_boundary(7) = 6 ('b' start)
+        // actually 'b' is at pos 6, so prev_atomic from 7 is 6
+        // then move_cursor_left again from 6 should jump over element to 1
+        ta.move_cursor_left(); // from 6 to element start = 1
+        assert_eq!(ta.cursor(), 1);
+        ta.move_cursor_left(); // from 1 to 0
+        assert_eq!(ta.cursor(), 0);
+    }
+
+    #[test]
+    fn test_delete_backward_removes_element() {
+        let mut ta = TextArea::new();
+        ta.insert_str("a");
+        ta.insert_element("[IMG]");
+        ta.insert_str("b");
+        // "a[IMG]b", cursor at 7
+        ta.set_cursor(6); // right after element
+        ta.delete_backward(1);
+        // Should delete entire element
+        assert_eq!(ta.text(), "ab");
+        assert_eq!(ta.elements.len(), 0);
+    }
+
+    #[test]
+    fn test_clear_removes_elements() {
+        let mut ta = TextArea::new();
+        ta.insert_element("[Pasted 50 chars]");
+        ta.insert_element("[Image 1]");
+        assert_eq!(ta.elements.len(), 2);
+        ta.clear();
+        assert_eq!(ta.elements.len(), 0);
+        assert_eq!(ta.text(), "");
     }
 }

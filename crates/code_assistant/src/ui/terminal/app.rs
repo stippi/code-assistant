@@ -138,6 +138,7 @@ async fn event_loop(
                             }
                         }
                         KeyEventResult::SendMessage(message) => {
+                            let attachments = input_manager.take_attachments();
                             let current_session_id = {
                                 let state = app_state.lock().await;
                                 state.current_session_id.clone()
@@ -156,14 +157,14 @@ async fn event_loop(
                                         BackendEvent::SendUserMessage {
                                             session_id,
                                             message,
-                                            attachments: Vec::new(),
+                                            attachments,
                                             branch_parent_id: None, // Terminal UI doesn't support branching yet
                                         }
                                     }
                                     _ => BackendEvent::QueueUserMessage {
                                         session_id,
                                         message,
-                                        attachments: Vec::new(),
+                                        attachments,
                                     },
                                 };
 
@@ -237,6 +238,12 @@ async fn event_loop(
                             renderer_guard.set_overlay_active(overlay_active);
                         }
                     }
+                }
+                Event::Paste(pasted) => {
+                    // Many terminals convert newlines to \r when pasting;
+                    // normalize before processing.
+                    let pasted = pasted.replace('\r', "\n");
+                    input_manager.handle_paste(pasted);
                 }
                 Event::Resize(_, _) => {
                     // Resize is handled automatically by Tui::draw() via pending_viewport_area()
