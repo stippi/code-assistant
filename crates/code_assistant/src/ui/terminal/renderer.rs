@@ -310,6 +310,8 @@ impl TerminalRenderer {
             if !flushed_thinking.is_empty() {
                 let lines = style_thinking_lines(flushed_thinking);
                 self.insert_or_defer_history_lines(indent_lines(lines));
+                // Blank line between thinking and text blocks
+                self.insert_or_defer_history_lines(vec![Line::from("")]);
                 if let Some(msg) = self.transcript.active_message_mut() {
                     msg.streamed_to_scrollback = true;
                 }
@@ -338,6 +340,8 @@ impl TerminalRenderer {
             let flushed_text = self.streaming_controller.flush_kind(StreamKind::Text);
             if !flushed_text.is_empty() {
                 self.insert_or_defer_history_lines(indent_lines(flushed_text));
+                // Blank line between text and thinking blocks
+                self.insert_or_defer_history_lines(vec![Line::from("")]);
                 if let Some(msg) = self.transcript.active_message_mut() {
                     msg.streamed_to_scrollback = true;
                 }
@@ -351,8 +355,14 @@ impl TerminalRenderer {
     /// Force-flush pending stream tails and queued chunks.
     pub fn flush_streaming_pending(&mut self) {
         let flushed = self.streaming_controller.flush_pending();
+        let had_content = !flushed.text.is_empty() || !flushed.thinking.is_empty();
         self.apply_drained_lines(flushed);
         self.sync_live_stream_tails();
+        // Insert a blank separator after streamed content so that subsequent
+        // non-streamed blocks (tools, user text) are visually separated.
+        if had_content || self.streaming_controller.has_seen_any_delta() {
+            self.insert_or_defer_history_lines(vec![Line::from("")]);
+        }
         self.streaming_open = false;
     }
 
@@ -483,9 +493,6 @@ impl TerminalRenderer {
                 let tool_lines =
                     TranscriptState::as_history_lines_non_streamed_only(message, width);
                 if !tool_lines.is_empty() {
-                    if !lines.is_empty() {
-                        lines.push(Line::from(""));
-                    }
                     lines.extend(tool_lines);
                 }
                 continue;
@@ -700,7 +707,8 @@ impl TerminalRenderer {
 
         let mut cursor_y = scratch_height;
 
-        cursor_y = cursor_y.saturating_sub(1);
+        // Reserve blank line between content and composer
+        cursor_y = cursor_y.saturating_sub(2);
 
         let mut status_entries: Vec<StatusEntry> = Vec::new();
         if let Some(plan_text) = self.build_plan_text() {

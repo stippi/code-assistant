@@ -77,10 +77,18 @@ impl MarkdownStreamCollector {
         }
 
         let rendered = render_markdown_lines(&source, self.width);
-        let out = if self.committed_line_count >= rendered.len() {
+        let mut end = rendered.len();
+        // Strip trailing blank lines (consistent with commit_complete_lines)
+        while end > self.committed_line_count
+            && is_blank_line_spaces_only(&rendered[end - 1])
+        {
+            end -= 1;
+        }
+
+        let out = if self.committed_line_count >= end {
             Vec::new()
         } else {
-            rendered[self.committed_line_count..].to_vec()
+            rendered[self.committed_line_count..end].to_vec()
         };
 
         self.clear();

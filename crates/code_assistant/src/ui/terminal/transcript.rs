@@ -125,9 +125,15 @@ impl TranscriptState {
                 }
             }
 
-            // Insert a single blank line between blocks (if this block produced content)
+            // Insert a single blank line between blocks, unless the previous
+            // block already ends with one (e.g. UserText includes a trailing blank).
             if lines.len() > block_lines_start && block_lines_start > 0 {
-                lines.insert(block_lines_start, Line::from(""));
+                let prev_is_blank = lines
+                    .get(block_lines_start - 1)
+                    .is_some_and(|l| l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty()));
+                if !prev_is_blank {
+                    lines.insert(block_lines_start, Line::from(""));
+                }
             }
         }
 
@@ -158,9 +164,15 @@ impl TranscriptState {
                 }
             }
 
-            // Insert a single blank line between blocks
+            // Insert a single blank line between blocks, unless the previous
+            // block already ends with one.
             if lines.len() > block_lines_start && block_lines_start > 0 {
-                lines.insert(block_lines_start, Line::from(""));
+                let prev_is_blank = lines
+                    .get(block_lines_start - 1)
+                    .is_some_and(|l| l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty()));
+                if !prev_is_blank {
+                    lines.insert(block_lines_start, Line::from(""));
+                }
             }
         }
 
@@ -240,6 +252,8 @@ impl TranscriptState {
 
         // Bottom padding line (full-width background)
         lines.push(make_bg_line(vec![]));
+        // Blank line after the user message block for visual separation
+        lines.push(Line::from(""));
     }
 
     /// Render a ToolUse block as history lines with "● name" format.
