@@ -653,6 +653,10 @@ impl TerminalRenderer {
         // Status/error height
         content_height = content_height.saturating_add(self.measure_status_height(screen_width));
 
+        // Always reserve at least 1 row so there's a visible gap between
+        // scrollback and the composer when no live content is displayed.
+        content_height = content_height.max(1);
+
         content_height.saturating_add(input_height)
     }
 
@@ -707,8 +711,7 @@ impl TerminalRenderer {
 
         let mut cursor_y = scratch_height;
 
-        // Reserve blank line between content and composer
-        cursor_y = cursor_y.saturating_sub(2);
+        cursor_y = cursor_y.saturating_sub(1);
 
         let mut status_entries: Vec<StatusEntry> = Vec::new();
         if let Some(plan_text) = self.build_plan_text() {
@@ -2649,6 +2652,253 @@ mod tests {
                 !has_status_content,
                 "Status area should be clean when no error or pending message"
             );
+        }
+
+        #[test]
+        fn test_streamed_thinking_text_then_tool_has_single_blank_before_tool() {
+            let mut renderer = create_test_harness(80, 20);
+            let textarea = TextArea::new();
+
+            // Start a message (like StreamingStarted)
+            renderer.start_new_message(1);
+
+            // Stream some thinking content
+            renderer.queue_thinking_delta("Let me think about this.\n".to_string());
+            // Drain via render to simulate commit tick
+            renderer.render(&textarea);
+            let _ = renderer.drain_pending_history_lines();
+
+            // Switch to text — this should flush thinking + insert blank separator
+            renderer.queue_text_delta("Here is my answer.\n".to_string());
+            renderer.render(&textarea);
+            let _ = renderer.drain_pending_history_lines();
+
+            // Start a tool block (like UiEvent::StartTool)
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "/tmp/test.txt".to_string(),
+            );
+            renderer.update_tool_status("tool_1", ToolStatus::Success, None, None);
+
+            // Finalize the message (like what add_user_message does)
+            renderer.flush_streaming_pending();
+            renderer.transcript.finalize_active_if_content();
+            renderer.render(&textarea);
+
+            // Drain all pending history lines — these represent what goes to scrollback
+            let lines = renderer.drain_pending_history_lines();
+
+            // Debug: print all lines
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    if l.spans.is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        l.spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                    }
+                })
+                .collect();
+
+            // Find the tool line (starts with "● ")
+            let tool_line_idx = line_strs
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("Should have a tool line");
+
+            // Count consecutive blank lines immediately before the tool
+            let mut blank_count = 0;
+            let mut idx = tool_line_idx;
+            while idx > 0 {
+                idx -= 1;
+                if line_strs[idx] == "<<blank>>" {
+                    blank_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                blank_count, 1,
+                "Expected exactly 1 blank line before tool block, got {}.\nAll lines:\n{}",
+                blank_count,
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        /// Test that simulates a full flow WITHOUT draining intermediate pending
+        /// history lines — this is closer to what happens when the user scrolls
+        /// back and sees accumulated scrollback content.
+        #[test]
+        fn test_streamed_flow_accumulated_has_single_blank_before_tool() {
+            let mut renderer = create_test_harness(80, 20);
+            let textarea = TextArea::new();
+
+            // Start a message (like StreamingStarted)
+            renderer.start_new_message(1);
+
+            // Stream some thinking content
+            renderer.queue_thinking_delta("Let me think about this.\n".to_string());
+            renderer.render(&textarea);
+            // Do NOT drain — accumulate all lines
+
+            // Switch to text
+            renderer.queue_text_delta("Here is my answer.\n".to_string());
+            renderer.render(&textarea);
+
+            // Start a tool block
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "/tmp/test.txt".to_string(),
+            );
+            renderer.update_tool_status("tool_1", ToolStatus::Success, None, None);
+
+            // Finalize
+            renderer.flush_streaming_pending();
+            renderer.transcript.finalize_active_if_content();
+            renderer.render(&textarea);
+
+            // Now drain ALL accumulated history lines at once
+            let lines = renderer.drain_pending_history_lines();
+
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    if l.spans.is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        l.spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                    }
+                })
+                .collect();
+
+            // Find the tool line
+            let tool_line_idx = line_strs
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("Should have a tool line");
+
+            // Count consecutive blank lines immediately before the tool
+            let mut blank_count = 0;
+            let mut idx = tool_line_idx;
+            while idx > 0 {
+                idx -= 1;
+                if line_strs[idx] == "<<blank>>" {
+                    blank_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                blank_count, 1,
+                "Expected exactly 1 blank line before tool block, got {}.\nAll lines:\n{}",
+                blank_count,
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        /// Test: text → tool → text → tool (interleaved) — each tool should have
+        /// exactly 1 blank line before it.
+        #[test]
+        fn test_interleaved_text_tool_text_tool_spacing() {
+            let mut renderer = create_test_harness(80, 20);
+            let textarea = TextArea::new();
+
+            // Message 1: text then tool then text then tool
+            renderer.start_new_message(1);
+
+            renderer.queue_text_delta("First paragraph.\n".to_string());
+            renderer.render(&textarea);
+
+            renderer.start_tool_use_block("read".to_string(), "t1".to_string());
+            renderer.add_or_update_tool_parameter("t1", "path".to_string(), "a.txt".to_string());
+            renderer.update_tool_status("t1", ToolStatus::Success, None, None);
+
+            // More text after tool
+            renderer.queue_text_delta("Second paragraph.\n".to_string());
+            renderer.render(&textarea);
+
+            renderer.start_tool_use_block("write".to_string(), "t2".to_string());
+            renderer.add_or_update_tool_parameter("t2", "path".to_string(), "b.txt".to_string());
+            renderer.update_tool_status("t2", ToolStatus::Success, None, None);
+
+            // Finalize
+            renderer.flush_streaming_pending();
+            renderer.transcript.finalize_active_if_content();
+            renderer.render(&textarea);
+
+            let lines = renderer.drain_pending_history_lines();
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    if l.spans.is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        l.spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                    }
+                })
+                .collect();
+
+            // Find all tool lines
+            let tool_indices: Vec<usize> = line_strs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.contains("●"))
+                .map(|(i, _)| i)
+                .collect();
+
+            assert_eq!(
+                tool_indices.len(),
+                2,
+                "Should have 2 tool lines.\nAll lines:\n{}",
+                line_strs.iter().enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>().join("\n")
+            );
+
+            for &ti in &tool_indices {
+                let mut blank_count = 0;
+                let mut idx = ti;
+                while idx > 0 {
+                    idx -= 1;
+                    if line_strs[idx] == "<<blank>>" {
+                        blank_count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    blank_count, 1,
+                    "Expected 1 blank before tool at line {ti}, got {blank_count}.\nAll lines:\n{}",
+                    line_strs.iter().enumerate()
+                        .map(|(i, s)| format!("  [{i:2}] {s}"))
+                        .collect::<Vec<_>>().join("\n")
+                );
+            }
         }
     }
 }
