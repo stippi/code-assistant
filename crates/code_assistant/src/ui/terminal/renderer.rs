@@ -355,14 +355,8 @@ impl TerminalRenderer {
     /// Force-flush pending stream tails and queued chunks.
     pub fn flush_streaming_pending(&mut self) {
         let flushed = self.streaming_controller.flush_pending();
-        let had_content = !flushed.text.is_empty() || !flushed.thinking.is_empty();
         self.apply_drained_lines(flushed);
         self.sync_live_stream_tails();
-        // Insert a blank separator after streamed content so that subsequent
-        // non-streamed blocks (tools, user text) are visually separated.
-        if had_content || self.streaming_controller.has_seen_any_delta() {
-            self.insert_or_defer_history_lines(vec![Line::from("")]);
-        }
         self.streaming_open = false;
     }
 
@@ -493,6 +487,8 @@ impl TerminalRenderer {
                 let tool_lines =
                     TranscriptState::as_history_lines_non_streamed_only(message, width);
                 if !tool_lines.is_empty() {
+                    // Blank separator between streamed content and tool blocks
+                    lines.push(Line::from(""));
                     lines.extend(tool_lines);
                 }
                 continue;
