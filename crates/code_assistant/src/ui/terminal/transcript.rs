@@ -5,6 +5,7 @@ use ratatui::{
 
 use super::message::{LiveMessage, MessageBlock};
 use super::streaming::markdown_stream::render_markdown_lines;
+use super::terminal_color;
 use crate::ui::ToolStatus;
 
 pub struct TranscriptState {
@@ -85,13 +86,13 @@ impl TranscriptState {
         };
 
         for block in &message.blocks {
+            let block_lines_start = lines.len();
+
             match block {
                 MessageBlock::PlainText(text) => {
                     if text.content.is_empty() {
                         continue;
                     }
-                    // Use the same buffer-rendering approach as the streaming path
-                    // to preserve full markdown styling (bold, code, etc.)
                     for mut line in render_markdown_lines(&text.content, render_width) {
                         line.spans.insert(0, Span::raw("  ".to_string()));
                         lines.push(line);
@@ -101,15 +102,16 @@ impl TranscriptState {
                     if thinking.content.trim().is_empty() {
                         continue;
                     }
-                    // Render through buffer for inline formatting (code, etc.)
-                    // then apply Yellow+Italic as base style to all spans.
                     let rendered = render_markdown_lines(&thinking.content, render_width);
                     for line in rendered {
                         let mut styled_spans: Vec<Span<'static>> =
                             vec![Span::raw("  ".to_string())];
                         styled_spans.extend(line.spans.into_iter().map(|span| {
                             let mut style = span.style;
-                            style = style.fg(Color::Yellow).add_modifier(Modifier::ITALIC);
+                            style = style
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM)
+                                .add_modifier(Modifier::ITALIC);
                             Span::styled(span.content.to_string(), style)
                         }));
                         lines.push(Line::from(styled_spans));
@@ -121,6 +123,11 @@ impl TranscriptState {
                 MessageBlock::ToolUse(tool) => {
                     Self::push_tool_history_lines(tool, &mut lines);
                 }
+            }
+
+            // Insert a single blank line between blocks (if this block produced content)
+            if lines.len() > block_lines_start && block_lines_start > 0 {
+                lines.insert(block_lines_start, Line::from(""));
             }
         }
 
@@ -137,6 +144,8 @@ impl TranscriptState {
         let mut lines = Vec::new();
 
         for block in &message.blocks {
+            let block_lines_start = lines.len();
+
             match block {
                 MessageBlock::PlainText(_) | MessageBlock::Thinking(_) => {
                     // Already sent to scrollback during streaming — skip.
@@ -148,14 +157,18 @@ impl TranscriptState {
                     Self::push_tool_history_lines(tool, &mut lines);
                 }
             }
+
+            // Insert a single blank line between blocks
+            if lines.len() > block_lines_start && block_lines_start > 0 {
+                lines.insert(block_lines_start, Line::from(""));
+            }
         }
 
         lines
     }
 
-    /// Render a UserText block as history lines with "› " prefix and word wrapping.
-    /// Uses `textwrap` with `FirstFit` algorithm to match the input textarea's wrapping.
-    /// Text wraps at `width - 2` to account for the 2-char prefix.
+    /// Render a UserText block as history lines with "› " prefix, word wrapping,
+    /// and background color matching the composer input area.
     fn push_user_text_history_lines(
         content: &str,
         width: u16,
@@ -164,10 +177,28 @@ impl TranscriptState {
         if content.is_empty() {
             return;
         }
-        lines.push(Line::from(""));
 
-        let wrap_width = if width > 2 {
-            (width - 2) as usize
+        let bg = terminal_color::composer_bg();
+        let bg_style = Style::default().bg(bg);
+        let w = width as usize;
+
+        // Helper: create a full-width background-filled line from spans
+        let make_bg_line = |spans: Vec<Span<'static>>| -> Line<'static> {
+            // Calculate how many visible chars the spans occupy
+            let used: usize = spans.iter().map(|s| s.content.len()).sum();
+            let mut all_spans = spans;
+            if used < w {
+                all_spans.push(Span::styled(" ".repeat(w - used), bg_style));
+            }
+            Line::from(all_spans).style(bg_style)
+        };
+
+        // Top padding line (full-width background)
+        lines.push(make_bg_line(vec![]));
+
+        let wrap_width = if width > 3 {
+            // prefix "› " = 2, plus 1 right margin
+            (width - 3) as usize
         } else {
             width.max(1) as usize
         };
@@ -175,43 +206,40 @@ impl TranscriptState {
         let opts = textwrap::Options::new(wrap_width)
             .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
 
-        // Split content into logical lines (from actual newlines in the input),
-        // then word-wrap each logical line at wrap_width.
+        let prefix_style = Style::default()
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::DIM)
+            .bg(bg);
+
         let mut is_first_visual_line = true;
         for logical_line in content.split('\n') {
             if logical_line.is_empty() {
                 let prefix = if is_first_visual_line {
                     is_first_visual_line = false;
-                    Span::styled(
-                        "› ",
-                        Style::default()
-                            .add_modifier(Modifier::BOLD)
-                            .add_modifier(Modifier::DIM),
-                    )
+                    Span::styled("› ", prefix_style)
                 } else {
-                    Span::raw("  ")
+                    Span::styled("  ", bg_style)
                 };
-                lines.push(Line::from(vec![prefix]));
+                lines.push(make_bg_line(vec![prefix]));
                 continue;
             }
 
             for wrapped in textwrap::wrap(logical_line, &opts) {
                 let prefix = if is_first_visual_line {
                     is_first_visual_line = false;
-                    Span::styled(
-                        "› ",
-                        Style::default()
-                            .add_modifier(Modifier::BOLD)
-                            .add_modifier(Modifier::DIM),
-                    )
+                    Span::styled("› ", prefix_style)
                 } else {
-                    Span::raw("  ")
+                    Span::styled("  ", bg_style)
                 };
-                lines.push(Line::from(vec![prefix, Span::raw(wrapped.into_owned())]));
+                lines.push(make_bg_line(vec![
+                    prefix,
+                    Span::styled(wrapped.into_owned(), bg_style),
+                ]));
             }
         }
 
-        lines.push(Line::from(""));
+        // Bottom padding line (full-width background)
+        lines.push(make_bg_line(vec![]));
     }
 
     /// Render a ToolUse block as history lines with "● name" format.

@@ -240,7 +240,8 @@ impl Widget for MessageBlock {
                     let paragraph = ratatui::widgets::Paragraph::new(text)
                         .style(
                             Style::default()
-                                .fg(Color::Yellow)
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM)
                                 .add_modifier(Modifier::ITALIC),
                         )
                         .wrap(ratatui::widgets::Wrap { trim: false });

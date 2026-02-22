@@ -1170,7 +1170,8 @@ fn style_thinking_lines(thinking: Vec<Line<'static>>) -> Vec<Line<'static>> {
                 .map(|span| {
                     let style = span
                         .style
-                        .fg(Color::Yellow)
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM)
                         .add_modifier(Modifier::ITALIC);
                     Span::styled(span.content.to_string(), style)
                 })
