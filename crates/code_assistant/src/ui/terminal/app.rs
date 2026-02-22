@@ -15,12 +15,14 @@ use crate::ui::terminal::{
 use crate::ui::UserInterface;
 use anyhow::Result;
 
-use ratatui::crossterm::event::{self, Event};
+use crossterm::event::{Event, EventStream};
+use futures::StreamExt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use tokio::sync::Mutex;
+use tokio::time::Duration;
 use tracing::debug;
 
 /// Main event loop for handling terminal events
@@ -31,228 +33,265 @@ async fn event_loop(
     cancel_flag: Arc<AtomicBool>,
     backend_event_tx: async_channel::Sender<BackendEvent>,
     mut tui: tui::Tui,
+    mut redraw_rx: tokio::sync::watch::Receiver<()>,
 ) -> Result<()> {
+    let mut event_stream = EventStream::new();
+    let mut needs_redraw = true; // Draw initial frame
+
     loop {
-        // Sync state and render the UI
-        {
-            let mut renderer_guard = renderer.lock().await;
-            let mut state = app_state.lock().await;
+        // === PHASE 1: Draw if needed ===
+        if needs_redraw {
+            {
+                let mut renderer_guard = renderer.lock().await;
+                let mut state = app_state.lock().await;
 
-            // Sync info message from state to renderer
-            if let Some(ref info_msg) = state.info_message {
-                renderer_guard.set_info(info_msg.clone());
-            } else {
-                renderer_guard.clear_info();
+                // Sync info message from state to renderer
+                if let Some(ref info_msg) = state.info_message {
+                    renderer_guard.set_info(info_msg.clone());
+                } else {
+                    renderer_guard.clear_info();
+                }
+
+                if state.plan_dirty {
+                    renderer_guard.set_plan_state(state.plan.clone());
+                    state.plan_dirty = false;
+                }
+                renderer_guard.set_plan_expanded(state.plan_expanded);
+                renderer_guard.set_overlay_active(state.is_overlay_active());
+
+                drop(state); // Release the lock before rendering
+
+                let screen_size = tui.size()?;
+
+                // Prepare renderer state (streaming tick, flush finalized messages)
+                renderer_guard.prepare(screen_size.width, screen_size.height);
+
+                // Drain pending history lines and insert them into scrollback
+                let pending_lines = renderer_guard.drain_pending_history_lines();
+                if !pending_lines.is_empty() {
+                    tui.insert_history_lines(pending_lines);
+                }
+
+                // Compute desired viewport height and draw
+                let desired_height = renderer_guard
+                    .desired_viewport_height(&input_manager.textarea, screen_size.width);
+                tui.draw(desired_height, |frame| {
+                    renderer_guard.paint(frame, &input_manager.textarea);
+                })?;
             }
-
-            if state.plan_dirty {
-                renderer_guard.set_plan_state(state.plan.clone());
-                state.plan_dirty = false;
-            }
-            renderer_guard.set_plan_expanded(state.plan_expanded);
-            renderer_guard.set_overlay_active(state.is_overlay_active());
-
-            drop(state); // Release the lock before rendering
-
-            let screen_size = tui.size()?;
-
-            // Prepare renderer state (streaming tick, flush finalized messages)
-            renderer_guard.prepare(screen_size.width, screen_size.height);
-
-            // Drain pending history lines and insert them into scrollback
-            let pending_lines = renderer_guard.drain_pending_history_lines();
-            if !pending_lines.is_empty() {
-                tui.insert_history_lines(pending_lines);
-            }
-
-            // Compute desired viewport height and draw
-            let desired_height =
-                renderer_guard.desired_viewport_height(&input_manager.textarea, screen_size.width);
-            tui.draw(desired_height, |frame| {
-                renderer_guard.paint(frame, &input_manager.textarea);
-            })?;
+            needs_redraw = false;
         }
 
-        // Check for events with a timeout
-        if event::poll(tokio::time::Duration::from_millis(8))? {
-            match event::read()? {
-                Event::Key(key_event) => {
-                    let key_result = input_manager.handle_key_event(key_event);
+        // === PHASE 2: Determine animation timer ===
+        let animation_delay = {
+            let renderer_guard = renderer.lock().await;
+            if renderer_guard.needs_animation_timer() {
+                Duration::from_millis(50)
+            } else {
+                // Effectively infinite - no animation needed
+                Duration::from_secs(86400)
+            }
+        };
 
-                    match key_result {
-                        KeyEventResult::Quit => {
-                            break;
-                        }
-                        KeyEventResult::Escape => {
-                            // Check if there's an error to dismiss first
-                            let has_error = {
-                                let renderer_guard = renderer.lock().await;
-                                renderer_guard.has_error()
-                            };
+        // === PHASE 3: Wait for any wake source ===
+        tokio::select! {
+            maybe_event = event_stream.next() => {
+                match maybe_event {
+                    Some(Ok(event)) => match event {
+                        Event::Key(key_event) => {
+                            let key_result = input_manager.handle_key_event(key_event);
 
-                            let has_info = {
-                                let state = app_state.lock().await;
-                                state.info_message.is_some()
-                            };
-
-                            if has_error {
-                                // Clear the error
-                                let mut renderer_guard = renderer.lock().await;
-                                renderer_guard.clear_error();
-                            } else if has_info {
-                                // Clear the info message
-                                let mut state = app_state.lock().await;
-                                state.set_info_message(None);
-                            } else {
-                                // Capture current activity/session in one lock to reduce lag
-                                let (activity_state, current_session_id) = {
-                                    let state = app_state.lock().await;
-                                    (
-                                        state.activity_state.clone(),
-                                        state.current_session_id.clone(),
-                                    )
-                                };
-
-                                if let Some(session_id) = current_session_id {
-                                    cancel_flag.store(true, Ordering::SeqCst);
-                                    debug!(
-                                        "Escape pressed - cancellation flag set for session {} (state: {:?})",
-                                        session_id, activity_state
-                                    );
-
-                                    let mut state = app_state.lock().await;
-                                    if matches!(
-                                        activity_state,
-                                        Some(crate::session::instance::SessionActivityState::Idle)
-                                    ) {
-                                        state.set_info_message(Some(
-                                            "No agent is currently running.".to_string(),
-                                        ));
-                                    } else {
-                                        state.set_info_message(Some(
-                                            "Cancellation requested...".to_string(),
-                                        ));
-                                        debug!("Cancellation requested for session {}", session_id);
-                                    }
+                            match key_result {
+                                KeyEventResult::Quit => {
+                                    break;
                                 }
-                            }
-                        }
-                        KeyEventResult::SendMessage {
-                            message,
-                            attachments,
-                        } => {
-                            let current_session_id = {
-                                let state = app_state.lock().await;
-                                state.current_session_id.clone()
-                            };
+                                KeyEventResult::Escape => {
+                                    // Check if there's an error to dismiss first
+                                    let has_error = {
+                                        let renderer_guard = renderer.lock().await;
+                                        renderer_guard.has_error()
+                                    };
 
-                            if let Some(session_id) = current_session_id {
-                                let activity_state = {
-                                    let state = app_state.lock().await;
-                                    state.activity_state.clone()
-                                };
+                                    let has_info = {
+                                        let state = app_state.lock().await;
+                                        state.info_message.is_some()
+                                    };
 
-                                let event = match activity_state {
-                                    Some(crate::session::instance::SessionActivityState::Idle)
-                                    | None => {
-                                        cancel_flag.store(false, Ordering::SeqCst);
-                                        BackendEvent::SendUserMessage {
-                                            session_id,
-                                            message,
-                                            attachments,
-                                            branch_parent_id: None, // Terminal UI doesn't support branching yet
+                                    if has_error {
+                                        // Clear the error
+                                        let mut renderer_guard = renderer.lock().await;
+                                        renderer_guard.clear_error();
+                                    } else if has_info {
+                                        // Clear the info message
+                                        let mut state = app_state.lock().await;
+                                        state.set_info_message(None);
+                                    } else {
+                                        // Capture current activity/session in one lock to reduce lag
+                                        let (activity_state, current_session_id) = {
+                                            let state = app_state.lock().await;
+                                            (
+                                                state.activity_state.clone(),
+                                                state.current_session_id.clone(),
+                                            )
+                                        };
+
+                                        if let Some(session_id) = current_session_id {
+                                            cancel_flag.store(true, Ordering::SeqCst);
+                                            debug!(
+                                                "Escape pressed - cancellation flag set for session {} (state: {:?})",
+                                                session_id, activity_state
+                                            );
+
+                                            let mut state = app_state.lock().await;
+                                            if matches!(
+                                                activity_state,
+                                                Some(crate::session::instance::SessionActivityState::Idle)
+                                            ) {
+                                                state.set_info_message(Some(
+                                                    "No agent is currently running.".to_string(),
+                                                ));
+                                            } else {
+                                                state.set_info_message(Some(
+                                                    "Cancellation requested...".to_string(),
+                                                ));
+                                                debug!("Cancellation requested for session {}", session_id);
+                                            }
                                         }
                                     }
-                                    _ => BackendEvent::QueueUserMessage {
-                                        session_id,
-                                        message,
-                                        attachments,
-                                    },
-                                };
+                                }
+                                KeyEventResult::SendMessage {
+                                    message,
+                                    attachments,
+                                } => {
+                                    let current_session_id = {
+                                        let state = app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
 
-                                let _ = backend_event_tx.send(event).await;
+                                    if let Some(session_id) = current_session_id {
+                                        let activity_state = {
+                                            let state = app_state.lock().await;
+                                            state.activity_state.clone()
+                                        };
+
+                                        let event = match activity_state {
+                                            Some(crate::session::instance::SessionActivityState::Idle)
+                                            | None => {
+                                                cancel_flag.store(false, Ordering::SeqCst);
+                                                BackendEvent::SendUserMessage {
+                                                    session_id,
+                                                    message,
+                                                    attachments,
+                                                    branch_parent_id: None, // Terminal UI doesn't support branching yet
+                                                }
+                                            }
+                                            _ => BackendEvent::QueueUserMessage {
+                                                session_id,
+                                                message,
+                                                attachments,
+                                            },
+                                        };
+
+                                        let _ = backend_event_tx.send(event).await;
+                                    }
+                                }
+                                KeyEventResult::Continue => {
+                                    // Input may have changed (cursor, text), redraw below
+                                }
+                                KeyEventResult::ShowInfo(info_text) => {
+                                    // Display info message in the UI
+                                    let mut state = app_state.lock().await;
+                                    state.set_info_message(Some(info_text));
+                                }
+                                KeyEventResult::SwitchModel(model_name) => {
+                                    // Handle model switching
+                                    let current_session_id = {
+                                        let state = app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
+
+                                    if let Some(session_id) = current_session_id {
+                                        let event = BackendEvent::SwitchModel {
+                                            session_id,
+                                            model_name: model_name.clone(),
+                                        };
+
+                                        let _ = backend_event_tx.send(event).await;
+
+                                        // Update state
+                                        let mut state = app_state.lock().await;
+                                        state.update_current_model(Some(model_name.clone()));
+                                        state.set_info_message(Some(format!(
+                                            "Switched to model: {model_name}",
+                                        )));
+                                    } else {
+                                        let mut state = app_state.lock().await;
+                                        state.set_info_message(Some(
+                                            "No active session to switch model".to_string(),
+                                        ));
+                                    }
+                                }
+                                KeyEventResult::ShowCurrentModel => {
+                                    let current_model = {
+                                        let state = app_state.lock().await;
+                                        state.current_model.clone()
+                                    };
+
+                                    let message = match current_model {
+                                        Some(model) => format!("Current model: {model}"),
+                                        None => "No model selected".to_string(),
+                                    };
+
+                                    let mut state = app_state.lock().await;
+                                    state.set_info_message(Some(message));
+                                }
+                                KeyEventResult::TogglePlan => {
+                                    let (plan_state, expanded, overlay_active) = {
+                                        let mut state = app_state.lock().await;
+                                        let expanded = state.toggle_plan_expanded();
+                                        (state.plan.clone(), expanded, state.is_overlay_active())
+                                    };
+
+                                    let mut renderer_guard = renderer.lock().await;
+                                    if let Some(plan_state) = plan_state {
+                                        renderer_guard.set_plan_state(Some(plan_state));
+                                    } else {
+                                        debug!("TogglePlan invoked with no plan available; renderer state unchanged");
+                                    }
+                                    renderer_guard.set_plan_expanded(expanded);
+                                    renderer_guard.set_overlay_active(overlay_active);
+                                }
                             }
+                            needs_redraw = true;
                         }
-                        KeyEventResult::Continue => {
-                            // Do nothing, just continue the loop
+                        Event::Paste(pasted) => {
+                            // Many terminals convert newlines to \r when pasting;
+                            // normalize before processing.
+                            let pasted = pasted.replace('\r', "\n");
+                            input_manager.handle_paste(pasted);
+                            needs_redraw = true;
                         }
-                        KeyEventResult::ShowInfo(info_text) => {
-                            // Display info message in the UI
-                            let mut state = app_state.lock().await;
-                            state.set_info_message(Some(info_text));
+                        Event::Resize(_, _) => {
+                            needs_redraw = true;
                         }
-                        KeyEventResult::SwitchModel(model_name) => {
-                            // Handle model switching
-                            let current_session_id = {
-                                let state = app_state.lock().await;
-                                state.current_session_id.clone()
-                            };
-
-                            if let Some(session_id) = current_session_id {
-                                let event = BackendEvent::SwitchModel {
-                                    session_id,
-                                    model_name: model_name.clone(),
-                                };
-
-                                let _ = backend_event_tx.send(event).await;
-
-                                // Update state
-                                let mut state = app_state.lock().await;
-                                state.update_current_model(Some(model_name.clone()));
-                                state.set_info_message(Some(format!(
-                                    "Switched to model: {model_name}",
-                                )));
-                            } else {
-                                let mut state = app_state.lock().await;
-                                state.set_info_message(Some(
-                                    "No active session to switch model".to_string(),
-                                ));
-                            }
-                        }
-                        KeyEventResult::ShowCurrentModel => {
-                            let current_model = {
-                                let state = app_state.lock().await;
-                                state.current_model.clone()
-                            };
-
-                            let message = match current_model {
-                                Some(model) => format!("Current model: {model}"),
-                                None => "No model selected".to_string(),
-                            };
-
-                            let mut state = app_state.lock().await;
-                            state.set_info_message(Some(message));
-                        }
-                        KeyEventResult::TogglePlan => {
-                            let (plan_state, expanded, overlay_active) = {
-                                let mut state = app_state.lock().await;
-                                let expanded = state.toggle_plan_expanded();
-                                (state.plan.clone(), expanded, state.is_overlay_active())
-                            };
-
-                            let mut renderer_guard = renderer.lock().await;
-                            if let Some(plan_state) = plan_state {
-                                renderer_guard.set_plan_state(Some(plan_state));
-                            } else {
-                                debug!("TogglePlan invoked with no plan available; renderer state unchanged");
-                            }
-                            renderer_guard.set_plan_expanded(expanded);
-                            renderer_guard.set_overlay_active(overlay_active);
-                        }
+                        _ => {}
+                    },
+                    Some(Err(e)) => {
+                        return Err(e.into());
+                    }
+                    None => {
+                        // Event stream ended
+                        break;
                     }
                 }
-                Event::Paste(pasted) => {
-                    // Many terminals convert newlines to \r when pasting;
-                    // normalize before processing.
-                    let pasted = pasted.replace('\r', "\n");
-                    input_manager.handle_paste(pasted);
-                }
-                Event::Resize(_, _) => {
-                    // Resize is handled automatically by Tui::draw() via pending_viewport_area()
-                }
-                _ => {
-                    // Ignore other events
-                }
+            }
+
+            _ = redraw_rx.changed() => {
+                needs_redraw = true;
+            }
+
+            _ = tokio::time::sleep(animation_delay) => {
+                needs_redraw = true;
             }
         }
     }
@@ -501,7 +540,7 @@ impl TerminalTuiApp {
         terminal_ui.set_renderer_async(renderer.clone()).await;
 
         // Create redraw notification channel
-        let (redraw_tx, mut redraw_rx) = tokio::sync::watch::channel::<()>(());
+        let (redraw_tx, redraw_rx) = tokio::sync::watch::channel::<()>(());
         terminal_ui.set_redraw_sender(redraw_tx.clone());
 
         // Print welcome message to content area
@@ -536,32 +575,21 @@ impl TerminalTuiApp {
         }
 
         // Start main event loop in a separate task
-        let mut event_loop_handle = tokio::spawn(event_loop(
+        let event_loop_handle = tokio::spawn(event_loop(
             input_manager,
             renderer.clone(),
             app_state,
             terminal_ui.cancel_flag.clone(),
             backend_event_tx,
             tui,
+            redraw_rx,
         ));
 
-        // Handle redraw notifications in main loop
-        let loop_result: Result<()> = loop {
-            tokio::select! {
-                // Handle redraw notifications
-                _ = redraw_rx.changed() => {
-                    // Redraw is handled automatically by the renderer during the next render cycle
-                }
-
-                // Check if event loop finished (on Ctrl+C)
-                result = &mut event_loop_handle => {
-                    match result {
-                        Ok(Ok(())) => break Ok(()),
-                        Ok(Err(e)) => break Err(e),
-                        Err(e) => break Err(e.into()),
-                    }
-                }
-            }
+        // Wait for the event loop to finish (Ctrl+C or event stream end)
+        let loop_result: Result<()> = match event_loop_handle.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e.into()),
         };
 
         // Restore terminal state (disable raw mode)

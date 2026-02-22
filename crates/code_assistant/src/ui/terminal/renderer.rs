@@ -1143,6 +1143,13 @@ impl TerminalRenderer {
         self.current_error.is_some()
     }
 
+    /// Returns true when the UI has time-varying content that requires
+    /// periodic redraws even without external events (spinner animation,
+    /// streaming commit ticks).
+    pub fn needs_animation_timer(&self) -> bool {
+        !matches!(self.spinner_state, SpinnerState::Hidden) || self.streaming_open
+    }
+
     /// Set an info message to display
     pub fn set_info(&mut self, info_message: String) {
         self.info_message = Some(info_message);
