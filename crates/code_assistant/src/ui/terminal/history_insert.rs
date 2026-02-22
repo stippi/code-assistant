@@ -181,7 +181,7 @@ impl Command for SetScrollRegion {
 
     #[cfg(windows)]
     fn execute_winapi(&self) -> std::io::Result<()> {
-        panic!("SetScrollRegion via WinAPI is unsupported");
+        panic!("tried to execute SetScrollRegion command using WinAPI, use ANSI instead");
     }
 
     #[cfg(windows)]
@@ -200,7 +200,7 @@ impl Command for ResetScrollRegion {
 
     #[cfg(windows)]
     fn execute_winapi(&self) -> std::io::Result<()> {
-        panic!("ResetScrollRegion via WinAPI is unsupported");
+        panic!("tried to execute ResetScrollRegion command using WinAPI, use ANSI instead");
     }
 
     #[cfg(windows)]
