@@ -109,10 +109,6 @@ pub struct TerminalRenderer {
     last_block_type_for_hidden_tool: Option<LastBlockType>,
     /// Flag indicating a hidden tool completed and we may need a paragraph break
     needs_paragraph_break_after_hidden_tool: bool,
-    /// When true, a tool block was added since the last streamed text/thinking.
-    /// The next text or thinking delta should insert a blank separator line in
-    /// scrollback before the first new streamed content.
-    needs_blank_after_tool: bool,
     /// Last known terminal width (updated in prepare(), used for history rendering).
     last_known_width: u16,
 }
@@ -147,7 +143,6 @@ impl TerminalRenderer {
             spinner_state: SpinnerState::Hidden,
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
-            needs_blank_after_tool: false,
             last_known_width: 80,
         })
     }
@@ -166,7 +161,6 @@ impl TerminalRenderer {
         };
         self.streaming_controller.clear();
         self.last_stream_kind = None;
-        self.needs_blank_after_tool = false;
         self.transcript.start_active_message();
         self.streaming_open = true;
     }
@@ -178,10 +172,11 @@ impl TerminalRenderer {
 
         // Flush any in-progress streaming text/thinking to scrollback so
         // the tool block in the live viewport doesn't overlap with it.
-        // The blank separator before the tool is handled later by
-        // flush_new_finalized_messages.
+        // Also insert a blank separator so the scrollback content is visually
+        // separated from the tool block that will appear in the viewport.
         if self.last_stream_kind.is_some() {
             self.flush_streaming_pending();
+            self.insert_or_defer_history_lines(vec![Line::from("")]);
             if let Some(msg) = self.transcript.active_message_mut() {
                 msg.streamed_to_scrollback = true;
             }
@@ -194,7 +189,6 @@ impl TerminalRenderer {
         };
 
         live_message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
-        self.needs_blank_after_tool = true;
     }
 
     /// Ensure the last block in the live message is of the specified type.
@@ -336,14 +330,6 @@ impl TerminalRenderer {
                     msg.streamed_to_scrollback = true;
                 }
             }
-            // Tool blank already handled by the thinking→text transition above
-            self.needs_blank_after_tool = false;
-        }
-        // When text resumes after an interleaved tool block, insert a blank
-        // separator so the tool block and new text don't visually merge.
-        if self.needs_blank_after_tool {
-            self.insert_or_defer_history_lines(vec![Line::from("")]);
-            self.needs_blank_after_tool = false;
         }
         self.last_stream_kind = Some(StreamKind::Text);
         self.streaming_controller.push(StreamKind::Text, content);
@@ -374,14 +360,6 @@ impl TerminalRenderer {
                     msg.streamed_to_scrollback = true;
                 }
             }
-            // Tool blank already handled by the text→thinking transition above
-            self.needs_blank_after_tool = false;
-        }
-        // When thinking resumes after an interleaved tool block, insert a blank
-        // separator so the tool block and new thinking don't visually merge.
-        if self.needs_blank_after_tool {
-            self.insert_or_defer_history_lines(vec![Line::from("")]);
-            self.needs_blank_after_tool = false;
         }
         self.last_stream_kind = Some(StreamKind::Thinking);
         self.streaming_controller
@@ -489,7 +467,6 @@ impl TerminalRenderer {
         self.streaming_controller.clear();
         self.streaming_open = false;
         self.last_stream_kind = None;
-        self.needs_blank_after_tool = false;
         self.deferred_history_lines.clear();
         self.pending_history_lines.clear();
         self.spinner_state = SpinnerState::Hidden;
@@ -539,9 +516,13 @@ impl TerminalRenderer {
                 let tool_lines =
                     TranscriptState::as_history_lines_non_streamed_only(message, width);
                 if !tool_lines.is_empty() {
-                    // Blank separator between streamed content and tool blocks
-                    lines.push(Line::from(""));
+                    // The blank separator before these tool blocks was already
+                    // inserted by start_tool_use_block when it flushed the
+                    // preceding streamed content.
                     lines.extend(tool_lines);
+                    // Trailing blank so the next streamed content doesn't
+                    // visually merge with the tool block.
+                    lines.push(Line::from(""));
                 }
                 continue;
             }
@@ -2962,6 +2943,87 @@ mod tests {
                         .join("\n")
                 );
             }
+        }
+
+        /// Verify trailing blank line after tool blocks in scrollback
+        /// when tool is followed by more streamed content.
+        #[test]
+        fn test_scrollback_trailing_blank_after_tool() {
+            let mut harness = create_test_harness(80, 30);
+            let textarea = TextArea::new();
+
+            harness.start_new_message(1);
+
+            // Stream text, tool, then more text
+            harness.queue_text_delta("Before tool.\n".to_string());
+            harness.render(&textarea);
+            let _ = harness.drain_pending_history_lines();
+
+            harness.start_tool_use_block("read_files".to_string(), "t1".to_string());
+            harness.add_or_update_tool_parameter(
+                "t1",
+                "paths".to_string(),
+                "src/main.rs".to_string(),
+            );
+            harness.update_tool_status("t1", ToolStatus::Success, None, None);
+
+            harness.queue_text_delta("After tool.\n".to_string());
+            harness.render(&textarea);
+            let _ = harness.drain_pending_history_lines();
+
+            // Finalize
+            harness.flush_streaming_pending();
+            harness.transcript.finalize_active_if_content();
+            harness.render(&textarea);
+
+            let lines = harness.drain_pending_history_lines();
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                    if text.trim().is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        text
+                    }
+                })
+                .collect();
+
+            // Find the tool header
+            let tool_idx = line_strs.iter().position(|s| s.contains("●"));
+            assert!(
+                tool_idx.is_some(),
+                "Tool line not found.\nAll lines:\n{}",
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            let ti = tool_idx.unwrap();
+
+            // Find the last line of the tool block (before next blank or end)
+            let mut last_tool_line = ti;
+            for i in (ti + 1)..line_strs.len() {
+                if line_strs[i] == "<<blank>>" {
+                    break;
+                }
+                last_tool_line = i;
+            }
+
+            // There should be a blank line after the tool block
+            let next = last_tool_line + 1;
+            assert!(
+                next < line_strs.len() && line_strs[next] == "<<blank>>",
+                "Expected blank line after tool block (last tool line at {last_tool_line}).\nAll lines:\n{}",
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
         }
     }
 }
