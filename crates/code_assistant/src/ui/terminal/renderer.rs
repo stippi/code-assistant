@@ -109,6 +109,10 @@ pub struct TerminalRenderer {
     last_block_type_for_hidden_tool: Option<LastBlockType>,
     /// Flag indicating a hidden tool completed and we may need a paragraph break
     needs_paragraph_break_after_hidden_tool: bool,
+    /// When true, a tool block was added since the last streamed text/thinking.
+    /// The next text or thinking delta should insert a blank separator line in
+    /// scrollback before the first new streamed content.
+    needs_blank_after_tool: bool,
     /// Last known terminal width (updated in prepare(), used for history rendering).
     last_known_width: u16,
 }
@@ -143,6 +147,7 @@ impl TerminalRenderer {
             spinner_state: SpinnerState::Hidden,
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
+            needs_blank_after_tool: false,
             last_known_width: 80,
         })
     }
@@ -161,6 +166,7 @@ impl TerminalRenderer {
         };
         self.streaming_controller.clear();
         self.last_stream_kind = None;
+        self.needs_blank_after_tool = false;
         self.transcript.start_active_message();
         self.streaming_open = true;
     }
@@ -169,12 +175,26 @@ impl TerminalRenderer {
     pub fn start_tool_use_block(&mut self, name: String, id: String) {
         // Hide spinner when first content arrives
         self.hide_loading_spinner_if_active();
+
+        // Flush any in-progress streaming text/thinking to scrollback so
+        // the tool block in the live viewport doesn't overlap with it.
+        // The blank separator before the tool is handled later by
+        // flush_new_finalized_messages.
+        if self.last_stream_kind.is_some() {
+            self.flush_streaming_pending();
+            if let Some(msg) = self.transcript.active_message_mut() {
+                msg.streamed_to_scrollback = true;
+            }
+            self.last_stream_kind = None;
+        }
+
         self.ensure_active_message();
         let Some(live_message) = self.transcript.active_message_mut() else {
             return;
         };
 
         live_message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
+        self.needs_blank_after_tool = true;
     }
 
     /// Ensure the last block in the live message is of the specified type.
@@ -316,6 +336,14 @@ impl TerminalRenderer {
                     msg.streamed_to_scrollback = true;
                 }
             }
+            // Tool blank already handled by the thinking→text transition above
+            self.needs_blank_after_tool = false;
+        }
+        // When text resumes after an interleaved tool block, insert a blank
+        // separator so the tool block and new text don't visually merge.
+        if self.needs_blank_after_tool {
+            self.insert_or_defer_history_lines(vec![Line::from("")]);
+            self.needs_blank_after_tool = false;
         }
         self.last_stream_kind = Some(StreamKind::Text);
         self.streaming_controller.push(StreamKind::Text, content);
@@ -346,6 +374,14 @@ impl TerminalRenderer {
                     msg.streamed_to_scrollback = true;
                 }
             }
+            // Tool blank already handled by the text→thinking transition above
+            self.needs_blank_after_tool = false;
+        }
+        // When thinking resumes after an interleaved tool block, insert a blank
+        // separator so the tool block and new thinking don't visually merge.
+        if self.needs_blank_after_tool {
+            self.insert_or_defer_history_lines(vec![Line::from("")]);
+            self.needs_blank_after_tool = false;
         }
         self.last_stream_kind = Some(StreamKind::Thinking);
         self.streaming_controller
@@ -453,6 +489,7 @@ impl TerminalRenderer {
         self.streaming_controller.clear();
         self.streaming_open = false;
         self.last_stream_kind = None;
+        self.needs_blank_after_tool = false;
         self.deferred_history_lines.clear();
         self.pending_history_lines.clear();
         self.spinner_state = SpinnerState::Hidden;

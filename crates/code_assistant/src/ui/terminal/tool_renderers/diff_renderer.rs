@@ -248,6 +248,28 @@ pub fn generate_write_file_diff_lines(content: &str) -> Vec<DiffLine> {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
+/// Expand tab characters to spaces (4-space tab stops).
+fn expand_tabs(text: &str) -> String {
+    if !text.contains('\t') {
+        return text.to_string();
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut col = 0;
+    for ch in text.chars() {
+        if ch == '\t' {
+            let spaces = 4 - (col % 4);
+            for _ in 0..spaces {
+                result.push(' ');
+            }
+            col += spaces;
+        } else {
+            result.push(ch);
+            col += 1;
+        }
+    }
+    result
+}
+
 fn get_file_path(tool_block: &ToolUseBlock) -> Option<String> {
     tool_block
         .parameters
@@ -341,7 +363,7 @@ pub fn render_diff_to_buffer(
                     &gutter,
                     Style::default().add_modifier(Modifier::DIM).bg(bg),
                 );
-                let content = format!(" {text}");
+                let content = format!(" {}", expand_tabs(text));
                 buf.set_string(
                     x + gutter.len() as u16,
                     y,
@@ -357,7 +379,7 @@ pub fn render_diff_to_buffer(
                     &gutter,
                     Style::default().add_modifier(Modifier::DIM).bg(bg),
                 );
-                let content = format!("+{text}");
+                let content = format!("+{}", expand_tabs(text));
                 buf.set_string(
                     x + gutter.len() as u16,
                     y,
@@ -373,7 +395,7 @@ pub fn render_diff_to_buffer(
                     &gutter,
                     Style::default().add_modifier(Modifier::DIM).bg(bg),
                 );
-                let content = format!("-{text}");
+                let content = format!("-{}", expand_tabs(text));
                 buf.set_string(
                     x + gutter.len() as u16,
                     y,
@@ -392,11 +414,12 @@ pub fn render_diff_to_history_lines(diff_lines: &[DiffLine], lines: &mut Vec<Lin
     let max_ln = max_line_number(diff_lines);
     let gw = line_number_width(max_ln);
     let bg = terminal_color::tool_content_bg();
+    let bg_style = Style::default().bg(bg);
 
     for diff_line in diff_lines {
-        match diff_line {
+        let line = match diff_line {
             DiffLine::HunkSeparator => {
-                lines.push(Line::from(vec![
+                Line::from(vec![
                     Span::styled(
                         format!("  {:width$} ", "", width = gw),
                         Style::default().add_modifier(Modifier::DIM).bg(bg),
@@ -405,45 +428,48 @@ pub fn render_diff_to_history_lines(diff_lines: &[DiffLine], lines: &mut Vec<Lin
                         "⋮",
                         Style::default().add_modifier(Modifier::DIM).bg(bg),
                     ),
-                ]));
+                ])
             }
             DiffLine::Context { line_num, text } => {
-                lines.push(Line::from(vec![
+                Line::from(vec![
                     Span::styled(
                         format!("  {:>width$} ", line_num, width = gw),
                         Style::default().add_modifier(Modifier::DIM).bg(bg),
                     ),
                     Span::styled(
-                        format!(" {text}"),
+                        format!(" {}", expand_tabs(text)),
                         Style::default().fg(Color::Gray).bg(bg),
                     ),
-                ]));
+                ])
             }
             DiffLine::Insert { line_num, text } => {
-                lines.push(Line::from(vec![
+                Line::from(vec![
                     Span::styled(
                         format!("  {:>width$} ", line_num, width = gw),
                         Style::default().add_modifier(Modifier::DIM).bg(bg),
                     ),
                     Span::styled(
-                        format!("+{text}"),
+                        format!("+{}", expand_tabs(text)),
                         Style::default().fg(Color::Green).bg(bg),
                     ),
-                ]));
+                ])
             }
             DiffLine::Delete { line_num, text } => {
-                lines.push(Line::from(vec![
+                Line::from(vec![
                     Span::styled(
                         format!("  {:>width$} ", line_num, width = gw),
                         Style::default().add_modifier(Modifier::DIM).bg(bg),
                     ),
                     Span::styled(
-                        format!("-{text}"),
+                        format!("-{}", expand_tabs(text)),
                         Style::default().fg(Color::Red).bg(bg),
                     ),
-                ]));
+                ])
             }
-        }
+        };
+        // Setting bg on the Line style causes history_insert to fill the
+        // entire terminal row with the background colour (via ClearType::UntilNewLine).
+        lines.push(line.style(bg_style));
     }
 }
 

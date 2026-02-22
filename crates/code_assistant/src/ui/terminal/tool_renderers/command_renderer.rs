@@ -13,6 +13,28 @@ use crate::ui::terminal::message::ToolUseBlock;
 use crate::ui::terminal::terminal_color;
 use crate::ui::ToolStatus;
 
+/// Expand tab characters to spaces (4-space tab stops).
+fn expand_tabs(text: &str) -> String {
+    if !text.contains('\t') {
+        return text.to_string();
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut col = 0;
+    for ch in text.chars() {
+        if ch == '\t' {
+            let spaces = 4 - (col % 4);
+            for _ in 0..spaces {
+                result.push(' ');
+            }
+            col += spaces;
+        } else {
+            result.push(ch);
+            col += 1;
+        }
+    }
+    result
+}
+
 /// Renderer for the `execute_command` tool.
 pub struct CommandToolRenderer;
 
@@ -73,17 +95,18 @@ impl ToolRenderer for CommandToolRenderer {
                     if y >= area.y + area.height {
                         break;
                     }
-                    // Fill background
+                    // Fill background across full row width
                     buf.set_string(
                         area.x + 2,
                         y,
                         &" ".repeat(row_width),
                         Style::default().bg(bg),
                     );
-                    let display = if line.len() > row_width {
-                        &line[..row_width]
+                    let expanded = expand_tabs(line);
+                    let display = if expanded.len() > row_width {
+                        &expanded[..row_width]
                     } else {
-                        line
+                        expanded.as_str()
                     };
                     buf.set_string(
                         area.x + 2,
@@ -123,31 +146,38 @@ impl ToolRenderer for CommandToolRenderer {
     fn render_history_lines(&self, tool_block: &ToolUseBlock) -> Vec<Line<'static>> {
         let mut lines = vec![tool_header_line(tool_block)];
         let bg = terminal_color::tool_content_bg();
+        let bg_style = Style::default().bg(bg);
 
         // Command line
         if let Some(cmd) = tool_block.parameters.get("command_line") {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  $ ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD)
-                        .bg(bg),
-                ),
-                Span::styled(
-                    cmd.value.clone(),
-                    Style::default().fg(Color::White).bg(bg),
-                ),
-            ]));
+            lines.push(
+                Line::from(vec![
+                    Span::styled(
+                        "  $ ",
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD)
+                            .bg(bg),
+                    ),
+                    Span::styled(
+                        cmd.value.clone(),
+                        Style::default().fg(Color::White).bg(bg),
+                    ),
+                ])
+                .style(bg_style),
+            );
         }
 
         // Terminal output
         if let Some(ref output) = tool_block.output {
             for line in output.lines() {
-                lines.push(Line::from(vec![Span::styled(
-                    format!("  {line}"),
-                    Style::default().fg(Color::Gray).bg(bg),
-                )]));
+                lines.push(
+                    Line::from(vec![Span::styled(
+                        format!("  {}", expand_tabs(line)),
+                        Style::default().fg(Color::Gray).bg(bg),
+                    )])
+                    .style(bg_style),
+                );
             }
         }
 
