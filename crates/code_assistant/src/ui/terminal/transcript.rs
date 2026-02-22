@@ -6,6 +6,7 @@ use ratatui::{
 use super::message::{LiveMessage, MessageBlock};
 use super::streaming::markdown_stream::render_markdown_lines;
 use super::terminal_color;
+use super::tool_renderers::ToolRendererRegistry;
 use crate::ui::ToolStatus;
 
 pub struct TranscriptState {
@@ -260,6 +261,15 @@ impl TranscriptState {
         tool: &super::message::ToolUseBlock,
         lines: &mut Vec<Line<'static>>,
     ) {
+        // Try a registered renderer first.
+        if let Some(registry) = ToolRendererRegistry::global() {
+            if let Some(renderer) = registry.get(&tool.name) {
+                lines.extend(renderer.render_history_lines(tool));
+                return;
+            }
+        }
+
+        // Fallback: generic rendering
         let status_color = match tool.status {
             ToolStatus::Pending => Color::Yellow,
             ToolStatus::Running => Color::Blue,

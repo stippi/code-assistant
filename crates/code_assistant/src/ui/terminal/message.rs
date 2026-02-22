@@ -3,7 +3,8 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Wrap};
 use tui_markdown as md;
 
-use super::tool_widget::ToolWidget;
+use super::tool_renderers::ToolRendererRegistry;
+use super::tool_widget::{is_full_width_parameter, should_hide_parameter, ToolWidget};
 use crate::ui::ToolStatus;
 
 /// A complete message containing multiple blocks
@@ -120,48 +121,28 @@ impl MessageBlock {
                 2 + content_lines // 1 blank before + content + 1 blank after
             }
             MessageBlock::ToolUse(block) => {
-                let mut height = 1; // Tool name line
+                // Try a registered renderer first.
+                if let Some(registry) = ToolRendererRegistry::global() {
+                    if let Some(renderer) = registry.get(&block.name) {
+                        return renderer.calculate_height(block, width);
+                    }
+                }
 
-                // Check if we should show combined diff for completed edit tools
-                let should_show_combined_diff = block.name == "edit"
-                    && matches!(block.status, ToolStatus::Success | ToolStatus::Error)
-                    && block.parameters.contains_key("old_text")
-                    && block.parameters.contains_key("new_text");
+                // Fallback: generic height calculation
+                let mut height: u16 = 1; // Tool name line
 
-                // Count parameter lines
                 for (name, param) in &block.parameters {
                     if should_hide_parameter(&block.name, name, &param.value) {
                         continue;
                     }
-
-                    // Skip old_text and new_text if we're showing combined diff
-                    if should_show_combined_diff && (name == "old_text" || name == "new_text") {
-                        continue;
-                    }
-
                     if is_full_width_parameter(&block.name, name) {
                         height += 1; // Parameter name
-                        height += param.value.lines().count() as u16; // Show all lines for full-width parameters
+                        height += param.value.lines().count() as u16;
                     } else {
-                        height += 1; // Regular parameter line
+                        height += 1;
                     }
                 }
 
-                // Add height for combined diff if applicable
-                if should_show_combined_diff {
-                    if let (Some(old_param), Some(new_param)) = (
-                        block.parameters.get("old_text"),
-                        block.parameters.get("new_text"),
-                    ) {
-                        height += 1; // "diff" parameter name
-                                     // Estimate diff height - this is approximate but should be close enough
-                        let old_lines = old_param.value.lines().count();
-                        let new_lines = new_param.value.lines().count();
-                        height += (old_lines + new_lines) as u16; // Conservative estimate
-                    }
-                }
-
-                // Status message
                 if block.status_message.is_some() && block.status == ToolStatus::Error {
                     height += 1;
                 }
@@ -381,30 +362,3 @@ impl ParameterValue {
     }
 }
 
-/// Check if a parameter should be rendered full-width
-fn is_full_width_parameter(tool_name: &str, param_name: &str) -> bool {
-    match (tool_name, param_name) {
-        // Diff-style parameters
-        ("replace_in_file", "diff") => true,
-        ("edit", "old_text") => true,
-        ("edit", "new_text") => true,
-        // Content parameters
-        ("write_file", "content") => true,
-        // Large text parameters
-        (_, "content") if param_name != "message" => true, // Exclude short message content
-        (_, "output") => true,
-        (_, "query") => true,
-        _ => false,
-    }
-}
-
-/// Check if a parameter should be hidden
-fn should_hide_parameter(tool_name: &str, param_name: &str, param_value: &str) -> bool {
-    match (tool_name, param_name) {
-        (_, "project") => {
-            // Hide project parameter if it's empty or matches common defaults
-            param_value.is_empty() || param_value == "." || param_value == "unknown"
-        }
-        _ => false,
-    }
-}

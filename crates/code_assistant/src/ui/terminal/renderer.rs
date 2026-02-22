@@ -392,6 +392,21 @@ impl TerminalRenderer {
         }
     }
 
+    /// Append streaming output to a tool block (used by execute_command).
+    pub fn append_tool_output(&mut self, tool_id: &str, chunk: &str) {
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            tracing::warn!("Ignoring tool output append without active message");
+            return;
+        };
+
+        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+            match &mut tool_block.output {
+                Some(existing) => existing.push_str(chunk),
+                None => tool_block.output = Some(chunk.to_string()),
+            }
+        }
+    }
+
     /// Add a user message as finalized message and clear any pending user message.
     /// Before adding, finalizes any active streaming message so it appears in
     /// scrollback history BEFORE this user message (correct chronological order).

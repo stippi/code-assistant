@@ -41,6 +41,23 @@ pub fn composer_bg() -> Color {
     }
 }
 
+/// Compute a subtle background tint for tool content areas (diffs, terminal output).
+/// Slightly less prominent than the composer background so it blends more gently.
+pub fn tool_content_bg() -> Color {
+    match terminal_bg() {
+        Some(bg) => {
+            let (top, alpha) = if is_light(bg) {
+                ((0, 0, 0), 0.03)
+            } else {
+                ((255, 255, 255), 0.06)
+            };
+            let (r, g, b) = blend(top, bg, alpha);
+            Color::Rgb(r, g, b)
+        }
+        None => Color::Rgb(35, 35, 35), // fallback for terminals that don't support OSC 11
+    }
+}
+
 /// Determine if a background color is "light" using ITU-R BT.601 luminance.
 fn is_light(bg: (u8, u8, u8)) -> bool {
     let (r, g, b) = bg;

@@ -5,7 +5,7 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{watch, Mutex};
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use super::renderer::ProductionTerminalRenderer;
 use super::state::AppState;
@@ -300,6 +300,13 @@ impl UserInterface for TerminalUI {
                 // The actual status comes later via UpdateToolStatus
                 // For now, we don't change the status here - wait for UpdateToolStatus
             }
+            UiEvent::AppendToolOutput { tool_id, chunk } => {
+                // Accumulate streaming output into the tool block (used by execute_command)
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.append_tool_output(&tool_id, &chunk);
+                }
+            }
             UiEvent::HiddenToolCompleted => {
                 // Mark that a hidden tool completed - renderer handles paragraph breaks
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
@@ -480,9 +487,11 @@ impl UserInterface for TerminalUI {
                     )));
                 }
 
-                // For terminal UI, we can append the streaming output to the tool
-                // For now, just log it - we'll implement proper streaming display later
-                trace!("Tool {} streaming output: {}", tool_id, chunk);
+                // Accumulate streaming output into the tool block (for execute_command display)
+                self.push_event(UiEvent::AppendToolOutput {
+                    tool_id: tool_id.clone(),
+                    chunk: chunk.clone(),
+                });
             }
             DisplayFragment::ToolTerminal {
                 tool_id,

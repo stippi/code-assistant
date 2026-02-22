@@ -34,6 +34,9 @@ pub fn init() -> io::Result<Tui> {
     // Uses OSC 11 to detect the actual bg color for composer overlay blending.
     super::terminal_color::init();
 
+    // Initialize tool renderer registry for custom tool block display.
+    super::tool_renderers::init_registry();
+
     enable_raw_mode()?;
     let _ = execute!(stdout(), EnableBracketedPaste);
 

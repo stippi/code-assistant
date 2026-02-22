@@ -10,6 +10,7 @@ pub mod state;
 pub mod streaming;
 pub mod terminal_color;
 pub mod textarea;
+pub mod tool_renderers;
 pub mod tool_widget;
 pub mod transcript;
 pub mod tui;
