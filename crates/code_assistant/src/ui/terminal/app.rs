@@ -10,7 +10,7 @@ use crate::ui::terminal::{
     renderer::ProductionTerminalRenderer,
     state::AppState,
     tui,
-    ui::TerminalTuiUI,
+    ui::TerminalUI,
 };
 use crate::ui::UserInterface;
 use anyhow::Result;
@@ -287,7 +287,7 @@ impl TerminalTuiApp {
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
         // Create terminal UI and wrap as UserInterface
-        let terminal_ui = TerminalTuiUI::new_with_state(app_state.clone());
+        let terminal_ui = TerminalUI::new_with_state(app_state.clone());
         let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui.clone());
 
         // Setup UI event channel for display fragments

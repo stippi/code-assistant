@@ -11,7 +11,7 @@ use super::renderer::ProductionTerminalRenderer;
 use super::state::AppState;
 
 #[derive(Clone)]
-pub struct TerminalTuiUI {
+pub struct TerminalUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<AtomicBool>,
@@ -19,7 +19,7 @@ pub struct TerminalTuiUI {
     event_sender: Arc<std::sync::Mutex<Option<async_channel::Sender<UiEvent>>>>,
 }
 
-impl TerminalTuiUI {
+impl TerminalUI {
     pub fn new_with_state(app_state: Arc<Mutex<AppState>>) -> Self {
         Self {
             app_state,
@@ -74,7 +74,7 @@ impl TerminalTuiUI {
 }
 
 #[async_trait]
-impl UserInterface for TerminalTuiUI {
+impl UserInterface for TerminalUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         match event {
             UiEvent::SetMessages {
