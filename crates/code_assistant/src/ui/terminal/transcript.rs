@@ -128,9 +128,9 @@ impl TranscriptState {
             // Insert a single blank line between blocks, unless the previous
             // block already ends with one (e.g. UserText includes a trailing blank).
             if lines.len() > block_lines_start && block_lines_start > 0 {
-                let prev_is_blank = lines
-                    .get(block_lines_start - 1)
-                    .is_some_and(|l| l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty()));
+                let prev_is_blank = lines.get(block_lines_start - 1).is_some_and(|l| {
+                    l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty())
+                });
                 if !prev_is_blank {
                     lines.insert(block_lines_start, Line::from(""));
                 }
@@ -167,9 +167,9 @@ impl TranscriptState {
             // Insert a single blank line between blocks, unless the previous
             // block already ends with one.
             if lines.len() > block_lines_start && block_lines_start > 0 {
-                let prev_is_blank = lines
-                    .get(block_lines_start - 1)
-                    .is_some_and(|l| l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty()));
+                let prev_is_blank = lines.get(block_lines_start - 1).is_some_and(|l| {
+                    l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty())
+                });
                 if !prev_is_blank {
                     lines.insert(block_lines_start, Line::from(""));
                 }
@@ -181,11 +181,7 @@ impl TranscriptState {
 
     /// Render a UserText block as history lines with "› " prefix, word wrapping,
     /// and background color matching the composer input area.
-    fn push_user_text_history_lines(
-        content: &str,
-        width: u16,
-        lines: &mut Vec<Line<'static>>,
-    ) {
+    fn push_user_text_history_lines(content: &str, width: u16, lines: &mut Vec<Line<'static>>) {
         if content.is_empty() {
             return;
         }
@@ -217,8 +213,8 @@ impl TranscriptState {
             width.max(1) as usize
         };
 
-        let opts = textwrap::Options::new(wrap_width)
-            .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
+        let opts =
+            textwrap::Options::new(wrap_width).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
 
         let prefix_style = Style::default()
             .add_modifier(Modifier::BOLD)

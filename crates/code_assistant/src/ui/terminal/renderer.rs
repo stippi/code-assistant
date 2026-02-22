@@ -1194,8 +1194,7 @@ fn indent_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     lines
         .into_iter()
         .map(|mut line| {
-            line.spans
-                .insert(0, Span::raw("  ".to_string()));
+            line.spans.insert(0, Span::raw("  ".to_string()));
             line
         })
         .collect()
@@ -2720,7 +2719,8 @@ mod tests {
             }
 
             assert_eq!(
-                blank_count, 1,
+                blank_count,
+                1,
                 "Expected exactly 1 blank line before tool block, got {}.\nAll lines:\n{}",
                 blank_count,
                 line_strs
@@ -2802,7 +2802,8 @@ mod tests {
             }
 
             assert_eq!(
-                blank_count, 1,
+                blank_count,
+                1,
                 "Expected exactly 1 blank line before tool block, got {}.\nAll lines:\n{}",
                 blank_count,
                 line_strs
@@ -2871,9 +2872,12 @@ mod tests {
                 tool_indices.len(),
                 2,
                 "Should have 2 tool lines.\nAll lines:\n{}",
-                line_strs.iter().enumerate()
+                line_strs
+                    .iter()
+                    .enumerate()
                     .map(|(i, s)| format!("  [{i:2}] {s}"))
-                    .collect::<Vec<_>>().join("\n")
+                    .collect::<Vec<_>>()
+                    .join("\n")
             );
 
             for &ti in &tool_indices {
@@ -2888,11 +2892,15 @@ mod tests {
                     }
                 }
                 assert_eq!(
-                    blank_count, 1,
+                    blank_count,
+                    1,
                     "Expected 1 blank before tool at line {ti}, got {blank_count}.\nAll lines:\n{}",
-                    line_strs.iter().enumerate()
+                    line_strs
+                        .iter()
+                        .enumerate()
                         .map(|(i, s)| format!("  [{i:2}] {s}"))
-                        .collect::<Vec<_>>().join("\n")
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 );
             }
         }

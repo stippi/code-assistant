@@ -79,9 +79,7 @@ impl MarkdownStreamCollector {
         let rendered = render_markdown_lines(&source, self.width);
         let mut end = rendered.len();
         // Strip trailing blank lines (consistent with commit_complete_lines)
-        while end > self.committed_line_count
-            && is_blank_line_spaces_only(&rendered[end - 1])
-        {
+        while end > self.committed_line_count && is_blank_line_spaces_only(&rendered[end - 1]) {
             end -= 1;
         }
 

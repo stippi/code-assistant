@@ -56,7 +56,10 @@ impl TerminalUI {
 
     /// Set the event sender for pushing events
     pub fn set_event_sender(&self, sender: async_channel::Sender<UiEvent>) {
-        *self.event_sender.lock().expect("event_sender lock poisoned") = Some(sender);
+        *self
+            .event_sender
+            .lock()
+            .expect("event_sender lock poisoned") = Some(sender);
     }
 
     /// Helper to push an event to the queue.
@@ -64,7 +67,10 @@ impl TerminalUI {
     /// ordering.  The previous implementation spawned a Tokio task per event,
     /// which could reorder events when two tasks raced for the async mutex.
     fn push_event(&self, event: UiEvent) {
-        let guard = self.event_sender.lock().expect("event_sender lock poisoned");
+        let guard = self
+            .event_sender
+            .lock()
+            .expect("event_sender lock poisoned");
         if let Some(sender) = guard.as_ref() {
             if let Err(err) = sender.try_send(event) {
                 warn!("Failed to send event via channel: {}", err);

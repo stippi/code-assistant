@@ -181,8 +181,7 @@ impl InputManager {
                 debug!("Clipboard image: {}x{}", w, h);
 
                 // Convert to PNG
-                let Some(rgba_img) =
-                    image::RgbaImage::from_raw(w, h, img_data.bytes.into_owned())
+                let Some(rgba_img) = image::RgbaImage::from_raw(w, h, img_data.bytes.into_owned())
                 else {
                     debug!("Failed to create RGBA image from clipboard data");
                     return false;
@@ -199,8 +198,7 @@ impl InputManager {
                     return false;
                 }
 
-                let base64_content =
-                    base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+                let base64_content = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
 
                 self.image_counter += 1;
                 let placeholder = format!("[Image {}]", self.image_counter);
@@ -297,7 +295,10 @@ mod tests {
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::NONE));
         match result {
-            KeyEventResult::SendMessage { message, attachments } => {
+            KeyEventResult::SendMessage {
+                message,
+                attachments,
+            } => {
                 assert_eq!(message, "hi");
                 assert!(attachments.is_empty());
             }

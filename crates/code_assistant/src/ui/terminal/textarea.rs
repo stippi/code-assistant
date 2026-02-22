@@ -113,9 +113,7 @@ impl TextArea {
         // Shift existing elements
         self.shift_elements(start, 0, text.len());
         // Register the new element
-        self.elements.push(TextElement {
-            range: start..end,
-        });
+        self.elements.push(TextElement { range: start..end });
         self.elements.sort_by_key(|e| e.range.start);
         // Place cursor after element
         self.cursor_pos = end;
@@ -186,16 +184,32 @@ impl TextArea {
     pub fn input(&mut self, event: KeyEvent) {
         match event {
             // C0 control character fallbacks (terminals that don't report CONTROL modifier)
-            KeyEvent { code: KeyCode::Char('\u{0002}'), modifiers: KeyModifiers::NONE, .. } => {
+            KeyEvent {
+                code: KeyCode::Char('\u{0002}'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 self.move_cursor_left();
             }
-            KeyEvent { code: KeyCode::Char('\u{0006}'), modifiers: KeyModifiers::NONE, .. } => {
+            KeyEvent {
+                code: KeyCode::Char('\u{0006}'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 self.move_cursor_right();
             }
-            KeyEvent { code: KeyCode::Char('\u{0010}'), modifiers: KeyModifiers::NONE, .. } => {
+            KeyEvent {
+                code: KeyCode::Char('\u{0010}'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 self.move_cursor_up();
             }
-            KeyEvent { code: KeyCode::Char('\u{000e}'), modifiers: KeyModifiers::NONE, .. } => {
+            KeyEvent {
+                code: KeyCode::Char('\u{000e}'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 self.move_cursor_down();
             }
             KeyEvent {
@@ -431,7 +445,11 @@ impl TextArea {
     pub fn kill_to_beginning_of_line(&mut self) {
         let bol = self.beginning_of_current_line();
         let range = if self.cursor_pos == bol {
-            if bol > 0 { Some(bol - 1..bol) } else { None }
+            if bol > 0 {
+                Some(bol - 1..bol)
+            } else {
+                None
+            }
         } else {
             Some(bol..self.cursor_pos)
         };
@@ -658,7 +676,11 @@ impl TextArea {
 
     fn wrapped_line_index_by_start(lines: &[Range<usize>], pos: usize) -> Option<usize> {
         let idx = lines.partition_point(|r| r.start <= pos);
-        if idx == 0 { None } else { Some(idx - 1) }
+        if idx == 0 {
+            None
+        } else {
+            Some(idx - 1)
+        }
     }
 
     fn move_to_display_col_on_line(
@@ -716,7 +738,11 @@ impl TextArea {
             return 0;
         }
         // If at or inside an element, jump to its start.
-        if let Some(idx) = self.elements.iter().position(|e| pos > e.range.start && pos <= e.range.end) {
+        if let Some(idx) = self
+            .elements
+            .iter()
+            .position(|e| pos > e.range.start && pos <= e.range.end)
+        {
             return self.elements[idx].range.start;
         }
         let mut gc = unicode_segmentation::GraphemeCursor::new(pos, self.text.len(), false);
@@ -740,7 +766,11 @@ impl TextArea {
             return self.text.len();
         }
         // If at start or inside an element, jump to its end.
-        if let Some(idx) = self.elements.iter().position(|e| pos >= e.range.start && pos < e.range.end) {
+        if let Some(idx) = self
+            .elements
+            .iter()
+            .position(|e| pos >= e.range.start && pos < e.range.end)
+        {
             return self.elements[idx].range.end;
         }
         let mut gc = unicode_segmentation::GraphemeCursor::new(pos, self.text.len(), false);
@@ -769,8 +799,7 @@ impl TextArea {
             if needs_recalc {
                 let lines = wrap_ranges(
                     &self.text,
-                    Options::new(width as usize)
-                        .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
+                    Options::new(width as usize).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
                 );
                 *cache = Some(WrapCache { width, lines });
             }
@@ -861,7 +890,8 @@ impl TextArea {
         let end = at + removed;
         let diff = inserted as isize - removed as isize;
         // Remove elements fully deleted by the operation
-        self.elements.retain(|e| !(e.range.start >= at && e.range.end <= end));
+        self.elements
+            .retain(|e| !(e.range.start >= at && e.range.end <= end));
         for e in &mut self.elements {
             if e.range.end <= at {
                 // before edit - no change
@@ -1076,9 +1106,9 @@ mod tests {
 
         // Move left: should skip from 'b' over element to 'a'
         ta.move_cursor_left(); // to end of element = 6 -> actually to start of 'b' which is 6
-        // move_cursor_left goes to prev_atomic_boundary(7) = 6 ('b' start)
-        // actually 'b' is at pos 6, so prev_atomic from 7 is 6
-        // then move_cursor_left again from 6 should jump over element to 1
+                               // move_cursor_left goes to prev_atomic_boundary(7) = 6 ('b' start)
+                               // actually 'b' is at pos 6, so prev_atomic from 7 is 6
+                               // then move_cursor_left again from 6 should jump over element to 1
         ta.move_cursor_left(); // from 6 to element start = 1
         assert_eq!(ta.cursor(), 1);
         ta.move_cursor_left(); // from 1 to 0

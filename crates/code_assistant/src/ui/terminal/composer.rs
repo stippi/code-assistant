@@ -62,7 +62,9 @@ impl Composer {
             width: area.width,
             height: bg_height,
         };
-        Block::default().style(bg_style).render(bg_rect, f.buffer_mut());
+        Block::default()
+            .style(bg_style)
+            .render(bg_rect, f.buffer_mut());
 
         // Textarea area: inset from left by PREFIX_COLS, from right by 1
         let textarea_rect = Rect {
@@ -79,7 +81,8 @@ impl Composer {
                 .add_modifier(Modifier::BOLD)
                 .bg(composer_bg()),
         );
-        f.buffer_mut().set_span(area.x, area.y + 1, &prompt, PREFIX_COLS);
+        f.buffer_mut()
+            .set_span(area.x, area.y + 1, &prompt, PREFIX_COLS);
 
         // Render textarea
         (&textarea).render_ref(textarea_rect, f.buffer_mut());
@@ -87,10 +90,10 @@ impl Composer {
         // Apply background to textarea cells (textarea renders with default bg)
         for row in 0..textarea_rect.height {
             for col in 0..textarea_rect.width {
-                if let Some(cell) = f.buffer_mut().cell_mut((
-                    textarea_rect.x + col,
-                    textarea_rect.y + row,
-                )) {
+                if let Some(cell) = f
+                    .buffer_mut()
+                    .cell_mut((textarea_rect.x + col, textarea_rect.y + row))
+                {
                     if cell.bg == Color::Reset {
                         cell.set_style(Style::default().bg(composer_bg()));
                     }
@@ -102,9 +105,7 @@ impl Composer {
         let action_style = Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM);
-        let mapping_style = Style::default()
-            .fg(Color::Gray)
-            .add_modifier(Modifier::DIM);
+        let mapping_style = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
         let footer_line = Line::from(vec![
             Span::styled("  Enter", action_style),
             Span::styled(" send  ", mapping_style),

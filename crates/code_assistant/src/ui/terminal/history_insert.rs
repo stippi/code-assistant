@@ -340,9 +340,7 @@ fn wrap_lines_for_width_styled(lines: &[Line<'_>], width: usize) -> Vec<Line<'st
             }
 
             // Wrap: if adding this char would exceed width, emit the current line
-            if ci.display_width > 0
-                && current_width + ci.display_width > width
-                && current_width > 0
+            if ci.display_width > 0 && current_width + ci.display_width > width && current_width > 0
             {
                 if let Some(idx) = current_span_idx {
                     current_spans.push(Span::styled(

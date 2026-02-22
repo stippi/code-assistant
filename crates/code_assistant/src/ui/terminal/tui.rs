@@ -6,12 +6,12 @@
 // synchronized update block to prevent flicker.
 
 use std::io;
-use std::io::Stdout;
 use std::io::stdout;
+use std::io::Stdout;
 use std::panic;
 
-use crossterm::SynchronizedUpdate;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::SynchronizedUpdate;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;

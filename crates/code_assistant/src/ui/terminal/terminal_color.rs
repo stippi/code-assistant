@@ -58,8 +58,8 @@ fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
 
 #[cfg(all(unix, not(test)))]
 fn query_terminal_bg() -> Option<(u8, u8, u8)> {
-    use crossterm::style::Color as CrosstermColor;
     use crossterm::style::query_background_color;
+    use crossterm::style::Color as CrosstermColor;
 
     match query_background_color() {
         Ok(Some(CrosstermColor::Rgb { r, g, b })) => Some((r, g, b)),
