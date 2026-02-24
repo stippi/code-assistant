@@ -182,9 +182,7 @@ impl<'a> ToolWidget<'a> {
                             crate::agent::sub_agent::SubAgentToolStatus::Success => {
                                 ("●", Color::Green)
                             }
-                            crate::agent::sub_agent::SubAgentToolStatus::Error => {
-                                ("●", Color::Red)
-                            }
+                            crate::agent::sub_agent::SubAgentToolStatus::Error => ("●", Color::Red),
                         };
 
                         let display_text = tool
@@ -196,15 +194,15 @@ impl<'a> ToolWidget<'a> {
                             .unwrap_or_else(|| tool.name.replace('_', " "));
 
                         let full_text = format!("{sym} {display_text}");
-                        let truncated =
-                            if full_text.len() > (area.width.saturating_sub(4)) as usize {
-                                format!(
-                                    "{}...",
-                                    &full_text[..(area.width.saturating_sub(7)) as usize]
-                                )
-                            } else {
-                                full_text
-                            };
+                        let truncated = if full_text.len() > (area.width.saturating_sub(4)) as usize
+                        {
+                            format!(
+                                "{}...",
+                                &full_text[..(area.width.saturating_sub(7)) as usize]
+                            )
+                        } else {
+                            full_text
+                        };
 
                         buf.set_string(
                             area.x + 2,
@@ -215,8 +213,7 @@ impl<'a> ToolWidget<'a> {
                         current_y += 1;
                     }
 
-                    if sub_agent_output.cancelled == Some(true)
-                        && current_y < area.y + area.height
+                    if sub_agent_output.cancelled == Some(true) && current_y < area.y + area.height
                     {
                         buf.set_string(
                             area.x + 2,
@@ -243,15 +240,11 @@ impl<'a> ToolWidget<'a> {
                         if current_y >= area.y + area.height {
                             break;
                         }
-                        let truncated =
-                            if line.len() > (area.width.saturating_sub(4)) as usize {
-                                format!(
-                                    "{}...",
-                                    &line[..(area.width.saturating_sub(7)) as usize]
-                                )
-                            } else {
-                                line.to_string()
-                            };
+                        let truncated = if line.len() > (area.width.saturating_sub(4)) as usize {
+                            format!("{}...", &line[..(area.width.saturating_sub(7)) as usize])
+                        } else {
+                            line.to_string()
+                        };
                         buf.set_string(
                             area.x + 2,
                             current_y,
@@ -283,9 +276,7 @@ pub(super) fn is_full_width_parameter(tool_name: &str, param_name: &str) -> bool
 /// Check if a parameter should be hidden from display.
 pub(super) fn should_hide_parameter(tool_name: &str, param_name: &str, param_value: &str) -> bool {
     match (tool_name, param_name) {
-        (_, "project") => {
-            param_value.is_empty() || param_value == "." || param_value == "unknown"
-        }
+        (_, "project") => param_value.is_empty() || param_value == "." || param_value == "unknown",
         _ => false,
     }
 }

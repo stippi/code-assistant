@@ -42,12 +42,7 @@ impl ToolRenderer for CompactToolRenderer {
             }
             match line {
                 CompactLine::Item(text) => {
-                    buf.set_string(
-                        area.x + 2,
-                        y,
-                        "- ",
-                        Style::default().fg(Color::DarkGray),
-                    );
+                    buf.set_string(area.x + 2, y, "- ", Style::default().fg(Color::DarkGray));
                     let max_len = area.width.saturating_sub(4) as usize;
                     let display = if text.len() > max_len {
                         &text[..max_len]
@@ -110,9 +105,7 @@ impl ToolRenderer for CompactToolRenderer {
                         Span::raw("  "),
                         Span::styled(
                             key,
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::DIM),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
                         ),
                         Span::styled(": ", Style::default().fg(Color::White)),
                         Span::styled(value, Style::default().fg(Color::Gray)),
@@ -243,10 +236,7 @@ mod tests {
 
     #[test]
     fn test_search_files_compact() {
-        let tool = make_tool(
-            "search_files",
-            &[("pattern", "fn main"), ("path", "src/")],
-        );
+        let tool = make_tool("search_files", &[("pattern", "fn main"), ("path", "src/")]);
         let lines = compact_lines(&tool);
         assert_eq!(lines.len(), 2);
         match &lines[0] {

@@ -159,10 +159,7 @@ impl ToolRenderer for CommandToolRenderer {
                             .add_modifier(Modifier::BOLD)
                             .bg(bg),
                     ),
-                    Span::styled(
-                        cmd.value.clone(),
-                        Style::default().fg(Color::White).bg(bg),
-                    ),
+                    Span::styled(cmd.value.clone(), Style::default().fg(Color::White).bg(bg)),
                 ])
                 .style(bg_style),
             );

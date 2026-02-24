@@ -10,41 +10,11 @@ use super::terminal_color;
 /// Top and bottom rows use half-block characters (▄▀) for smooth edges.
 fn letter_bitmap(ch: char) -> &'static [&'static str] {
     match ch {
-        'c' => &[
-            " ####",
-            "#    ",
-            "#    ",
-            "#    ",
-            " ####",
-        ],
-        'o' => &[
-            " #### ",
-            "#    #",
-            "#    #",
-            "#    #",
-            " #### ",
-        ],
-        'd' => &[
-            "##### ",
-            "#    #",
-            "#    #",
-            "#    #",
-            "##### ",
-        ],
-        'e' => &[
-            "######",
-            "#     ",
-            "####  ",
-            "#     ",
-            "######",
-        ],
-        _ => &[
-            "      ",
-            "      ",
-            "      ",
-            "      ",
-            "      ",
-        ],
+        'c' => &[" ####", "#    ", "#    ", "#    ", " ####"],
+        'o' => &[" #### ", "#    #", "#    #", "#    #", " #### "],
+        'd' => &["##### ", "#    #", "#    #", "#    #", "##### "],
+        'e' => &["######", "#     ", "####  ", "#     ", "######"],
+        _ => &["      ", "      ", "      ", "      ", "      "],
     }
 }
 
@@ -109,10 +79,7 @@ pub fn welcome_banner_lines(project_path: &str, is_temporary: bool) -> Vec<Line<
     // "assistant" subtitle with letter-spacing
     lines.push(Line::from(vec![
         Span::raw("   "),
-        Span::styled(
-            "a s s i s t a n t",
-            Style::default().fg(dim_accent),
-        ),
+        Span::styled("a s s i s t a n t", Style::default().fg(dim_accent)),
     ]));
 
     // Empty line between banner and project info
@@ -171,7 +138,11 @@ mod tests {
     fn test_banner_temporary_project() {
         let lines = welcome_banner_lines("~/projects/test", true);
         let path_line = &lines[lines.len() - 2];
-        let text: String = path_line.spans.iter().map(|s| s.content.to_string()).collect();
+        let text: String = path_line
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(text.contains("(temporary)"));
     }
 
@@ -179,7 +150,11 @@ mod tests {
     fn test_banner_configured_project() {
         let lines = welcome_banner_lines("~/projects/test", false);
         let path_line = &lines[lines.len() - 2];
-        let text: String = path_line.spans.iter().map(|s| s.content.to_string()).collect();
+        let text: String = path_line
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(!text.contains("(temporary)"));
         assert!(text.contains("~/projects/test"));
     }

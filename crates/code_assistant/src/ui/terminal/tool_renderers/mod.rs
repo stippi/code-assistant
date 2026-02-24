@@ -147,21 +147,13 @@ pub fn tool_header_line(tool_block: &ToolUseBlock) -> Line<'static> {
         ),
     ];
     if !project.is_empty() {
-        spans.push(Span::styled(
-            project,
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(project, Style::default().fg(Color::DarkGray)));
     }
     Line::from(spans)
 }
 
 /// Render an error status message (if any) into a Buffer. Returns the next y.
-pub fn render_error_line(
-    tool_block: &ToolUseBlock,
-    area: Rect,
-    buf: &mut Buffer,
-    y: u16,
-) -> u16 {
+pub fn render_error_line(tool_block: &ToolUseBlock, area: Rect, buf: &mut Buffer, y: u16) -> u16 {
     if tool_block.status == ToolStatus::Error {
         if let Some(ref message) = tool_block.status_message {
             if y < area.y + area.height {
@@ -171,12 +163,7 @@ pub fn render_error_line(
                 } else {
                     message.as_str()
                 };
-                buf.set_string(
-                    area.x + 2,
-                    y,
-                    display,
-                    Style::default().fg(Color::LightRed),
-                );
+                buf.set_string(area.x + 2, y, display, Style::default().fg(Color::LightRed));
                 return y + 1;
             }
         }

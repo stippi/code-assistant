@@ -570,10 +570,8 @@ impl TerminalTuiApp {
                 root_path.display().to_string()
             };
 
-            let banner_lines = super::welcome_banner::welcome_banner_lines(
-                &display_path,
-                !is_configured_project,
-            );
+            let banner_lines =
+                super::welcome_banner::welcome_banner_lines(&display_path, !is_configured_project);
             renderer_guard.add_styled_history_lines(banner_lines);
         }
 

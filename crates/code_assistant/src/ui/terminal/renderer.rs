@@ -3039,10 +3039,18 @@ mod tests {
         fn test_execute_command_vs_edit_blank_lines() {
             // Helper: collect all history lines from a scenario
             fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
-                harness.drain_pending_history_lines().iter().map(|l| {
-                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                    if text.trim().is_empty() { "<<blank>>".to_string() } else { text }
-                }).collect()
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
             }
 
             fn count_blanks_before(lines: &[String], ti: usize) -> usize {
@@ -3050,7 +3058,11 @@ mod tests {
                 let mut idx = ti;
                 while idx > 0 {
                     idx -= 1;
-                    if lines[idx] == "<<blank>>" { count += 1; } else { break; }
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
                 }
                 count
             }
@@ -3070,7 +3082,12 @@ mod tests {
                 harness.render(&textarea);
                 all.extend(drain_to_strings(&mut harness));
 
-                harness.update_tool_status(tool_id, ToolStatus::Success, Some("done".to_string()), None);
+                harness.update_tool_status(
+                    tool_id,
+                    ToolStatus::Success,
+                    Some("done".to_string()),
+                    None,
+                );
                 harness.flush_streaming_pending();
                 harness.transcript.finalize_active_if_content();
                 harness.render(&textarea);
@@ -3081,17 +3098,36 @@ mod tests {
             let edit_lines = run_single_tool("edit", "e1");
             let cmd_lines = run_single_tool("execute_command", "c1");
 
-            let edit_ti = edit_lines.iter().position(|s| s.contains("●")).expect("no edit header");
-            let cmd_ti = cmd_lines.iter().position(|s| s.contains("●")).expect("no cmd header");
+            let edit_ti = edit_lines
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("no edit header");
+            let cmd_ti = cmd_lines
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("no cmd header");
 
             let edit_blanks = count_blanks_before(&edit_lines, edit_ti);
             let cmd_blanks = count_blanks_before(&cmd_lines, cmd_ti);
 
-            assert_eq!(edit_blanks, cmd_blanks,
+            assert_eq!(
+                edit_blanks,
+                cmd_blanks,
                 "Single tool: edit blanks ({edit_blanks}) != cmd blanks ({cmd_blanks})\n\
                  Edit:\n{}\nCmd:\n{}",
-                edit_lines.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"),
-                cmd_lines.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"));
+                edit_lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                cmd_lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
 
             assert_eq!(edit_blanks, 1, "Expected 1 blank before tool");
 
@@ -3110,20 +3146,34 @@ mod tests {
                 harness.render(&textarea);
                 all.extend(drain_to_strings(&mut harness));
 
-                harness.update_tool_status("e1", ToolStatus::Success, Some("done".to_string()), None);
+                harness.update_tool_status(
+                    "e1",
+                    ToolStatus::Success,
+                    Some("done".to_string()),
+                    None,
+                );
 
                 harness.queue_text_delta("Second text.\n".to_string());
                 harness.render(&textarea);
                 all.extend(drain_to_strings(&mut harness));
 
                 harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
-                harness.add_or_update_tool_parameter("c1", "command_line".to_string(), "cargo test".to_string());
+                harness.add_or_update_tool_parameter(
+                    "c1",
+                    "command_line".to_string(),
+                    "cargo test".to_string(),
+                );
                 // Simulate streaming output
                 harness.append_tool_output("c1", "running tests...\n");
                 harness.render(&textarea);
                 all.extend(drain_to_strings(&mut harness));
 
-                harness.update_tool_status("c1", ToolStatus::Success, Some("done".to_string()), None);
+                harness.update_tool_status(
+                    "c1",
+                    ToolStatus::Success,
+                    Some("done".to_string()),
+                    None,
+                );
 
                 harness.flush_streaming_pending();
                 harness.transcript.finalize_active_if_content();
@@ -3131,20 +3181,36 @@ mod tests {
                 all.extend(drain_to_strings(&mut harness));
 
                 // Find both tool headers
-                let tool_positions: Vec<(usize, &String)> = all.iter().enumerate()
+                let tool_positions: Vec<(usize, &String)> = all
+                    .iter()
+                    .enumerate()
                     .filter(|(_, s)| s.contains("●"))
                     .collect();
 
-                assert_eq!(tool_positions.len(), 2,
+                assert_eq!(
+                    tool_positions.len(),
+                    2,
                     "Expected 2 tool headers.\nAll lines:\n{}",
-                    all.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"));
+                    all.iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("  [{i:2}] {s}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
 
                 for (ti, tool_line) in &tool_positions {
                     let blanks = count_blanks_before(&all, *ti);
-                    assert_eq!(blanks, 1,
+                    assert_eq!(
+                        blanks,
+                        1,
                         "Expected 1 blank before '{}' at line {ti}, got {blanks}.\nAll lines:\n{}",
                         tool_line,
-                        all.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"));
+                        all.iter()
+                            .enumerate()
+                            .map(|(i, s)| format!("  [{i:2}] {s}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
                 }
             }
         }
@@ -3154,10 +3220,18 @@ mod tests {
         #[test]
         fn test_hidden_tool_then_execute_command_blank_lines() {
             fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
-                harness.drain_pending_history_lines().iter().map(|l| {
-                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                    if text.trim().is_empty() { "<<blank>>".to_string() } else { text }
-                }).collect()
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
             }
 
             fn count_blanks_before(lines: &[String], ti: usize) -> usize {
@@ -3165,7 +3239,11 @@ mod tests {
                 let mut idx = ti;
                 while idx > 0 {
                     idx -= 1;
-                    if lines[idx] == "<<blank>>" { count += 1; } else { break; }
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
                 }
                 count
             }
@@ -3191,7 +3269,11 @@ mod tests {
 
             // Now start execute_command
             harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
-            harness.add_or_update_tool_parameter("c1", "command_line".to_string(), "cargo test".to_string());
+            harness.add_or_update_tool_parameter(
+                "c1",
+                "command_line".to_string(),
+                "cargo test".to_string(),
+            );
             harness.render(&textarea);
             all.extend(drain_to_strings(&mut harness));
 
@@ -3202,23 +3284,40 @@ mod tests {
             harness.render(&textarea);
             all.extend(drain_to_strings(&mut harness));
 
-            let cmd_ti = all.iter().position(|s| s.contains("● execute_command"))
+            let cmd_ti = all
+                .iter()
+                .position(|s| s.contains("● execute_command"))
                 .expect("no execute_command header");
 
             let blanks = count_blanks_before(&all, cmd_ti);
-            assert_eq!(blanks, 1,
+            assert_eq!(
+                blanks,
+                1,
                 "Expected 1 blank before execute_command, got {blanks}.\nAll lines:\n{}",
-                all.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"));
+                all.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
         }
 
         /// Scenario: thinking → text → execute_command should have 1 blank before tool.
         #[test]
         fn test_thinking_text_then_execute_command_blank_lines() {
             fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
-                harness.drain_pending_history_lines().iter().map(|l| {
-                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                    if text.trim().is_empty() { "<<blank>>".to_string() } else { text }
-                }).collect()
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
             }
 
             fn count_blanks_before(lines: &[String], ti: usize) -> usize {
@@ -3226,7 +3325,11 @@ mod tests {
                 let mut idx = ti;
                 while idx > 0 {
                     idx -= 1;
-                    if lines[idx] == "<<blank>>" { count += 1; } else { break; }
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
                 }
                 count
             }
@@ -3249,7 +3352,11 @@ mod tests {
 
             // Now start execute_command
             harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
-            harness.add_or_update_tool_parameter("c1", "command_line".to_string(), "cargo test".to_string());
+            harness.add_or_update_tool_parameter(
+                "c1",
+                "command_line".to_string(),
+                "cargo test".to_string(),
+            );
             harness.render(&textarea);
             all.extend(drain_to_strings(&mut harness));
 
@@ -3260,13 +3367,22 @@ mod tests {
             harness.render(&textarea);
             all.extend(drain_to_strings(&mut harness));
 
-            let cmd_ti = all.iter().position(|s| s.contains("● execute_command"))
+            let cmd_ti = all
+                .iter()
+                .position(|s| s.contains("● execute_command"))
                 .expect("no execute_command header");
 
             let blanks = count_blanks_before(&all, cmd_ti);
-            assert_eq!(blanks, 1,
+            assert_eq!(
+                blanks,
+                1,
                 "Expected 1 blank before execute_command, got {blanks}.\nAll lines:\n{}",
-                all.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"));
+                all.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
         }
 
         /// Scenario: edit → text → execute_command, checking both tools.
@@ -3274,10 +3390,18 @@ mod tests {
         #[test]
         fn test_edit_then_text_then_execute_command_with_output() {
             fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
-                harness.drain_pending_history_lines().iter().map(|l| {
-                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                    if text.trim().is_empty() { "<<blank>>".to_string() } else { text }
-                }).collect()
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
             }
 
             fn count_blanks_before(lines: &[String], ti: usize) -> usize {
@@ -3285,7 +3409,11 @@ mod tests {
                 let mut idx = ti;
                 while idx > 0 {
                     idx -= 1;
-                    if lines[idx] == "<<blank>>" { count += 1; } else { break; }
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
                 }
                 count
             }
@@ -3303,7 +3431,11 @@ mod tests {
 
             // Start edit tool
             harness.start_tool_use_block("edit".to_string(), "e1".to_string());
-            harness.add_or_update_tool_parameter("e1", "file_path".to_string(), "src/main.rs".to_string());
+            harness.add_or_update_tool_parameter(
+                "e1",
+                "file_path".to_string(),
+                "src/main.rs".to_string(),
+            );
             harness.update_tool_status("e1", ToolStatus::Success, Some("done".to_string()), None);
             harness.render(&textarea);
             all.extend(drain_to_strings(&mut harness));
@@ -3315,16 +3447,26 @@ mod tests {
 
             // Start execute_command
             harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
-            harness.add_or_update_tool_parameter("c1", "command_line".to_string(), "cargo test".to_string());
+            harness.add_or_update_tool_parameter(
+                "c1",
+                "command_line".to_string(),
+                "cargo test".to_string(),
+            );
             // Streaming output
             harness.append_tool_output("c1", "test result: ok\n");
             harness.render(&textarea);
             all.extend(drain_to_strings(&mut harness));
 
             // Complete with render() output (replaces streaming output)
-            harness.update_tool_status("c1", ToolStatus::Success,
+            harness.update_tool_status(
+                "c1",
+                ToolStatus::Success,
                 Some("Command executed successfully".to_string()),
-                Some("Status: Success\n>>>>> OUTPUT:\ntest result: ok\n<<<<< END OF OUTPUT".to_string()));
+                Some(
+                    "Status: Success\n>>>>> OUTPUT:\ntest result: ok\n<<<<< END OF OUTPUT"
+                        .to_string(),
+                ),
+            );
 
             harness.flush_streaming_pending();
             harness.transcript.finalize_active_if_content();
@@ -3332,21 +3474,37 @@ mod tests {
             all.extend(drain_to_strings(&mut harness));
 
             // Check both tools
-            let tool_positions: Vec<(usize, String)> = all.iter().enumerate()
+            let tool_positions: Vec<(usize, String)> = all
+                .iter()
+                .enumerate()
                 .filter(|(_, s)| s.contains("●"))
                 .map(|(i, s)| (i, s.clone()))
                 .collect();
 
-            assert_eq!(tool_positions.len(), 2,
+            assert_eq!(
+                tool_positions.len(),
+                2,
                 "Expected 2 tool headers.\nAll lines:\n{}",
-                all.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"));
+                all.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
 
             for (ti, tool_line) in &tool_positions {
                 let blanks = count_blanks_before(&all, *ti);
-                assert_eq!(blanks, 1,
+                assert_eq!(
+                    blanks,
+                    1,
                     "Expected 1 blank before '{}' at line {ti}, got {blanks}.\nAll lines:\n{}",
                     tool_line,
-                    all.iter().enumerate().map(|(i, s)| format!("  [{i:2}] {s}")).collect::<Vec<_>>().join("\n"));
+                    all.iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("  [{i:2}] {s}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
             }
         }
     }
