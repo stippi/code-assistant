@@ -58,7 +58,7 @@ impl ToolRenderer for CommandToolRenderer {
                 buf.set_string(
                     area.x + 2,
                     y,
-                    &" ".repeat(row_width),
+                    " ".repeat(row_width),
                     Style::default().bg(bg),
                 );
                 buf.set_string(
@@ -99,7 +99,7 @@ impl ToolRenderer for CommandToolRenderer {
                     buf.set_string(
                         area.x + 2,
                         y,
-                        &" ".repeat(row_width),
+                        " ".repeat(row_width),
                         Style::default().bg(bg),
                     );
                     let expanded = expand_tabs(line);

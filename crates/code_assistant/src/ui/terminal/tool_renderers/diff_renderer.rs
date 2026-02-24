@@ -332,7 +332,7 @@ pub fn render_diff_to_buffer(
         // Fill the entire row with the background color
         let row_width = area.width.saturating_sub(x - area.x);
         let bg_style = Style::default().bg(bg);
-        buf.set_string(x, y, &" ".repeat(row_width as usize), bg_style);
+        buf.set_string(x, y, " ".repeat(row_width as usize), bg_style);
 
         match diff_line {
             DiffLine::HunkSeparator => {

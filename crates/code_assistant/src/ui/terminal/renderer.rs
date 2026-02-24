@@ -3012,6 +3012,7 @@ mod tests {
 
             // Find the last line of the tool block (before next blank or end)
             let mut last_tool_line = ti;
+            #[allow(clippy::needless_range_loop)] // Index needed for last_tool_line
             for i in (ti + 1)..line_strs.len() {
                 if line_strs[i] == "<<blank>>" {
                     break;
