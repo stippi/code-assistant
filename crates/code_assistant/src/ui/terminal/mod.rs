@@ -15,5 +15,6 @@ pub mod tool_widget;
 pub mod transcript;
 pub mod tui;
 pub mod ui;
+pub mod welcome_banner;
 
 pub use app::TerminalTuiApp as TerminalApp;

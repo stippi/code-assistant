@@ -1,4 +1,5 @@
 use crate::app::AgentRunConfig;
+use crate::config;
 use crate::persistence::FileSessionPersistence;
 use crate::session::manager::SessionManager;
 use crate::session::SessionConfig;
@@ -15,6 +16,7 @@ use crate::ui::terminal::{
 use crate::ui::UserInterface;
 use anyhow::Result;
 
+use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 use std::sync::{
@@ -296,6 +298,11 @@ async fn event_loop(
         }
     }
 
+    // Move cursor below the viewport so post-exit output (e.g. "Goodbye!")
+    // appears below the UI instead of overlapping the composer area.
+    let viewport = tui.terminal.viewport_area;
+    crossterm::execute!(std::io::stdout(), MoveTo(0, viewport.bottom()))?;
+
     Ok(())
 }
 
@@ -543,25 +550,31 @@ impl TerminalTuiApp {
         let (redraw_tx, redraw_rx) = tokio::sync::watch::channel::<()>(());
         terminal_ui.set_redraw_sender(redraw_tx.clone());
 
-        // Print welcome message to content area
+        // Display welcome banner with project info
         {
             let mut renderer_guard = renderer.lock().await;
-            let log_file_path = dirs::cache_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("code-assistant")
-                .join("terminal-ui.log");
 
-            let welcome_text = format!(
-                "Welcome to Code Assistant Terminal UI!\n\
-                Type your message and press Enter to send.\n\
-                Use Shift+Enter for multi-line input.\n\
-                Press Esc to stop the current response.\n\
-                Press Ctrl+C to quit.\n\
-                \n\
-                Debug logs are written to: {}\n\n",
-                log_file_path.display()
+            // Determine if this is a configured (persistent) project
+            let is_configured_project = config::load_projects()
+                .map(|projects| projects.values().any(|p| p.path == root_path))
+                .unwrap_or(false);
+
+            // Shorten path by replacing home directory with ~
+            let display_path = if let Some(home) = dirs::home_dir() {
+                if let Ok(suffix) = root_path.strip_prefix(&home) {
+                    format!("~/{}", suffix.display())
+                } else {
+                    root_path.display().to_string()
+                }
+            } else {
+                root_path.display().to_string()
+            };
+
+            let banner_lines = super::welcome_banner::welcome_banner_lines(
+                &display_path,
+                !is_configured_project,
             );
-            renderer_guard.add_instruction_message(&welcome_text)?;
+            renderer_guard.add_styled_history_lines(banner_lines);
         }
 
         // Send initial task if provided

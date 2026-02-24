@@ -461,6 +461,13 @@ impl TerminalRenderer {
         Ok(())
     }
 
+    /// Add pre-styled lines directly to the pending history buffer.
+    /// Used for the welcome banner which needs custom styling beyond what
+    /// markdown rendering provides.
+    pub fn add_styled_history_lines(&mut self, lines: Vec<Line<'static>>) {
+        self.pending_history_lines.extend(lines);
+    }
+
     /// Clear all messages and reset state
     pub fn clear_all_messages(&mut self) {
         self.transcript.clear();
