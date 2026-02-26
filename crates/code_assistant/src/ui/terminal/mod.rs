@@ -1,10 +1,20 @@
 pub mod app;
 pub mod commands;
+pub mod composer;
+pub mod custom_terminal;
+pub mod history_insert;
 pub mod input;
 pub mod message;
 pub mod renderer;
 pub mod state;
+pub mod streaming;
+pub mod terminal_color;
+pub mod textarea;
+pub mod tool_renderers;
 pub mod tool_widget;
+pub mod transcript;
+pub mod tui;
 pub mod ui;
+pub mod welcome_banner;
 
 pub use app::TerminalTuiApp as TerminalApp;

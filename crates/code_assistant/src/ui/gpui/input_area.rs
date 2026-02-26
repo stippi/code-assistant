@@ -239,6 +239,8 @@ impl InputArea {
                     let attachment = DraftAttachment::Image {
                         content: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
                         mime_type: image.format.mime_type().to_string(),
+                        width: None,
+                        height: None,
                     };
 
                     self.attachments.push(attachment);

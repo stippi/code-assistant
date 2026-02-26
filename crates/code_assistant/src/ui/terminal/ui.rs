@@ -5,28 +5,28 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{watch, Mutex};
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use super::renderer::ProductionTerminalRenderer;
 use super::state::AppState;
 
 #[derive(Clone)]
-pub struct TerminalTuiUI {
+pub struct TerminalUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<AtomicBool>,
     pub renderer: Arc<Mutex<Option<Arc<Mutex<ProductionTerminalRenderer>>>>>,
-    event_sender: Arc<Mutex<Option<async_channel::Sender<UiEvent>>>>,
+    event_sender: Arc<std::sync::Mutex<Option<async_channel::Sender<UiEvent>>>>,
 }
 
-impl TerminalTuiUI {
-    pub fn new() -> Self {
+impl TerminalUI {
+    pub fn new_with_state(app_state: Arc<Mutex<AppState>>) -> Self {
         Self {
-            app_state: Arc::new(Mutex::new(AppState::new())),
+            app_state,
             redraw_tx: Arc::new(Mutex::new(None)),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             renderer: Arc::new(Mutex::new(None)),
-            event_sender: Arc::new(Mutex::new(None)),
+            event_sender: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -55,35 +55,40 @@ impl TerminalTuiUI {
     }
 
     /// Set the event sender for pushing events
-    pub async fn set_event_sender(&self, sender: async_channel::Sender<UiEvent>) {
-        *self.event_sender.lock().await = Some(sender);
+    pub fn set_event_sender(&self, sender: async_channel::Sender<UiEvent>) {
+        *self
+            .event_sender
+            .lock()
+            .expect("event_sender lock poisoned") = Some(sender);
     }
 
-    /// Helper to push an event to the queue
+    /// Helper to push an event to the queue.
+    /// Uses synchronous `try_send` on an unbounded channel to guarantee FIFO
+    /// ordering.  The previous implementation spawned a Tokio task per event,
+    /// which could reorder events when two tasks raced for the async mutex.
     fn push_event(&self, event: UiEvent) {
-        let rt = tokio::runtime::Handle::current();
-        let event_sender = self.event_sender.clone();
-        rt.spawn(async move {
-            if let Some(sender) = event_sender.lock().await.as_ref() {
-                if let Err(err) = sender.send(event).await {
-                    warn!("Failed to send event via channel: {}", err);
-                }
+        let guard = self
+            .event_sender
+            .lock()
+            .expect("event_sender lock poisoned");
+        if let Some(sender) = guard.as_ref() {
+            if let Err(err) = sender.try_send(event) {
+                warn!("Failed to send event via channel: {}", err);
             }
-        });
+        }
     }
 }
 
 #[async_trait]
-impl UserInterface for TerminalTuiUI {
+impl UserInterface for TerminalUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
-        let mut state = self.app_state.lock().await;
-
         match event {
             UiEvent::SetMessages {
                 messages: _,
                 session_id,
                 tool_results,
             } => {
+                let mut state = self.app_state.lock().await;
                 debug!("Setting messages for session {:?}", session_id);
 
                 if let Some(session_id) = session_id {
@@ -104,16 +109,22 @@ impl UserInterface for TerminalTuiUI {
             UiEvent::UpdatePlan { plan } => {
                 debug!("Updating plan");
                 let plan_clone = plan.clone();
-                state.set_plan(Some(plan));
+                let (plan_expanded, overlay_active) = {
+                    let mut state = self.app_state.lock().await;
+                    state.set_plan(Some(plan));
+                    (state.plan_expanded, state.is_overlay_active())
+                };
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.set_plan_state(Some(plan_clone));
-                    renderer_guard.set_plan_expanded(state.plan_expanded);
+                    renderer_guard.set_plan_expanded(plan_expanded);
+                    renderer_guard.set_overlay_active(overlay_active);
                 }
             }
             UiEvent::UpdateChatList { sessions } => {
                 debug!("Updating chat list with {} sessions", sessions.len());
+                let mut state = self.app_state.lock().await;
                 state.update_sessions(sessions);
             }
             UiEvent::UpdateSessionActivityState {
@@ -124,6 +135,7 @@ impl UserInterface for TerminalTuiUI {
                     "Updating activity state for session {}: {:?}",
                     session_id, activity_state
                 );
+                let mut state = self.app_state.lock().await;
                 state.update_session_activity_state(session_id.clone(), activity_state.clone());
                 let is_idle = matches!(
                     &activity_state,
@@ -140,7 +152,10 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("Updating pending message: {:?}", message);
-                state.update_pending_message(message.clone());
+                {
+                    let mut state = self.app_state.lock().await;
+                    state.update_pending_message(message.clone());
+                }
 
                 // Set pending message in renderer if available
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
@@ -155,7 +170,10 @@ impl UserInterface for TerminalTuiUI {
                 output,
             } => {
                 debug!("Updating tool status for {}: {:?}", tool_id, status);
-                state.tool_statuses.insert(tool_id.clone(), status);
+                {
+                    let mut state = self.app_state.lock().await;
+                    state.tool_statuses.insert(tool_id.clone(), status);
+                }
 
                 // Update tool status in renderer - can now update any tool in current message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
@@ -184,27 +202,39 @@ impl UserInterface for TerminalTuiUI {
                     let mut renderer_guard = renderer.lock().await;
                     // Clear any existing error when user sends a message
                     renderer_guard.clear_error();
-                    let formatted = format!("\n\n**User:** {content}\n");
-                    let _ = renderer_guard.add_user_message(&formatted);
-
-                    for attachment in &attachments {
-                        match attachment {
-                            crate::persistence::DraftAttachment::Text { content } => {
-                                let attachment_text = format!("  [attachment: text]\n{content}\n");
-                                let _ = renderer_guard.add_user_message(&attachment_text);
+                    // Build combined content with attachment info merged in
+                    let mut display_content = content.clone();
+                    let attachment_lines: Vec<String> = attachments
+                        .iter()
+                        .map(|attachment| match attachment {
+                            crate::persistence::DraftAttachment::Text { .. } => {
+                                "[text attachment]".to_string()
                             }
-                            crate::persistence::DraftAttachment::Image { mime_type, .. } => {
-                                let attachment_text =
-                                    format!("  [attachment: image ({mime_type})]\n");
-                                let _ = renderer_guard.add_user_message(&attachment_text);
+                            crate::persistence::DraftAttachment::Image {
+                                mime_type,
+                                width,
+                                height,
+                                ..
+                            } => {
+                                let dims = match (width, height) {
+                                    (Some(w), Some(h)) => format!("{w}x{h} "),
+                                    _ => String::new(),
+                                };
+                                format!("[image {dims}({mime_type})]")
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
-                                let attachment_text =
-                                    format!("  [attachment: file ({filename})]\n");
-                                let _ = renderer_guard.add_user_message(&attachment_text);
+                                format!("[file ({filename})]")
                             }
+                        })
+                        .collect();
+                    if !attachment_lines.is_empty() {
+                        display_content.push('\n');
+                        for line in &attachment_lines {
+                            display_content.push('\n');
+                            display_content.push_str(line);
                         }
                     }
+                    let _ = renderer_guard.add_user_message(&display_content);
                 }
             }
             UiEvent::DisplayCompactionSummary { summary } => {
@@ -231,10 +261,7 @@ impl UserInterface for TerminalTuiUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.ensure_last_block_type(super::message::MessageBlock::PlainText(
-                        super::message::PlainTextBlock::new(),
-                    ));
-                    renderer_guard.append_to_live_block(&content);
+                    renderer_guard.queue_text_delta(content);
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
@@ -242,13 +269,7 @@ impl UserInterface for TerminalTuiUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.ensure_last_block_type(super::message::MessageBlock::Thinking(
-                        super::message::ThinkingBlock::new(),
-                    ));
-
-                    if !content.trim().is_empty() {
-                        renderer_guard.append_to_live_block(&content);
-                    }
+                    renderer_guard.queue_thinking_delta(content);
                 }
             }
             UiEvent::StartTool { name, id } => {
@@ -279,6 +300,13 @@ impl UserInterface for TerminalTuiUI {
                 // The actual status comes later via UpdateToolStatus
                 // For now, we don't change the status here - wait for UpdateToolStatus
             }
+            UiEvent::AppendToolOutput { tool_id, chunk } => {
+                // Accumulate streaming output into the tool block (used by execute_command)
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.append_tool_output(&tool_id, &chunk);
+                }
+            }
             UiEvent::HiddenToolCompleted => {
                 // Mark that a hidden tool completed - renderer handles paragraph breaks
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
@@ -297,6 +325,11 @@ impl UserInterface for TerminalTuiUI {
                 );
 
                 self.cancel_flag.store(false, Ordering::SeqCst);
+
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.flush_streaming_pending();
+                }
 
                 // Don't finalize the message yet - keep it live for tool status updates
                 // It will be finalized when the next StreamingStarted event arrives
@@ -454,9 +487,11 @@ impl UserInterface for TerminalTuiUI {
                     )));
                 }
 
-                // For terminal UI, we can append the streaming output to the tool
-                // For now, just log it - we'll implement proper streaming display later
-                trace!("Tool {} streaming output: {}", tool_id, chunk);
+                // Accumulate streaming output into the tool block (for execute_command display)
+                self.push_event(UiEvent::AppendToolOutput {
+                    tool_id: tool_id.clone(),
+                    chunk: chunk.clone(),
+                });
             }
             DisplayFragment::ToolTerminal {
                 tool_id,

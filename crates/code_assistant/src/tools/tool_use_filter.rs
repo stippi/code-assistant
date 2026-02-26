@@ -1,5 +1,26 @@
 //! Tool use filtering system to control which tool blocks are allowed and when to truncate responses
 
+/// Check if a tool is a read/explore operation (doesn't modify state).
+/// Used by the UI to render these tools in compact mode.
+pub fn is_explore_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "read_files"
+            | "list_files"
+            | "list_projects"
+            | "search_files"
+            | "glob_files"
+            | "web_fetch"
+            | "web_search"
+    )
+}
+
+/// Check if a tool is a write/edit operation that should show diffs.
+#[allow(dead_code)]
+pub fn is_write_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "edit" | "write_file" | "replace_in_file")
+}
+
 /// Trait for filtering tool use blocks during parsing
 /// This allows controlling which tools can be used and when to stop parsing
 pub trait ToolUseFilter: Send + Sync {
@@ -54,20 +75,11 @@ impl SmartToolFilter {
         Self {}
     }
 
-    /// Check if a tool is a "read" operation (doesn't modify state)
+    /// Check if a tool is a "read" operation (doesn't modify state).
+    /// Includes explore tools plus utility tools (name_session, update_plan)
+    /// that are safe to chain.
     fn is_read_tool(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            "read_files"
-                | "name_session"
-                | "update_plan"
-                | "list_files"
-                | "list_projects"
-                | "search_files"
-                | "glob_files"
-                | "web_fetch"
-                | "web_search"
-        )
+        is_explore_tool(tool_name) || matches!(tool_name, "name_session" | "update_plan")
     }
 }
 

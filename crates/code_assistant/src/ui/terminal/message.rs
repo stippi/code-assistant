@@ -1,8 +1,10 @@
+use indexmap::IndexMap;
 use ratatui::prelude::*;
-use std::collections::HashMap;
+use ratatui::widgets::{Paragraph, Wrap};
 use tui_markdown as md;
 
-use super::tool_widget::ToolWidget;
+use super::tool_renderers::ToolRendererRegistry;
+use super::tool_widget::{is_full_width_parameter, should_hide_parameter, ToolWidget};
 use crate::ui::ToolStatus;
 
 /// A complete message containing multiple blocks
@@ -10,6 +12,10 @@ use crate::ui::ToolStatus;
 pub struct LiveMessage {
     pub blocks: Vec<MessageBlock>,
     pub finalized: bool,
+    /// When true, the committed stream lines for this message were progressively
+    /// sent to scrollback during streaming. Only the final tail needs to be sent
+    /// on finalization — the bulk of the content is already in scrollback.
+    pub streamed_to_scrollback: bool,
 }
 
 impl LiveMessage {
@@ -17,6 +23,7 @@ impl LiveMessage {
         Self {
             blocks: Vec::new(),
             finalized: false,
+            streamed_to_scrollback: false,
         }
     }
 
@@ -54,6 +61,7 @@ pub enum MessageBlock {
     PlainText(PlainTextBlock),
     Thinking(ThinkingBlock),
     ToolUse(ToolUseBlock),
+    UserText(PlainTextBlock),
 }
 
 impl MessageBlock {
@@ -63,6 +71,7 @@ impl MessageBlock {
             MessageBlock::PlainText(block) => !block.content.trim().is_empty(),
             MessageBlock::Thinking(block) => !block.content.trim().is_empty(),
             MessageBlock::ToolUse(block) => !block.name.is_empty(),
+            MessageBlock::UserText(block) => !block.content.trim().is_empty(),
         }
     }
 
@@ -75,88 +84,65 @@ impl MessageBlock {
                 // Tool use blocks don't support general content appending
                 // Parameter updates are handled separately
             }
+            MessageBlock::UserText(block) => block.content.push_str(content),
         }
     }
 
+    /// Width reserved for the left indent on text/thinking/tool blocks,
+    /// aligning content with the user's "› " prefix.
+    const INDENT: u16 = 2;
+
     /// Calculate the height needed to render this block
     pub fn calculate_height(&self, width: u16) -> u16 {
+        let inner_width = if width > Self::INDENT {
+            width - Self::INDENT
+        } else {
+            width
+        };
         match self {
             MessageBlock::PlainText(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
-                // Account for text wrapping
-                let mut total_lines = 0u16;
-                for line in block.content.lines() {
-                    if line.is_empty() {
-                        total_lines += 1;
-                    } else {
-                        let wrapped_lines = (line.len() as u16 + width - 1) / width.max(1);
-                        total_lines += wrapped_lines.max(1);
-                    }
-                }
-                total_lines.max(1)
+                measure_markdown_height(&block.content, inner_width)
             }
             MessageBlock::Thinking(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
-                let formatted = format!("*{}*", block.content);
-                // Account for text wrapping
-                let mut total_lines = 0u16;
-                for line in formatted.lines() {
-                    if line.is_empty() {
-                        total_lines += 1;
-                    } else {
-                        let wrapped_lines = (line.len() as u16 + width - 1) / width.max(1);
-                        total_lines += wrapped_lines.max(1);
-                    }
+                measure_markdown_height(&block.content, inner_width)
+            }
+            MessageBlock::UserText(block) => {
+                if block.content.trim().is_empty() {
+                    return 0;
                 }
-                total_lines.max(1)
+                // Empty line before + content lines + empty line after
+                let content_lines = block.content.lines().count().max(1) as u16;
+                2 + content_lines // 1 blank before + content + 1 blank after
             }
             MessageBlock::ToolUse(block) => {
-                let mut height = 1; // Tool name line
+                // Try a registered renderer first.
+                if let Some(registry) = ToolRendererRegistry::global() {
+                    if let Some(renderer) = registry.get(&block.name) {
+                        return renderer.calculate_height(block, width);
+                    }
+                }
 
-                // Check if we should show combined diff for completed edit tools
-                let should_show_combined_diff = block.name == "edit"
-                    && matches!(block.status, ToolStatus::Success | ToolStatus::Error)
-                    && block.parameters.contains_key("old_text")
-                    && block.parameters.contains_key("new_text");
+                // Fallback: generic height calculation
+                let mut height: u16 = 1; // Tool name line
 
-                // Count parameter lines
                 for (name, param) in &block.parameters {
                     if should_hide_parameter(&block.name, name, &param.value) {
                         continue;
                     }
-
-                    // Skip old_text and new_text if we're showing combined diff
-                    if should_show_combined_diff && (name == "old_text" || name == "new_text") {
-                        continue;
-                    }
-
                     if is_full_width_parameter(&block.name, name) {
                         height += 1; // Parameter name
-                        height += param.value.lines().count() as u16; // Show all lines for full-width parameters
+                        height += param.value.lines().count() as u16;
                     } else {
-                        height += 1; // Regular parameter line
+                        height += 1;
                     }
                 }
 
-                // Add height for combined diff if applicable
-                if should_show_combined_diff {
-                    if let (Some(old_param), Some(new_param)) = (
-                        block.parameters.get("old_text"),
-                        block.parameters.get("new_text"),
-                    ) {
-                        height += 1; // "diff" parameter name
-                                     // Estimate diff height - this is approximate but should be close enough
-                        let old_lines = old_param.value.lines().count();
-                        let new_lines = new_param.value.lines().count();
-                        height += (old_lines + new_lines) as u16; // Conservative estimate
-                    }
-                }
-
-                // Status message
                 if block.status_message.is_some() && block.status == ToolStatus::Error {
                     height += 1;
                 }
@@ -174,32 +160,100 @@ impl MessageBlock {
     }
 }
 
+fn measure_markdown_height(content: &str, width: u16) -> u16 {
+    if content.trim().is_empty() || width == 0 {
+        return 0;
+    }
+
+    let base_lines = content.lines().count().max(1) as u16;
+    let rough_wrap = (content.chars().count() as u16 / width.max(1)).saturating_add(base_lines);
+    let max_height = rough_wrap.saturating_add(16).clamp(16, 2048);
+
+    let text = md::from_str(content);
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+    let mut tmp = ratatui::buffer::Buffer::empty(Rect::new(0, 0, width, max_height));
+    paragraph.render(Rect::new(0, 0, width, max_height), &mut tmp);
+
+    for y in (0..max_height).rev() {
+        let mut row_empty = true;
+        for x in 0..width {
+            let Some(cell) = tmp.cell((x, y)) else {
+                continue;
+            };
+            if !cell.symbol().is_empty() && cell.symbol() != " " {
+                row_empty = false;
+                break;
+            }
+        }
+        if !row_empty {
+            return y + 1;
+        }
+    }
+
+    0
+}
+
 impl Widget for MessageBlock {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let indent = if area.width > Self::INDENT {
+            Self::INDENT
+        } else {
+            0
+        };
+        let inner = Rect {
+            x: area.x + indent,
+            y: area.y,
+            width: area.width.saturating_sub(indent),
+            height: area.height,
+        };
         match self {
             MessageBlock::PlainText(block) => {
                 if !block.content.trim().is_empty() {
                     let text = md::from_str(&block.content);
                     let paragraph = ratatui::widgets::Paragraph::new(text)
                         .wrap(ratatui::widgets::Wrap { trim: false });
-                    paragraph.render(area, buf);
+                    paragraph.render(inner, buf);
                 }
             }
             MessageBlock::Thinking(block) => {
                 if !block.content.trim().is_empty() {
-                    let formatted = format!("*{}*", block.content);
-                    let text = md::from_str(&formatted);
+                    let text = md::from_str(&block.content);
                     let paragraph = ratatui::widgets::Paragraph::new(text)
                         .style(
                             Style::default()
-                                .fg(Color::Yellow)
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM)
                                 .add_modifier(Modifier::ITALIC),
                         )
                         .wrap(ratatui::widgets::Wrap { trim: false });
+                    paragraph.render(inner, buf);
+                }
+            }
+            MessageBlock::UserText(block) => {
+                if !block.content.trim().is_empty() {
+                    let mut lines = Vec::new();
+                    lines.push(Line::from(""));
+                    for (i, line) in block.content.lines().enumerate() {
+                        let prefix = if i == 0 {
+                            Span::styled(
+                                "› ",
+                                Style::default()
+                                    .add_modifier(Modifier::BOLD)
+                                    .add_modifier(Modifier::DIM),
+                            )
+                        } else {
+                            Span::raw("  ")
+                        };
+                        lines.push(Line::from(vec![prefix, Span::raw(line.to_string())]));
+                    }
+                    lines.push(Line::from(""));
+                    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
                     paragraph.render(area, buf);
                 }
             }
             MessageBlock::ToolUse(block) => {
+                // ToolWidget renders its own "● name" layout starting at area.x,
+                // so it uses the full area (dot at col 0, text at col 2).
                 let tool_widget = ToolWidget::new(&block);
                 tool_widget.render(area, buf);
             }
@@ -254,7 +308,7 @@ impl ThinkingBlock {
 pub struct ToolUseBlock {
     pub name: String,
     pub id: String,
-    pub parameters: HashMap<String, ParameterValue>,
+    pub parameters: IndexMap<String, ParameterValue>,
     pub status: ToolStatus,
     pub status_message: Option<String>,
     pub output: Option<String>,
@@ -265,7 +319,7 @@ impl ToolUseBlock {
         Self {
             name,
             id,
-            parameters: HashMap::new(),
+            parameters: IndexMap::new(),
             status: ToolStatus::Pending,
             status_message: None,
             output: None,
@@ -305,33 +359,5 @@ impl ParameterValue {
         } else {
             self.value.clone()
         }
-    }
-}
-
-/// Check if a parameter should be rendered full-width
-fn is_full_width_parameter(tool_name: &str, param_name: &str) -> bool {
-    match (tool_name, param_name) {
-        // Diff-style parameters
-        ("replace_in_file", "diff") => true,
-        ("edit", "old_text") => true,
-        ("edit", "new_text") => true,
-        // Content parameters
-        ("write_file", "content") => true,
-        // Large text parameters
-        (_, "content") if param_name != "message" => true, // Exclude short message content
-        (_, "output") => true,
-        (_, "query") => true,
-        _ => false,
-    }
-}
-
-/// Check if a parameter should be hidden
-fn should_hide_parameter(tool_name: &str, param_name: &str, param_value: &str) -> bool {
-    match (tool_name, param_name) {
-        (_, "project") => {
-            // Hide project parameter if it's empty or matches common defaults
-            param_value.is_empty() || param_value == "." || param_value == "unknown"
-        }
-        _ => false,
     }
 }

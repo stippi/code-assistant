@@ -568,7 +568,9 @@ impl UserInterface for ACPUserUI {
                 for attachment in attachments {
                     #[allow(clippy::single_match)]
                     match attachment {
-                        crate::persistence::DraftAttachment::Image { content, mime_type } => {
+                        crate::persistence::DraftAttachment::Image {
+                            content, mime_type, ..
+                        } => {
                             self.send_session_update(acp::SessionUpdate::UserMessageChunk(
                                 Self::content_chunk(acp::ContentBlock::Image(
                                     acp::ImageContent::new(content, mime_type),

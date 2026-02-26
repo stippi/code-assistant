@@ -4,9 +4,16 @@ use crate::types::PlanState;
 use sandbox::SandboxPolicy;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayState {
+    None,
+    Plan,
+}
+
 pub struct AppState {
     pub plan: Option<PlanState>,
     pub plan_expanded: bool,
+    pub overlay_state: OverlayState,
     pub plan_dirty: bool,
     pub sessions: Vec<ChatMetadata>,
     pub current_session_id: Option<String>,
@@ -24,6 +31,7 @@ impl AppState {
         Self {
             plan: None,
             plan_expanded: false,
+            overlay_state: OverlayState::None,
             plan_dirty: true,
             sessions: Vec::new(),
             current_session_id: None,
@@ -86,6 +94,15 @@ impl AppState {
 
     pub fn toggle_plan_expanded(&mut self) -> bool {
         self.plan_expanded = !self.plan_expanded;
+        self.overlay_state = if self.plan_expanded {
+            OverlayState::Plan
+        } else {
+            OverlayState::None
+        };
         self.plan_expanded
+    }
+
+    pub fn is_overlay_active(&self) -> bool {
+        !matches!(self.overlay_state, OverlayState::None)
     }
 }

@@ -1,20 +1,21 @@
 use anyhow::Result;
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
-    layout::Position,
     prelude::*,
-    widgets::{Block, Borders, Paragraph, Wrap},
-    Terminal, TerminalOptions, Viewport,
+    widgets::{Paragraph, Wrap},
 };
-use std::io;
 use tui_markdown as md;
-use tui_textarea::TextArea;
 
+use super::textarea::TextArea;
+
+use super::composer::Composer;
+use super::custom_terminal;
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
+use super::streaming::controller::{DrainedLines, StreamKind, StreamingController};
+use super::transcript::TranscriptState;
 use crate::types::{PlanItemStatus, PlanState};
 use crate::ui::ToolStatus;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, info, trace, warn};
 
 /// Spinner state for loading indication
 #[derive(Debug, Clone)]
@@ -71,15 +72,11 @@ struct StatusEntry {
     height: u16,
 }
 
-/// Handles the terminal display and rendering using ratatui
-pub struct TerminalRenderer<B: Backend> {
-    pub terminal: Terminal<B>,
-    /// Factory function to create new terminal instances (used for resizing)
-    terminal_factory: Box<dyn Fn() -> Result<Terminal<B>> + Send + Sync>,
-    /// Finalized messages (as complete message structures)
-    pub finalized_messages: Vec<LiveMessage>,
-    /// Current live message being streamed
-    pub live_message: Option<LiveMessage>,
+/// Handles the terminal display and rendering using ratatui.
+/// Does NOT own a terminal — the `Tui` orchestration layer owns it.
+pub struct TerminalRenderer {
+    /// Transcript model with committed history and one active streaming message.
+    pub transcript: TranscriptState,
     /// Optional pending user message (displayed between input and live content while streaming)
     pending_user_message: Option<String>,
     /// Current error message to display
@@ -90,17 +87,30 @@ pub struct TerminalRenderer<B: Backend> {
     plan_state: Option<PlanState>,
     /// Whether to render the expanded plan view
     plan_expanded: bool,
-    /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
-    pub last_overflow: u16,
+    /// When overlay is active, history commits are deferred and flushed on close.
+    overlay_active: bool,
+    /// Buffered history lines emitted while overlay is active.
+    deferred_history_lines: Vec<Line<'static>>,
+    /// History lines ready to be inserted into terminal scrollback.
+    /// Drained by the Tui orchestration layer before each draw cycle.
+    pending_history_lines: Vec<Line<'static>>,
 
-    /// Maximum rows for input area (including 1 for content min + border)
-    pub max_input_rows: u16,
+    /// Bottom composer rendering and sizing.
+    composer: Composer,
+    /// Queue of incoming stream deltas, drained on render commit ticks.
+    streaming_controller: StreamingController,
+    /// True while actively receiving stream deltas for the current assistant turn.
+    streaming_open: bool,
+    /// Last stream kind seen from incoming deltas (used as ordering tiebreaker).
+    last_stream_kind: Option<StreamKind>,
     /// Spinner state for loading indication
     spinner_state: SpinnerState,
     /// Tracks the last block type for hidden tool paragraph breaks
     last_block_type_for_hidden_tool: Option<LastBlockType>,
     /// Flag indicating a hidden tool completed and we may need a paragraph break
     needs_paragraph_break_after_hidden_tool: bool,
+    /// Last known terminal width (updated in prepare(), used for history rendering).
+    last_known_width: u16,
 }
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -110,69 +120,49 @@ enum LastBlockType {
     Thinking,
 }
 
-/// Type alias for the production terminal renderer
-pub type ProductionTerminalRenderer = TerminalRenderer<CrosstermBackend<io::Stdout>>;
+/// Type alias for the production terminal renderer (no longer generic).
+pub type ProductionTerminalRenderer = TerminalRenderer;
 
-impl<B: Backend> TerminalRenderer<B> {
-    pub fn with_factory<F>(factory: F) -> Result<Self>
-    where
-        F: Fn() -> Result<Terminal<B>> + Send + Sync + 'static,
-    {
-        let terminal = factory()?;
+impl TerminalRenderer {
+    pub fn new() -> Result<Self> {
         Ok(Self {
-            terminal,
-            terminal_factory: Box::new(factory),
-            finalized_messages: Vec::new(),
-            live_message: None,
+            transcript: TranscriptState::new(),
             pending_user_message: None,
             current_error: None,
             info_message: None,
 
             plan_state: None,
             plan_expanded: false,
-            last_overflow: 0,
-            max_input_rows: 5, // max input height (content lines + border line)
+            overlay_active: false,
+            deferred_history_lines: Vec::new(),
+            pending_history_lines: Vec::new(),
+            composer: Composer::new(5),
+            streaming_controller: StreamingController::new(),
+            streaming_open: false,
+            last_stream_kind: None,
             spinner_state: SpinnerState::Hidden,
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
+            last_known_width: 80,
         })
-    }
-
-    /// Setup terminal for ratatui usage
-    pub fn setup_terminal(&mut self) -> Result<()> {
-        ratatui::crossterm::terminal::enable_raw_mode()?;
-        Ok(())
-    }
-
-    /// Cleanup terminal when exiting
-    pub fn cleanup_terminal(&mut self) -> Result<()> {
-        ratatui::crossterm::terminal::disable_raw_mode()?;
-        Ok(())
-    }
-
-    /// Update terminal size and adjust viewport (recreate terminal using factory)
-    pub fn update_size(&mut self, _input_height: u16) -> Result<()> {
-        self.terminal = (self.terminal_factory)()?;
-        Ok(())
     }
 
     /// Start a new message (called on StreamingStarted)
     pub fn start_new_message(&mut self, _request_id: u64) {
+        // Flush any buffered tail chunks into the currently active message before
+        // rotating the transcript lifecycle.
+        let pending = self.streaming_controller.flush_pending();
+        self.apply_drained_lines(pending);
+        self.sync_live_stream_tails();
+
         // Show loading spinner
         self.spinner_state = SpinnerState::Loading {
             start_time: Instant::now(),
         };
-        // Finalize current message if any
-        if let Some(mut current_message) = self.live_message.take() {
-            current_message.finalized = true;
-            if current_message.has_content() {
-                self.finalized_messages.push(current_message);
-            }
-        }
-
-        // Start new live message
-        self.live_message = Some(LiveMessage::new());
-        self.last_overflow = 0;
+        self.streaming_controller.clear();
+        self.last_stream_kind = None;
+        self.transcript.start_active_message();
+        self.streaming_open = true;
     }
 
     /// Start a new tool use block within the current message
@@ -180,18 +170,34 @@ impl<B: Backend> TerminalRenderer<B> {
         // Hide spinner when first content arrives
         self.hide_loading_spinner_if_active();
 
-        let live_message = self
-            .live_message
-            .as_mut()
-            .expect("start_tool_use_block called without an active live message");
+        // Flush any in-progress streaming text/thinking to scrollback so
+        // the tool block in the live viewport doesn't overlap with it.
+        // Also insert a blank separator so the scrollback content is visually
+        // separated from the tool block that will appear in the viewport.
+        if self.last_stream_kind.is_some() {
+            self.flush_streaming_pending();
+            self.insert_or_defer_history_lines(vec![Line::from("")]);
+            if let Some(msg) = self.transcript.active_message_mut() {
+                msg.streamed_to_scrollback = true;
+            }
+            self.last_stream_kind = None;
+        }
+
+        self.ensure_active_message();
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            return;
+        };
 
         live_message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
     }
 
-    /// Ensure the last block in the live message is of the specified type
+    /// Ensure the last block in the live message is of the specified type.
+    #[cfg_attr(not(test), allow(dead_code))]
     /// If not, append a new block of that type
     /// Returns true if a new block was created, false if the last block was already the right type
     pub fn ensure_last_block_type(&mut self, block: MessageBlock) -> bool {
+        self.ensure_active_message();
+
         // Determine the block type for hidden tool tracking
         let current_block_type = match &block {
             MessageBlock::PlainText(_) => Some(LastBlockType::PlainText),
@@ -206,7 +212,7 @@ impl<B: Backend> TerminalRenderer<B> {
             {
                 if last_type == current_type {
                     // Same type as before the hidden tool - insert paragraph break
-                    if let Some(live_message) = self.live_message.as_mut() {
+                    if let Some(live_message) = self.transcript.active_message_mut() {
                         if let Some(last_block) = live_message.blocks.last_mut() {
                             match last_block {
                                 MessageBlock::PlainText(text_block) => {
@@ -229,8 +235,9 @@ impl<B: Backend> TerminalRenderer<B> {
             self.last_block_type_for_hidden_tool = Some(block_type);
         }
 
-        let live_message = self.live_message.as_mut()
-            .expect("ensure_last_block_type called without an active live message - call start_new_message first");
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            return false;
+        };
 
         // Check if we need a new block of the specified type
         let needs_new_block = match live_message.blocks.last() {
@@ -276,27 +283,103 @@ impl<B: Backend> TerminalRenderer<B> {
         self.plan_expanded = expanded;
     }
 
+    /// Toggle whether an overlay is active (drives deferred history behavior).
+    pub fn set_overlay_active(&mut self, active: bool) {
+        self.overlay_active = active;
+    }
+
     /// Append text to the last block in the current message
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn append_to_live_block(&mut self, text: &str) {
         // Hide spinner when first content arrives
         self.hide_loading_spinner_if_active();
-
-        let live_message = self
-            .live_message
-            .as_mut()
-            .expect("append_to_live_block called without an active live message");
+        self.ensure_active_message();
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            return;
+        };
 
         if let Some(last_block) = live_message.get_last_block_mut() {
             last_block.append_content(text);
         }
     }
 
+    /// Queue a text delta for commit-tick-based streaming.
+    pub fn queue_text_delta(&mut self, content: String) {
+        if !self.streaming_open {
+            if self.transcript.active_message().is_none() {
+                warn!(
+                    "Received text delta before StreamingStarted; recovering with synthetic stream start"
+                );
+                self.start_new_message(0);
+            } else {
+                tracing::warn!("Dropping text delta while no active stream is open");
+                return;
+            }
+        }
+        // When switching from thinking to text, flush the thinking stream
+        // so its tail goes to scrollback immediately rather than lingering
+        // in the viewport.
+        if self.last_stream_kind == Some(StreamKind::Thinking) {
+            let flushed_thinking = self.streaming_controller.flush_kind(StreamKind::Thinking);
+            if !flushed_thinking.is_empty() {
+                let lines = style_thinking_lines(flushed_thinking);
+                self.insert_or_defer_history_lines(indent_lines(lines));
+                // Blank line between thinking and text blocks
+                self.insert_or_defer_history_lines(vec![Line::from("")]);
+                if let Some(msg) = self.transcript.active_message_mut() {
+                    msg.streamed_to_scrollback = true;
+                }
+            }
+        }
+        self.last_stream_kind = Some(StreamKind::Text);
+        self.streaming_controller.push(StreamKind::Text, content);
+    }
+
+    /// Queue a thinking delta for commit-tick-based streaming.
+    pub fn queue_thinking_delta(&mut self, content: String) {
+        if !self.streaming_open {
+            if self.transcript.active_message().is_none() {
+                warn!(
+                    "Received thinking delta before StreamingStarted; recovering with synthetic stream start"
+                );
+                self.start_new_message(0);
+            } else {
+                tracing::warn!("Dropping thinking delta while no active stream is open");
+                return;
+            }
+        }
+        // When switching from text to thinking, flush the text stream
+        // so its tail goes to scrollback immediately.
+        if self.last_stream_kind == Some(StreamKind::Text) {
+            let flushed_text = self.streaming_controller.flush_kind(StreamKind::Text);
+            if !flushed_text.is_empty() {
+                self.insert_or_defer_history_lines(indent_lines(flushed_text));
+                // Blank line between text and thinking blocks
+                self.insert_or_defer_history_lines(vec![Line::from("")]);
+                if let Some(msg) = self.transcript.active_message_mut() {
+                    msg.streamed_to_scrollback = true;
+                }
+            }
+        }
+        self.last_stream_kind = Some(StreamKind::Thinking);
+        self.streaming_controller
+            .push(StreamKind::Thinking, content);
+    }
+
+    /// Force-flush pending stream tails and queued chunks.
+    pub fn flush_streaming_pending(&mut self) {
+        let flushed = self.streaming_controller.flush_pending();
+        self.apply_drained_lines(flushed);
+        self.sync_live_stream_tails();
+        self.streaming_open = false;
+    }
+
     /// Add or update a tool parameter in the current message
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
-        let live_message = self
-            .live_message
-            .as_mut()
-            .expect("add_or_update_tool_parameter called without an active live message");
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            tracing::warn!("Ignoring tool parameter update without active message");
+            return;
+        };
 
         if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
             tool_block.add_or_update_parameter(name, value);
@@ -311,10 +394,10 @@ impl<B: Backend> TerminalRenderer<B> {
         message: Option<String>,
         output: Option<String>,
     ) {
-        let live_message = self
-            .live_message
-            .as_mut()
-            .expect("update_tool_status called without an active live message");
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            tracing::warn!("Ignoring tool status update without active message");
+            return;
+        };
 
         if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
             tool_block.status = status;
@@ -323,16 +406,44 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
-    /// Add a user message as finalized message and clear any pending user message
+    /// Append streaming output to a tool block (used by execute_command).
+    pub fn append_tool_output(&mut self, tool_id: &str, chunk: &str) {
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            tracing::warn!("Ignoring tool output append without active message");
+            return;
+        };
+
+        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+            match &mut tool_block.output {
+                Some(existing) => existing.push_str(chunk),
+                None => tool_block.output = Some(chunk.to_string()),
+            }
+        }
+    }
+
+    /// Add a user message as finalized message and clear any pending user message.
+    /// Before adding, finalizes any active streaming message so it appears in
+    /// scrollback history BEFORE this user message (correct chronological order).
     pub fn add_user_message(&mut self, content: &str) -> Result<()> {
-        // Create a finalized message with a single plain text block
+        // Finalize any active streaming message first so it gets committed
+        // to history BEFORE this user message
+        self.flush_streaming_pending();
+        self.transcript.finalize_active_if_content();
+        // Clear stale stream state so prepare()/sync_live_stream_tails() won't
+        // re-create a phantom active message from leftover tail text.
+        self.streaming_controller.clear();
+        self.last_stream_kind = None;
+        // Flush the now-finalized agent response into scrollback
+        self.flush_new_finalized_messages(self.last_known_width);
+
+        // Create a finalized message with a UserText block for proper styling
         let mut user_message = LiveMessage::new();
         let mut text_block = PlainTextBlock::new();
         text_block.content = content.to_string();
-        user_message.add_block(MessageBlock::PlainText(text_block));
+        user_message.add_block(MessageBlock::UserText(text_block));
         user_message.finalized = true;
 
-        self.finalized_messages.push(user_message);
+        self.transcript.push_committed_message(user_message);
         self.pending_user_message = None; // Clear pending message when it becomes finalized
         Ok(())
     }
@@ -346,15 +457,25 @@ impl<B: Backend> TerminalRenderer<B> {
         instruction_message.add_block(MessageBlock::PlainText(text_block));
         instruction_message.finalized = true;
 
-        self.finalized_messages.push(instruction_message);
+        self.transcript.push_committed_message(instruction_message);
         Ok(())
+    }
+
+    /// Add pre-styled lines directly to the pending history buffer.
+    /// Used for the welcome banner which needs custom styling beyond what
+    /// markdown rendering provides.
+    pub fn add_styled_history_lines(&mut self, lines: Vec<Line<'static>>) {
+        self.pending_history_lines.extend(lines);
     }
 
     /// Clear all messages and reset state
     pub fn clear_all_messages(&mut self) {
-        self.finalized_messages.clear();
-        self.live_message = None;
-        self.last_overflow = 0;
+        self.transcript.clear();
+        self.streaming_controller.clear();
+        self.streaming_open = false;
+        self.last_stream_kind = None;
+        self.deferred_history_lines.clear();
+        self.pending_history_lines.clear();
         self.spinner_state = SpinnerState::Hidden;
     }
 
@@ -378,23 +499,254 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
-    /// Render the complete UI: composed finalized content + live content + 1-line gap + input
-    pub fn render(&mut self, textarea: &TextArea) -> Result<()> {
-        // Phase 1: compute layout and promotion outside of draw
-        let term_size = self.terminal.size()?;
-        let input_height = self.calculate_input_height(textarea);
-        let available = term_size.height.saturating_sub(input_height);
-        let width = term_size.width;
+    fn flush_deferred_history_lines(&mut self) {
+        if self.deferred_history_lines.is_empty() {
+            return;
+        }
 
-        // Compose scratch buffer: render 1 blank line (gap), then live_message, then finalized tail above
-        let headroom: u16 = 200; // keep small to reduce work per frame
+        let lines = std::mem::take(&mut self.deferred_history_lines);
+        self.insert_or_defer_history_lines(lines);
+    }
+
+    fn flush_new_finalized_messages(&mut self, width: u16) {
+        let unrendered = self.transcript.unrendered_committed_messages();
+        if unrendered.is_empty() {
+            return;
+        }
+
+        let mut lines = Vec::new();
+        for message in unrendered {
+            if message.streamed_to_scrollback {
+                // PlainText and Thinking blocks were already progressively sent
+                // to scrollback during streaming. Only send non-streamed blocks
+                // (ToolUse, UserText) that were added directly to the message.
+                let tool_lines =
+                    TranscriptState::as_history_lines_non_streamed_only(message, width);
+                if !tool_lines.is_empty() {
+                    // The blank separator before these tool blocks was already
+                    // inserted by start_tool_use_block when it flushed the
+                    // preceding streamed content.
+                    lines.extend(tool_lines);
+                    // Trailing blank so the next streamed content doesn't
+                    // visually merge with the tool block.
+                    lines.push(Line::from(""));
+                }
+                continue;
+            }
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            lines.extend(TranscriptState::as_history_lines(message, width));
+        }
+
+        self.insert_or_defer_history_lines(lines);
+        self.transcript.mark_committed_as_rendered();
+    }
+
+    fn apply_streaming_commit_tick(&mut self) {
+        let drained = self.streaming_controller.drain_commit_tick();
+        self.apply_drained_lines(drained);
+        self.sync_live_stream_tails();
+    }
+
+    fn apply_drained_lines(&mut self, drained: DrainedLines) {
+        if !drained.text.is_empty() || !drained.thinking.is_empty() {
+            info!(
+                target: "tui_scrollback",
+                text_lines = drained.text.len(),
+                thinking_lines = drained.thinking.len(),
+                overlay_active = self.overlay_active,
+                streaming_open = self.streaming_open,
+                "apply drained lines"
+            );
+        }
+
+        // Drained lines always go to scrollback — both during streaming and after.
+        // During streaming, the viewport shows ONLY the undrained tail (via
+        // sync_live_stream_tails), so there is no duplication.
+        let has_lines = !drained.text.is_empty() || !drained.thinking.is_empty();
+
+        if !drained.text.is_empty() {
+            self.insert_or_defer_history_lines(indent_lines(drained.text));
+        }
+
+        if !drained.thinking.is_empty() {
+            let lines = style_thinking_lines(drained.thinking);
+            self.insert_or_defer_history_lines(indent_lines(lines));
+        }
+
+        // Mark the active message so flush_new_finalized_messages() won't
+        // re-send text/thinking content that was already sent to scrollback.
+        if self.streaming_open && has_lines {
+            if let Some(msg) = self.transcript.active_message_mut() {
+                msg.streamed_to_scrollback = true;
+            }
+        }
+    }
+
+    fn sync_live_stream_tails(&mut self) {
+        // The viewport shows ONLY the undrained tail — all committed (drained)
+        // content has already been sent to scrollback.
+        let text_tail = self.streaming_controller.tail_text(StreamKind::Text);
+        let thinking_tail = self.streaming_controller.tail_text(StreamKind::Thinking);
+        trace!(
+            target: "tui_scrollback",
+            text_tail_len = text_tail.len(),
+            thinking_tail_len = thinking_tail.len(),
+            "sync live tails (tail-only)"
+        );
+
+        if text_tail.is_empty() && thinking_tail.is_empty() {
+            // All content has been drained to scrollback. Only remove stream
+            // blocks when the streaming controller actually managed the content
+            // (has_seen_any_delta). If blocks were added directly via
+            // append_to_live_block, they should not be stripped.
+            if self.streaming_controller.has_seen_any_delta() {
+                if let Some(live_message) = self.transcript.active_message_mut() {
+                    live_message
+                        .blocks
+                        .retain(|block| stream_kind_for_block(block).is_none());
+                }
+            }
+            return;
+        }
+
+        self.ensure_active_message();
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            return;
+        };
+
+        let text_content = text_tail.to_string();
+        let thinking_content = thinking_tail.to_string();
+        let stream_blocks = build_stream_blocks_for_live_message(
+            &live_message.blocks,
+            text_content,
+            thinking_content,
+            self.last_stream_kind,
+        );
+        if stream_blocks.is_empty() {
+            return;
+        }
+
+        live_message.blocks =
+            merge_blocks_preserving_stream_slots(&live_message.blocks, stream_blocks);
+    }
+
+    fn insert_or_defer_history_lines(&mut self, lines: Vec<Line<'static>>) {
+        if lines.is_empty() {
+            return;
+        }
+
+        if self.overlay_active {
+            self.deferred_history_lines.extend(lines);
+            return;
+        }
+
+        self.pending_history_lines.extend(lines);
+    }
+
+    /// Drain pending history lines for the Tui layer to insert into scrollback.
+    pub fn drain_pending_history_lines(&mut self) -> Vec<Line<'static>> {
+        std::mem::take(&mut self.pending_history_lines)
+    }
+
+    /// Prepare for the next frame: flush streaming data, commit finalized messages.
+    /// Must be called before `paint()` each frame.
+    pub fn prepare(&mut self, width: u16, screen_height: u16) {
+        let _ = screen_height; // Reserved for future partial-scrollback support
+        self.last_known_width = width;
+        // Account for 2-char indent when computing streaming wrap width
+        let stream_width = width.saturating_sub(2).max(1) as usize;
+        self.streaming_controller.set_width(Some(stream_width));
+        self.apply_streaming_commit_tick();
+        if !self.overlay_active {
+            self.flush_deferred_history_lines();
+        }
+        self.flush_new_finalized_messages(width);
+    }
+
+    /// Compute the desired viewport height for the current content.
+    pub fn desired_viewport_height(&self, textarea: &TextArea, screen_width: u16) -> u16 {
+        let input_height = self.composer.calculate_input_height(textarea, screen_width);
+        let mut content_height: u16 = 0;
+
+        // Live message height
+        if let Some(live_message) = self.transcript.active_message() {
+            if live_message.has_content() {
+                for block in &live_message.blocks {
+                    content_height = content_height
+                        .saturating_add(block.calculate_height(screen_width))
+                        .saturating_add(1); // gap between blocks
+                }
+            }
+        }
+
+        // Spinner height
+        if self.spinner_state.get_spinner_char().is_some() {
+            content_height = content_height.saturating_add(2); // spinner + gap
+        }
+
+        // Status/error height
+        content_height = content_height.saturating_add(self.measure_status_height(screen_width));
+
+        // Always reserve at least 1 row so there's a visible gap between
+        // scrollback and the composer when no live content is displayed.
+        content_height = content_height.max(1);
+
+        content_height.saturating_add(input_height)
+    }
+
+    fn measure_status_height(&self, width: u16) -> u16 {
+        let mut height: u16 = 0;
+        if self.current_error.is_some() {
+            let formatted = Self::format_error_message(self.current_error.as_deref().unwrap());
+            height = Self::measure_markdown_height(&formatted, width, 20);
+            if height > 0 {
+                height = height.saturating_add(1); // gap
+            }
+        } else {
+            let mut has_any = false;
+            if let Some(plan_text) = self.build_plan_text() {
+                let h = Self::measure_markdown_height(&plan_text, width, 20);
+                height = height.saturating_add(h);
+                has_any = true;
+            }
+            if let Some(ref info_msg) = self.info_message {
+                if has_any {
+                    height = height.saturating_add(1);
+                }
+                let h = Self::measure_markdown_height(info_msg, width, 20);
+                height = height.saturating_add(h);
+                has_any = true;
+            } else if let Some(ref pending_msg) = self.pending_user_message {
+                if has_any {
+                    height = height.saturating_add(1);
+                }
+                let h = Self::measure_markdown_height(pending_msg, width, 20);
+                height = height.saturating_add(h);
+                has_any = true;
+            }
+            if has_any {
+                height = height.saturating_add(1); // gap above status
+            }
+        }
+        height
+    }
+
+    /// Paint the current state into the provided frame.
+    /// The frame area is the viewport area provided by Tui.
+    pub fn paint(&mut self, f: &mut custom_terminal::Frame, textarea: &TextArea) {
+        let full = f.area();
+        let width = full.width;
+        let input_height = self.composer.calculate_input_height(textarea, width);
+        let available = full.height.saturating_sub(input_height);
+
+        let headroom: u16 = 200;
         let scratch_height = available.saturating_add(headroom).max(available);
         let mut scratch = Buffer::empty(Rect::new(0, 0, width, scratch_height));
 
-        // We pack from bottom up: bottom = gap, above it pending user msg (if any), above it live, above that finalized tail
-        let mut cursor_y = scratch_height; // one past last line
+        let mut cursor_y = scratch_height;
 
-        // Reserve one blank line as gap above input (at the very bottom)
         cursor_y = cursor_y.saturating_sub(1);
 
         let mut status_entries: Vec<StatusEntry> = Vec::new();
@@ -476,135 +828,89 @@ impl<B: Backend> TerminalRenderer<B> {
             if cursor_y > 0 {
                 cursor_y = cursor_y.saturating_sub(1);
 
-                // Render spinner character
                 scratch.set_string(
-                    0,
+                    2,
                     cursor_y,
                     spinner_char.to_string(),
                     Style::default().fg(spinner_color),
                 );
 
-                // Render status text if present
                 if let Some(status_text) = self.spinner_state.get_status_text() {
                     scratch.set_string(
-                        2,
+                        4,
                         cursor_y,
                         &status_text,
                         Style::default().fg(Color::LightRed),
                     );
                 }
 
-                // Add gap after spinner
                 cursor_y = cursor_y.saturating_sub(1);
             }
         }
 
         // 2) Render current live message (so it is closest to the input)
-        if let Some(ref live_message) = self.live_message {
+        if let Some(live_message) = self.transcript.active_message() {
             if live_message.has_content() && cursor_y > 0 {
                 self.render_message_to_buffer(live_message, &mut scratch, &mut cursor_y, width);
-                // Add gap after live message
                 cursor_y = cursor_y.saturating_sub(1);
             }
         }
 
-        // 3) Render finalized messages from newest to oldest above live until we filled enough
-        for message in self.finalized_messages.iter().rev() {
-            if cursor_y == 0 {
-                break;
-            }
-            // stop if we already filled enough (available + headroom)
-            let filled = scratch_height - cursor_y;
-            if filled >= available + headroom {
-                break;
-            }
-
-            self.render_message_to_buffer(message, &mut scratch, &mut cursor_y, width);
-            // Add gap after each message
-            cursor_y = cursor_y.saturating_sub(1);
-        }
-
-        // Now composed content occupies rows [cursor_y .. scratch_height)
+        // Composed content occupies rows [cursor_y .. scratch_height)
         let total_height = scratch_height.saturating_sub(cursor_y);
-        let overflow = total_height.saturating_sub(available);
 
-        // Promote only the delta that has not yet been promoted
-        if overflow > self.last_overflow {
-            let new_to_promote = overflow - self.last_overflow;
-            let promote_start = cursor_y + self.last_overflow;
-            let term_width = width;
-            self.terminal
-                .insert_before(new_to_promote, |buf: &mut Buffer| {
-                    for y in 0..new_to_promote {
-                        for x in 0..term_width {
-                            let row = promote_start + y;
-                            let src = scratch
-                                .cell((x, row))
-                                .cloned()
-                                .unwrap_or_else(ratatui::buffer::Cell::default);
-                            if let Some(dst) = buf.cell_mut((x, y)) {
-                                *dst = src;
-                            }
-                        }
-                    }
-                })?;
-            self.last_overflow = overflow;
-        }
+        let [content_area, status_area, input_area] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(status_height),
+            Constraint::Length(input_height),
+        ])
+        .areas(full);
 
-        // Phase 2: draw bottom `available` rows, pending message, and input
-        self.terminal.draw(|f| {
-            let full = f.area();
+        let visible_total = total_height.min(content_area.height);
+        let top_blank = content_area.height - visible_total;
+        let visible_start = scratch_height.saturating_sub(visible_total);
+        let dst = f.buffer_mut();
 
-            let [content_area, status_area, input_area] = Layout::vertical([
-                Constraint::Min(1),
-                Constraint::Length(status_height),
-                Constraint::Length(input_height),
-            ])
-            .areas(full);
-
-            let visible_total = total_height.min(content_area.height);
-            let top_blank = content_area.height - visible_total; // rows to leave blank at top
-            let visible_start = cursor_y.saturating_add(overflow);
-            let dst = f.buffer_mut();
-
-            // Top blank area (if any)
-            for y in 0..top_blank {
-                // clear line
-                for x in 0..content_area.width {
-                    if let Some(cell) = dst.cell_mut((content_area.x + x, content_area.y + y)) {
-                        *cell = ratatui::buffer::Cell::default();
-                    }
+        // Top blank area (if any)
+        for y in 0..top_blank {
+            for x in 0..content_area.width {
+                if let Some(cell) = dst.cell_mut((content_area.x + x, content_area.y + y)) {
+                    cell.set_style(Style::default());
+                    cell.set_char(' ');
                 }
             }
+        }
 
-            // Copy visible content aligned at the bottom of content_area
-            for y in 0..visible_total {
-                for x in 0..content_area.width {
-                    let src_row = visible_start + y;
-                    let src = scratch
-                        .cell((x, src_row))
-                        .cloned()
-                        .unwrap_or_else(ratatui::buffer::Cell::default);
-                    if let Some(dst_cell) =
-                        dst.cell_mut((content_area.x + x, content_area.y + top_blank + y))
-                    {
+        // Copy visible content aligned at the bottom of content_area
+        for y in 0..visible_total {
+            for x in 0..content_area.width {
+                let src_row = visible_start + y;
+                let src = scratch
+                    .cell((x, src_row))
+                    .cloned()
+                    .unwrap_or_else(ratatui::buffer::Cell::default);
+                if let Some(dst_cell) =
+                    dst.cell_mut((content_area.x + x, content_area.y + top_blank + y))
+                {
+                    if src.symbol().is_empty() {
+                        dst_cell.set_style(Style::default());
+                        dst_cell.set_char(' ');
+                    } else {
                         *dst_cell = src;
                     }
                 }
             }
+        }
 
-            // Render status area (error takes priority over other messages)
-            if let Some(ref error_msg) = error_display {
-                Self::render_error_message(f, status_area, error_msg);
-            } else if status_entries.iter().any(|entry| entry.height > 0) {
-                Self::render_status_entries(f, status_area, &status_entries);
-            }
+        // Render status area (error takes priority over other messages)
+        if let Some(ref error_msg) = error_display {
+            Self::render_error_message(f, status_area, error_msg);
+        } else if status_entries.iter().any(|entry| entry.height > 0) {
+            Self::render_status_entries(f, status_area, &status_entries);
+        }
 
-            // Render input area (block + textarea)
-            Self::render_input_area_static(f, input_area, textarea);
-        })?;
-
-        Ok(())
+        // Render input area (block + textarea)
+        self.composer.render(f, input_area, textarea);
     }
 
     /// Render a message to the scratch buffer, updating cursor_y
@@ -736,7 +1042,7 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
-    fn render_status_entries(f: &mut Frame, area: Rect, entries: &[StatusEntry]) {
+    fn render_status_entries(f: &mut custom_terminal::Frame, area: Rect, entries: &[StatusEntry]) {
         if area.height == 0 {
             return;
         }
@@ -772,7 +1078,7 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
-    fn render_info_message(f: &mut Frame, area: Rect, message: &str) {
+    fn render_info_message(f: &mut custom_terminal::Frame, area: Rect, message: &str) {
         if area.height == 0 {
             return;
         }
@@ -785,7 +1091,7 @@ impl<B: Backend> TerminalRenderer<B> {
         f.render_widget(paragraph, area);
     }
 
-    fn render_plan_message(f: &mut Frame, area: Rect, plan_text: &str) {
+    fn render_plan_message(f: &mut custom_terminal::Frame, area: Rect, plan_text: &str) {
         if area.height == 0 {
             return;
         }
@@ -798,7 +1104,7 @@ impl<B: Backend> TerminalRenderer<B> {
         f.render_widget(paragraph, area);
     }
 
-    fn clear_status_gap(f: &mut Frame, area: Rect) {
+    fn clear_status_gap(f: &mut custom_terminal::Frame, area: Rect) {
         if area.height == 0 {
             return;
         }
@@ -807,41 +1113,26 @@ impl<B: Backend> TerminalRenderer<B> {
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
                 if let Some(cell) = buffer.cell_mut((x, y)) {
-                    *cell = ratatui::buffer::Cell::default();
+                    cell.set_style(Style::default());
+                    cell.set_char(' ');
                 }
             }
         }
     }
 
     /// Calculate the height needed for the input area based on textarea content
-    pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
-        let lines = textarea.lines().len() as u16;
-        // Add 1 for border, then clamp to reasonable bounds
-        let height_with_border = lines + 1;
-        height_with_border.clamp(2, self.max_input_rows + 1)
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn calculate_input_height(&self, textarea: &TextArea, width: u16) -> u16 {
+        self.composer.calculate_input_height(textarea, width)
     }
 
-    /// Render the input area with textarea (static version)
-    fn render_input_area_static(f: &mut Frame, area: Rect, textarea: &TextArea) {
-        // Create a block with border for the input area
-        let input_block = Block::default()
-            .borders(Borders::TOP)
-            .title("Input (Enter=send, Shift+Enter=newline, Ctrl+C=quit)");
-
-        // Render the textarea widget inside the block
-        let inner_area = input_block.inner(area);
-        f.render_widget(input_block, area);
-        f.render_widget(textarea, inner_area);
-
-        // Set cursor position for the textarea
-        let cursor_pos = textarea.cursor();
-        let cursor_x = inner_area.x + cursor_pos.1 as u16;
-        let cursor_y = inner_area.y + cursor_pos.0 as u16;
-        f.set_cursor_position(Position::new(cursor_x, cursor_y));
+    #[cfg(test)]
+    fn max_input_rows(&self) -> u16 {
+        self.composer.max_input_rows()
     }
 
     /// Render pending user message with dimmed and italic styling
-    fn render_pending_message(f: &mut Frame, area: Rect, message: &str) {
+    fn render_pending_message(f: &mut custom_terminal::Frame, area: Rect, message: &str) {
         if area.height == 0 {
             return;
         }
@@ -859,7 +1150,7 @@ impl<B: Backend> TerminalRenderer<B> {
     }
 
     /// Render error message with red styling and dismiss instructions
-    fn render_error_message(f: &mut Frame, area: Rect, message: &str) {
+    fn render_error_message(f: &mut custom_terminal::Frame, area: Rect, message: &str) {
         if area.height == 0 {
             return;
         }
@@ -892,6 +1183,13 @@ impl<B: Backend> TerminalRenderer<B> {
         self.current_error.is_some()
     }
 
+    /// Returns true when the UI has time-varying content that requires
+    /// periodic redraws even without external events (spinner animation,
+    /// streaming commit ticks).
+    pub fn needs_animation_timer(&self) -> bool {
+        !matches!(self.spinner_state, SpinnerState::Hidden) || self.streaming_open
+    }
+
     /// Set an info message to display
     pub fn set_info(&mut self, info_message: String) {
         self.info_message = Some(info_message);
@@ -901,19 +1199,165 @@ impl<B: Backend> TerminalRenderer<B> {
     pub fn clear_info(&mut self) {
         self.info_message = None;
     }
+
+    fn ensure_active_message(&mut self) {
+        if self.transcript.active_message().is_none() {
+            tracing::warn!("Recovering missing active message in renderer");
+            self.transcript.start_active_message();
+        }
+    }
+
+    #[cfg(test)]
+    fn deferred_history_line_count(&self) -> usize {
+        self.deferred_history_lines.len()
+    }
 }
 
-impl ProductionTerminalRenderer {
-    pub fn new() -> Result<Self> {
-        Self::with_factory(|| {
-            let (_w, h) = ratatui::crossterm::terminal::size()?;
-            let backend = CrosstermBackend::new(io::stdout());
-            let options = TerminalOptions {
-                viewport: Viewport::Inline(h),
-            };
-            Terminal::with_options(backend, options).map_err(Into::into)
+/// Apply Yellow+Italic style to thinking lines while preserving per-span markdown styling.
+fn style_thinking_lines(thinking: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    thinking
+        .into_iter()
+        .map(|line| {
+            let styled_spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    let style = span
+                        .style
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM)
+                        .add_modifier(Modifier::ITALIC);
+                    Span::styled(span.content.to_string(), style)
+                })
+                .collect();
+            Line::from(styled_spans)
         })
+        .collect()
+}
+
+/// Prepend a 2-space indent to each line so scrollback content aligns with
+/// the user's "› " prefix.
+fn indent_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|mut line| {
+            line.spans.insert(0, Span::raw("  ".to_string()));
+            line
+        })
+        .collect()
+}
+
+fn stream_kind_for_block(block: &MessageBlock) -> Option<StreamKind> {
+    match block {
+        MessageBlock::PlainText(_) => Some(StreamKind::Text),
+        MessageBlock::Thinking(_) => Some(StreamKind::Thinking),
+        MessageBlock::ToolUse(_) | MessageBlock::UserText(_) => None,
     }
+}
+
+fn block_for_stream_kind(kind: StreamKind, content: String) -> Option<MessageBlock> {
+    match kind {
+        StreamKind::Text => {
+            if content.is_empty() {
+                return None;
+            }
+            let mut block = PlainTextBlock::new();
+            block.content = content;
+            Some(MessageBlock::PlainText(block))
+        }
+        StreamKind::Thinking => {
+            if content.trim().is_empty() {
+                return None;
+            }
+            let mut block = super::message::ThinkingBlock::new();
+            block.content = content;
+            Some(MessageBlock::Thinking(block))
+        }
+    }
+}
+
+fn build_stream_blocks_for_live_message(
+    existing_blocks: &[MessageBlock],
+    text_content: String,
+    thinking_content: String,
+    last_stream_kind: Option<StreamKind>,
+) -> Vec<MessageBlock> {
+    let mut order = existing_blocks
+        .iter()
+        .filter_map(stream_kind_for_block)
+        .collect::<Vec<_>>();
+
+    if order.is_empty() {
+        match last_stream_kind {
+            Some(StreamKind::Text) => {
+                if !thinking_content.trim().is_empty() {
+                    order.push(StreamKind::Thinking);
+                }
+                if !text_content.is_empty() {
+                    order.push(StreamKind::Text);
+                }
+            }
+            Some(StreamKind::Thinking) => {
+                if !text_content.is_empty() {
+                    order.push(StreamKind::Text);
+                }
+                if !thinking_content.trim().is_empty() {
+                    order.push(StreamKind::Thinking);
+                }
+            }
+            None => {
+                if !text_content.is_empty() {
+                    order.push(StreamKind::Text);
+                }
+                if !thinking_content.trim().is_empty() {
+                    order.push(StreamKind::Thinking);
+                }
+            }
+        }
+    } else {
+        if !text_content.is_empty() && !order.contains(&StreamKind::Text) {
+            order.push(StreamKind::Text);
+        }
+        if !thinking_content.trim().is_empty() && !order.contains(&StreamKind::Thinking) {
+            order.push(StreamKind::Thinking);
+        }
+    }
+
+    let mut out = Vec::new();
+    for kind in order {
+        let content = match kind {
+            StreamKind::Text => text_content.clone(),
+            StreamKind::Thinking => thinking_content.clone(),
+        };
+        if let Some(block) = block_for_stream_kind(kind, content) {
+            out.push(block);
+        }
+    }
+    out
+}
+
+fn merge_blocks_preserving_stream_slots(
+    existing_blocks: &[MessageBlock],
+    stream_blocks: Vec<MessageBlock>,
+) -> Vec<MessageBlock> {
+    let mut rebuilt = Vec::with_capacity(existing_blocks.len().max(stream_blocks.len()));
+    let mut stream_iter = stream_blocks.into_iter();
+
+    for block in existing_blocks {
+        if stream_kind_for_block(block).is_some() {
+            if let Some(next_stream_block) = stream_iter.next() {
+                rebuilt.push(next_stream_block);
+            }
+            continue;
+        }
+        rebuilt.push(block.clone());
+    }
+
+    // Append any remaining stream blocks (e.g. new stream types that didn't
+    // exist in the previous set of blocks).
+    rebuilt.extend(stream_iter);
+
+    rebuilt
 }
 
 #[cfg(test)]
@@ -921,23 +1365,68 @@ mod tests {
     use super::*;
     use crate::types::{PlanItem, PlanItemStatus, PlanState};
     use crate::ui::terminal::message::{LiveMessage, MessageBlock, PlainTextBlock};
-    use ratatui::backend::TestBackend;
 
-    /// Create a test renderer using TestBackend for proper testing
-    fn create_test_renderer(width: u16, height: u16) -> TerminalRenderer<TestBackend> {
-        TerminalRenderer::with_factory(move || {
-            let backend = TestBackend::new(width, height);
-            let options = TerminalOptions {
-                viewport: Viewport::Inline(height),
-            };
-            Terminal::with_options(backend, options).map_err(Into::into)
-        })
-        .unwrap()
+    /// Test harness that provides a TerminalRenderer and a buffer to render into.
+    /// This replaces the old approach where TerminalRenderer owned a Terminal<TestBackend>.
+    struct TestHarness {
+        renderer: TerminalRenderer,
+        width: u16,
+        height: u16,
+        /// The last rendered buffer (filled by `render()`).
+        buffer: Buffer,
     }
 
-    /// Create a default test renderer with reasonable dimensions
-    fn create_default_test_renderer() -> TerminalRenderer<TestBackend> {
-        create_test_renderer(80, 20)
+    impl TestHarness {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                renderer: TerminalRenderer::new().unwrap(),
+                width,
+                height,
+                buffer: Buffer::empty(Rect::new(0, 0, width, height)),
+            }
+        }
+
+        /// Render the UI into the internal buffer. Returns a reference to the buffer.
+        /// Note: does NOT drain pending history lines — call `drain_pending_history_lines()`
+        /// separately if you want to inspect them.
+        fn render(&mut self, textarea: &TextArea) -> &Buffer {
+            let area = Rect::new(0, 0, self.width, self.height);
+            self.buffer = Buffer::empty(area);
+            self.renderer.prepare(self.width, self.height);
+            let mut frame = custom_terminal::Frame {
+                cursor_position: None,
+                viewport_area: area,
+                buffer: &mut self.buffer,
+            };
+            self.renderer.paint(&mut frame, textarea);
+            &self.buffer
+        }
+
+        /// Access the buffer after rendering
+        fn buffer(&self) -> &Buffer {
+            &self.buffer
+        }
+    }
+
+    impl std::ops::Deref for TestHarness {
+        type Target = TerminalRenderer;
+        fn deref(&self) -> &Self::Target {
+            &self.renderer
+        }
+    }
+
+    impl std::ops::DerefMut for TestHarness {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.renderer
+        }
+    }
+
+    fn create_test_harness(width: u16, height: u16) -> TestHarness {
+        TestHarness::new(width, height)
+    }
+
+    fn create_default_test_harness() -> TestHarness {
+        create_test_harness(80, 20)
     }
 
     /// Helper to create a simple text message
@@ -955,28 +1444,27 @@ mod tests {
 
         #[test]
         fn test_basic_renderer_creation_and_state() {
-            let renderer = create_default_test_renderer();
-            assert_eq!(renderer.finalized_messages.len(), 0);
-            assert!(renderer.live_message.is_none());
-            assert_eq!(renderer.last_overflow, 0);
+            let renderer = create_default_test_harness();
+            assert_eq!(renderer.transcript.committed_messages().len(), 0);
+            assert!(renderer.transcript.active_message().is_none());
             assert!(!renderer.has_error());
         }
 
         #[test]
         fn test_message_finalization_workflow() {
-            let mut renderer = create_default_test_renderer();
+            let mut renderer = create_default_test_harness();
 
             // Start a new message
             renderer.start_new_message(1);
-            assert!(renderer.live_message.is_some());
-            assert_eq!(renderer.finalized_messages.len(), 0);
+            assert!(renderer.transcript.active_message().is_some());
+            assert_eq!(renderer.transcript.committed_messages().len(), 0);
 
             // Add content to live message
             renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
             renderer.append_to_live_block("Test content");
 
             // Verify live message has content
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert!(live_message.has_content());
             assert!(!live_message.finalized);
 
@@ -984,19 +1472,19 @@ mod tests {
             renderer.start_new_message(2);
 
             // Previous message should be finalized
-            assert_eq!(renderer.finalized_messages.len(), 1);
-            assert!(renderer.finalized_messages[0].finalized);
-            assert!(renderer.finalized_messages[0].has_content());
+            assert_eq!(renderer.transcript.committed_messages().len(), 1);
+            assert!(renderer.transcript.committed_messages()[0].finalized);
+            assert!(renderer.transcript.committed_messages()[0].has_content());
 
             // New live message should be empty
-            let new_live = renderer.live_message.as_ref().unwrap();
+            let new_live = renderer.transcript.active_message().unwrap();
             assert!(!new_live.has_content());
             assert!(!new_live.finalized);
         }
 
         #[test]
         fn test_ensure_last_block_type_behavior() {
-            let mut renderer = create_default_test_renderer();
+            let mut renderer = create_default_test_harness();
 
             // Start a message
             renderer.start_new_message(1);
@@ -1024,13 +1512,13 @@ mod tests {
             );
 
             // Verify we have 2 blocks now
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert_eq!(live_message.blocks.len(), 2);
         }
 
         #[test]
         fn test_content_appending_to_blocks() {
-            let mut renderer = create_default_test_renderer();
+            let mut renderer = create_default_test_harness();
 
             // Start a message
             renderer.start_new_message(1);
@@ -1041,7 +1529,7 @@ mod tests {
             renderer.append_to_live_block("world!");
 
             // Verify content was appended
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert_eq!(live_message.blocks.len(), 1);
 
             if let MessageBlock::PlainText(text_block) = &live_message.blocks[0] {
@@ -1053,12 +1541,12 @@ mod tests {
 
         #[test]
         fn test_pending_message_rendering() {
-            let mut renderer = create_default_test_renderer();
-            let textarea = tui_textarea::TextArea::default();
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
 
             // Initially no pending message - should render only input area
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             // Check that most of the screen is empty (no pending message content)
             let mut has_content_above_input = false;
@@ -1082,8 +1570,8 @@ mod tests {
 
             // Set pending message and render
             renderer.set_pending_user_message(Some("User is typing a message...".to_string()));
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             // Verify pending message is rendered in dimmed style above input
             let mut found_pending_text = false;
@@ -1103,8 +1591,8 @@ mod tests {
 
             // Clear pending message and verify it's gone
             renderer.set_pending_user_message(None);
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_pending_after_clear = false;
             for y in 0..18 {
@@ -1126,8 +1614,8 @@ mod tests {
 
         #[test]
         fn test_plan_collapsed_summary_rendering() {
-            let mut renderer = create_default_test_renderer();
-            let textarea = tui_textarea::TextArea::default();
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
 
             let plan_state = PlanState {
                 entries: vec![
@@ -1155,8 +1643,8 @@ mod tests {
             renderer.set_plan_state(Some(plan_state));
             renderer.set_plan_expanded(false);
 
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_summary = false;
             for y in 0..18 {
@@ -1176,9 +1664,9 @@ mod tests {
 
         #[test]
         fn test_plan_expanded_rendering_limits_entries() {
-            let mut renderer = create_default_test_renderer();
+            let mut renderer = create_default_test_harness();
             renderer.set_plan_expanded(true);
-            let textarea = tui_textarea::TextArea::default();
+            let textarea = TextArea::new();
 
             let plan_state = PlanState {
                 entries: vec![
@@ -1216,8 +1704,8 @@ mod tests {
 
             renderer.set_plan_state(Some(plan_state));
 
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut header_found = false;
             let mut plan_item_lines = 0;
@@ -1291,12 +1779,12 @@ mod tests {
 
         #[test]
         fn test_error_message_rendering() {
-            let mut renderer = create_default_test_renderer();
-            let textarea = tui_textarea::TextArea::default();
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
 
             // Initially no error - should render cleanly
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             // Check that no error text is present
             let mut found_error_text = false;
@@ -1315,8 +1803,8 @@ mod tests {
 
             // Set error and render
             renderer.set_error("Something went wrong".to_string());
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             // Verify error message is rendered with "Error:" prefix and dismiss instruction
             let mut found_error_prefix = false;
@@ -1350,8 +1838,8 @@ mod tests {
 
             // Clear error and verify it's gone
             renderer.clear_error();
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_error_after_clear = false;
             for y in 0..18 {
@@ -1372,8 +1860,127 @@ mod tests {
         }
 
         #[test]
+        fn test_overlay_defers_and_flushes_committed_history_lines() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            renderer.set_plan_expanded(true);
+            renderer.set_overlay_active(true);
+            renderer.start_new_message(1);
+            renderer.queue_text_delta("deferred line\n".to_string());
+            renderer.render(&textarea);
+
+            renderer.start_new_message(2);
+            renderer.render(&textarea);
+
+            assert!(
+                renderer.deferred_history_line_count() > 0,
+                "History commits should be buffered while overlay is active"
+            );
+            renderer.set_plan_expanded(false);
+            renderer.set_overlay_active(false);
+            renderer.render(&textarea);
+
+            assert_eq!(renderer.deferred_history_line_count(), 0);
+        }
+
+        #[test]
+        fn test_overlay_deferral_survives_resize_until_close() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            renderer.set_overlay_active(true);
+            renderer.start_new_message(1);
+            renderer.queue_text_delta("resize defer\n".to_string());
+            renderer.render(&textarea);
+
+            renderer.start_new_message(2);
+            renderer.render(&textarea);
+
+            assert!(renderer.deferred_history_line_count() > 0);
+
+            // Simulate resize by just re-rendering (Tui handles resize now)
+            renderer.render(&textarea);
+
+            assert!(
+                renderer.deferred_history_line_count() > 0,
+                "Resize must not flush deferred history while overlay is active"
+            );
+
+            renderer.set_overlay_active(false);
+            renderer.render(&textarea);
+            assert_eq!(renderer.deferred_history_line_count(), 0);
+        }
+
+        #[test]
+        fn test_overlay_defers_tool_event_history_and_flushes_on_close() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            renderer.start_new_message(1);
+            renderer.start_tool_use_block("shell".to_string(), "tool-1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool-1",
+                "command".to_string(),
+                "echo hi".to_string(),
+            );
+            renderer.update_tool_status(
+                "tool-1",
+                ToolStatus::Success,
+                Some("done".to_string()),
+                Some("hi".to_string()),
+            );
+
+            renderer.set_overlay_active(true);
+            renderer.start_new_message(2);
+            renderer.render(&textarea);
+
+            assert_eq!(renderer.transcript.committed_messages().len(), 1);
+            assert!(
+                renderer.deferred_history_line_count() > 0,
+                "Tool history should be deferred while overlay is active"
+            );
+
+            renderer.set_overlay_active(false);
+            renderer.render(&textarea);
+            assert_eq!(renderer.deferred_history_line_count(), 0);
+        }
+
+        #[test]
+        fn test_late_stream_delta_after_stop_is_ignored() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            renderer.start_new_message(1);
+            renderer.flush_streaming_pending();
+            renderer.queue_text_delta("late chunk".to_string());
+            renderer.render(&textarea);
+
+            let live_message = renderer.transcript.active_message().unwrap();
+            assert!(
+                !live_message.has_content(),
+                "Late deltas after stop should not mutate the live message"
+            );
+        }
+
+        #[test]
+        fn test_pre_start_delta_recovers_streaming_state() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            renderer.queue_text_delta("hello before start".to_string());
+            renderer.render(&textarea);
+
+            let live_message = renderer.transcript.active_message().unwrap();
+            assert!(
+                live_message.has_content(),
+                "Pre-start deltas should recover by starting a synthetic stream"
+            );
+        }
+
+        #[test]
         fn test_spinner_state_management() {
-            let mut renderer = create_default_test_renderer();
+            let mut renderer = create_default_test_harness();
 
             // Initially hidden
             assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
@@ -1402,12 +2009,12 @@ mod tests {
 
         #[test]
         fn test_clear_all_messages() {
-            let mut renderer = create_default_test_renderer();
+            let mut renderer = create_default_test_harness();
 
             // Add some finalized messages
             for i in 0..3 {
                 let message = create_text_message(&format!("Message {i}"));
-                renderer.finalized_messages.push(message);
+                renderer.transcript.committed_messages_mut().push(message);
             }
 
             // Add live message
@@ -1416,22 +2023,20 @@ mod tests {
             renderer.append_to_live_block("Live content");
 
             // Set some state
-            renderer.last_overflow = 10;
             renderer.show_rate_limit_spinner(30);
 
             // Clear all messages
             renderer.clear_all_messages();
 
             // Everything should be reset
-            assert_eq!(renderer.last_overflow, 0);
-            assert!(renderer.finalized_messages.is_empty());
-            assert!(renderer.live_message.is_none());
+            assert!(renderer.transcript.committed_messages().is_empty());
+            assert!(renderer.transcript.active_message().is_none());
             assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
         }
 
         #[test]
         fn test_tool_status_updates() {
-            let mut renderer = create_default_test_renderer();
+            let mut renderer = create_default_test_harness();
 
             // Start a message with a tool block
             renderer.start_new_message(1);
@@ -1446,7 +2051,7 @@ mod tests {
             );
 
             // Verify tool block was updated
-            let live_message = renderer.live_message.as_ref().unwrap();
+            let live_message = renderer.transcript.active_message().unwrap();
             assert_eq!(live_message.blocks.len(), 1);
 
             if let MessageBlock::ToolUse(tool_block) = &live_message.blocks[0] {
@@ -1495,15 +2100,15 @@ mod tests {
                 "Three lines should have height 3"
             );
 
-            // Test line wrapping
-            let long_line = "a".repeat(160); // Should wrap to 2 lines with width 80
+            // Test line wrapping (effective width is 78 due to 2-char indent)
+            let long_line = "a".repeat(160); // Should wrap to 3 lines with inner width 78
             let mut wrap_block = PlainTextBlock::new();
             wrap_block.content = long_line;
             let message_block = MessageBlock::PlainText(wrap_block);
             assert_eq!(
                 message_block.calculate_height(width),
-                2,
-                "Long line should wrap to 2 lines"
+                3,
+                "Long line should wrap to 3 lines at inner width 78"
             );
         }
 
@@ -1586,12 +2191,12 @@ mod tests {
                 "Each character should be on its own line with width 1"
             );
 
-            // Test with zero width (edge case)
+            // Test with zero width (edge case) — zero width means nothing can render
             let mut text_block = PlainTextBlock::new();
             text_block.content = "Hello".to_string();
             let message_block = MessageBlock::PlainText(text_block);
             let height = message_block.calculate_height(0);
-            assert!(height > 0, "Should handle zero width gracefully");
+            assert_eq!(height, 0, "Zero width should produce zero height");
         }
     }
 
@@ -1600,66 +2205,70 @@ mod tests {
 
         #[test]
         fn test_input_height_calculation() {
-            let renderer = create_default_test_renderer();
+            let renderer = create_default_test_harness();
+            let width = 80;
 
             // Test empty textarea
-            let textarea = tui_textarea::TextArea::default();
-            let height = renderer.calculate_input_height(&textarea);
+            // Layout: 1 top + 1 textarea + 1 bottom padding + 1 footer = 4
+            let textarea = TextArea::new();
+            let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
-                height, 2,
-                "Empty textarea should have minimum height (1 content + 1 border)"
+                height, 4,
+                "Empty textarea should have minimum height (1 top + 1 content + 1 bottom + 1 footer)"
             );
 
             // Test single line content
-            let mut textarea = tui_textarea::TextArea::default();
+            let mut textarea = TextArea::new();
             textarea.insert_str("Hello");
-            let height = renderer.calculate_input_height(&textarea);
-            assert_eq!(height, 2, "Single line should still be minimum height");
+            let height = renderer.calculate_input_height(&textarea, width);
+            assert_eq!(height, 4, "Single line should still be minimum height");
 
             // Test multiple lines
-            let mut textarea = tui_textarea::TextArea::default();
+            // Layout: 1 top + 3 textarea + 1 bottom padding + 1 footer = 6
+            let mut textarea = TextArea::new();
             textarea.insert_str("Line 1\nLine 2\nLine 3");
-            let height = renderer.calculate_input_height(&textarea);
+            let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
-                height, 4,
-                "Three lines should give height 4 (3 content + 1 border)"
+                height, 6,
+                "Three lines should give height 6 (1 top + 3 content + 1 bottom + 1 footer)"
             );
 
             // Test max height constraint
-            let mut textarea = tui_textarea::TextArea::default();
+            let mut textarea = TextArea::new();
             let many_lines = (0..10)
                 .map(|i| format!("Line {i}"))
                 .collect::<Vec<_>>()
                 .join("\n");
             textarea.insert_str(&many_lines);
-            let height = renderer.calculate_input_height(&textarea);
+            let height = renderer.calculate_input_height(&textarea, width);
             assert_eq!(
                 height,
-                renderer.max_input_rows + 1,
-                "Should be capped at max_input_rows + border"
+                renderer.max_input_rows() + 3,
+                "Should be capped at max_input_rows + top + bottom + footer"
             );
         }
 
         #[test]
         fn test_input_height_constraints() {
-            let renderer = create_default_test_renderer();
+            let renderer = create_default_test_harness();
+            let width = 80;
 
-            // Test that height is always at least 2 (content + border)
-            let textarea = tui_textarea::TextArea::default();
-            let height = renderer.calculate_input_height(&textarea);
-            assert!(height >= 2, "Height should always be at least 2");
+            // Test that height is always at least 4 (top + content + bottom + footer)
+            let textarea = TextArea::new();
+            let height = renderer.calculate_input_height(&textarea, width);
+            assert!(height >= 4, "Height should always be at least 4");
 
-            // Test that height never exceeds max_input_rows + 1
-            let mut textarea = tui_textarea::TextArea::default();
+            // Test that height never exceeds max_input_rows + 3
+            let mut textarea = TextArea::new();
             let excessive_lines = (0..100)
                 .map(|i| format!("Line {i}"))
                 .collect::<Vec<_>>()
                 .join("\n");
             textarea.insert_str(&excessive_lines);
-            let height = renderer.calculate_input_height(&textarea);
+            let height = renderer.calculate_input_height(&textarea, width);
             assert!(
-                height <= renderer.max_input_rows + 1,
-                "Height should never exceed max_input_rows + 1"
+                height <= renderer.max_input_rows() + 3,
+                "Height should never exceed max_input_rows + 3"
             );
         }
     }
@@ -1669,13 +2278,13 @@ mod tests {
 
         #[test]
         fn test_complete_message_workflow_rendering() {
-            let mut renderer = create_default_test_renderer();
-            let textarea = tui_textarea::TextArea::default();
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
 
             // 1. Start streaming - should show spinner
             renderer.start_new_message(1);
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             // Look for spinner character (braille patterns)
             let mut found_spinner = false;
@@ -1702,8 +2311,8 @@ mod tests {
             // 2. Add some text content - spinner should disappear
             renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
             renderer.append_to_live_block("Here's my response: ");
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             // Check that text content is rendered
             let mut found_response_text = false;
@@ -1730,8 +2339,8 @@ mod tests {
                 "path".to_string(),
                 "test.txt".to_string(),
             );
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_tool_name = false;
             let mut found_path_param = false;
@@ -1758,8 +2367,8 @@ mod tests {
                 None,
                 Some("File written successfully".to_string()), // This is for LLM, not UI
             );
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             // Look for tool with success status indicator (green bullet)
             let mut found_success_status = false;
@@ -1771,7 +2380,7 @@ mod tests {
                 }
                 // Look for the tool name line
                 if line_text.contains("write_file") {
-                    // Check if the status symbol (first character) is green (success)
+                    // Check if the status symbol (at col 0, no indent) is green (success)
                     let status_cell = buffer.cell((0, y)).unwrap();
                     if status_cell.fg == Color::Green && status_cell.symbol() == "●" {
                         found_success_status = true;
@@ -1786,376 +2395,94 @@ mod tests {
 
             // 5. Finalize message by starting new one
             renderer.start_new_message(2);
-            assert_eq!(renderer.finalized_messages.len(), 1);
-            assert!(renderer.finalized_messages[0].finalized);
+            assert_eq!(renderer.transcript.committed_messages().len(), 1);
+            assert!(renderer.transcript.committed_messages()[0].finalized);
         }
 
         #[test]
-        fn test_scrollback_behavior_with_overflow() {
-            // Create a smaller terminal to test scrollback more easily
-            let mut renderer = create_test_renderer(80, 10); // Only 10 lines tall (8 content + 2 input)
-            let textarea = tui_textarea::TextArea::default();
+        fn test_finalized_messages_produce_pending_history_lines() {
+            let mut renderer = create_test_harness(80, 10);
+            let textarea = TextArea::new();
 
-            // Add exactly 3 finalized messages with predictable single-line content
+            // Add finalized messages
             for i in 0..3 {
                 let message = create_text_message(&format!("Message {i}"));
-                renderer.finalized_messages.push(message);
+                renderer.transcript.committed_messages_mut().push(message);
             }
 
-            // Add a live message that will push content into scrollback
-            renderer.start_new_message(1);
-            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
-            renderer.append_to_live_block("Live message content");
+            // Render to flush finalized messages
+            renderer.render(&textarea);
 
-            // First render - should have minimal overflow
-            renderer.render(&textarea).unwrap();
-            let backend = renderer.terminal.backend();
+            // Drain pending history lines — they should contain our messages
+            let lines = renderer.drain_pending_history_lines();
+            let combined: String = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
 
-            // Capture what's in viewport and scrollback
-            let buffer = backend.buffer();
-            let scrollback = backend.scrollback();
-
-            // Extract visible content (excluding input area at bottom)
-            let mut viewport_lines = Vec::new();
-            for y in 0..8 {
-                // 8 lines for content (10 total - 2 for input)
-                let mut line_text = String::new();
-                for x in 0..80 {
-                    let cell = buffer.cell((x, y)).unwrap();
-                    line_text.push_str(cell.symbol());
-                }
-                let trimmed = line_text.trim_end();
-                if !trimmed.is_empty() {
-                    viewport_lines.push(format!("V{y}: {trimmed}"));
-                }
-            }
-
-            // Extract scrollback content
-            let mut scrollback_lines = Vec::new();
-            for y in 0..scrollback.area().height {
-                let mut line_text = String::new();
-                for x in 0..scrollback.area().width {
-                    if let Some(cell) = scrollback.cell((x, y)) {
-                        line_text.push_str(cell.symbol());
-                    }
-                }
-                let trimmed = line_text.trim_end();
-                if !trimmed.is_empty() {
-                    scrollback_lines.push(format!("S{y}: {trimmed}"));
-                }
-            }
-
-            println!("=== After first render ===");
-            println!("Viewport content:");
-            for line in &viewport_lines {
-                println!("  {line}");
-            }
-            println!("Scrollback content:");
-            for line in &scrollback_lines {
-                println!("  {line}");
-            }
-            println!("last_overflow: {}", renderer.last_overflow);
-
-            // Now add more content to force more overflow
-            for i in 3..6 {
-                let message = create_text_message(&format!("Additional message {i}"));
-                renderer.finalized_messages.push(message);
-            }
-
-            // Second render - should push more content to scrollback
-            renderer.render(&textarea).unwrap();
-            let backend = renderer.terminal.backend();
-
-            // Capture content again
-            let buffer = backend.buffer();
-            let scrollback = backend.scrollback();
-
-            let mut viewport_lines_2 = Vec::new();
-            for y in 0..8 {
-                let mut line_text = String::new();
-                for x in 0..80 {
-                    let cell = buffer.cell((x, y)).unwrap();
-                    line_text.push_str(cell.symbol());
-                }
-                let trimmed = line_text.trim_end();
-                if !trimmed.is_empty() {
-                    viewport_lines_2.push(format!("V{y}: {trimmed}"));
-                }
-            }
-
-            let mut scrollback_lines_2 = Vec::new();
-            for y in 0..scrollback.area().height {
-                let mut line_text = String::new();
-                for x in 0..scrollback.area().width {
-                    if let Some(cell) = scrollback.cell((x, y)) {
-                        line_text.push_str(cell.symbol());
-                    }
-                }
-                let trimmed = line_text.trim_end();
-                if !trimmed.is_empty() {
-                    scrollback_lines_2.push(format!("S{y}: {trimmed}"));
-                }
-            }
-
-            println!("=== After second render ===");
-            println!("Viewport content:");
-            for line in &viewport_lines_2 {
-                println!("  {line}");
-            }
-            println!("Scrollback content:");
-            for line in &scrollback_lines_2 {
-                println!("  {line}");
-            }
-            println!("last_overflow: {}", renderer.last_overflow);
-
-            // Specific assertions to catch duplication bugs:
-
-            // 1. Live message should be visible in viewport (closest to input)
-            let viewport_text = viewport_lines_2.join(" ");
             assert!(
-                viewport_text.contains("Live message content"),
-                "Live message should be visible in viewport"
-            );
-
-            // 2. Check for duplication - no message should appear in both viewport and scrollback
-
-            // Extract unique message identifiers from both areas
-            let mut viewport_messages = std::collections::HashSet::new();
-            let mut scrollback_messages = std::collections::HashSet::new();
-
-            // Simple regex-free approach: look for exact patterns
-            for line in &viewport_lines_2 {
-                // Look for "Message X" patterns
-                if let Some(start) = line.find("Message ") {
-                    let after_msg = &line[start + 8..]; // "Message ".len() = 8
-                    if let Some(space_pos) = after_msg.find(' ') {
-                        let id = &after_msg[..space_pos];
-                        viewport_messages.insert(format!("Message {id}"));
-                    } else if !after_msg.is_empty() {
-                        viewport_messages.insert(format!("Message {after_msg}"));
-                    }
-                }
-                // Look for "Additional message X" patterns
-                if let Some(start) = line.find("Additional message ") {
-                    let after_msg = &line[start + 19..]; // "Additional message ".len() = 19
-                    if let Some(space_pos) = after_msg.find(' ') {
-                        let id = &after_msg[..space_pos];
-                        viewport_messages.insert(format!("Additional message {id}"));
-                    } else if !after_msg.is_empty() {
-                        viewport_messages.insert(format!("Additional message {after_msg}"));
-                    }
-                }
-            }
-
-            for line in &scrollback_lines_2 {
-                // Look for "Message X" patterns
-                if let Some(start) = line.find("Message ") {
-                    let after_msg = &line[start + 8..];
-                    if let Some(space_pos) = after_msg.find(' ') {
-                        let id = &after_msg[..space_pos];
-                        scrollback_messages.insert(format!("Message {id}"));
-                    } else if !after_msg.is_empty() {
-                        scrollback_messages.insert(format!("Message {after_msg}"));
-                    }
-                }
-                // Look for "Additional message X" patterns
-                if let Some(start) = line.find("Additional message ") {
-                    let after_msg = &line[start + 19..];
-                    if let Some(space_pos) = after_msg.find(' ') {
-                        let id = &after_msg[..space_pos];
-                        scrollback_messages.insert(format!("Additional message {id}"));
-                    } else if !after_msg.is_empty() {
-                        scrollback_messages.insert(format!("Additional message {after_msg}"));
-                    }
-                }
-            }
-
-            // 3. No message should appear in both viewport and scrollback
-            let intersection: Vec<_> = viewport_messages
-                .intersection(&scrollback_messages)
-                .collect();
-            assert!(
-                intersection.is_empty(),
-                "Messages should not be duplicated between viewport and scrollback: {intersection:?}"
-            );
-
-            // 4. Scrollback should contain older content
-            assert!(
-                !scrollback_lines_2.is_empty(),
-                "Should have content in scrollback"
-            );
-
-            // 5. Verify overflow tracking is reasonable
-            assert!(renderer.last_overflow > 0, "Should track overflow amount");
-
-            // 6. Total unique messages should equal what we added
-            let total_unique_messages = viewport_messages.len() + scrollback_messages.len();
-            assert!(
-                total_unique_messages <= 6,
-                "Should not have more messages than we created"
+                combined.contains("Message 0"),
+                "Pending history should contain Message 0"
             );
             assert!(
-                total_unique_messages >= 3,
-                "Should have at least some of our messages visible"
+                combined.contains("Message 2"),
+                "Pending history should contain Message 2"
+            );
+
+            // Second drain should be empty
+            let lines2 = renderer.drain_pending_history_lines();
+            assert!(
+                lines2.is_empty(),
+                "Pending history should be empty after drain"
             );
         }
 
         #[test]
-        fn test_tall_live_message_modification_no_duplication() {
-            // Test the scenario where a live message is already tall and being modified
-            // This should not cause duplication in scrollback
-            let mut renderer = create_test_renderer(40, 8); // Very small terminal: 6 content + 2 input
-            let textarea = tui_textarea::TextArea::default();
+        fn test_live_message_not_in_pending_history() {
+            let mut renderer = create_test_harness(80, 10);
+            let textarea = TextArea::new();
 
-            // Add one finalized message first
-            let message = create_text_message("Previous message");
-            renderer.finalized_messages.push(message);
-
-            // Start a live message with a tool that will be tall
+            // Start live message
             renderer.start_new_message(1);
-            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
-            renderer.add_or_update_tool_parameter(
-                "tool_1",
-                "path".to_string(),
-                "long_file.txt".to_string(),
-            );
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Live content should not be in history");
 
-            // Add a large content parameter that will make the tool block tall
-            let large_content = (0..10)
-                .map(|i| format!("Line {i} of file content"))
+            renderer.render(&textarea);
+
+            // Live message should NOT appear in pending history
+            let lines = renderer.drain_pending_history_lines();
+            let combined: String = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
-            renderer.add_or_update_tool_parameter("tool_1", "content".to_string(), large_content);
-
-            // First render - live message should already overflow
-            renderer.render(&textarea).unwrap();
-            let backend = renderer.terminal.backend();
-
-            let mut initial_scrollback_lines = Vec::new();
-            let scrollback = backend.scrollback();
-            for y in 0..scrollback.area().height {
-                let mut line_text = String::new();
-                for x in 0..scrollback.area().width {
-                    if let Some(cell) = scrollback.cell((x, y)) {
-                        line_text.push_str(cell.symbol());
-                    }
-                }
-                let trimmed = line_text.trim_end();
-                if !trimmed.is_empty() {
-                    initial_scrollback_lines.push(trimmed.to_string());
-                }
-            }
-
-            println!("=== Initial scrollback after tall live message ===");
-            for (i, line) in initial_scrollback_lines.iter().enumerate() {
-                println!("  {i}: {line}");
-            }
-
-            // Now modify the live message by updating tool status
-            renderer.update_tool_status("tool_1", crate::ui::ToolStatus::Success, None, None);
-
-            // Second render - should not duplicate content in scrollback
-            renderer.render(&textarea).unwrap();
-            let backend = renderer.terminal.backend();
-
-            let mut modified_scrollback_lines = Vec::new();
-            let scrollback = backend.scrollback();
-            for y in 0..scrollback.area().height {
-                let mut line_text = String::new();
-                for x in 0..scrollback.area().width {
-                    if let Some(cell) = scrollback.cell((x, y)) {
-                        line_text.push_str(cell.symbol());
-                    }
-                }
-                let trimmed = line_text.trim_end();
-                if !trimmed.is_empty() {
-                    modified_scrollback_lines.push(trimmed.to_string());
-                }
-            }
-
-            println!("=== Scrollback after live message modification ===");
-            for (i, line) in modified_scrollback_lines.iter().enumerate() {
-                println!("  {i}: {line}");
-            }
-
-            // Key assertion: scrollback should not have grown significantly
-            // It might grow slightly due to status change, but should not double
-            let initial_non_empty_lines = initial_scrollback_lines.len();
-            let modified_non_empty_lines = modified_scrollback_lines.len();
 
             assert!(
-                modified_non_empty_lines <= initial_non_empty_lines + 2,
-                "Scrollback should not grow significantly when modifying live message.\
-                Initial: {initial_non_empty_lines}, Modified: {modified_non_empty_lines}"
-            );
-
-            // Check for obvious duplication patterns
-            let mut line_counts = std::collections::HashMap::new();
-            for line in &modified_scrollback_lines {
-                *line_counts.entry(line.clone()).or_insert(0) += 1;
-            }
-
-            let duplicated_lines: Vec<_> =
-                line_counts.iter().filter(|(_, &count)| count > 1).collect();
-
-            assert!(
-                duplicated_lines.is_empty(),
-                "Found duplicated lines in scrollback: {duplicated_lines:?}",
-            );
-
-            // Add more content to the live message
-            renderer.append_to_live_block("\n\nAdditional text appended to live message");
-
-            // Third render
-            renderer.render(&textarea).unwrap();
-            let backend = renderer.terminal.backend();
-
-            let mut final_scrollback_lines = Vec::new();
-            let scrollback = backend.scrollback();
-            for y in 0..scrollback.area().height {
-                let mut line_text = String::new();
-                for x in 0..scrollback.area().width {
-                    if let Some(cell) = scrollback.cell((x, y)) {
-                        line_text.push_str(cell.symbol());
-                    }
-                }
-                let trimmed = line_text.trim_end();
-                if !trimmed.is_empty() {
-                    final_scrollback_lines.push(trimmed.to_string());
-                }
-            }
-
-            println!("=== Final scrollback after appending to live message ===");
-            for (i, line) in final_scrollback_lines.iter().enumerate() {
-                println!("  {i}: {line}");
-            }
-
-            // Final assertion: should not have excessive duplication
-            let mut final_line_counts = std::collections::HashMap::new();
-            for line in &final_scrollback_lines {
-                *final_line_counts.entry(line.clone()).or_insert(0) += 1;
-            }
-
-            let final_duplicated_lines: Vec<_> = final_line_counts
-                .iter()
-                .filter(|(_, &count)| count > 1)
-                .collect();
-
-            assert!(
-                final_duplicated_lines.is_empty(),
-                "Found duplicated lines in final scrollback: {final_duplicated_lines:?}"
+                !combined.contains("Live content"),
+                "Live message should not be in pending history lines"
             );
         }
 
         #[test]
         fn test_live_message_rendering_priority() {
-            let mut renderer = create_default_test_renderer();
-            let textarea = tui_textarea::TextArea::default();
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
 
             // Add some finalized messages
             for i in 0..2 {
                 let message = create_text_message(&format!("Finalized message {i}"));
-                renderer.finalized_messages.push(message);
+                renderer.transcript.committed_messages_mut().push(message);
             }
 
             // Start a live message
@@ -2163,15 +2490,11 @@ mod tests {
             renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
             renderer.append_to_live_block("This is live content being streamed");
 
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
-            // Live content should appear closest to input (bottom of content area)
+            // Live content should appear in the viewport
             let mut found_live_content = false;
-            let mut found_finalized_content = false;
-            let mut live_content_y = None;
-            let mut finalized_content_y = None;
-
             for y in 0..18 {
                 let mut line_text = String::new();
                 for x in 0..80 {
@@ -2181,37 +2504,38 @@ mod tests {
 
                 if line_text.contains("live content being streamed") {
                     found_live_content = true;
-                    live_content_y = Some(y);
-                }
-                if line_text.contains("Finalized message") {
-                    found_finalized_content = true;
-                    if finalized_content_y.is_none() {
-                        finalized_content_y = Some(y);
-                    }
                 }
             }
+            assert!(found_live_content, "Should render live content in viewport");
 
-            assert!(found_live_content, "Should render live content");
-            assert!(found_finalized_content, "Should render finalized content");
-
-            // Live content should appear below (higher y coordinate) finalized content
-            if let (Some(live_y), Some(finalized_y)) = (live_content_y, finalized_content_y) {
-                assert!(
-                    live_y > finalized_y,
-                    "Live content should appear closer to input than finalized content"
-                );
-            }
+            // Finalized messages should be in pending history lines (scrollback),
+            // NOT in the viewport buffer
+            let pending = renderer.drain_pending_history_lines();
+            let combined: String = pending
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                combined.contains("Finalized message"),
+                "Finalized content should be in pending history lines"
+            );
         }
 
         #[test]
         fn test_spinner_rendering_states() {
-            let mut renderer = create_default_test_renderer();
-            let textarea = tui_textarea::TextArea::default();
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
 
             // Test loading spinner
             renderer.start_new_message(1);
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_loading_spinner = false;
             for y in 0..18 {
@@ -2233,8 +2557,8 @@ mod tests {
 
             // Test rate limit spinner with text
             renderer.show_rate_limit_spinner(30);
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_rate_limit_text = false;
             for y in 0..18 {
@@ -2255,8 +2579,8 @@ mod tests {
 
             // Test hidden spinner
             renderer.hide_spinner();
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_spinner_after_hide = false;
             for y in 0..18 {
@@ -2284,16 +2608,16 @@ mod tests {
 
         #[test]
         fn test_error_takes_priority_over_pending_message_in_rendering() {
-            let mut renderer = create_default_test_renderer();
-            let textarea = tui_textarea::TextArea::default();
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
 
             // Set both pending message and error
             renderer.set_pending_user_message(Some("User is typing...".to_string()));
             renderer.set_error("Critical error occurred".to_string());
 
             // Render and verify error takes priority over pending message
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_error = false;
             let mut found_pending = false;
@@ -2321,8 +2645,8 @@ mod tests {
 
             // Clear error - pending message should now be visible
             renderer.clear_error();
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut found_error_after_clear = false;
             let mut found_pending_after_clear = false;
@@ -2349,8 +2673,8 @@ mod tests {
 
             // Clear pending message - should have clean status area
             renderer.set_pending_user_message(None);
-            renderer.render(&textarea).unwrap();
-            let buffer = renderer.terminal.backend().buffer();
+            renderer.render(&textarea);
+            let buffer = renderer.buffer();
 
             let mut has_status_content = false;
             for y in 0..17 {
@@ -2370,6 +2694,819 @@ mod tests {
                 !has_status_content,
                 "Status area should be clean when no error or pending message"
             );
+        }
+
+        #[test]
+        fn test_streamed_thinking_text_then_tool_has_single_blank_before_tool() {
+            let mut renderer = create_test_harness(80, 20);
+            let textarea = TextArea::new();
+
+            // Start a message (like StreamingStarted)
+            renderer.start_new_message(1);
+
+            // Stream some thinking content
+            renderer.queue_thinking_delta("Let me think about this.\n".to_string());
+            // Drain via render to simulate commit tick
+            renderer.render(&textarea);
+            let _ = renderer.drain_pending_history_lines();
+
+            // Switch to text — this should flush thinking + insert blank separator
+            renderer.queue_text_delta("Here is my answer.\n".to_string());
+            renderer.render(&textarea);
+            let _ = renderer.drain_pending_history_lines();
+
+            // Start a tool block (like UiEvent::StartTool)
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "/tmp/test.txt".to_string(),
+            );
+            renderer.update_tool_status("tool_1", ToolStatus::Success, None, None);
+
+            // Finalize the message (like what add_user_message does)
+            renderer.flush_streaming_pending();
+            renderer.transcript.finalize_active_if_content();
+            renderer.render(&textarea);
+
+            // Drain all pending history lines — these represent what goes to scrollback
+            let lines = renderer.drain_pending_history_lines();
+
+            // Debug: print all lines
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    if l.spans.is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        l.spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                    }
+                })
+                .collect();
+
+            // Find the tool line (starts with "● ")
+            let tool_line_idx = line_strs
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("Should have a tool line");
+
+            // Count consecutive blank lines immediately before the tool
+            let mut blank_count = 0;
+            let mut idx = tool_line_idx;
+            while idx > 0 {
+                idx -= 1;
+                if line_strs[idx] == "<<blank>>" {
+                    blank_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                blank_count,
+                1,
+                "Expected exactly 1 blank line before tool block, got {}.\nAll lines:\n{}",
+                blank_count,
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        /// Test that simulates a full flow WITHOUT draining intermediate pending
+        /// history lines — this is closer to what happens when the user scrolls
+        /// back and sees accumulated scrollback content.
+        #[test]
+        fn test_streamed_flow_accumulated_has_single_blank_before_tool() {
+            let mut renderer = create_test_harness(80, 20);
+            let textarea = TextArea::new();
+
+            // Start a message (like StreamingStarted)
+            renderer.start_new_message(1);
+
+            // Stream some thinking content
+            renderer.queue_thinking_delta("Let me think about this.\n".to_string());
+            renderer.render(&textarea);
+            // Do NOT drain — accumulate all lines
+
+            // Switch to text
+            renderer.queue_text_delta("Here is my answer.\n".to_string());
+            renderer.render(&textarea);
+
+            // Start a tool block
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "/tmp/test.txt".to_string(),
+            );
+            renderer.update_tool_status("tool_1", ToolStatus::Success, None, None);
+
+            // Finalize
+            renderer.flush_streaming_pending();
+            renderer.transcript.finalize_active_if_content();
+            renderer.render(&textarea);
+
+            // Now drain ALL accumulated history lines at once
+            let lines = renderer.drain_pending_history_lines();
+
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    if l.spans.is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        l.spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                    }
+                })
+                .collect();
+
+            // Find the tool line
+            let tool_line_idx = line_strs
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("Should have a tool line");
+
+            // Count consecutive blank lines immediately before the tool
+            let mut blank_count = 0;
+            let mut idx = tool_line_idx;
+            while idx > 0 {
+                idx -= 1;
+                if line_strs[idx] == "<<blank>>" {
+                    blank_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                blank_count,
+                1,
+                "Expected exactly 1 blank line before tool block, got {}.\nAll lines:\n{}",
+                blank_count,
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        /// Test: text → tool → text → tool (interleaved) — each tool should have
+        /// exactly 1 blank line before it.
+        #[test]
+        fn test_interleaved_text_tool_text_tool_spacing() {
+            let mut renderer = create_test_harness(80, 20);
+            let textarea = TextArea::new();
+
+            // Message 1: text then tool then text then tool
+            renderer.start_new_message(1);
+
+            renderer.queue_text_delta("First paragraph.\n".to_string());
+            renderer.render(&textarea);
+
+            renderer.start_tool_use_block("read".to_string(), "t1".to_string());
+            renderer.add_or_update_tool_parameter("t1", "path".to_string(), "a.txt".to_string());
+            renderer.update_tool_status("t1", ToolStatus::Success, None, None);
+
+            // More text after tool
+            renderer.queue_text_delta("Second paragraph.\n".to_string());
+            renderer.render(&textarea);
+
+            renderer.start_tool_use_block("write".to_string(), "t2".to_string());
+            renderer.add_or_update_tool_parameter("t2", "path".to_string(), "b.txt".to_string());
+            renderer.update_tool_status("t2", ToolStatus::Success, None, None);
+
+            // Finalize
+            renderer.flush_streaming_pending();
+            renderer.transcript.finalize_active_if_content();
+            renderer.render(&textarea);
+
+            let lines = renderer.drain_pending_history_lines();
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    if l.spans.is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        l.spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                    }
+                })
+                .collect();
+
+            // Find all tool lines
+            let tool_indices: Vec<usize> = line_strs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.contains("●"))
+                .map(|(i, _)| i)
+                .collect();
+
+            assert_eq!(
+                tool_indices.len(),
+                2,
+                "Should have 2 tool lines.\nAll lines:\n{}",
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+
+            for &ti in &tool_indices {
+                let mut blank_count = 0;
+                let mut idx = ti;
+                while idx > 0 {
+                    idx -= 1;
+                    if line_strs[idx] == "<<blank>>" {
+                        blank_count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    blank_count,
+                    1,
+                    "Expected 1 blank before tool at line {ti}, got {blank_count}.\nAll lines:\n{}",
+                    line_strs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("  [{i:2}] {s}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
+        }
+
+        /// Verify trailing blank line after tool blocks in scrollback
+        /// when tool is followed by more streamed content.
+        #[test]
+        fn test_scrollback_trailing_blank_after_tool() {
+            let mut harness = create_test_harness(80, 30);
+            let textarea = TextArea::new();
+
+            harness.start_new_message(1);
+
+            // Stream text, tool, then more text
+            harness.queue_text_delta("Before tool.\n".to_string());
+            harness.render(&textarea);
+            let _ = harness.drain_pending_history_lines();
+
+            harness.start_tool_use_block("read_files".to_string(), "t1".to_string());
+            harness.add_or_update_tool_parameter(
+                "t1",
+                "paths".to_string(),
+                "src/main.rs".to_string(),
+            );
+            harness.update_tool_status("t1", ToolStatus::Success, None, None);
+
+            harness.queue_text_delta("After tool.\n".to_string());
+            harness.render(&textarea);
+            let _ = harness.drain_pending_history_lines();
+
+            // Finalize
+            harness.flush_streaming_pending();
+            harness.transcript.finalize_active_if_content();
+            harness.render(&textarea);
+
+            let lines = harness.drain_pending_history_lines();
+            let line_strs: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                    if text.trim().is_empty() {
+                        "<<blank>>".to_string()
+                    } else {
+                        text
+                    }
+                })
+                .collect();
+
+            // Find the tool header
+            let tool_idx = line_strs.iter().position(|s| s.contains("●"));
+            assert!(
+                tool_idx.is_some(),
+                "Tool line not found.\nAll lines:\n{}",
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            let ti = tool_idx.unwrap();
+
+            // Find the last line of the tool block (before next blank or end)
+            let mut last_tool_line = ti;
+            #[allow(clippy::needless_range_loop)] // Index needed for last_tool_line
+            for i in (ti + 1)..line_strs.len() {
+                if line_strs[i] == "<<blank>>" {
+                    break;
+                }
+                last_tool_line = i;
+            }
+
+            // There should be a blank line after the tool block
+            let next = last_tool_line + 1;
+            assert!(
+                next < line_strs.len() && line_strs[next] == "<<blank>>",
+                "Expected blank line after tool block (last tool line at {last_tool_line}).\nAll lines:\n{}",
+                line_strs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        /// Compare blank lines before execute_command vs edit tool blocks.
+        /// Both should have exactly 1 blank line before their header.
+        #[test]
+        fn test_execute_command_vs_edit_blank_lines() {
+            // Helper: collect all history lines from a scenario
+            fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
+            }
+
+            fn count_blanks_before(lines: &[String], ti: usize) -> usize {
+                let mut count = 0;
+                let mut idx = ti;
+                while idx > 0 {
+                    idx -= 1;
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                count
+            }
+
+            // Scenario: text → tool (single tool)
+            fn run_single_tool(tool_name: &str, tool_id: &str) -> Vec<String> {
+                let mut harness = create_test_harness(80, 30);
+                let textarea = TextArea::new();
+                let mut all = Vec::new();
+
+                harness.start_new_message(1);
+                harness.queue_text_delta("I will now use a tool.\n".to_string());
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+
+                harness.start_tool_use_block(tool_name.to_string(), tool_id.to_string());
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+
+                harness.update_tool_status(
+                    tool_id,
+                    ToolStatus::Success,
+                    Some("done".to_string()),
+                    None,
+                );
+                harness.flush_streaming_pending();
+                harness.transcript.finalize_active_if_content();
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+                all
+            }
+
+            let edit_lines = run_single_tool("edit", "e1");
+            let cmd_lines = run_single_tool("execute_command", "c1");
+
+            let edit_ti = edit_lines
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("no edit header");
+            let cmd_ti = cmd_lines
+                .iter()
+                .position(|s| s.contains("●"))
+                .expect("no cmd header");
+
+            let edit_blanks = count_blanks_before(&edit_lines, edit_ti);
+            let cmd_blanks = count_blanks_before(&cmd_lines, cmd_ti);
+
+            assert_eq!(
+                edit_blanks,
+                cmd_blanks,
+                "Single tool: edit blanks ({edit_blanks}) != cmd blanks ({cmd_blanks})\n\
+                 Edit:\n{}\nCmd:\n{}",
+                edit_lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                cmd_lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+
+            assert_eq!(edit_blanks, 1, "Expected 1 blank before tool");
+
+            // Scenario: text → edit → text → execute_command (two tools with text between)
+            {
+                let mut harness = create_test_harness(80, 30);
+                let textarea = TextArea::new();
+                let mut all = Vec::new();
+
+                harness.start_new_message(1);
+                harness.queue_text_delta("First text.\n".to_string());
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+
+                harness.start_tool_use_block("edit".to_string(), "e1".to_string());
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+
+                harness.update_tool_status(
+                    "e1",
+                    ToolStatus::Success,
+                    Some("done".to_string()),
+                    None,
+                );
+
+                harness.queue_text_delta("Second text.\n".to_string());
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+
+                harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
+                harness.add_or_update_tool_parameter(
+                    "c1",
+                    "command_line".to_string(),
+                    "cargo test".to_string(),
+                );
+                // Simulate streaming output
+                harness.append_tool_output("c1", "running tests...\n");
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+
+                harness.update_tool_status(
+                    "c1",
+                    ToolStatus::Success,
+                    Some("done".to_string()),
+                    None,
+                );
+
+                harness.flush_streaming_pending();
+                harness.transcript.finalize_active_if_content();
+                harness.render(&textarea);
+                all.extend(drain_to_strings(&mut harness));
+
+                // Find both tool headers
+                let tool_positions: Vec<(usize, &String)> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.contains("●"))
+                    .collect();
+
+                assert_eq!(
+                    tool_positions.len(),
+                    2,
+                    "Expected 2 tool headers.\nAll lines:\n{}",
+                    all.iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("  [{i:2}] {s}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+
+                for (ti, tool_line) in &tool_positions {
+                    let blanks = count_blanks_before(&all, *ti);
+                    assert_eq!(
+                        blanks,
+                        1,
+                        "Expected 1 blank before '{}' at line {ti}, got {blanks}.\nAll lines:\n{}",
+                        tool_line,
+                        all.iter()
+                            .enumerate()
+                            .map(|(i, s)| format!("  [{i:2}] {s}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                }
+            }
+        }
+
+        /// Scenario: hidden tool completes → text → execute_command should still
+        /// have only 1 blank before the tool header.
+        #[test]
+        fn test_hidden_tool_then_execute_command_blank_lines() {
+            fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
+            }
+
+            fn count_blanks_before(lines: &[String], ti: usize) -> usize {
+                let mut count = 0;
+                let mut idx = ti;
+                while idx > 0 {
+                    idx -= 1;
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                count
+            }
+
+            let mut harness = create_test_harness(80, 30);
+            let textarea = TextArea::new();
+            let mut all = Vec::new();
+
+            harness.start_new_message(1);
+
+            // Stream some initial text
+            harness.queue_text_delta("Initial text.\n".to_string());
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Hidden tool completes
+            harness.mark_hidden_tool_completed();
+
+            // More text after hidden tool
+            harness.queue_text_delta("After hidden tool.\n".to_string());
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Now start execute_command
+            harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
+            harness.add_or_update_tool_parameter(
+                "c1",
+                "command_line".to_string(),
+                "cargo test".to_string(),
+            );
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            harness.update_tool_status("c1", ToolStatus::Success, Some("done".to_string()), None);
+
+            harness.flush_streaming_pending();
+            harness.transcript.finalize_active_if_content();
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            let cmd_ti = all
+                .iter()
+                .position(|s| s.contains("● execute_command"))
+                .expect("no execute_command header");
+
+            let blanks = count_blanks_before(&all, cmd_ti);
+            assert_eq!(
+                blanks,
+                1,
+                "Expected 1 blank before execute_command, got {blanks}.\nAll lines:\n{}",
+                all.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        /// Scenario: thinking → text → execute_command should have 1 blank before tool.
+        #[test]
+        fn test_thinking_text_then_execute_command_blank_lines() {
+            fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
+            }
+
+            fn count_blanks_before(lines: &[String], ti: usize) -> usize {
+                let mut count = 0;
+                let mut idx = ti;
+                while idx > 0 {
+                    idx -= 1;
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                count
+            }
+
+            let mut harness = create_test_harness(80, 30);
+            let textarea = TextArea::new();
+            let mut all = Vec::new();
+
+            harness.start_new_message(1);
+
+            // Stream thinking
+            harness.queue_thinking_delta("Let me think...\n".to_string());
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Stream text (switches from thinking → text, flushes thinking)
+            harness.queue_text_delta("I will run a command.\n".to_string());
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Now start execute_command
+            harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
+            harness.add_or_update_tool_parameter(
+                "c1",
+                "command_line".to_string(),
+                "cargo test".to_string(),
+            );
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            harness.update_tool_status("c1", ToolStatus::Success, Some("done".to_string()), None);
+
+            harness.flush_streaming_pending();
+            harness.transcript.finalize_active_if_content();
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            let cmd_ti = all
+                .iter()
+                .position(|s| s.contains("● execute_command"))
+                .expect("no execute_command header");
+
+            let blanks = count_blanks_before(&all, cmd_ti);
+            assert_eq!(
+                blanks,
+                1,
+                "Expected 1 blank before execute_command, got {blanks}.\nAll lines:\n{}",
+                all.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        /// Scenario: edit → text → execute_command, checking both tools.
+        /// Also checks with streaming tool output and full render() output replacement.
+        #[test]
+        fn test_edit_then_text_then_execute_command_with_output() {
+            fn drain_to_strings(harness: &mut TestHarness) -> Vec<String> {
+                harness
+                    .drain_pending_history_lines()
+                    .iter()
+                    .map(|l| {
+                        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                        if text.trim().is_empty() {
+                            "<<blank>>".to_string()
+                        } else {
+                            text
+                        }
+                    })
+                    .collect()
+            }
+
+            fn count_blanks_before(lines: &[String], ti: usize) -> usize {
+                let mut count = 0;
+                let mut idx = ti;
+                while idx > 0 {
+                    idx -= 1;
+                    if lines[idx] == "<<blank>>" {
+                        count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                count
+            }
+
+            let mut harness = create_test_harness(80, 30);
+            let textarea = TextArea::new();
+            let mut all = Vec::new();
+
+            harness.start_new_message(1);
+
+            // Stream text
+            harness.queue_text_delta("Let me edit and then run.\n".to_string());
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Start edit tool
+            harness.start_tool_use_block("edit".to_string(), "e1".to_string());
+            harness.add_or_update_tool_parameter(
+                "e1",
+                "file_path".to_string(),
+                "src/main.rs".to_string(),
+            );
+            harness.update_tool_status("e1", ToolStatus::Success, Some("done".to_string()), None);
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // More text between tools
+            harness.queue_text_delta("Now running the command.\n".to_string());
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Start execute_command
+            harness.start_tool_use_block("execute_command".to_string(), "c1".to_string());
+            harness.add_or_update_tool_parameter(
+                "c1",
+                "command_line".to_string(),
+                "cargo test".to_string(),
+            );
+            // Streaming output
+            harness.append_tool_output("c1", "test result: ok\n");
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Complete with render() output (replaces streaming output)
+            harness.update_tool_status(
+                "c1",
+                ToolStatus::Success,
+                Some("Command executed successfully".to_string()),
+                Some(
+                    "Status: Success\n>>>>> OUTPUT:\ntest result: ok\n<<<<< END OF OUTPUT"
+                        .to_string(),
+                ),
+            );
+
+            harness.flush_streaming_pending();
+            harness.transcript.finalize_active_if_content();
+            harness.render(&textarea);
+            all.extend(drain_to_strings(&mut harness));
+
+            // Check both tools
+            let tool_positions: Vec<(usize, String)> = all
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.contains("●"))
+                .map(|(i, s)| (i, s.clone()))
+                .collect();
+
+            assert_eq!(
+                tool_positions.len(),
+                2,
+                "Expected 2 tool headers.\nAll lines:\n{}",
+                all.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  [{i:2}] {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+
+            for (ti, tool_line) in &tool_positions {
+                let blanks = count_blanks_before(&all, *ti);
+                assert_eq!(
+                    blanks,
+                    1,
+                    "Expected 1 blank before '{}' at line {ti}, got {blanks}.\nAll lines:\n{}",
+                    tool_line,
+                    all.iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("  [{i:2}] {s}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
         }
     }
 }
