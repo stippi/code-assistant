@@ -22,7 +22,11 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
     let session_config_template = SessionConfig {
         init_path: Some(root_path.clone()),
-        initial_project: String::new(),
+        initial_project: root_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
         sandbox_policy: config.sandbox_policy.clone(),
