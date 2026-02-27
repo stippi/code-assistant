@@ -277,6 +277,10 @@ impl acp::Agent for ACPAgentImpl {
                 .agent_capabilities(
                     acp::AgentCapabilities::new()
                         .load_session(true)
+                        .session_capabilities(
+                            acp::SessionCapabilities::new()
+                                .list(acp::SessionListCapabilities::new()),
+                        )
                         .prompt_capabilities(
                             acp::PromptCapabilities::new()
                                 .image(true)
@@ -400,7 +404,9 @@ impl acp::Agent for ACPAgentImpl {
 
                 (
                     session_instance.session.config.tool_syntax,
-                    session_instance.session.messages.clone(),
+                    // Use get_active_messages_cloned() to get messages from tree structure
+                    // (session.messages is the legacy linear list which is empty after migration)
+                    session_instance.session.get_active_messages_cloned(),
                     session_instance.session.config.init_path.clone(),
                     session_instance.session.model_config.clone(),
                 )
@@ -928,6 +934,98 @@ impl acp::Agent for ACPAgentImpl {
             }
 
             Ok(())
+        })
+    }
+
+    fn list_sessions<'life0, 'async_trait>(
+        &'life0 self,
+        arguments: acp::ListSessionsRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acp::ListSessionsResponse, acp::Error>>
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
+        let session_manager = self.session_manager.clone();
+
+        Box::pin(async move {
+            tracing::info!("ACP: Listing sessions with cwd filter: {:?}", arguments.cwd);
+
+            let manager = session_manager.lock().await;
+            let all_sessions = manager.list_all_sessions().map_err(|e| {
+                tracing::error!("Failed to list sessions: {}", e);
+                acp::Error::internal_error()
+            })?;
+
+            // Load project configuration to resolve project names to paths
+            let projects = crate::config::load_projects().unwrap_or_default();
+
+            // Canonicalize the filter path once for comparison
+            let filter_path_canonical = arguments
+                .cwd
+                .as_ref()
+                .and_then(|p| std::path::Path::new(p).canonicalize().ok());
+
+            // Filter and transform sessions using metadata (no individual session loading)
+            let filtered_sessions: Vec<acp::SessionInfo> = all_sessions
+                .into_iter()
+                .filter_map(|metadata| {
+                    // Get the project path from the initial_project name via project config
+                    let project_path = if metadata.initial_project.is_empty() {
+                        None
+                    } else {
+                        projects
+                            .get(&metadata.initial_project)
+                            .map(|p| p.path.clone())
+                    };
+
+                    // If cwd filter is provided, check if this session's project matches
+                    if let Some(ref filter_canonical) = filter_path_canonical {
+                        match &project_path {
+                            Some(path) => {
+                                let path_canonical = path.canonicalize().ok();
+                                if path_canonical.as_ref() != Some(filter_canonical) {
+                                    return None; // Doesn't match filter
+                                }
+                            }
+                            None => return None, // No project means no match
+                        }
+                    }
+
+                    // Need a valid project path to create SessionInfo (cwd is required)
+                    let cwd = project_path?;
+
+                    // Convert updated_at to ISO 8601 string
+                    let updated_at =
+                        chrono::DateTime::<chrono::Utc>::from(metadata.updated_at).to_rfc3339();
+
+                    // Use session name as title, but only if non-empty
+                    let title = if metadata.name.is_empty() {
+                        None
+                    } else {
+                        Some(metadata.name.clone())
+                    };
+
+                    Some(
+                        acp::SessionInfo::new(metadata.id.clone(), cwd)
+                            .title(title)
+                            .updated_at(updated_at),
+                    )
+                })
+                .collect();
+
+            tracing::info!(
+                "ACP: Found {} sessions matching filter",
+                filtered_sessions.len()
+            );
+
+            // Note: We don't implement pagination yet - return all matching sessions
+            // If needed in the future, we can add cursor-based pagination
+            Ok(acp::ListSessionsResponse::new(filtered_sessions))
         })
     }
 }
