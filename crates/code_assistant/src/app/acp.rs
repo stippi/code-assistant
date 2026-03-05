@@ -24,8 +24,11 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         "code-assistant-acp.log"
     };
 
-    let log_file = std::fs::File::create(log_path)
-        .unwrap_or_else(|_| panic!("Failed to create log file at {log_path}"));
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .unwrap_or_else(|_| panic!("Failed to open log file at {log_path}"));
 
     tracing_subscriber::registry()
         .with(
