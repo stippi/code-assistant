@@ -15,6 +15,7 @@ use anyhow::Result;
 use fs_explorer::Explorer;
 use llm::types::*;
 use sandbox::SandboxPolicy;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -2449,6 +2450,276 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
     } else {
         panic!("Expected Structured content for cancelled tool results");
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
+    // Scenario: LLM calls read_files on a large file, the result is big (>50KB),
+    // then the *next* LLM call fails with "prompt is too long".
+    // Expected: the large tool result is replaced with a PromptTooLongError,
+    // the UI is notified, and the LLM is retried successfully.
+
+    // Create an explorer with a large file (100KB, well above the 50KB threshold)
+    let large_content = "x".repeat(100 * 1024);
+    let mut files = HashMap::new();
+    files.insert(PathBuf::from("./root/big.txt"), large_content);
+    files.insert(
+        PathBuf::from("./root/test.txt"),
+        "line 1\nline 2\n".to_string(),
+    );
+    let explorer = crate::tests::mocks::MockExplorer::new(files, None);
+
+    let project_manager = MockProjectManager::new().with_project_path(
+        "test",
+        PathBuf::from("./root"),
+        Box::new(explorer),
+    );
+
+    // Response sequence (remember: Vec is a stack, last = popped first):
+    //  1. LLM requests read_files on big.txt (tool call)
+    //  2. "prompt is too long" error (after tool execution, on next LLM call)
+    //  3. LLM responds normally after replacement (text only, triggers GetUserInput)
+    //  (complete_task is auto-inserted by MockLLMProvider at position 0)
+    let mock_llm = MockLLMProvider::new(vec![
+        // Third response (popped last before complete_task): success after replacement
+        Ok(create_test_response_text(
+            "I see the file was too large. Let me try a different approach.",
+        )),
+        // Second response (popped second): prompt too long error
+        Err(anyhow::anyhow!(
+            "Invalid request: prompt is too long: 500000 tokens > 200000 maximum"
+        )),
+        // First response (popped first): LLM asks to read the large file
+        Ok(create_test_response(
+            "read-big-file",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["big.txt"],
+                "ignore_size_limit": true
+            }),
+            "Let me read this large file",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(project_manager),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    agent
+        .start_with_task("Read the big file".to_string())
+        .await?;
+
+    // Verify: 3 LLM requests were made:
+    //  1. Initial task → LLM returns read_files tool call
+    //  2. After tool execution → "prompt too long" error
+    //  3. After replacement → LLM responds with text (triggers GetUserInput)
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "Expected 3 requests (tool call, prompt-too-long, retry after replacement)"
+    );
+
+    // The retry request (3rd, index 2) should contain a ToolResult with is_error=true
+    let retry_request = &requests[2];
+    let has_error_tool_result = retry_request.messages.iter().any(|msg| {
+        if let MessageContent::Structured(blocks) = &msg.content {
+            blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult {
+                        is_error: Some(true),
+                        ..
+                    }
+                )
+            })
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_error_tool_result,
+        "Expected retry request to contain an error ToolResult after replacement"
+    );
+
+    // Verify the UI received an UpdateToolStatus event with Error status
+    let events = ui.events();
+    let has_tool_error_update = events.iter().any(|event| {
+        matches!(
+            event,
+            UiEvent::UpdateToolStatus {
+                tool_id,
+                status: crate::ui::ToolStatus::Error,
+                message: Some(msg),
+                ..
+            } if tool_id == "read-big-file" && msg.contains("Prompt Too Long")
+        )
+    });
+    assert!(
+        has_tool_error_update,
+        "Expected UI to receive UpdateToolStatus with Error for the replaced tool"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<()> {
+    // Scenario: LLM calls read_files with a small result (<50KB), then the next
+    // LLM call fails with "prompt is too long".  Since the tool result is below
+    // the 50KB replacement threshold, the agent should drop the last exchange
+    // and force compaction.
+
+    let mock_project_manager = MockProjectManager::new();
+
+    // Response sequence (stack order, last = popped first):
+    //  1. LLM requests read_files on small file → tool call with small result
+    //  2. "prompt is too long" error
+    //  3. Compaction summary response (non-streaming, from perform_compaction)
+    //  4. LLM responds normally after compaction
+    //  (complete_task auto-inserted)
+    let mock_llm = MockLLMProvider::new(vec![
+        // Fourth (popped last before complete_task): normal response after compaction
+        Ok(create_test_response_text(
+            "I'll try a different approach after compaction.",
+        )),
+        // Third (popped third): compaction summary response (consumed by perform_compaction)
+        Ok(LLMResponse {
+            content: vec![ContentBlock::new_text("Summary: user asked to read a file")],
+            usage: Usage {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            rate_limit_info: None,
+        }),
+        // Second (popped second): prompt too long error
+        Err(anyhow::anyhow!(
+            "Invalid request: prompt is too long: 300000 tokens > 200000 maximum"
+        )),
+        // First (popped first): LLM asks to read a small file
+        Ok(create_test_response(
+            "read-small-file",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["test.txt"]
+            }),
+            "Let me read this file",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(mock_project_manager),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    agent.start_with_task("Read the file".to_string()).await?;
+
+    // Verify: 4 LLM requests were made:
+    //  1. Initial task → LLM returns read_files tool call
+    //  2. After tool execution → "prompt too long" error
+    //  3. Compaction summary (non-streaming)
+    //  4. After compaction → LLM responds with text (triggers GetUserInput)
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "Expected 4 requests (tool call, prompt-too-long, compaction, post-compaction)"
+    );
+
+    // The compaction request (3rd, index 2) should contain the compaction prompt marker
+    let compaction_request = &requests[2];
+    let has_compaction_prompt = compaction_request.messages.iter().any(|msg| {
+        matches!(&msg.content, MessageContent::Text(text) if text.contains("system-compaction"))
+    });
+    assert!(
+        has_compaction_prompt,
+        "Expected compaction prompt in the third request"
+    );
+
+    // After compaction, the message history should contain a compaction summary
+    let has_compaction_summary = agent
+        .message_history_for_tests()
+        .iter()
+        .any(|m| m.is_compaction_summary);
+    assert!(
+        has_compaction_summary,
+        "Expected compaction summary in message history"
+    );
+
+    // The dropped exchange (assistant tool_use + user tool_result) should no longer
+    // be in the message history
+    let has_tool_result = agent.message_history_for_tests().iter().any(|msg| {
+        if let MessageContent::Structured(blocks) = &msg.content {
+            blocks.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        ..
+                    } if tool_use_id == "read-small-file"
+                )
+            })
+        } else {
+            false
+        }
+    });
+    assert!(
+        !has_tool_result,
+        "Expected the dropped tool result to be removed from message history"
+    );
+
+    // Verify UI received compaction divider
+    let streaming_output = ui.get_streaming_output();
+    let has_compaction = streaming_output
+        .iter()
+        .any(|s| s.starts_with("[compaction]"));
+    assert!(
+        has_compaction,
+        "Expected compaction divider in UI streaming output"
+    );
 
     Ok(())
 }

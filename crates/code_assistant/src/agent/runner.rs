@@ -432,9 +432,21 @@ impl Agent {
                 Ok(result) => result,
                 Err(e) if Self::is_prompt_too_long_error(&e) => {
                     warn!("Prompt too long error detected, replacing large tool results with error messages");
-                    if self.replace_large_tool_results() {
-                        // We replaced at least one large tool result with a small error
-                        // placeholder.  `continue` restarts the loop which will call
+                    let replaced = self.replace_large_tool_results();
+                    if !replaced.is_empty() {
+                        // Notify the UI that these tools switched from success → error
+                        for (tool_id, error_message) in &replaced {
+                            let _ = self
+                                .ui
+                                .send_event(UiEvent::UpdateToolStatus {
+                                    tool_id: tool_id.clone(),
+                                    status: crate::ui::ToolStatus::Error,
+                                    message: Some("Prompt Too Long".to_string()),
+                                    output: Some(error_message.clone()),
+                                })
+                                .await;
+                        }
+                        // `continue` restarts the loop which will call
                         // render_tool_results_in_messages() again — this time the replaced
                         // PromptTooLongError placeholders produce a much smaller prompt —
                         // and then get_next_assistant_message() is retried automatically.
@@ -1615,8 +1627,10 @@ impl Agent {
     /// with [`PromptTooLongError`] placeholders so that the next LLM request has a
     /// chance to succeed.
     ///
-    /// Returns `true` if at least one result was replaced.
-    fn replace_large_tool_results(&mut self) -> bool {
+    /// Returns a vec of `(tool_id, error_message)` for each replaced result,
+    /// empty if nothing was replaced.  The caller is responsible for sending
+    /// `UpdateToolStatus` UI events for these.
+    fn replace_large_tool_results(&mut self) -> Vec<(String, String)> {
         use crate::tools::core::render::ResourcesTracker;
         use crate::tools::PromptTooLongError;
 
@@ -1655,7 +1669,7 @@ impl Agent {
             .collect();
 
         if current_turn_ids.is_empty() {
-            return false;
+            return Vec::new();
         }
 
         // Render each current-turn tool output to measure its size
@@ -1675,32 +1689,30 @@ impl Agent {
         // Replace results that are above a minimum threshold (50KB) — there is no
         // point replacing tiny results since they are unlikely to be the cause.
         const MIN_REPLACE_THRESHOLD: usize = 50 * 1024;
-        let mut replaced_any = false;
+        let mut replaced: Vec<(String, String)> = Vec::new();
 
         for (idx, byte_size) in sizes {
             if byte_size < MIN_REPLACE_THRESHOLD {
                 break;
             }
             let tool_name = self.tool_executions[idx].tool_request.name.clone();
+            let tool_id = self.tool_executions[idx].tool_request.id.clone();
             warn!(
                 "Replacing tool result for '{}' ({}KB) with prompt-too-long error",
                 tool_name,
                 byte_size / 1024
             );
-            self.tool_executions[idx].result =
-                Box::new(PromptTooLongError::new(&tool_name, byte_size));
-            replaced_any = true;
+            let error = PromptTooLongError::new(&tool_name, byte_size);
+            let error_message = error.error_message.clone();
+            self.tool_executions[idx].result = Box::new(error);
+            replaced.push((tool_id, error_message));
         }
 
         // Also update the corresponding ToolResult content blocks in message history
         // so the is_error flag is set correctly
-        if replaced_any {
-            let replaced_ids: std::collections::HashSet<String> = self
-                .tool_executions
-                .iter()
-                .filter(|e| e.result.as_render().status().contains("Prompt Too Long"))
-                .map(|e| e.tool_request.id.clone())
-                .collect();
+        if !replaced.is_empty() {
+            let replaced_ids: std::collections::HashSet<&str> =
+                replaced.iter().map(|(id, _)| id.as_str()).collect();
 
             for msg in &mut self.message_history {
                 if let MessageContent::Structured(blocks) = &mut msg.content {
@@ -1711,7 +1723,7 @@ impl Agent {
                             ..
                         } = block
                         {
-                            if replaced_ids.contains(tool_use_id) {
+                            if replaced_ids.contains(tool_use_id.as_str()) {
                                 *is_error = Some(true);
                             }
                         }
@@ -1720,7 +1732,7 @@ impl Agent {
             }
         }
 
-        replaced_any
+        replaced
     }
 
     /// Drop the last assistant → tool-result message pair from history.
