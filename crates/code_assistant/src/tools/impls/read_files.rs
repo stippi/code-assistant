@@ -25,6 +25,9 @@ fn prefix_lines_with_numbers(content: &str, start_line: usize) -> String {
         .join("\n")
 }
 
+/// Maximum file size in bytes before requiring explicit opt-in
+const MAX_FILE_SIZE: usize = 200 * 1024; // 200KB
+
 // Input type for the read_files tool
 #[derive(Deserialize, Serialize)]
 pub struct ReadFilesInput {
@@ -33,6 +36,10 @@ pub struct ReadFilesInput {
     /// If true, prefix each line with its line number (1-indexed)
     #[serde(default)]
     pub prefix_line_numbers: bool,
+    /// If true, bypass the file size limit check. Use when you explicitly need to read
+    /// a large file in full.
+    #[serde(default)]
+    pub ignore_size_limit: bool,
 }
 
 /// Content of a loaded file with optional line offset information
@@ -235,6 +242,11 @@ impl Tool for ReadFilesTool {
                         "type": "boolean",
                         "description": "If true, prefix each line with its line number (1-indexed). Line number and true content are separated by ' | '. Default is false.",
                         "default": false
+                    },
+                    "ignore_size_limit": {
+                        "type": "boolean",
+                        "description": "If true, bypass the file size limit check (~200KB). Only set this if you explicitly need to read a very large file in full.",
+                        "default": false
                     }
                 },
                 "required": ["project", "paths"]
@@ -315,6 +327,32 @@ impl Tool for ReadFilesTool {
 
             match read_result {
                 Ok(content) => {
+                    // Check file size unless explicitly opted out or using line ranges
+                    let has_line_range =
+                        parsed_path.start_line.is_some() || parsed_path.end_line.is_some();
+                    if !input.ignore_size_limit && !has_line_range && content.len() > MAX_FILE_SIZE
+                    {
+                        let line_count = content.lines().count();
+                        let size_kb = content.len() / 1024;
+                        let line_info = if line_count <= 1 {
+                            format!(
+                                "{size_kb}KB, {line_count} line (this appears to be a minified or \
+                                 single-line file)"
+                            )
+                        } else {
+                            format!("{size_kb}KB, {line_count} lines")
+                        };
+                        failed_files.push((
+                            PathBuf::from(&path_str),
+                            format!(
+                                "File is too large to read in full ({line_info}). Options:\n\
+                                 - Use line ranges to read specific sections, e.g. {path_str}:1-200\n\
+                                 - Use search_files to find relevant sections first\n\
+                                 - Set ignore_size_limit to true if you need the entire file"
+                            ),
+                        ));
+                        continue;
+                    }
                     loaded_files.insert(
                         PathBuf::from(&path_str),
                         LoadedFileContent {
@@ -744,6 +782,167 @@ mod tests {
         // Make sure we don't have line 1 or 2
         assert!(!output.contains("1 | "));
         assert!(!output.contains("2 | "));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_files_rejects_large_file() -> Result<()> {
+        let registry = ToolRegistry::global();
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        // Create a file larger than MAX_FILE_SIZE (200KB)
+        let large_content = "x".repeat(250 * 1024);
+
+        let mut fixture =
+            ToolTestFixture::with_files(vec![("large.txt".to_string(), large_content)]);
+        let mut context = fixture.context();
+
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["large.txt"]
+        });
+
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        // Should fail with a size error
+        assert!(!result.is_success());
+        assert!(output.contains("too large to read in full"));
+        assert!(output.contains("ignore_size_limit"));
+        // Should include line count info
+        assert!(output.contains("1 line"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_files_large_file_with_ignore_size_limit() -> Result<()> {
+        let registry = ToolRegistry::global();
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        let large_content = "line\n".repeat(50_000); // ~250KB
+
+        let mut fixture =
+            ToolTestFixture::with_files(vec![("large.txt".to_string(), large_content.clone())]);
+        let mut context = fixture.context();
+
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["large.txt"],
+            "ignore_size_limit": true
+        });
+
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        // Should succeed when ignore_size_limit is true
+        assert!(result.is_success());
+        assert!(output.contains("Successfully loaded"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_files_large_file_with_line_range_bypasses_limit() -> Result<()> {
+        let registry = ToolRegistry::global();
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        let large_content = (1..=50_000)
+            .map(|i| format!("Line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut fixture =
+            ToolTestFixture::with_files(vec![("large.txt".to_string(), large_content)]);
+        let mut context = fixture.context();
+
+        // Reading a specific range should always work regardless of file size
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["large.txt:1-50"]
+        });
+
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        assert!(result.is_success());
+        assert!(output.contains("Line 1"));
+        assert!(output.contains("Line 50"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_files_large_file_error_shows_line_count() -> Result<()> {
+        let registry = ToolRegistry::global();
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        // Multi-line file over 200KB
+        let large_content = (1..=10_000)
+            .map(|i| format!("This is line number {i} with some extra padding text"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut fixture = ToolTestFixture::with_files(vec![("big.rs".to_string(), large_content)]);
+        let mut context = fixture.context();
+
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["big.rs"]
+        });
+
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        assert!(!result.is_success());
+        assert!(output.contains("10000 lines"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_files_large_single_line_file_shows_minified_warning() -> Result<()> {
+        let registry = ToolRegistry::global();
+        let read_files_tool = registry
+            .get("read_files")
+            .expect("read_files tool should be registered");
+
+        // Single-line file (minified JSON) over 200KB
+        let large_content = format!("{{{}}}", "\"key\":\"value\",".repeat(20_000));
+
+        let mut fixture =
+            ToolTestFixture::with_files(vec![("data.json".to_string(), large_content)]);
+        let mut context = fixture.context();
+
+        let mut params = json!({
+            "project": "test-project",
+            "paths": ["data.json"]
+        });
+
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        assert!(!result.is_success());
+        assert!(output.contains("minified") || output.contains("single-line"));
 
         Ok(())
     }
