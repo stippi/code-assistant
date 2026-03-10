@@ -441,10 +441,10 @@ impl RootView {
                 )
             };
 
-            // Return the error popover positioned at bottom
+            // Return the error popover positioned at bottom of scroll area
             return vec![div()
                 .absolute()
-                .bottom(px(80.)) // Above input area (input is ~76px tall)
+                .bottom_2() // Small gap from the bottom of the scroll area
                 .left(px(0.))
                 .right(px(0.))
                 .flex()
@@ -458,6 +458,7 @@ impl RootView {
                         .border_color(border_color)
                         .rounded_lg()
                         .shadow_lg()
+                        .overflow_hidden()
                         .flex()
                         .items_start() // Align items to top for multi-line text
                         .gap_2()
@@ -480,6 +481,9 @@ impl RootView {
                                 .text_size(px(11.))
                                 .font_weight(gpui::FontWeight(500.0))
                                 .flex_grow()
+                                .flex_shrink()
+                                .min_w_0() // Allow shrinking below content size for text wrapping
+                                .overflow_hidden() // Prevent text from overflowing
                                 .whitespace_normal() // Enable text wrapping
                                 .line_height(px(14.)) // Set line height for better readability
                                 .child(error_message),
@@ -560,10 +564,10 @@ impl RootView {
                     _ => unreachable!(),
                 };
 
-                // Return the floating popover positioned at bottom
+                // Return the floating popover positioned at bottom of scroll area
                 return vec![div()
                     .absolute()
-                    .bottom(px(80.)) // Above input area (input is ~76px tall)
+                    .bottom_2() // Small gap from the bottom of the scroll area
                     .left(px(0.))
                     .right(px(0.))
                     .flex()
@@ -869,7 +873,6 @@ impl Render for RootView {
                     .child(
                         // Messages and input (content area) with floating popover
                         div()
-                            .relative() // For popover positioning
                             .bg(cx.theme().popover)
                             .flex()
                             .flex_col()
@@ -877,11 +880,20 @@ impl Render for RootView {
                             .flex_shrink() // Allow shrinking if needed
                             .overflow_hidden() // Prevent overflow
                             .child(
-                                // Messages display area - use the AutoScrollContainer wrapping MessagesView
-                                self.auto_scroll_container.clone(),
+                                // Scroll area wrapper: relative container for popover overlay
+                                div()
+                                    .relative()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(
+                                        // Messages display area - AutoScrollContainer
+                                        self.auto_scroll_container.clone(),
+                                    )
+                                    // Status popover - overlaid at bottom of scroll area
+                                    .children(self.render_status_popover(cx)),
                             )
-                            // Status popover - positioned at bottom center
-                            .children(self.render_status_popover(cx))
                             // Session plan banner (if available)
                             .when(plan_visible, |s| s.child(self.plan_banner.clone()))
                             // Input area sits at the bottom
