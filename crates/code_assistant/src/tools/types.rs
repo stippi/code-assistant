@@ -90,3 +90,43 @@ impl ToolResult for ParseError {
         false
     }
 }
+
+/// Placeholder result used when a tool's output was too large and caused a
+/// "prompt too long" error from the LLM provider.  The original tool execution
+/// is replaced with this so the LLM gets actionable feedback on the next turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTooLongError {
+    pub error_message: String,
+}
+
+impl PromptTooLongError {
+    pub fn new(tool_name: &str, output_size_bytes: usize) -> Self {
+        let size_kb = output_size_bytes / 1024;
+        Self {
+            error_message: format!(
+                "Tool result omitted — the total prompt exceeded the model's context limit. \
+                 The output of '{tool_name}' was approximately {size_kb}KB. \
+                 Consider more targeted approaches:\n\
+                 - For read_files: use line ranges (e.g. file.txt:1-200) or search_files to find relevant sections\n\
+                 - For execute_command: pipe output through head/tail/grep to limit size\n\
+                 - For web_fetch: use CSS selectors to extract specific content"
+            ),
+        }
+    }
+}
+
+impl Render for PromptTooLongError {
+    fn render(&self, _tracker: &mut ResourcesTracker) -> String {
+        self.error_message.clone()
+    }
+
+    fn status(&self) -> String {
+        "Prompt Too Long".to_string()
+    }
+}
+
+impl ToolResult for PromptTooLongError {
+    fn is_success(&self) -> bool {
+        false
+    }
+}

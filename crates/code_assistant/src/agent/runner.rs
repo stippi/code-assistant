@@ -428,7 +428,42 @@ impl Agent {
             let messages = self.render_tool_results_in_messages();
 
             // 1. Get LLM response (without adding to history yet)
-            let (llm_response, request_id) = self.get_next_assistant_message(messages).await?;
+            let (llm_response, request_id) = match self.get_next_assistant_message(messages).await {
+                Ok(result) => result,
+                Err(e) if Self::is_prompt_too_long_error(&e) => {
+                    warn!("Prompt too long error detected, replacing large tool results with error messages");
+                    let replaced = self.replace_large_tool_results();
+                    if !replaced.is_empty() {
+                        // Notify the UI that these tools switched from success → error
+                        for (tool_id, error_message) in &replaced {
+                            let _ = self
+                                .ui
+                                .send_event(UiEvent::UpdateToolStatus {
+                                    tool_id: tool_id.clone(),
+                                    status: crate::ui::ToolStatus::Error,
+                                    message: Some("Prompt Too Long".to_string()),
+                                    output: Some(error_message.clone()),
+                                })
+                                .await;
+                        }
+                        // `continue` restarts the loop which will call
+                        // render_tool_results_in_messages() again — this time the replaced
+                        // PromptTooLongError placeholders produce a much smaller prompt —
+                        // and then get_next_assistant_message() is retried automatically.
+                        // (StreamingStopped was already sent by get_next_assistant_message
+                        // in its error path, so we don't need to send it again.)
+                        continue;
+                    }
+                    // Nothing large enough to replace in the current turn.
+                    // Last resort: drop the last assistant+tool-result exchange and
+                    // force context compaction so we have a chance to continue.
+                    warn!("No large tool results to replace — dropping last exchange and forcing compaction");
+                    self.drop_last_tool_exchange();
+                    self.perform_compaction().await?;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
             // 2. Add original LLM response to message history if it has content
             if !llm_response.content.is_empty() {
@@ -1569,6 +1604,195 @@ impl Agent {
             }
         }
         Ok(false)
+    }
+
+    /// Check if an error from the LLM provider indicates the prompt exceeded the
+    /// model's context limit.
+    fn is_prompt_too_long_error(error: &anyhow::Error) -> bool {
+        let msg = error.to_string().to_lowercase();
+        // Anthropic patterns
+        msg.contains("prompt is too long")
+            || msg.contains("request size exceeds")
+            || msg.contains("exceed context limit")
+            || msg.contains("exceeds model context")
+            // OpenAI patterns
+            || msg.contains("context_length_exceeded")
+            || msg.contains("maximum context length")
+            // Generic patterns
+            || msg.contains("too many tokens")
+            || msg.contains("request too large")
+    }
+
+    /// Replace the largest tool execution results **from the most recent turn**
+    /// with [`PromptTooLongError`] placeholders so that the next LLM request has a
+    /// chance to succeed.
+    ///
+    /// Returns a vec of `(tool_id, error_message)` for each replaced result,
+    /// empty if nothing was replaced.  The caller is responsible for sending
+    /// `UpdateToolStatus` UI events for these.
+    fn replace_large_tool_results(&mut self) -> Vec<(String, String)> {
+        use crate::tools::core::render::ResourcesTracker;
+        use crate::tools::PromptTooLongError;
+
+        // Collect tool_use_ids from the last user message that contains ToolResult
+        // blocks — these are the results from the most recent turn.
+        let current_turn_ids: std::collections::HashSet<String> = self
+            .message_history
+            .iter()
+            .rev()
+            .find_map(|msg| {
+                if msg.role != MessageRole::User {
+                    return None;
+                }
+                if let MessageContent::Structured(blocks) = &msg.content {
+                    let ids: Vec<String> = blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                                Some(tool_use_id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if ids.is_empty() {
+                        None
+                    } else {
+                        Some(ids)
+                    }
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        if current_turn_ids.is_empty() {
+            return Vec::new();
+        }
+
+        // Render each current-turn tool output to measure its size
+        let mut sizes: Vec<(usize, usize)> = Vec::new(); // (index, byte_size)
+        let mut tracker = ResourcesTracker::new();
+        for (i, exec) in self.tool_executions.iter().enumerate() {
+            if !current_turn_ids.contains(&exec.tool_request.id) {
+                continue;
+            }
+            let rendered = exec.result.as_render().render(&mut tracker);
+            sizes.push((i, rendered.len()));
+        }
+
+        // Sort descending by size
+        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Replace results that are above a minimum threshold (50KB) — there is no
+        // point replacing tiny results since they are unlikely to be the cause.
+        const MIN_REPLACE_THRESHOLD: usize = 50 * 1024;
+        let mut replaced: Vec<(String, String)> = Vec::new();
+
+        for (idx, byte_size) in sizes {
+            if byte_size < MIN_REPLACE_THRESHOLD {
+                break;
+            }
+            let tool_name = self.tool_executions[idx].tool_request.name.clone();
+            let tool_id = self.tool_executions[idx].tool_request.id.clone();
+            warn!(
+                "Replacing tool result for '{}' ({}KB) with prompt-too-long error",
+                tool_name,
+                byte_size / 1024
+            );
+            let error = PromptTooLongError::new(&tool_name, byte_size);
+            let error_message = error.error_message.clone();
+            self.tool_executions[idx].result = Box::new(error);
+            replaced.push((tool_id, error_message));
+        }
+
+        // Also update the corresponding ToolResult content blocks in message history
+        // so the is_error flag is set correctly
+        if !replaced.is_empty() {
+            let replaced_ids: std::collections::HashSet<&str> =
+                replaced.iter().map(|(id, _)| id.as_str()).collect();
+
+            for msg in &mut self.message_history {
+                if let MessageContent::Structured(blocks) = &mut msg.content {
+                    for block in blocks {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            is_error,
+                            ..
+                        } = block
+                        {
+                            if replaced_ids.contains(tool_use_id.as_str()) {
+                                *is_error = Some(true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        replaced
+    }
+
+    /// Drop the last assistant → tool-result message pair from history.
+    /// Also removes the corresponding `tool_executions` entries.
+    /// Used as a last-resort fallback before forcing compaction when the prompt
+    /// is too long but no individual tool result is large enough to replace.
+    fn drop_last_tool_exchange(&mut self) {
+        // Walk backwards to find the last user message with ToolResult blocks
+        // and the assistant message immediately before it.
+        let mut tool_result_idx = None;
+        for i in (0..self.message_history.len()).rev() {
+            let msg = &self.message_history[i];
+            if msg.role == MessageRole::User {
+                if let MessageContent::Structured(blocks) = &msg.content {
+                    if blocks
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                    {
+                        tool_result_idx = Some(i);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let Some(tr_idx) = tool_result_idx else {
+            return;
+        };
+
+        // Collect the tool_use_ids we're about to drop so we can clean up
+        // tool_executions too.
+        let mut dropped_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let MessageContent::Structured(blocks) = &self.message_history[tr_idx].content {
+            for block in blocks {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                    dropped_ids.insert(tool_use_id.clone());
+                }
+            }
+        }
+
+        // Remove the tool-result user message
+        self.message_history.remove(tr_idx);
+
+        // If the message right before it was the assistant message with the
+        // corresponding ToolUse blocks, remove that too.
+        if tr_idx > 0 {
+            let prev = &self.message_history[tr_idx - 1];
+            if prev.role == MessageRole::Assistant {
+                self.message_history.remove(tr_idx - 1);
+            }
+        }
+
+        // Remove corresponding tool executions
+        self.tool_executions
+            .retain(|e| !dropped_ids.contains(&e.tool_request.id));
+
+        debug!(
+            "Dropped last tool exchange ({} tool result(s)) from history",
+            dropped_ids.len()
+        );
     }
 
     async fn perform_compaction(&mut self) -> Result<()> {
