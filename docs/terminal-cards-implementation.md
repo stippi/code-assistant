@@ -70,16 +70,48 @@ Zed's implementation in the `zed` project (checked out locally):
 
 - [x] **3.1** Add `terminal` and `terminal_view` as dependencies of `code_assistant`
 - [x] **3.2** Implement `ExecuteCommandOutputRenderer` — a `ToolOutputRenderer` that creates and embeds a `TerminalView`
-  - Alternative: create a new `BlockData` variant for terminal blocks (evaluate which approach is cleaner)
-- [ ] **3.3** Modify `execute_command` tool to create a `Terminal` entity for each command execution
-- [ ] **3.4** Wire streaming: instead of (or in addition to) `StreamingCallback::on_output_chunk()`, feed output to the `Terminal` entity
-- [ ] **3.5** Implement terminal card wrapper UI:
+  - **Current approach (display-only)**: Creates display-only terminals, feeds accumulated text output on each render call. Works but is suboptimal — ANSI escape sequences that control cursor position (e.g. progress bars) don't render correctly because we only see the final output text.
+  - **Target approach (real PTY)**: See updated design below.
+
+#### Updated Design: Real PTY via `GpuiTerminalCommandExecutor`
+
+The display-only approach was a first step but the correct architecture mirrors how ACP mode works:
+
+1. **`GpuiTerminalCommandExecutor`** — a new `CommandExecutor` implementation (analogous to `ACPTerminalCommandExecutor` in `acp/terminal_executor.rs`)
+   - Creates a real `Terminal` entity (with PTY) via the GPUI thread
+   - Runs the command directly in the PTY
+   - Returns the final output to the tool when the command completes
+   - Uses a worker/channel pattern to bridge Tokio async → GPUI thread
+
+2. **Replace `DefaultCommandExecutor`** at two injection points:
+   - `app/gpui.rs:92` — initial task execution
+   - `ui/backend.rs:440` — subsequent agent runs
+
+3. **Wire `DisplayFragment::ToolTerminal`** in the GPUI UI handler (`ui/gpui/mod.rs:1370-1377`)
+   - When received, look up the Terminal entity and create a TerminalView card
+   - The card shows live terminal output as the command runs
+
+4. **Lifecycle**:
+   - Tool calls `executor.execute_streaming()` → executor sends request to GPUI thread
+   - GPUI thread creates Terminal entity with PTY, runs command, sends `ToolTerminal` fragment
+   - UI creates card with TerminalView showing live output
+   - When command exits, executor reads output from Terminal and returns `CommandOutput`
+   - Tool receives output and returns it to the agent loop
+
+**Key reference**: `crates/code_assistant/src/acp/terminal_executor.rs` — the ACP executor uses the exact same pattern (request → worker → events → result), just with RPC calls to Zed instead of local PTY.
+
+Remaining tasks:
+- [ ] **3.3** Implement `GpuiTerminalCommandExecutor` with worker/channel pattern
+- [ ] **3.4** Register GPUI terminal worker during GPUI app initialization
+- [ ] **3.5** Wire `DisplayFragment::ToolTerminal` in GPUI UI to create terminal card
+- [ ] **3.6** Implement terminal card wrapper UI:
   - Header: working directory, running indicator, elapsed time
   - Command display: monospace, collapsible
   - Body: embedded `TerminalView`
   - Error state: dashed border on failure
-- [ ] **3.6** Handle expand/collapse toggle for terminal cards
-- [ ] **3.7** Handle command completion: show exit status, stop indicator animation
+- [ ] **3.7** Handle expand/collapse toggle for terminal cards
+- [ ] **3.8** Handle command completion: show exit status, stop indicator animation
+- [ ] **3.9** Remove or keep display-only renderer as fallback
 
 ### Phase 4: Polish & edge cases
 > Make it production-ready.

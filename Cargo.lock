@@ -7585,6 +7585,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal-test-app"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "terminal",
+ "terminal_view",
+]
+
+[[package]]
 name = "terminal_view"
 version = "0.1.0"
 dependencies = [
