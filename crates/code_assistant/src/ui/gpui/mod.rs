@@ -18,6 +18,7 @@ mod root;
 pub mod sandbox_selector;
 pub mod simple_renderers;
 pub mod spawn_agent_renderer;
+pub mod terminal_output_renderer;
 pub mod theme;
 pub mod tool_output_renderers;
 
@@ -263,6 +264,9 @@ impl Gpui {
         // Initialize tool output renderers registry
         let mut tool_output_registry = ToolOutputRendererRegistry::new();
         tool_output_registry.register_renderer(Box::new(SpawnAgentOutputRenderer));
+        tool_output_registry.register_renderer(Box::new(
+            terminal_output_renderer::ExecuteCommandOutputRenderer,
+        ));
         ToolOutputRendererRegistry::set_global(Arc::new(tool_output_registry));
 
         // Create a channel to send and receive UiEvents
