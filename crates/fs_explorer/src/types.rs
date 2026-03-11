@@ -27,6 +27,10 @@ pub enum LineEnding {
 pub struct FileFormat {
     pub encoding: FileEncoding,
     pub line_ending: LineEnding,
+    /// Whether the original file had trailing whitespace on any line.
+    /// When true, normalization preserves trailing whitespace to avoid noisy diffs.
+    #[serde(default)]
+    pub has_trailing_whitespace: bool,
 }
 
 impl Default for FileFormat {
@@ -34,6 +38,7 @@ impl Default for FileFormat {
         Self {
             encoding: FileEncoding::UTF8,
             line_ending: LineEnding::LF,
+            has_trailing_whitespace: false,
         }
     }
 }

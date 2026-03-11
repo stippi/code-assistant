@@ -550,7 +550,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?
             .clone();
 
-        let updated_content = apply_replacements_normalized(&content, replacements)?;
+        let updated_content = apply_replacements_normalized(&content, replacements, false)?;
 
         // Update the stored content
         files.insert(path.to_path_buf(), updated_content.clone());
@@ -569,7 +569,9 @@ impl CodeExplorer for MockExplorer {
         let original_content = self.read_file(path).await?;
 
         // Find matches and detect adjacency/overlap
-        let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
+
+        let (matches, has_conflicts) =
+            find_replacement_matches(&original_content, replacements, false)?;
 
         // Apply replacements first
         let updated_content = self.apply_replacements(path, replacements).await?;
@@ -601,7 +603,7 @@ impl CodeExplorer for MockExplorer {
         let updated_replacements = if has_conflicts {
             None
         } else {
-            let stable_ranges = extract_stable_ranges(&original_content, &matches);
+            let stable_ranges = extract_stable_ranges(&original_content, &matches, false);
             reconstruct_formatted_replacements(
                 &original_content,
                 &final_content,

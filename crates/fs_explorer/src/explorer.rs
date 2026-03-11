@@ -347,10 +347,14 @@ impl Explorer {
         // Detect line ending
         let line_ending = crate::encoding::detect_line_ending(&content);
 
+        // Detect trailing whitespace
+        let has_trailing_whitespace = crate::encoding::detect_trailing_whitespace(&content);
+
         // Create and store file format information
         let file_format = FileFormat {
             encoding: encoding.clone(),
             line_ending,
+            has_trailing_whitespace,
         };
 
         // Store the format information
@@ -361,8 +365,13 @@ impl Explorer {
         let mut encodings = self.file_encodings.write().unwrap();
         encodings.insert(resolved.clone(), encoding);
 
-        // Normalize content for consistent line ending and removal of trailing whitespace
-        let normalized_content = crate::encoding::normalize_content(&content);
+        // Normalize content for consistent line endings
+        // If file has trailing whitespace, preserve it to avoid noisy diffs
+        let normalized_content = if has_trailing_whitespace {
+            crate::encoding::normalize_line_endings(&content)
+        } else {
+            crate::encoding::normalize_content(&content)
+        };
 
         // If we have line range parameters, extract the specified lines
         let lines: Vec<&str> = normalized_content.lines().collect();
@@ -476,10 +485,14 @@ impl CodeExplorer for Explorer {
         // Detect line ending
         let line_ending = crate::encoding::detect_line_ending(&content);
 
+        // Detect trailing whitespace
+        let has_trailing_whitespace = crate::encoding::detect_trailing_whitespace(&content);
+
         // Create and store file format information
         let file_format = FileFormat {
             encoding: encoding.clone(),
             line_ending,
+            has_trailing_whitespace,
         };
 
         // Store the format information
@@ -491,7 +504,12 @@ impl CodeExplorer for Explorer {
         encodings.insert(path.to_path_buf(), encoding);
 
         // Normalize content for LLM
-        let normalized_content = crate::encoding::normalize_content(&content);
+        // If file has trailing whitespace, only normalize line endings to avoid noisy diffs
+        let normalized_content = if has_trailing_whitespace {
+            crate::encoding::normalize_line_endings(&content)
+        } else {
+            crate::encoding::normalize_content(&content)
+        };
 
         Ok(normalized_content)
     }
@@ -536,8 +554,12 @@ impl CodeExplorer for Explorer {
             // Try to read existing content and append new content
             match crate::encoding::read_file_with_encoding(path) {
                 Ok((existing, _)) => {
-                    // When appending, we need to normalize the existing content as well
-                    let normalized_existing = crate::encoding::normalize_content(&existing);
+                    // When appending, normalize the existing content respecting trailing whitespace
+                    let normalized_existing = if file_format.has_trailing_whitespace {
+                        crate::encoding::normalize_line_endings(&existing)
+                    } else {
+                        crate::encoding::normalize_content(&existing)
+                    };
                     normalized_existing + content
                 }
                 Err(_) => content.to_string(), // Fallback if reading fails
@@ -609,17 +631,23 @@ impl CodeExplorer for Explorer {
                     // Detect format if not already known
                     let encoding = FileEncoding::UTF8; // Fallback
                     let line_ending = crate::encoding::detect_line_ending(&original_content);
+                    let has_trailing_whitespace =
+                        crate::encoding::detect_trailing_whitespace(&original_content);
                     FileFormat {
                         encoding,
                         line_ending,
+                        has_trailing_whitespace,
                     }
                 }
             }
         };
 
         // Apply replacements with normalized content
-        let updated_normalized =
-            crate::file_updater::apply_replacements_normalized(&original_content, replacements)?;
+        let updated_normalized = crate::file_updater::apply_replacements_normalized(
+            &original_content,
+            replacements,
+            file_format.has_trailing_whitespace,
+        )?;
 
         // Write the content back using the file format helper to ensure consistent newline handling
         crate::encoding::write_file_with_format(path, &updated_normalized, &file_format)?;
@@ -655,19 +683,30 @@ impl CodeExplorer for Explorer {
                     // Detect format if not already known
                     let encoding = FileEncoding::UTF8; // Fallback
                     let line_ending = crate::encoding::detect_line_ending(&original_content);
+                    let has_trailing_whitespace =
+                        crate::encoding::detect_trailing_whitespace(&original_content);
                     FileFormat {
                         encoding,
                         line_ending,
+                        has_trailing_whitespace,
                     }
                 }
             }
         };
 
+        let preserve_trailing_ws = file_format.has_trailing_whitespace;
+
         // Phase 1: Find matches and check for conflicts
-        let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
+        let (matches, has_conflicts) =
+            find_replacement_matches(&original_content, replacements, preserve_trailing_ws)?;
 
         // Phase 2: Apply replacements
-        let updated_content = apply_matches(&original_content, &matches, replacements)?;
+        let updated_content = apply_matches(
+            &original_content,
+            &matches,
+            replacements,
+            preserve_trailing_ws,
+        )?;
 
         // Phase 3: Write the file
         crate::encoding::write_file_with_format(path, &updated_content, &file_format)?;
@@ -692,7 +731,8 @@ impl CodeExplorer for Explorer {
             None
         } else {
             // Extract stable ranges for reconstruction
-            let stable_ranges = extract_stable_ranges(&original_content, &matches);
+            let stable_ranges =
+                extract_stable_ranges(&original_content, &matches, preserve_trailing_ws);
 
             // Attempt to reconstruct formatted replacements
             reconstruct_formatted_replacements(

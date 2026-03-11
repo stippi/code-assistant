@@ -150,21 +150,49 @@ pub fn detect_line_ending(content: &str) -> LineEnding {
     }
 }
 
+/// Detects whether the content has trailing whitespace on any line
+pub fn detect_trailing_whitespace(content: &str) -> bool {
+    // Normalize line endings first so we split correctly
+    let content = content.replace("\r\n", "\n").replace('\r', "\n");
+    content.lines().any(|line| {
+        let trimmed = line.trim_end();
+        trimmed.len() < line.len()
+    })
+}
+
 /// Normalizes text content by:
 /// 1. Converting all line endings to LF (\n)
 /// 2. Removing trailing whitespace from each line
 /// 3. Preserving empty lines
 /// 4. NOT adding a trailing newline (this happens at file write time)
 pub fn normalize_content(content: &str) -> String {
+    normalize_content_impl(content, true)
+}
+
+/// Normalizes line endings to LF but preserves trailing whitespace on each line.
+/// Used for files that originally had trailing whitespace to avoid noisy diffs.
+pub fn normalize_line_endings(content: &str) -> String {
+    normalize_content_impl(content, false)
+}
+
+/// Normalizes content: always converts line endings to LF,
+/// optionally strips trailing whitespace from each line.
+fn normalize_content_impl(content: &str, strip_trailing_ws: bool) -> String {
     // First normalize all line endings to LF
     let content = content.replace("\r\n", "\n").replace('\r', "\n");
 
-    // Process each line - preserve empty lines but trim trailing whitespace
-    content
-        .lines()
-        .map(|line| line.trim_end())
-        .collect::<Vec<&str>>()
-        .join("\n")
+    if strip_trailing_ws {
+        // Process each line - preserve empty lines but trim trailing whitespace
+        content
+            .lines()
+            .map(|line| line.trim_end())
+            .collect::<Vec<&str>>()
+            .join("\n")
+    } else {
+        // Only normalize line endings, preserve trailing whitespace
+        // .lines() strips the trailing newline, which is what we want
+        content.lines().collect::<Vec<&str>>().join("\n")
+    }
 }
 
 /// Restores the original line endings of content
@@ -264,11 +292,13 @@ mod tests {
         let crlf_format = FileFormat {
             encoding: FileEncoding::UTF8,
             line_ending: LineEnding::Crlf,
+            has_trailing_whitespace: false,
         };
 
         let cr_format = FileFormat {
             encoding: FileEncoding::UTF8,
             line_ending: LineEnding::CR,
+            has_trailing_whitespace: false,
         };
 
         assert_eq!(
@@ -296,6 +326,7 @@ mod tests {
         let format = FileFormat {
             encoding: FileEncoding::UTF8,
             line_ending: LineEnding::LF,
+            has_trailing_whitespace: false,
         };
 
         // All cases should result in content with exactly one trailing newline
@@ -314,5 +345,49 @@ mod tests {
 
             assert_eq!(content, expected);
         }
+    }
+
+    #[test]
+    fn test_detect_trailing_whitespace() {
+        // No trailing whitespace
+        assert!(!detect_trailing_whitespace("Line1\nLine2\nLine3"));
+        // Trailing spaces on a line
+        assert!(detect_trailing_whitespace("Line1  \nLine2\nLine3"));
+        // Trailing tab
+        assert!(detect_trailing_whitespace("Line1\t\nLine2\nLine3"));
+        // Only on last line
+        assert!(detect_trailing_whitespace("Line1\nLine2\nLine3  "));
+        // With CRLF
+        assert!(detect_trailing_whitespace("Line1  \r\nLine2\r\nLine3"));
+        // No trailing whitespace with CRLF
+        assert!(!detect_trailing_whitespace("Line1\r\nLine2\r\nLine3"));
+    }
+
+    #[test]
+    fn test_normalize_line_endings() {
+        // Should preserve trailing whitespace but normalize line endings
+        assert_eq!(
+            normalize_line_endings("Line1  \r\nLine2 \r\nLine3"),
+            "Line1  \nLine2 \nLine3"
+        );
+        // CR line endings
+        assert_eq!(
+            normalize_line_endings("Line1  \rLine2 \rLine3"),
+            "Line1  \nLine2 \nLine3"
+        );
+        // LF already - no change
+        assert_eq!(
+            normalize_line_endings("Line1  \nLine2 \nLine3"),
+            "Line1  \nLine2 \nLine3"
+        );
+    }
+
+    #[test]
+    fn test_normalize_content_strips_trailing_ws() {
+        // normalize_content should strip trailing whitespace
+        assert_eq!(
+            normalize_content("Line1  \nLine2 \nLine3"),
+            "Line1\nLine2\nLine3"
+        );
     }
 }

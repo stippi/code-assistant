@@ -1,6 +1,18 @@
 use crate::encoding;
 use crate::types::FileReplacement;
 
+/// Helper to normalize content based on the preserve_trailing_ws flag.
+/// When `preserve_trailing_ws` is true, only line endings are normalized (LF),
+/// preserving trailing whitespace on each line. When false, trailing whitespace
+/// is also stripped (the old default behavior).
+fn normalize(content: &str, preserve_trailing_ws: bool) -> String {
+    if preserve_trailing_ws {
+        encoding::normalize_line_endings(content)
+    } else {
+        encoding::normalize_content(content)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FileUpdaterError {
     SearchBlockNotFound(usize, String),
@@ -71,14 +83,15 @@ impl std::error::Error for FileUpdaterError {}
 pub fn find_replacement_matches(
     content: &str,
     replacements: &[FileReplacement],
+    preserve_trailing_ws: bool,
 ) -> Result<(Vec<MatchRange>, bool), FileUpdaterError> {
     // Normalize the input content first
-    let normalized_content = encoding::normalize_content(content);
+    let normalized_content = normalize(content, preserve_trailing_ws);
     let mut all_matches = Vec::new();
 
     for (replacement_index, replacement) in replacements.iter().enumerate() {
         // Normalize the search string as well
-        let normalized_search = encoding::normalize_content(&replacement.search);
+        let normalized_search = normalize(&replacement.search, preserve_trailing_ws);
 
         // Find all occurrences
         let matches: Vec<_> = normalized_content
@@ -138,9 +151,10 @@ pub fn apply_matches(
     content: &str,
     matches: &[MatchRange],
     replacements: &[FileReplacement],
+    preserve_trailing_ws: bool,
 ) -> Result<String, FileUpdaterError> {
     // Normalize the input content first
-    let normalized_content = encoding::normalize_content(content);
+    let normalized_content = normalize(content, preserve_trailing_ws);
     let mut result = normalized_content;
 
     // Sort matches by position in reverse order so we can apply them without
@@ -150,7 +164,7 @@ pub fn apply_matches(
 
     for match_range in sorted_matches {
         let replacement = &replacements[match_range.replacement_index];
-        let normalized_replace = encoding::normalize_content(&replacement.replace);
+        let normalized_replace = normalize(&replacement.replace, preserve_trailing_ws);
 
         result.replace_range(match_range.start..match_range.end, &normalized_replace);
     }
@@ -161,8 +175,12 @@ pub fn apply_matches(
 /// Extract stable (unchanged) content ranges between matches
 /// These ranges can be used to reconstruct formatted replacements by finding
 /// the same stable content in the formatted file
-pub fn extract_stable_ranges(content: &str, matches: &[MatchRange]) -> Vec<StableRange> {
-    let normalized_content = encoding::normalize_content(content);
+pub fn extract_stable_ranges(
+    content: &str,
+    matches: &[MatchRange],
+    preserve_trailing_ws: bool,
+) -> Vec<StableRange> {
+    let normalized_content = normalize(content, preserve_trailing_ws);
     let mut stable_ranges = Vec::new();
 
     // Sort matches by position to process them in order
@@ -201,8 +219,8 @@ pub fn extract_stable_ranges(content: &str, matches: &[MatchRange]) -> Vec<Stabl
     stable_ranges
 }
 
-/// Reconstruct formatted replacements by finding stable ranges in formatted content
-/// Returns updated replacements with formatted replace text, or None if reconstruction fails
+/// Reconstruct formatted replacements by finding stable ranges in formatted content.
+/// Returns updated replacements with formatted replace text, or None if reconstruction fails.
 pub fn reconstruct_formatted_replacements(
     _original_content: &str,
     formatted_content: &str,
@@ -317,14 +335,16 @@ pub fn reconstruct_formatted_replacements(
 }
 
 /// Apply replacements with content normalization to make SEARCH blocks more robust
-/// against whitespace and line ending differences
+/// against whitespace and line ending differences.
 pub fn apply_replacements_normalized(
     content: &str,
     replacements: &[FileReplacement],
+    preserve_trailing_ws: bool,
 ) -> Result<String, anyhow::Error> {
     // Use the new split functions
-    let (matches, _has_conflicts) = find_replacement_matches(content, replacements)?;
-    apply_matches(content, &matches, replacements).map_err(Into::into)
+    let (matches, _has_conflicts) =
+        find_replacement_matches(content, replacements, preserve_trailing_ws)?;
+    apply_matches(content, &matches, replacements, preserve_trailing_ws).map_err(Into::into)
 }
 
 #[test]
@@ -340,7 +360,7 @@ fn test_extract_stable_ranges() -> Result<(), anyhow::Error> {
         end: 42,   // End of "console.log('hello');"
     }];
 
-    let stable_ranges = extract_stable_ranges(content, &matches);
+    let stable_ranges = extract_stable_ranges(content, &matches, false);
 
     // Should have stable ranges before and after the match
     assert_eq!(stable_ranges.len(), 2);
@@ -371,7 +391,7 @@ fn test_reconstruct_formatted_replacements() -> Result<(), anyhow::Error> {
         end: 23,   // End of that section
     }];
 
-    let stable_ranges = extract_stable_ranges(original_content, &matches);
+    let stable_ranges = extract_stable_ranges(original_content, &matches, false);
 
     let original_replacements = vec![FileReplacement {
         search: "const y=2;".to_string(),
@@ -454,7 +474,7 @@ fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
     ];
 
     for (input, replacements, expected) in test_cases {
-        let result = apply_replacements_normalized(input, &replacements);
+        let result = apply_replacements_normalized(input, &replacements, false);
         match (&result, &expected) {
             (Ok(res), Ok(exp)) => assert_eq!(res, exp),
             (Err(e), Err(exp)) => assert!(e.to_string().contains(exp)),
@@ -465,6 +485,51 @@ fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
             }
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_apply_replacements_preserving_trailing_whitespace() -> Result<(), anyhow::Error> {
+    // When preserve_trailing_ws is true, trailing whitespace in the file
+    // and in the search/replace strings should be preserved
+
+    // File has trailing whitespace on some lines
+    let input = "Hello World  \nThis is a test\nGoodbye  ";
+    let replacements = vec![FileReplacement {
+        search: "Hello World  \nThis".to_string(), // Search includes trailing whitespace
+        replace: "Hi there  \nNew".to_string(),    // Replace also has trailing whitespace
+        replace_all: false,
+    }];
+    let result = apply_replacements_normalized(input, &replacements, true)?;
+    assert_eq!(result, "Hi there  \nNew is a test\nGoodbye  ");
+
+    // File has trailing whitespace, but search string matches with it
+    let input2 = "fn main() {  \n    println!(\"hello\");  \n}";
+    let replacements2 = vec![FileReplacement {
+        search: "    println!(\"hello\");  ".to_string(),
+        replace: "    println!(\"world\");  ".to_string(),
+        replace_all: false,
+    }];
+    let result2 = apply_replacements_normalized(input2, &replacements2, true)?;
+    assert_eq!(result2, "fn main() {  \n    println!(\"world\");  \n}");
+
+    Ok(())
+}
+
+#[test]
+fn test_trailing_ws_preserved_search_must_match_exactly() -> Result<(), anyhow::Error> {
+    // When preserve_trailing_ws is true, search without trailing whitespace
+    // should NOT match content that has trailing whitespace
+    let input = "Hello World  \nThis is a test\nGoodbye";
+    let replacements = vec![FileReplacement {
+        search: "Hello World\nThis".to_string(), // No trailing whitespace in search
+        replace: "Hi there\nNew".to_string(),
+        replace_all: false,
+    }];
+    let result = apply_replacements_normalized(input, &replacements, true);
+    // Should fail because "Hello World" (no trailing ws) doesn't match "Hello World  "
+    assert!(result.is_err());
 
     Ok(())
 }

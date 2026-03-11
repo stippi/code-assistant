@@ -7,7 +7,10 @@ use std::sync::{Arc, OnceLock, RwLock};
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::types::Project;
 use command_executor::CommandExecutor;
-use fs_explorer::encoding::{apply_file_format, detect_line_ending, normalize_content};
+use fs_explorer::encoding::{
+    apply_file_format, detect_line_ending, detect_trailing_whitespace, normalize_content,
+    normalize_line_endings,
+};
 use fs_explorer::file_updater::{
     apply_matches, apply_replacements_normalized, extract_stable_ranges, find_replacement_matches,
     reconstruct_formatted_replacements,
@@ -165,15 +168,22 @@ impl AcpCodeExplorer {
         .await?;
 
         let line_ending = detect_line_ending(&response.content);
+        let has_trailing_whitespace = detect_trailing_whitespace(&response.content);
         self.store_format(
             &abs,
             FileFormat {
                 encoding: FileEncoding::UTF8,
                 line_ending,
+                has_trailing_whitespace,
             },
         );
 
-        Ok((normalize_content(&response.content), abs))
+        let normalized = if has_trailing_whitespace {
+            normalize_line_endings(&response.content)
+        } else {
+            normalize_content(&response.content)
+        };
+        Ok((normalized, abs))
     }
 
     async fn write_entire(&self, path: &Path, content: &str) -> Result<String> {
@@ -191,15 +201,23 @@ impl AcpCodeExplorer {
             abs.clone(),
         ))
         .await?;
+
         let line_ending = detect_line_ending(&response.content);
+        let has_trailing_whitespace = detect_trailing_whitespace(&response.content);
         self.store_format(
             &abs,
             FileFormat {
                 encoding: FileEncoding::UTF8,
                 line_ending,
+                has_trailing_whitespace,
             },
         );
-        Ok(normalize_content(&response.content))
+        let normalized = if has_trailing_whitespace {
+            normalize_line_endings(&response.content)
+        } else {
+            normalize_content(&response.content)
+        };
+        Ok(normalized)
     }
 }
 
@@ -285,7 +303,12 @@ impl CodeExplorer for AcpCodeExplorer {
         replacements: &[FileReplacement],
     ) -> Result<String> {
         let (original_content, _) = self.read_entire(path).await?;
-        let updated = apply_replacements_normalized(&original_content, replacements)?;
+        let format = self.format_for_path(path);
+        let updated = apply_replacements_normalized(
+            &original_content,
+            replacements,
+            format.has_trailing_whitespace,
+        )?;
         self.write_entire(path, &updated).await
     }
 
@@ -297,13 +320,22 @@ impl CodeExplorer for AcpCodeExplorer {
         _command_executor: &dyn CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
         let (original_content, _) = self.read_entire(path).await?;
-        let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
-        let updated_content = apply_matches(&original_content, &matches, replacements)?;
+        let format = self.format_for_path(path);
+        let preserve_trailing_ws = format.has_trailing_whitespace;
+        let (matches, has_conflicts) =
+            find_replacement_matches(&original_content, replacements, preserve_trailing_ws)?;
+        let updated_content = apply_matches(
+            &original_content,
+            &matches,
+            replacements,
+            preserve_trailing_ws,
+        )?;
         let final_content = self.write_entire(path, &updated_content).await?;
         let updated_replacements = if has_conflicts {
             None
         } else {
-            let stable_ranges = extract_stable_ranges(&original_content, &matches);
+            let stable_ranges =
+                extract_stable_ranges(&original_content, &matches, preserve_trailing_ws);
             reconstruct_formatted_replacements(
                 &original_content,
                 &final_content,

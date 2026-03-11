@@ -25,7 +25,7 @@ fn test_stable_range_extraction_simple() -> Result<()> {
         end: 42,   // End of "console.log('hello');"
     }];
 
-    let stable_ranges = extract_stable_ranges(content, &matches);
+    let stable_ranges = extract_stable_ranges(content, &matches, false);
 
     // Should have stable ranges before and after the match
     assert_eq!(stable_ranges.len(), 2);
@@ -63,7 +63,7 @@ fn test_stable_range_extraction_multiple_matches() -> Result<()> {
         },
     ];
 
-    let stable_ranges = extract_stable_ranges(content, &matches);
+    let stable_ranges = extract_stable_ranges(content, &matches, false);
 
     // Should have one stable range between the two matches
     assert_eq!(stable_ranges.len(), 1);
@@ -91,7 +91,7 @@ fn test_parameter_reconstruction_simple() -> Result<()> {
         end: 21,   // End of "const y=2;"
     }];
 
-    let stable_ranges = extract_stable_ranges(original_content, &matches);
+    let stable_ranges = extract_stable_ranges(original_content, &matches, false);
 
     let original_replacements = vec![FileReplacement {
         search: "const y=2;".to_string(),
@@ -128,7 +128,7 @@ fn test_parameter_reconstruction_failure() -> Result<()> {
         end: 32,   // End of "// Comment"
     }];
 
-    let stable_ranges = extract_stable_ranges(original_content, &matches);
+    let stable_ranges = extract_stable_ranges(original_content, &matches, false);
 
     let original_replacements = vec![FileReplacement {
         search: "// Comment".to_string(),
