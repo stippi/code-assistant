@@ -1,6 +1,11 @@
 use crate::ui::gpui::elements::BlockView;
+use crate::ui::gpui::terminal_pool::TerminalPool;
 use crate::ui::ToolStatus;
-use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Window};
+use gpui::AppContext as _; // brings .new() into scope on Context
+use gpui::{
+    div, px, App, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window,
+};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use terminal::Terminal;
@@ -9,49 +14,43 @@ use terminal_view::{TerminalThemeColors, TerminalView};
 use super::tool_output_renderers::ToolOutputRenderer;
 
 // ---------------------------------------------------------------------------
-// Global Terminal Store — maps tool_id to Terminal entity + TerminalView
+// Display-only Terminal Store — fallback for session restoration
 // ---------------------------------------------------------------------------
 
-static TERMINAL_STORE: OnceLock<Mutex<TerminalStore>> = OnceLock::new();
+static DISPLAY_TERMINAL_STORE: OnceLock<Mutex<DisplayTerminalStore>> = OnceLock::new();
 
-struct TerminalStore {
+struct DisplayTerminalStore {
     /// Map from tool_id to a display-only terminal entity
     terminals: HashMap<String, Entity<Terminal>>,
-    /// Map from tool_id to a terminal view entity (created lazily during render)
-    views: HashMap<String, Entity<TerminalView>>,
     /// Track the last output length fed into each terminal, to avoid re-feeding
     fed_lengths: HashMap<String, usize>,
 }
 
-impl TerminalStore {
+impl DisplayTerminalStore {
     fn new() -> Self {
         Self {
             terminals: HashMap::new(),
-            views: HashMap::new(),
             fed_lengths: HashMap::new(),
         }
     }
 
-    fn global() -> &'static Mutex<TerminalStore> {
-        TERMINAL_STORE.get_or_init(|| Mutex::new(TerminalStore::new()))
+    fn global() -> &'static Mutex<DisplayTerminalStore> {
+        DISPLAY_TERMINAL_STORE.get_or_init(|| Mutex::new(DisplayTerminalStore::new()))
     }
 }
 
-/// Get the terminal entity for a tool_id, creating one if it doesn't exist.
-fn get_or_create_terminal(tool_id: &str, cx: &mut Context<BlockView>) -> Entity<Terminal> {
-    // Check if we already have one
-    if let Ok(store) = TerminalStore::global().lock() {
+/// Create a display-only terminal and feed text into it (fallback path).
+fn get_or_create_display_terminal(tool_id: &str, cx: &mut Context<BlockView>) -> Entity<Terminal> {
+    if let Ok(store) = DisplayTerminalStore::global().lock() {
         if let Some(terminal) = store.terminals.get(tool_id) {
             return terminal.clone();
         }
     }
 
-    // Create a new display-only terminal
     let builder = terminal::TerminalBuilder::new_display_only(Some(10_000));
     let terminal = cx.new(|cx| builder.subscribe(cx));
 
-    // Store it
-    if let Ok(mut store) = TerminalStore::global().lock() {
+    if let Ok(mut store) = DisplayTerminalStore::global().lock() {
         store
             .terminals
             .insert(tool_id.to_string(), terminal.clone());
@@ -60,10 +59,10 @@ fn get_or_create_terminal(tool_id: &str, cx: &mut Context<BlockView>) -> Entity<
     terminal
 }
 
-/// Feed output text into the terminal for a given tool_id.
-/// Only feeds new bytes since the last call.
-fn feed_output(tool_id: &str, output: &str, terminal: &Entity<Terminal>, cx: &mut App) {
-    let prev_len = TerminalStore::global()
+/// Feed output text into a display-only terminal. Only feeds new bytes since
+/// the last call for this tool_id.
+fn feed_display_output(tool_id: &str, output: &str, terminal: &Entity<Terminal>, cx: &mut App) {
+    let prev_len = DisplayTerminalStore::global()
         .lock()
         .ok()
         .and_then(|store| store.fed_lengths.get(tool_id).copied())
@@ -74,27 +73,34 @@ fn feed_output(tool_id: &str, output: &str, terminal: &Entity<Terminal>, cx: &mu
         terminal.update(cx, |terminal, cx| {
             terminal.write_output(new_bytes.as_bytes(), cx);
         });
-        if let Ok(mut store) = TerminalStore::global().lock() {
+        if let Ok(mut store) = DisplayTerminalStore::global().lock() {
             store.fed_lengths.insert(tool_id.to_string(), output.len());
         }
     }
 }
 
-/// Get or create a TerminalView for a tool_id.
+// ---------------------------------------------------------------------------
+// View cache — reuse TerminalView entities across re-renders
+// ---------------------------------------------------------------------------
+
+static VIEW_CACHE: OnceLock<Mutex<HashMap<String, Entity<TerminalView>>>> = OnceLock::new();
+
+fn view_cache() -> &'static Mutex<HashMap<String, Entity<TerminalView>>> {
+    VIEW_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn get_or_create_view(
-    tool_id: &str,
+    cache_key: &str,
     terminal: &Entity<Terminal>,
     theme_colors: TerminalThemeColors,
     cx: &mut Context<BlockView>,
 ) -> Entity<TerminalView> {
-    // Check if we already have a view
-    if let Ok(store) = TerminalStore::global().lock() {
-        if let Some(view) = store.views.get(tool_id) {
+    if let Ok(store) = view_cache().lock() {
+        if let Some(view) = store.get(cache_key) {
             return view.clone();
         }
     }
 
-    // Create a new view
     let terminal_clone = terminal.clone();
     let view = cx.new(|cx| {
         let mut tv = TerminalView::new(terminal_clone, "Berkeley Mono", px(13.), theme_colors, cx);
@@ -102,21 +108,35 @@ fn get_or_create_view(
         tv
     });
 
-    // Store it
-    if let Ok(mut store) = TerminalStore::global().lock() {
-        store.views.insert(tool_id.to_string(), view.clone());
+    if let Ok(mut store) = view_cache().lock() {
+        store.insert(cache_key.to_string(), view.clone());
     }
 
     view
 }
 
-/// Remove terminal data for a tool_id (cleanup).
-#[allow(dead_code)]
-pub fn remove_terminal(tool_id: &str) {
-    if let Ok(mut store) = TerminalStore::global().lock() {
-        store.terminals.remove(tool_id);
-        store.views.remove(tool_id);
-        store.fed_lengths.remove(tool_id);
+// ---------------------------------------------------------------------------
+// Collapse state — track which tool cards are collapsed
+// ---------------------------------------------------------------------------
+
+static COLLAPSED: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+fn collapsed_state() -> &'static Mutex<HashMap<String, bool>> {
+    COLLAPSED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn is_collapsed(tool_id: &str) -> bool {
+    collapsed_state()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(tool_id).copied())
+        .unwrap_or(false)
+}
+
+fn toggle_collapsed(tool_id: &str) {
+    if let Ok(mut m) = collapsed_state().lock() {
+        let current = m.get(tool_id).copied().unwrap_or(false);
+        m.insert(tool_id.to_string(), !current);
     }
 }
 
@@ -124,12 +144,14 @@ pub fn remove_terminal(tool_id: &str) {
 // ExecuteCommandOutputRenderer
 // ---------------------------------------------------------------------------
 
-/// Renders execute_command output as an embedded terminal with ANSI color support.
+/// Renders execute_command output as an embedded terminal card with ANSI
+/// color support.
 ///
-/// Instead of showing plain text output, this renderer creates a display-only
-/// Terminal entity and feeds the command output into it. The Alacritty terminal
-/// emulator processes ANSI escape codes, and the TerminalView renders the
-/// resulting styled cell grid.
+/// **Preferred path**: Looks up a live PTY terminal from the global
+/// `TerminalPool` (created by `GpuiTerminalCommandExecutor`).
+///
+/// **Fallback path**: Creates a display-only terminal and feeds the persisted
+/// output text into it (used for session restoration from disk).
 pub struct ExecuteCommandOutputRenderer;
 
 impl ToolOutputRenderer for ExecuteCommandOutputRenderer {
@@ -141,37 +163,199 @@ impl ToolOutputRenderer for ExecuteCommandOutputRenderer {
         &self,
         tool_id: &str,
         output: &str,
-        _status: &ToolStatus,
+        status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
         _window: &mut Window,
         cx: &mut Context<BlockView>,
     ) -> Option<gpui::AnyElement> {
-        // Don't render terminal for empty output
-        if output.is_empty() {
+        let theme_colors = theme_to_terminal_colors(theme);
+
+        // --- Resolve the Terminal entity ---
+        // Try the global pool first (live PTY terminals).
+        let (terminal, is_live) = if let Some(entry) =
+            TerminalPool::global().lock().ok().and_then(|pool| {
+                pool.get_terminal_by_tool_id_any_session(tool_id)
+                    .map(|e| e.terminal.clone())
+            }) {
+            (entry, true)
+        } else if !output.is_empty() {
+            // Fallback: display-only terminal for persisted output.
+            let t = get_or_create_display_terminal(tool_id, cx);
+            feed_display_output(tool_id, output, &t, cx);
+            (t, false)
+        } else {
+            // No live terminal AND no output text — nothing to show.
             return None;
+        };
+
+        // --- Read terminal state ---
+        let (is_running, exit_status, command) = {
+            let t = terminal.read(cx);
+            (
+                !t.has_exited(),
+                t.exit_status(),
+                t.command().unwrap_or("").to_string(),
+            )
+        };
+
+        // For display-only terminals the command isn't set; we don't show
+        // the card header in that case unless we have info from the status.
+        let show_header = is_live || !command.is_empty();
+
+        // --- Get or create the TerminalView ---
+        let cache_key = format!("exec-{}", tool_id);
+        let view = get_or_create_view(&cache_key, &terminal, theme_colors.clone(), cx);
+
+        // Update theme colors on the view (in case theme changed).
+        view.update(cx, |tv, cx| {
+            tv.set_theme_colors(theme_colors.clone(), cx);
+        });
+
+        let collapsed = is_collapsed(tool_id);
+
+        // --- Build the card element ---
+        let border_color = card_border_color(is_running, exit_status, is_live, status);
+
+        let mut card = div()
+            .w_full()
+            .mt_1()
+            .border_1()
+            .border_color(border_color)
+            .rounded_md()
+            .overflow_hidden();
+
+        // Header
+        if show_header {
+            let status_text = card_status_text(is_running, exit_status, is_live, status);
+            let display_command = if command.is_empty() {
+                "command".to_string()
+            } else {
+                command
+            };
+
+            let tool_id_for_click = tool_id.to_string();
+            let header_bg = if is_dark_theme(theme) {
+                gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            } else {
+                gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            };
+            let header_text_color = theme.muted_foreground;
+            let status_color = theme.muted_foreground;
+
+            // Collapse chevron
+            let chevron_icon = if collapsed {
+                "icons/chevron_right.svg"
+            } else {
+                "icons/chevron_down.svg"
+            };
+
+            card = card.child(
+                div()
+                    .id(SharedString::from(format!("term-header-{}", tool_id)))
+                    .px_3()
+                    .py_1p5()
+                    .bg(header_bg)
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .items_center()
+                    .on_click(move |_event, window, _cx| {
+                        toggle_collapsed(&tool_id_for_click);
+                        window.refresh();
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                gpui::svg()
+                                    .size(px(12.0))
+                                    .path(SharedString::from(chevron_icon))
+                                    .text_color(header_text_color),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(header_text_color)
+                                    .child(format!("$ {}", display_command)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(status_color)
+                            .child(status_text),
+                    ),
+            );
         }
 
-        // Get or create the terminal entity
-        let terminal = get_or_create_terminal(tool_id, cx);
+        // Terminal body (unless collapsed)
+        if !collapsed {
+            card = card.child(div().w_full().bg(theme_colors.background).child(view));
+        }
 
-        // Feed any new output into the terminal
-        feed_output(tool_id, output, &terminal, cx);
+        Some(card.into_any_element())
+    }
+}
 
-        // Get or create the view
-        let theme_colors = theme_to_terminal_colors(theme);
-        let view = get_or_create_view(tool_id, &terminal, theme_colors, cx);
+// ---------------------------------------------------------------------------
+// Card helpers
+// ---------------------------------------------------------------------------
 
-        let bg_color = theme.background;
+fn card_border_color(
+    is_running: bool,
+    exit_status: Option<Option<i32>>,
+    is_live: bool,
+    status: &ToolStatus,
+) -> gpui::Hsla {
+    if is_live && is_running {
+        // Running — neutral gray
+        gpui::hsla(0.0, 0.0, 0.4, 0.4)
+    } else if is_live {
+        // Live terminal has exited
+        if exit_status == Some(Some(0)) {
+            gpui::hsla(0.33, 0.5, 0.4, 0.6) // green
+        } else {
+            gpui::hsla(0.0, 0.6, 0.5, 0.6) // red
+        }
+    } else {
+        // Display-only (restored from persistence) — use tool status
 
-        Some(
-            div()
-                .w_full()
-                .rounded_md()
-                .overflow_hidden()
-                .bg(bg_color)
-                .child(view)
-                .into_any_element(),
-        )
+        match status {
+            ToolStatus::Pending | ToolStatus::Running => gpui::hsla(0.0, 0.0, 0.4, 0.4),
+            ToolStatus::Success => gpui::hsla(0.33, 0.5, 0.4, 0.6),
+            ToolStatus::Error => gpui::hsla(0.0, 0.6, 0.5, 0.6),
+        }
+    }
+}
+
+fn card_status_text(
+    is_running: bool,
+    exit_status: Option<Option<i32>>,
+    is_live: bool,
+    status: &ToolStatus,
+) -> String {
+    if is_live {
+        if is_running {
+            "Running…".to_string()
+        } else if let Some(Some(code)) = exit_status {
+            if code == 0 {
+                "Done".to_string()
+            } else {
+                format!("Exit {}", code)
+            }
+        } else {
+            "Exited".to_string()
+        }
+    } else {
+        match status {
+            ToolStatus::Pending | ToolStatus::Running => "Running…".to_string(),
+            ToolStatus::Success => "Done".to_string(),
+            ToolStatus::Error => "Error".to_string(),
+        }
     }
 }
 

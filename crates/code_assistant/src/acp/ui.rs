@@ -724,6 +724,9 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateBranchInfo { .. } => {
                 // These are UI management events, not relevant for ACP
             }
+            UiEvent::ToolTerminalAttached { .. } => {
+                // Terminal pool mapping — only relevant for GPUI
+            }
             UiEvent::DisplayError { message } => {
                 tracing::error!("ACPUserUI: Received DisplayError event: {}", message);
                 if let Ok(mut last_error) = self.last_error.lock() {

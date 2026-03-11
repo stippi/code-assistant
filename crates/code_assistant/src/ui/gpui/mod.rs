@@ -18,7 +18,9 @@ mod root;
 pub mod sandbox_selector;
 pub mod simple_renderers;
 pub mod spawn_agent_renderer;
+pub mod terminal_executor;
 pub mod terminal_output_renderer;
+pub mod terminal_pool;
 pub mod theme;
 pub mod tool_output_renderers;
 
@@ -424,6 +426,13 @@ impl Gpui {
                 let mut task_guard = gpui_clone.session_event_task.lock().unwrap();
                 *task_guard = Some(chat_response_task);
             }
+
+            // Register the GPUI terminal worker so that
+            // GpuiTerminalCommandExecutor can create PTY terminals.
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                terminal_executor::register_gpui_terminal_worker(cx);
+            })
+            .detach();
 
             // Create window with larger size to accommodate chat sidebar and messages
             let bounds =
@@ -985,11 +994,27 @@ impl Gpui {
                     message.add_image_block(media_type, data, cx);
                 });
             }
+
             UiEvent::AppendToolOutput { tool_id, chunk } => {
                 // Append tool output to the last message container
                 self.update_last_message(cx, |message, cx| {
                     message.append_tool_output(tool_id, chunk, cx);
                 });
+            }
+            UiEvent::ToolTerminalAttached {
+                tool_id,
+                terminal_id,
+            } => {
+                tracing::debug!("UI event: Tool {tool_id} attached terminal {terminal_id}");
+                let session_id = self
+                    .current_session_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
+                    pool.register_tool_mapping(session_id, tool_id, terminal_id);
+                }
             }
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
@@ -1371,13 +1396,25 @@ impl Gpui {
                         container.append_tool_output(tool_id, chunk, cx);
                     });
                 }
+
                 DisplayFragment::ToolTerminal {
                     tool_id,
                     terminal_id,
                 } => {
-                    tracing::debug!(
-                        "GPUI: Tool {tool_id} attached terminal {terminal_id}; GUI terminal embedding unsupported"
-                    );
+                    tracing::debug!("GPUI: Tool {tool_id} attached terminal {terminal_id}");
+                    let session_id = self
+                        .current_session_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_default();
+                    if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
+                        pool.register_tool_mapping(
+                            session_id,
+                            tool_id.clone(),
+                            terminal_id.clone(),
+                        );
+                    }
                 }
 
                 DisplayFragment::ReasoningComplete => {
@@ -1871,13 +1908,16 @@ impl UserInterface for Gpui {
                     chunk: chunk.clone(),
                 });
             }
+
             DisplayFragment::ToolTerminal {
                 tool_id,
                 terminal_id,
             } => {
-                tracing::debug!(
-                    "GPUI: Tool {tool_id} attached terminal {terminal_id}; no dedicated UI hook"
-                );
+                tracing::debug!("GPUI proxy: Tool {tool_id} attached terminal {terminal_id}");
+                self.push_event(UiEvent::ToolTerminalAttached {
+                    tool_id: tool_id.clone(),
+                    terminal_id: terminal_id.clone(),
+                });
             }
 
             DisplayFragment::CompactionDivider { summary } => {
