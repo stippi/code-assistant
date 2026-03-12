@@ -326,10 +326,21 @@ impl MessageContainer {
                         // Update generating state based on tool completion
                         if status == ToolStatus::Success || status == ToolStatus::Error {
                             if was_generating {
-                                // Auto-collapse all tools after completion
-                                // This keeps the UI clean regardless of streaming behavior
-                                tool.state = ToolBlockState::Collapsed;
-                                should_animate_collapse = true;
+                                // Check if this tool has a custom output renderer
+                                // (e.g. execute_command with terminal cards, spawn_agent).
+                                // Tools with custom renderers stay expanded so
+                                // their visual output remains visible.
+                                let has_custom_renderer = crate::ui::gpui::tool_output_renderers::ToolOutputRendererRegistry::global()
+                                    .is_some_and(|registry| registry.has_renderer(&tool.name));
+
+                                if has_custom_renderer {
+                                    tool.state = ToolBlockState::Expanded;
+                                } else {
+                                    // Auto-collapse tools without custom renderers
+                                    // This keeps the UI clean regardless of streaming behavior
+                                    tool.state = ToolBlockState::Collapsed;
+                                    should_animate_collapse = true;
+                                }
                             }
                             // If already not generating, no automatic state change
                         } else {

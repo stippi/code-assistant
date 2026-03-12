@@ -239,8 +239,10 @@ async fn run_command(
         std::mem::forget(_sub);
     })?;
 
-    // Track the last output length we've sent.
-    let mut seen_len = 0usize;
+    // Track the last output length we've sent (in chars, not bytes, since
+    // get_content_text() can reflow between reads and byte offsets become
+    // invalid across multi-byte UTF-8 characters).
+    let mut seen_chars = 0usize;
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
@@ -252,9 +254,10 @@ async fn run_command(
                 })?;
 
                 // Send any remaining output chunk.
-                if output.len() > seen_len {
-                    let chunk = &output[seen_len..];
-                    let _ = event_tx.send(TerminalWorkerEvent::OutputChunk(chunk.to_string()));
+                let total_chars = output.chars().count();
+                if total_chars > seen_chars {
+                    let chunk: String = output.chars().skip(seen_chars).collect();
+                    let _ = event_tx.send(TerminalWorkerEvent::OutputChunk(chunk));
                 }
 
                 let success = exit_code.map(|c| c == 0).unwrap_or(false);
@@ -266,10 +269,11 @@ async fn run_command(
                     terminal.read(cx).get_content_text()
                 })?;
 
-                if output.len() > seen_len {
-                    let chunk = &output[seen_len..];
-                    let _ = event_tx.send(TerminalWorkerEvent::OutputChunk(chunk.to_string()));
-                    seen_len = output.len();
+                let total_chars = output.chars().count();
+                if total_chars > seen_chars {
+                    let chunk: String = output.chars().skip(seen_chars).collect();
+                    let _ = event_tx.send(TerminalWorkerEvent::OutputChunk(chunk));
+                    seen_chars = total_chars;
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {

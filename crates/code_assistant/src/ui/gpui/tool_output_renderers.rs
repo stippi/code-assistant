@@ -83,7 +83,6 @@ impl ToolOutputRendererRegistry {
     }
 
     /// Check if a custom renderer exists for a tool
-    #[allow(dead_code)]
     pub fn has_renderer(&self, tool_name: &str) -> bool {
         self.renderers.contains_key(tool_name)
     }

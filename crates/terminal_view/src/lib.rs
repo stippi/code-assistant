@@ -757,14 +757,18 @@ impl TerminalView {
             TerminalMode::Embedded {
                 max_lines_when_unfocused,
             } => {
-                let total_lines = self.terminal.read(cx).total_lines();
+                let terminal = self.terminal.read(cx);
+                let total_lines = terminal.total_lines();
+                // Use content_lines() for height so the card grows with
+                // actual output rather than showing empty grid rows.
+                let content_lines = terminal.content_lines();
                 if total_lines > MAX_EMBEDDED_LINES {
                     ContentMode::Scrollable
                 } else {
                     let displayed_lines = if let Some(max) = max_lines_when_unfocused {
-                        total_lines.min(*max)
+                        content_lines.min(*max)
                     } else {
-                        total_lines
+                        content_lines
                     };
                     ContentMode::Inline {
                         displayed_lines: displayed_lines.max(1),

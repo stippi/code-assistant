@@ -296,6 +296,21 @@ impl Terminal {
         self.exit_status.is_some()
     }
 
+    /// Number of lines that actually have content (cursor line + 1, plus
+    /// any scrollback lines). This is useful for sizing embedded terminal
+    /// views so they grow with content rather than showing empty rows.
+    pub fn content_lines(&self) -> usize {
+        let term = self.term.lock_unfair();
+        // The cursor line (0-indexed within the visible grid). Lines above
+        // the visible grid are in scrollback (negative line indices).
+        let cursor_line = self.last_content.cursor.point.line.0;
+        // Scrollback lines that have content (topmost_line is negative).
+        let scrollback_lines = (-term.topmost_line().0).max(0) as usize;
+        // Content = scrollback + visible lines up to and including cursor.
+        // cursor_line is 0-based, so +1 for count.
+        scrollback_lines + (cursor_line.max(0) as usize) + 1
+    }
+
     /// Get the full terminal text content as a string.
     pub fn get_content_text(&self) -> String {
         let term = self.term.lock_unfair();

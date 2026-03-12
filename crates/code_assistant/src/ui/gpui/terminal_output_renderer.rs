@@ -103,8 +103,8 @@ fn get_or_create_view(
 
     let terminal_clone = terminal.clone();
     let view = cx.new(|cx| {
-        let mut tv = TerminalView::new(terminal_clone, "Berkeley Mono", px(13.), theme_colors, cx);
-        tv.set_embedded_mode(Some(1000), cx);
+        let mut tv = TerminalView::new(terminal_clone, "Menlo", px(13.), theme_colors, cx);
+        tv.set_embedded_mode(Some(50), cx);
         tv
     });
 
