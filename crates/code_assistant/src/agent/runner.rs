@@ -2061,6 +2061,17 @@ impl Agent {
             None => return Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
         };
 
+        // Verify the tool is allowed in the current scope.
+        // The scope filtering on the tool list offered to the LLM is not sufficient on its own,
+        // because models may hallucinate tool calls they know from training even when the tool
+        // is not in the provided tool list (e.g. a sub-agent calling write_file).
+        if !ToolRegistry::global().is_tool_in_scope(&tool_request.name, self.tool_scope) {
+            return Err(anyhow::anyhow!(
+                "Tool '{}' is not available in the current scope",
+                tool_request.name
+            ));
+        }
+
         // Create a tool context
         let mut context = ToolContext {
             project_manager: self.project_manager.as_ref(),
