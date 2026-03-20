@@ -49,6 +49,14 @@ impl ToolRegistry {
         self.tools.get(name).map(|boxed| boxed.as_ref())
     }
 
+    /// Check if a tool is allowed in the given scope
+    pub fn is_tool_in_scope(&self, tool_name: &str, scope: ToolScope) -> bool {
+        self.tools
+            .get(tool_name)
+            .map(|tool| tool.spec().supported_scopes.contains(&scope))
+            .unwrap_or(false)
+    }
+
     /// Check if a tool is hidden by consulting the tool definitions
     pub fn is_tool_hidden(&self, tool_name: &str, scope: ToolScope) -> bool {
         self.tools
