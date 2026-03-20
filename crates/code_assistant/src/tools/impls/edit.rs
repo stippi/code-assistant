@@ -120,7 +120,11 @@ impl Tool for EditTool {
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::SubAgentDefault,
+            ],
             hidden: false,
             title_template: Some("Editing {path}"),
         }

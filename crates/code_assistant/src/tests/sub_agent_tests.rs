@@ -306,6 +306,25 @@ fn test_tool_scope_for_sub_agent() {
     assert!(!available.contains(&"edit".to_string()));
     assert!(!available.contains(&"delete_files".to_string()));
     assert!(!available.contains(&"execute_command".to_string()));
+
+    // Check write tools ARE available in SubAgentDefault scope
+    let available = get_tools_for_scope(ToolScope::SubAgentDefault);
+    assert!(
+        available.contains(&"write_file".to_string()),
+        "write_file should be available in SubAgentDefault scope"
+    );
+    assert!(
+        available.contains(&"edit".to_string()),
+        "edit should be available in SubAgentDefault scope"
+    );
+    assert!(
+        available.contains(&"delete_files".to_string()),
+        "delete_files should be available in SubAgentDefault scope"
+    );
+    assert!(
+        available.contains(&"execute_command".to_string()),
+        "execute_command should be available in SubAgentDefault scope"
+    );
 }
 
 #[test]

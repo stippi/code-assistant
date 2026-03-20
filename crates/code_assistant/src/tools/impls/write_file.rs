@@ -107,6 +107,7 @@ impl Tool for WriteFileTool {
                 ToolScope::McpServer,
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentDefault,
             ],
             hidden: false,
             title_template: Some("Writing {path}"),
