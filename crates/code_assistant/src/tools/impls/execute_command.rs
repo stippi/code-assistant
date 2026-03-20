@@ -148,6 +148,7 @@ impl Tool for ExecuteCommandTool {
                 ToolScope::McpServer,
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentDefault,
             ],
             hidden: false,
             title_template: Some("Running: {command_line}"),
