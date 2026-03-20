@@ -828,6 +828,7 @@ impl acp::Agent for ACPAgentImpl {
         'life0: 'async_trait,
     {
         let session_manager = self.session_manager.clone();
+        let pending_sessions = self.pending_sessions.clone();
         let session_id = arguments.session_id.clone();
         let requested_model_id = arguments.model_id.to_string();
 
@@ -852,23 +853,34 @@ impl acp::Agent for ACPAgentImpl {
             }
 
             let display_name = requested_model_id.clone();
+            let new_model_config = SessionModelConfig::new(display_name.clone());
 
-            let existing_config = {
-                let manager = session_manager.lock().await;
-                manager.get_session_model_config(&session_id.0)
-            };
+            // Check if this is a pending (not yet persisted) session first
+            {
+                let mut pending = pending_sessions.lock().await;
+                if let Some(pending_session) = pending.get_mut(session_id.0.as_ref()) {
+                    pending_session.model_config = new_model_config;
+                    tracing::info!(
+                        "ACP: Pending session {} switched to model {}",
+                        session_id.0,
+                        display_name,
+                    );
 
-            if let Err(err) = existing_config {
-                tracing::error!(
-                    error = ?err,
-                    "ACP: Failed to read existing session model configuration"
-                );
-                return Err(acp::Error::internal_error());
+                    let mut response_meta = JsonMap::new();
+                    response_meta.insert(
+                        "model".into(),
+                        json!({
+                            "id": display_name,
+                            "display_name": display_name,
+                        }),
+                    );
+                    return Ok(acp::SetSessionModelResponse::new().meta(response_meta));
+                }
             }
 
+            // Session is already persisted — update via SessionManager
             {
                 let mut manager = session_manager.lock().await;
-                let new_model_config = SessionModelConfig::new(display_name.clone());
                 if let Err(err) =
                     manager.set_session_model_config(&session_id.0, Some(new_model_config))
                 {
