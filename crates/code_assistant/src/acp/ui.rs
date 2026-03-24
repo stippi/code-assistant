@@ -432,7 +432,7 @@ impl ACPUserUI {
         self.should_continue.store(false, Ordering::Relaxed);
     }
 
-    fn content_chunk(content: acp::ContentBlock) -> acp::ContentChunk {
+    pub(crate) fn content_chunk(content: acp::ContentBlock) -> acp::ContentChunk {
         acp::ContentChunk::new(content)
     }
 
@@ -494,7 +494,7 @@ impl ACPUserUI {
         tool_call
     }
 
-    fn queue_session_update(&self, update: acp::SessionUpdate) {
+    pub(crate) fn queue_session_update(&self, update: acp::SessionUpdate) {
         let (ack_tx, _ack_rx) = oneshot::channel();
         let notification = acp::SessionNotification::new(self.session_id.clone(), update);
 
