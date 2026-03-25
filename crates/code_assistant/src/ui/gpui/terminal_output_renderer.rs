@@ -2,7 +2,10 @@ use crate::ui::gpui::elements::BlockView;
 use crate::ui::gpui::terminal_pool::TerminalPool;
 use crate::ui::ToolStatus;
 use gpui::AppContext as _; // brings .new() into scope on Context
-use gpui::{div, px, App, Context, Entity, IntoElement, ParentElement, Styled, Window};
+use gpui::{
+    div, px, App, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window,
+};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use terminal::Terminal;
@@ -113,20 +116,42 @@ fn get_or_create_view(
 }
 
 // ---------------------------------------------------------------------------
+// Collapse state — track which tool cards are collapsed
+// ---------------------------------------------------------------------------
+
+static COLLAPSED: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+fn collapsed_state() -> &'static Mutex<HashMap<String, bool>> {
+    COLLAPSED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn is_collapsed(tool_id: &str) -> bool {
+    collapsed_state()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(tool_id).copied())
+        .unwrap_or(false)
+}
+
+fn toggle_collapsed(tool_id: &str) {
+    if let Ok(mut m) = collapsed_state().lock() {
+        let current = m.get(tool_id).copied().unwrap_or(false);
+        m.insert(tool_id.to_string(), !current);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ExecuteCommandOutputRenderer
 // ---------------------------------------------------------------------------
 
-/// Renders execute_command output as an embedded terminal with ANSI color
-/// support.
+/// Renders execute_command output as an embedded terminal card with ANSI
+/// color support.
 ///
 /// **Preferred path**: Looks up a live PTY terminal from the global
 /// `TerminalPool` (created by `GpuiTerminalCommandExecutor`).
 ///
 /// **Fallback path**: Creates a display-only terminal and feeds the persisted
 /// output text into it (used for session restoration from disk).
-///
-/// The surrounding tool block already provides header, collapse/expand, and
-/// visual framing — this renderer only produces the terminal content itself.
 pub struct ExecuteCommandOutputRenderer;
 
 impl ToolOutputRenderer for ExecuteCommandOutputRenderer {
@@ -138,7 +163,7 @@ impl ToolOutputRenderer for ExecuteCommandOutputRenderer {
         &self,
         tool_id: &str,
         output: &str,
-        _status: &ToolStatus,
+        status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
         _window: &mut Window,
         cx: &mut Context<BlockView>,
@@ -147,20 +172,35 @@ impl ToolOutputRenderer for ExecuteCommandOutputRenderer {
 
         // --- Resolve the Terminal entity ---
         // Try the global pool first (live PTY terminals).
-        let terminal = if let Some(entry) = TerminalPool::global().lock().ok().and_then(|pool| {
-            pool.get_terminal_by_tool_id_any_session(tool_id)
-                .map(|e| e.terminal.clone())
-        }) {
-            entry
+        let (terminal, is_live) = if let Some(entry) =
+            TerminalPool::global().lock().ok().and_then(|pool| {
+                pool.get_terminal_by_tool_id_any_session(tool_id)
+                    .map(|e| e.terminal.clone())
+            }) {
+            (entry, true)
         } else if !output.is_empty() {
             // Fallback: display-only terminal for persisted output.
             let t = get_or_create_display_terminal(tool_id, cx);
             feed_display_output(tool_id, output, &t, cx);
-            t
+            (t, false)
         } else {
             // No live terminal AND no output text — nothing to show.
             return None;
         };
+
+        // --- Read terminal state ---
+        let (is_running, exit_status, command) = {
+            let t = terminal.read(cx);
+            (
+                !t.has_exited(),
+                t.exit_status(),
+                t.command().unwrap_or("").to_string(),
+            )
+        };
+
+        // For display-only terminals the command isn't set; we don't show
+        // the card header in that case unless we have info from the status.
+        let show_header = is_live || !command.is_empty();
 
         // --- Get or create the TerminalView ---
         let cache_key = format!("exec-{}", tool_id);
@@ -171,17 +211,151 @@ impl ToolOutputRenderer for ExecuteCommandOutputRenderer {
             tv.set_theme_colors(theme_colors.clone(), cx);
         });
 
-        // The tool block already provides header, collapse/expand, and
-        // border — we just render the terminal content directly.
-        Some(
-            div()
-                .w_full()
-                .rounded_md()
-                .overflow_hidden()
-                .bg(theme_colors.background)
-                .child(view)
-                .into_any_element(),
-        )
+        let collapsed = is_collapsed(tool_id);
+
+        // --- Build the card element ---
+        let border_color = card_border_color(is_running, exit_status, is_live, status);
+
+        let mut card = div()
+            .w_full()
+            .mt_1()
+            .border_1()
+            .border_color(border_color)
+            .rounded_md()
+            .overflow_hidden();
+
+        // Header
+        if show_header {
+            let status_text = card_status_text(is_running, exit_status, is_live, status);
+            let display_command = if command.is_empty() {
+                "command".to_string()
+            } else {
+                command
+            };
+
+            let tool_id_for_click = tool_id.to_string();
+            let header_bg = if is_dark_theme(theme) {
+                gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            } else {
+                gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            };
+            let header_text_color = theme.muted_foreground;
+            let status_color = theme.muted_foreground;
+
+            // Collapse chevron
+            let chevron_icon = if collapsed {
+                "icons/chevron_right.svg"
+            } else {
+                "icons/chevron_down.svg"
+            };
+
+            card = card.child(
+                div()
+                    .id(SharedString::from(format!("term-header-{}", tool_id)))
+                    .px_3()
+                    .py_1p5()
+                    .bg(header_bg)
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .items_center()
+                    .on_click(move |_event, window, _cx| {
+                        toggle_collapsed(&tool_id_for_click);
+                        window.refresh();
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                gpui::svg()
+                                    .size(px(12.0))
+                                    .path(SharedString::from(chevron_icon))
+                                    .text_color(header_text_color),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(header_text_color)
+                                    .child(format!("$ {}", display_command)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(status_color)
+                            .child(status_text),
+                    ),
+            );
+        }
+
+        // Terminal body (unless collapsed)
+        if !collapsed {
+            card = card.child(div().w_full().bg(theme_colors.background).child(view));
+        }
+
+        Some(card.into_any_element())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Card helpers
+// ---------------------------------------------------------------------------
+
+fn card_border_color(
+    is_running: bool,
+    exit_status: Option<Option<i32>>,
+    is_live: bool,
+    status: &ToolStatus,
+) -> gpui::Hsla {
+    if is_live && is_running {
+        // Running — neutral gray
+        gpui::hsla(0.0, 0.0, 0.4, 0.4)
+    } else if is_live {
+        // Live terminal has exited
+        if exit_status == Some(Some(0)) {
+            gpui::hsla(0.33, 0.5, 0.4, 0.6) // green
+        } else {
+            gpui::hsla(0.0, 0.6, 0.5, 0.6) // red
+        }
+    } else {
+        // Display-only (restored from persistence) — use tool status
+
+        match status {
+            ToolStatus::Pending | ToolStatus::Running => gpui::hsla(0.0, 0.0, 0.4, 0.4),
+            ToolStatus::Success => gpui::hsla(0.33, 0.5, 0.4, 0.6),
+            ToolStatus::Error => gpui::hsla(0.0, 0.6, 0.5, 0.6),
+        }
+    }
+}
+
+fn card_status_text(
+    is_running: bool,
+    exit_status: Option<Option<i32>>,
+    is_live: bool,
+    status: &ToolStatus,
+) -> String {
+    if is_live {
+        if is_running {
+            "Running…".to_string()
+        } else if let Some(Some(code)) = exit_status {
+            if code == 0 {
+                "Done".to_string()
+            } else {
+                format!("Exit {}", code)
+            }
+        } else {
+            "Exited".to_string()
+        }
+    } else {
+        match status {
+            ToolStatus::Pending | ToolStatus::Running => "Running…".to_string(),
+            ToolStatus::Success => "Done".to_string(),
+            ToolStatus::Error => "Error".to_string(),
+        }
     }
 }
 
@@ -190,7 +364,9 @@ impl ToolOutputRenderer for ExecuteCommandOutputRenderer {
 // ---------------------------------------------------------------------------
 
 fn theme_to_terminal_colors(theme: &gpui_component::theme::Theme) -> TerminalThemeColors {
-    if is_dark_theme(theme) {
+    let is_dark = is_dark_theme(theme);
+
+    if is_dark {
         TerminalThemeColors {
             foreground: theme.foreground,
             background: theme.background,
