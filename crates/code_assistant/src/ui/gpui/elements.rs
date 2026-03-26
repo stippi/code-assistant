@@ -1,7 +1,7 @@
 use crate::persistence::{BranchInfo, NodeId};
 use crate::ui::gpui::file_icons;
 use crate::ui::gpui::image;
-use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
+
 use crate::ui::ToolStatus;
 use gpui::{
     bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, Bounds,
@@ -9,7 +9,7 @@ use gpui::{
     Task, Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
-use gpui_component::{label::Label, text::TextView, ActiveTheme};
+use gpui_component::{text::TextView, ActiveTheme};
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -77,7 +77,8 @@ pub struct MessageContainer {
     /// streaming, all blocks that were created for that last, canceled request are removed.
     current_request_id: Arc<Mutex<u64>>,
 
-    /// Current project for parameter filtering
+    /// Current project for parameter filtering (used to detect cross-project tool calls)
+    #[allow(dead_code)]
     current_project: Arc<Mutex<String>>,
     /// Tracks the last block type for hidden tool paragraph breaks
     last_block_type_for_hidden_tool: Arc<Mutex<Option<HiddenToolBlockType>>>,
@@ -102,6 +103,7 @@ impl MessageContainer {
         Self {
             elements: Arc::new(Mutex::new(Vec::new())),
             role,
+
             current_request_id: Arc::new(Mutex::new(0)),
             current_project: Arc::new(Mutex::new(String::new())),
             last_block_type_for_hidden_tool: Arc::new(Mutex::new(None)),
@@ -733,8 +735,10 @@ pub struct BlockView {
     // Animation state
     animation_state: AnimationState,
     content_height: Rc<Cell<Pixels>>,
+
     animation_task: Option<Task<()>>,
-    // Current project for parameter filtering
+    /// Current project for parameter filtering (used to detect cross-project tool calls)
+    #[allow(dead_code)]
     current_project: Arc<Mutex<String>>,
 }
 
@@ -1286,8 +1290,7 @@ impl Render for BlockView {
                     .into_any_element()
             }
             BlockData::ToolUse(block) => {
-                // --- Unified tool block rendering (Phase 1 inline + Phase 2 card) ---
-                // Check if this tool has a registered renderer (inline or card).
+                // Unified tool block rendering via ToolBlockRendererRegistry
                 if let Some(registry) =
                     crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
                 {
@@ -1329,477 +1332,19 @@ impl Render for BlockView {
                                 ) {
                                     return element;
                                 }
-                                // If render returns None, fall through to legacy path
                             }
                         }
                     }
                 }
 
-                // --- Legacy card tool rendering (fallback for unregistered tools) ---
-
-                // Get the appropriate icon for this tool type
-                let icon = file_icons::get().get_tool_icon(&block.name);
-
-                // Get the chevron icon based on block state
-                let (chevron_icon, chevron_text) = match block.state {
-                    ToolBlockState::Collapsed => (
-                        file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
-                        "▼",
-                    ),
-                    ToolBlockState::Expanded => {
-                        (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
-                    }
-                };
-
-                // Use theme utilities for colors
-                let icon_color =
-                    crate::ui::gpui::theme::colors::tool_block_icon(cx.theme(), &block.status);
-                let tool_name_color =
-                    crate::ui::gpui::theme::colors::tool_block_name(cx.theme(), &block.status);
-                let status_color = crate::ui::gpui::theme::colors::tool_border_by_status(
-                    cx.theme(),
-                    &block.status,
-                );
-                let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(cx.theme());
-                let chevron_color = cx.theme().muted_foreground;
-
-                // Parameter rendering function that uses the global registry if available
-                let render_parameter = |param: &ParameterBlock| {
-                    // Try to get the global registry
-                    if let Some(registry) = ParameterRendererRegistry::global() {
-                        // Use the registry to render the parameter with theme
-                        registry.render_parameter(
-                            &block.name,
-                            &param.name,
-                            &param.value,
-                            cx.theme(),
-                        )
-                    } else {
-                        // Fallback to empty element
-                        div().into_any_element()
-                    }
-                };
-
-                // Filter out hidden parameters, then separate into regular and full-width
-                let current_project = self.current_project.lock().unwrap().clone();
-                let registry = ParameterRendererRegistry::global();
-
-                // Convert parameters to HashMap for virtual parameter processing
-                let param_map: std::collections::HashMap<String, String> = block
-                    .parameters
-                    .iter()
-                    .map(|p| (p.name.clone(), p.value.clone()))
-                    .collect();
-
-                let should_hide_param = |param: &ParameterBlock| {
-                    // Hide project parameter logic (existing)
-                    let hide_project = param.name == "project"
-                        && !current_project.is_empty()
-                        && param.value == current_project;
-
-                    // Hide parameters that are part of virtual parameters (NEW)
-                    let hide_virtual = registry.as_ref().is_some_and(|reg| {
-                        reg.should_hide_parameter(
-                            &block.name,
-                            &param.name,
-                            &param_map,
-                            !self.is_generating, // completed = not generating
-                        )
-                    });
-
-                    hide_project || hide_virtual
-                };
-
-                let visible_params: Vec<&ParameterBlock> = block
-                    .parameters
-                    .iter()
-                    .filter(|param| !should_hide_param(param))
-                    .collect();
-
-                // Get virtual parameters that should be rendered
-                let virtual_elements: Vec<gpui::AnyElement> = if let Some(registry) = &registry {
-                    registry.render_virtual_parameters(
-                        &block.name,
-                        &param_map,
-                        !self.is_generating, // completed = not generating
-                        cx.theme(),
-                    )
-                } else {
-                    Vec::new()
-                };
-                let has_virtual_elements = !virtual_elements.is_empty();
-
-                let (regular_params, fullwidth_params): (
-                    Vec<&ParameterBlock>,
-                    Vec<&ParameterBlock>,
-                ) = visible_params.into_iter().partition(|param| {
-                    !registry.as_ref().is_some_and(|reg| {
-                        reg.get_renderer(&block.name, &param.name).is_full_width(
-                            &block.name,
-                            &param.name,
-                            &param.value,
-                        )
-                    })
-                });
-
+                // Fallback for tools without a registered renderer: render tool name only
+                tracing::warn!("No ToolBlockRenderer registered for tool '{}'", block.name);
                 div()
-                    .rounded(px(4.))
-                    .bg(tool_bg)
-                    .shadow_xs()
-                    .flex()
-                    .flex_row()
-                    .overflow_hidden()
-                    .children(vec![
-                        // Left side: Border with status indication
-                        div()
-                            .w(px(3.))
-                            .flex_none()
-                            .min_h_full()
-                            .overflow_hidden()
-                            // Use a child with enough width to avoid reducing the corner radius
-                            .child(div().w(px(8.)).h_full().rounded(px(4.)).bg(status_color)),
-                        div().flex_grow().min_w_0().relative().child(
-                            div().w_full().flex().flex_col().p_1().children({
-                                let mut elements = Vec::new();
-
-                                // First row: Tool header with icon, name, and regular parameters
-                                elements.push(
-
-                                    div()
-                                        .id("tool-header-toggle")
-                                        .flex()
-                                        .flex_row()
-                                        .justify_between()
-                                        .cursor_pointer()
-                                        .on_click(
-                                            cx.listener(move |view, _event: &ClickEvent, _window, cx| {
-                                                view.toggle_tool_collapsed(cx);
-                                            }),
-                                        )
-                                        .children(vec![
-                                            // Left side: Tool icon, name and regular parameters
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .flex_grow()
-                                                .min_w_0() // Allow shrinking below content size
-                                                .children(vec![
-                                                    // Tool icon
-                                                    file_icons::render_icon_container(
-                                                        &icon, 16.0, icon_color, "🔧",
-                                                    )
-                                                    .mx_2()
-                                                    .into_any(),
-                                                    // Tool name
-                                                    div()
-                                                        .font_weight(FontWeight(700.0))
-                                                        .text_color(tool_name_color)
-                                                        .mr_2()
-                                                        .flex_none() // Prevent shrinking
-                                                        .child(block.name.clone())
-                                                        .into_any(),
-                                                    // Regular parameters
-                                                    div()
-                                                        .flex()
-                                                        .flex_wrap()
-                                                        .gap_1()
-                                                        .flex_grow()
-                                                        .min_w_0() // Allow shrinking and enable proper wrapping
-                                                        .overflow_hidden() // Hide overflow instead of expanding
-                                                        .children(
-                                                            regular_params.iter().map(|param| {
-                                                                render_parameter(param)
-                                                            }),
-                                                        )
-                                                        .into_any(),
-                                                ])
-                                                .into_any(),
-                                            // Right side: Chevron icon
-                                            div()
-                                                .mr_1()
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .flex_none()
-                                                .cursor_pointer()
-                                                .size(px(24.))
-                                                .rounded_full()
-                                                .hover(|s| s.bg(status_color.opacity(0.2)))
-                                                .child(file_icons::render_icon(
-                                                    &chevron_icon,
-                                                    16.0,
-                                                    chevron_color,
-                                                    chevron_text,
-                                                ))
-                                                .into_any(),
-                                        ])
-                                        .into_any(),
-                                );
-
-                                // Animated expandable content container
-                                {
-                                    let scale = match &self.animation_state {
-                                        AnimationState::Animating { height_scale, .. } => *height_scale,
-                                        AnimationState::Idle => match block.state {
-                                            ToolBlockState::Collapsed => 0.0,
-                                            ToolBlockState::Expanded => 1.0,
-                                        },
-                                    };
-
-                                    let content_height_rc = self.content_height.clone();
-                                    let has_expandable_content = !fullwidth_params.is_empty() ||
-                                        has_virtual_elements ||
-                                        block.output.as_ref().is_some_and(|o| !o.is_empty());
-
-                                    if has_expandable_content && (block.state != ToolBlockState::Collapsed || scale > 0.0) {
-                                        elements.push(
-                                            div()
-                                                .overflow_hidden()
-                                                .when(scale < 1.0, |div| {
-                                                    // During animation, use measured height but prevent sudden changes
-                                                    let actual_height = content_height_rc.get();
-                                                    if actual_height > px(0.0) {
-                                                        let animated_height = actual_height * scale;
-                                                        div.h(animated_height)
-                                                    } else {
-                                                        div
-                                                    }
-                                                })
-                                                .on_children_prepainted({
-                                                    let content_height_rc = content_height_rc.clone();
-                                                    move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
-                                                        if let Some(first_child_bounds) = bounds_vec.first() {
-                                                            let new_height = first_child_bounds.size.height;
-                                                            if content_height_rc.get() != new_height {
-                                                                content_height_rc.set(new_height);
-                                                            }
-                                                        }
-                                                    }
-                                                })
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .children({
-                                                            let mut expandable_elements = Vec::new();
-
-                                                            // Full-width parameters
-                                                            if !fullwidth_params.is_empty() {
-                                                                expandable_elements.push(
-                                                                    div()
-                                                                        .flex()
-                                                                        .flex_col()
-                                                                        .w_full()
-                                                                        .mt_1()
-                                                                        .children(
-                                                                            fullwidth_params
-                                                                                .iter()
-                                                                                .map(|param| render_parameter(param)),
-                                                                        )
-                                                                        .into_any(),
-                                                                );
-                                                            }
-
-                                                            // Virtual parameters
-                                                            if has_virtual_elements {
-                                                                expandable_elements.push(
-                                                                    div()
-                                                                        .flex()
-                                                                        .flex_col()
-                                                                        .w_full()
-                                                                        .mt_1()
-                                                                        .children(virtual_elements)
-                                                                        .into_any(),
-                                                                );
-                                                            }
-
-                                                            // Smart output rendering based on streaming vs batch
-                                                            if let Some(output_content) = &block.output {
-                                                                if !output_content.is_empty() {
-                                                                    // Show output when block is expanded (state-driven, no is_generating override)
-                                                                    let should_show_output = block.state == ToolBlockState::Expanded;
-
-
-                                                                    if should_show_output {
-                                                                        // Try custom tool output renderer first
-                                                                        // Clone theme to avoid borrow conflict with cx
-                                                                        let theme = cx.theme().clone();
-                                                                        let custom_output = crate::ui::gpui::tool_output_renderers::ToolOutputRendererRegistry::global()
-                                                                            .and_then(|registry| {
-                                                                                registry.render_output(
-                                                                                    &block.name,
-                                                                                    &block.id,
-                                                                                    output_content,
-                                                                                    &block.status,
-                                                                                    &theme,
-                                                                                    window,
-                                                                                    cx,
-                                                                                )
-                                                                            });
-
-                                                                        if let Some(custom_element) = custom_output {
-                                                                            // Use custom renderer output
-                                                                            expandable_elements.push(
-                                                                                div()
-                                                                                    .mt_1()
-                                                                                    .w_full()
-                                                                                    .child(custom_element)
-                                                                                    .into_any(),
-                                                                            );
-                                                                        } else {
-                                                                            // Default output rendering
-                                                                            let output_color =
-                                                                                if block.status == crate::ui::ToolStatus::Error {
-                                                                                    cx.theme().danger
-                                                                                } else {
-                                                                                    cx.theme().foreground
-                                                                                };
-
-                                                                            expandable_elements.push(
-                                                                                div()
-                                                                                    .p_2()
-                                                                                    .mt_1()
-                                                                                    .w_full()
-                                                                                    .text_color(output_color)
-                                                                                    .text_size(px(13.))
-                                                                                    .whitespace_normal()
-                                                                                    .child(output_content.clone())
-                                                                                    .into_any(),
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-
-                                                            expandable_elements
-                                                        })
-                                                        // Add bottom padding to prevent content overlapping with collapse bar
-
-                                                        .when(
-                                                            !fullwidth_params.is_empty() ||
-                                                            has_virtual_elements ||
-                                                            block.output.as_ref().is_some_and(|o| !o.is_empty()),
-                                                            |div| div.pb(px(24.0))
-                                                        )
-                                                )
-                                                .into_any(),
-                                        );
-                                    }
-                                }
-
-                                // Error message (only shown for error status when collapsed, or when there's no output)
-
-                                if block.status == crate::ui::ToolStatus::Error
-                                    && block.status_message.is_some()
-                                    && (block.state == ToolBlockState::Collapsed
-                                        || block.output.as_ref().is_none_or(|o| o.is_empty()))
-                                {
-                                    elements.push(
-                                        div()
-                                            .p_2()
-                                            .mt_1()
-                                            .text_color(cx.theme().danger.opacity(0.9))
-                                            .text_size(px(13.))
-                                            .whitespace_normal() // Allow text wrapping
-                                            .child(block.status_message.clone().unwrap_or_default())
-                                            .into_any(),
-                                    );
-                                }
-
-                                elements
-                            }),
-                        ).child({
-                            // Absolutely positioned collapse bar on top of the content
-
-                            let (scale, is_expanding) = match &self.animation_state {
-                                AnimationState::Animating { height_scale, target, .. } => (*height_scale, *target == 1.0),
-                                AnimationState::Idle => match block.state {
-                                    ToolBlockState::Collapsed => (0.0, false),
-                                    ToolBlockState::Expanded => (1.0, false),
-                                },
-                            };
-
-                            let has_expandable_content = !fullwidth_params.is_empty() ||
-                                has_virtual_elements ||
-                                block.output.as_ref().is_some_and(|o| !o.is_empty());
-
-                            if has_expandable_content && (block.state != ToolBlockState::Collapsed || scale > 0.0) {
-                                // Calculate opacity based on animation phase and direction
-                                let footer_opacity = match &self.animation_state {
-                                    AnimationState::Idle => {
-                                        if block.state == ToolBlockState::Expanded {
-                                            1.0
-                                        } else {
-                                            0.0 // Collapsed
-                                        }
-                                    },
-                                    AnimationState::Animating { .. } => {
-                                        if is_expanding {
-                                            // Expanding: fade in during first 30% of animation
-                                            if scale < 0.3 {
-                                                scale / 0.3
-                                            } else {
-                                                1.0
-                                            }
-                                        } else {
-                                            // Collapsing: fade out during last 30% of animation
-                                            if scale > 0.7 {
-                                                (scale - 0.7) / 0.3
-                                            } else {
-                                                0.0
-                                            }
-                                        }
-                                    }
-                                };
-
-                                let (collapse_icon, collapse_text) = (
-                                    file_icons::get().get_type_icon(file_icons::CHEVRON_UP),
-                                    "Collapse",
-                                );
-
-                                div()
-                                    .absolute()
-                                    .bottom_0()
-                                    .left_0()
-                                    .right_0()
-                                    .flex()
-                                    .justify_center()
-                                    .items_center()
-                                    .text_xs()
-                                    .h(px(24.0))
-                                    .border_t_1()
-                                    .border_color(cx.theme().border)
-                                    .bg(tool_bg)
-
-                                    .id("tool-footer-toggle")
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(cx.theme().border.opacity(0.5)))
-                                    .opacity(footer_opacity)
-                                    .on_click(
-                                        cx.listener(move |view, _event: &ClickEvent, _window, cx| {
-                                            view.toggle_tool_collapsed(cx);
-                                        }),
-                                    )
-                                    .child(div().flex().items_center().gap_1().children(
-                                        vec![
-                                            file_icons::render_icon(
-                                                &collapse_icon,
-                                                14.0,
-                                                chevron_color,
-                                                "▲",
-                                            ).into_any(),
-                                            Label::new(collapse_text)
-                                                .text_color(chevron_color)
-                                                .into_any_element()
-                                        ],
-                                    ))
-                                    .into_any()
-                            } else {
-                                div().into_any()
-                            }
-                        }),
-                    ])
+                    .px_2()
+                    .py_1()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_size(px(13.))
+                    .child(format!("[{}]", block.name))
                     .into_any_element()
             }
             BlockData::CompactionSummary(block) => {

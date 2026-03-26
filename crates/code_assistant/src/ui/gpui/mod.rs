@@ -3,44 +3,26 @@ pub mod attachment;
 pub mod auto_scroll;
 pub mod branch_switcher;
 pub mod chat_sidebar;
-pub mod content_renderer;
 pub mod diff_card_renderer;
-pub mod diff_renderer;
-pub mod edit_diff_renderer;
 pub mod elements;
 pub mod file_icons;
 pub mod image;
 pub mod input_area;
 mod messages;
 pub mod model_selector;
-pub mod parameter_renderers;
 mod plan_banner;
 mod root;
 pub mod sandbox_selector;
-pub mod simple_renderers;
-pub mod spawn_agent_renderer;
 pub mod sub_agent_card_renderer;
 pub mod terminal_card_renderer;
 pub mod terminal_executor;
-#[allow(dead_code)]
-pub mod terminal_output_renderer;
 pub mod terminal_pool;
 pub mod theme;
 pub mod tool_block_renderers;
-pub mod tool_output_renderers;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::PlanState;
-use crate::ui::gpui::{
-    content_renderer::ContentRenderer,
-    diff_renderer::DiffParameterRenderer,
-    edit_diff_renderer::EditDiffRenderer,
-    elements::MessageRole,
-    parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
-    simple_renderers::SimpleParameterRenderer,
-    spawn_agent_renderer::SpawnAgentInstructionsRenderer,
-    tool_output_renderers::{SpawnAgentOutputRenderer, ToolOutputRendererRegistry},
-};
+use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use assets::Assets;
 use async_channel;
@@ -81,8 +63,6 @@ pub struct Gpui {
     event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     session_event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
-    #[allow(dead_code)]
-    parameter_renderers: Arc<ParameterRendererRegistry>,
     // Unified backend communication
     backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
     backend_response_receiver: Arc<Mutex<Option<async_channel::Receiver<BackendResponse>>>>,
@@ -237,50 +217,7 @@ impl Gpui {
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
 
-        // Initialize parameter renderers registry with default renderer
-        let mut registry = ParameterRendererRegistry::new(Box::new(DefaultParameterRenderer));
-
-        // Register specialized renderers
-        registry.register_renderer(Box::new(DiffParameterRenderer));
-        registry.register_renderer(Box::new(EditDiffRenderer));
-        registry.register_renderer(Box::new(ContentRenderer));
-
-        // Register simple renderers for parameters that don't need labels
-        registry.register_renderer(Box::new(SimpleParameterRenderer::new(
-            vec![
-                ("read_files".to_string(), "paths".to_string()),
-                ("list_files".to_string(), "paths".to_string()),
-                ("replace_in_file".to_string(), "path".to_string()),
-                ("write_file".to_string(), "path".to_string()),
-                ("search_files".to_string(), "regex".to_string()),
-                ("glob_files".to_string(), "pattern".to_string()),
-            ],
-            false, // These are not full-width
-        )));
-
-        // command_line: short commands inline, long commands full-width
-        registry.register_renderer(Box::new(SimpleParameterRenderer::with_dynamic_width(
-            vec![("execute_command".to_string(), "command_line".to_string())],
-            60, // threshold in characters
-        )));
-
-        // Register spawn_agent instructions renderer (full-width markdown)
-        registry.register_renderer(Box::new(SpawnAgentInstructionsRenderer));
-
-        // Wrap the registry in Arc for sharing
-        let parameter_renderers = Arc::new(registry);
-
-        // Set the global registry
-        ParameterRendererRegistry::set_global(parameter_renderers.clone());
-
-        // Initialize tool output renderers registry
-        let mut tool_output_registry = ToolOutputRendererRegistry::new();
-        tool_output_registry.register_renderer(Box::new(SpawnAgentOutputRenderer));
-        // Note: ExecuteCommandOutputRenderer is no longer registered here — it has
-        // been replaced by TerminalCardRenderer in the ToolBlockRendererRegistry.
-        ToolOutputRendererRegistry::set_global(Arc::new(tool_output_registry));
-
-        // Initialize unified tool block renderer registry
+        // Initialize tool block renderer registry
         {
             use tool_block_renderers::{InlineToolRenderer, ToolBlockRendererRegistry};
             let mut tbr_registry = ToolBlockRendererRegistry::new();
@@ -318,7 +255,6 @@ impl Gpui {
             event_task,
             session_event_task,
             current_request_id,
-            parameter_renderers,
             backend_event_sender: Arc::new(Mutex::new(None)),
             backend_response_receiver: Arc::new(Mutex::new(None)),
 
@@ -675,6 +611,7 @@ impl Gpui {
                     warn!("Using initial project: '{}'", current_project);
 
                     // Update MessagesView with current project and session ID
+
                     let session_id_for_messages = session_id.clone();
                     self.update_messages_view(cx, |messages_view, _cx| {
                         messages_view.set_current_project(current_project.clone());

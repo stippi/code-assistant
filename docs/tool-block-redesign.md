@@ -229,12 +229,14 @@ Renamed from "Edit/Write Card" — covers all file-mutation tools.
 4. ✅ Cancel button sends `UiEvent::CancelSubAgent` via `UiEventSender` global
 5. ✅ Smooth collapse/expand animation via `BlockView` animation infrastructure
 
-### Phase 5: Cleanup (TODO)
+### Phase 5: Cleanup ✅
 
-1. Migrate remaining tools to the new system (if any unregistered tools exist)
-2. Remove old `ParameterRendererRegistry` and `ToolOutputRendererRegistry` (or keep as internal implementation details within card renderers)
-3. Remove the generic tool block rendering code from `elements.rs`
-4. Remove old renderer files: `spawn_agent_renderer.rs`, `edit_diff_renderer.rs`, `diff_renderer.rs`, etc.
+1. ✅ All tools covered by `ToolBlockRendererRegistry` — no unregistered tools remain
+2. ✅ Removed `ParameterRendererRegistry`, `ToolOutputRendererRegistry`, and their initialization
+3. ✅ Removed ~460 lines of legacy card rendering from `elements.rs` (left minimal fallback with warning log)
+4. ✅ Deleted 8 old renderer files: `parameter_renderers.rs`, `tool_output_renderers.rs`, `content_renderer.rs`, `diff_renderer.rs`, `edit_diff_renderer.rs`, `simple_renderers.rs`, `spawn_agent_renderer.rs`, `terminal_output_renderer.rs`
+5. ✅ Removed dead theme helper functions (`tool_block_bg`, `tool_block_name`, `tool_parameter_*`, `tool_border_by_status`)
+6. ✅ Kept `current_project` plumbing on `MessageContainer`, `BlockView`, and `MessagesView` for future cross-project tool call indicators
 
 ## Key Files
 

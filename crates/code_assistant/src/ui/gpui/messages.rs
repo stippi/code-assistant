@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 pub struct MessagesView {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     current_pending_message: Arc<Mutex<Option<String>>>,
+    /// Current project (used to detect cross-project tool calls)
+    #[allow(dead_code)]
     current_project: Arc<Mutex<String>>,
     current_session_id: Arc<Mutex<Option<String>>>,
     focus_handle: FocusHandle,
@@ -94,10 +96,6 @@ impl MessagesView {
     pub fn set_current_project(&self, project: String) {
         *self.current_project.lock().unwrap() = project;
     }
-
-    fn get_current_project(&self) -> String {
-        self.current_project.lock().unwrap().clone()
-    }
 }
 
 impl Focusable for MessagesView {
@@ -122,7 +120,7 @@ impl Render for MessagesView {
         };
 
         // Get current project for parameter filtering
-        let current_project = self.get_current_project();
+        let current_project = self.current_project.lock().unwrap().clone();
         let current_session_id = self.get_current_session_id();
 
         // Collect all message elements first

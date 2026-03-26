@@ -144,14 +144,6 @@ pub mod colors {
     }
 
     // Tool block colors
-    pub fn tool_block_bg(theme: &Theme) -> Hsla {
-        if theme.is_dark() {
-            rgba(0x161616FF).into() // Dark mode tool background
-        } else {
-            rgba(0xF0F0F0FF).into() // Light mode tool background
-        }
-    }
-
     pub fn tool_block_icon(theme: &Theme, status: &crate::ui::ToolStatus) -> Hsla {
         match status {
             crate::ui::ToolStatus::Error => theme.warning,
@@ -162,44 +154,6 @@ pub mod colors {
                     black()
                 }
             }
-        }
-    }
-
-    pub fn tool_block_name(theme: &Theme, status: &crate::ui::ToolStatus) -> Hsla {
-        match status {
-            crate::ui::ToolStatus::Error => theme.warning,
-            _ => {
-                if theme.is_dark() {
-                    white()
-                } else {
-                    black()
-                }
-            }
-        }
-    }
-
-    pub fn tool_parameter_bg(theme: &Theme) -> Hsla {
-        if theme.is_dark() {
-            rgba(0x333333FF).into() // Dark parameter background
-        } else {
-            rgba(0xE2E2E2FF).into() // Light parameter background
-        }
-    }
-
-    pub fn tool_parameter_label(theme: &Theme) -> Hsla {
-        theme.info // Use theme's info color for parameter labels
-    }
-
-    pub fn tool_parameter_value(theme: &Theme) -> Hsla {
-        theme.foreground // Use theme's foreground color
-    }
-
-    pub fn tool_border_by_status(theme: &Theme, status: &crate::ui::ToolStatus) -> Hsla {
-        match status {
-            crate::ui::ToolStatus::Pending => rgba(0x999999FF).into(),
-            crate::ui::ToolStatus::Running => theme.info,
-            crate::ui::ToolStatus::Success => theme.success,
-            crate::ui::ToolStatus::Error => theme.warning,
         }
     }
 }
