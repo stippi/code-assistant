@@ -970,6 +970,169 @@ impl BlockView {
             AnimationState::Idle => {}
         }
     }
+
+    // ------------------------------------------------------------------
+    // Inline tool rendering
+    // ------------------------------------------------------------------
+
+    /// Render a tool block in the compact inline style.
+    ///
+    /// Layout:
+    /// ```text
+    /// [icon]  Description text                          [▾]   (chevron on hover)
+    /// │  output content when expanded …
+    /// ```
+    fn render_inline_tool(
+        &mut self,
+        block: &ToolUseBlock,
+        renderer: &dyn crate::ui::gpui::tool_block_renderers::ToolBlockRenderer,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        use crate::ui::gpui::theme::colors;
+
+        let theme = cx.theme().clone();
+
+        // Icon
+        let icon = file_icons::get().get_tool_icon(&block.name);
+        let (icon_color, desc_color) = match block.status {
+            ToolStatus::Error => (theme.danger, theme.danger),
+            ToolStatus::Running | ToolStatus::Pending => {
+                if self.is_generating {
+                    (theme.muted_foreground, theme.muted_foreground)
+                } else {
+                    (
+                        colors::tool_block_icon(&theme, &block.status),
+                        theme.foreground,
+                    )
+                }
+            }
+            ToolStatus::Success => (theme.muted_foreground, theme.muted_foreground),
+        };
+
+        // Description text
+        let description = if block.status == ToolStatus::Error {
+            if let Some(ref msg) = block.status_message {
+                format!("{} — {}", renderer.describe(block), msg)
+            } else {
+                renderer.describe(block)
+            }
+        } else {
+            renderer.describe(block)
+        };
+
+        // Determine expansion state
+        let is_expanded = self.is_generating || block.state == ToolBlockState::Expanded;
+        let has_output = block.output.as_ref().is_some_and(|o| !o.is_empty());
+        let can_expand = has_output && !self.is_generating;
+
+        // Chevron icon (only visible on hover, via group)
+        let chevron_icon = if is_expanded && !self.is_generating {
+            file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
+        } else {
+            file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
+        };
+        let chevron_color = theme.muted_foreground;
+
+        // Running spinner
+        let show_spinner = self.is_generating
+            && (block.status == ToolStatus::Pending || block.status == ToolStatus::Running);
+
+        // --- Build the element ---
+        let mut container = div().w_full().my(px(1.));
+
+        // Header line: clickable area with icon + description + chevron-on-hover
+        let header = div()
+            .id("inline-tool-header")
+            .group("inline-tool")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .py(px(2.))
+            .px(px(4.))
+            .rounded(px(4.))
+            .cursor_pointer()
+            .when(!can_expand && !self.is_generating, |d| d.cursor_default())
+            .hover(|s| s.bg(theme.secondary.opacity(0.5)))
+            .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                view.toggle_tool_collapsed(cx);
+            }))
+            .child(
+                // Left side: icon + description
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .flex_grow()
+                    .min_w_0()
+                    // Icon (or spinner)
+                    .when(show_spinner, |d| {
+                        d.child(
+                            gpui::svg()
+                                .size(px(14.))
+                                .path(SharedString::from("icons/arrow_circle.svg"))
+                                .text_color(icon_color)
+                                .with_animation(
+                                    "inline_spinner",
+                                    Animation::new(Duration::from_secs(2))
+                                        .repeat()
+                                        .with_easing(bounce(ease_in_out)),
+                                    |svg, delta| {
+                                        svg.with_transformation(Transformation::rotate(percentage(
+                                            delta,
+                                        )))
+                                    },
+                                ),
+                        )
+                    })
+                    .when(!show_spinner, |d| {
+                        d.child(file_icons::render_icon_container(
+                            &icon, 14.0, icon_color, "🔧",
+                        ))
+                    })
+                    // Description text
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(desc_color)
+                            .overflow_hidden()
+                            .text_overflow(gpui::TextOverflow::Truncate(SharedString::from("…")))
+                            .child(description),
+                    ),
+            )
+            // Chevron (shown when expandable; muted by default)
+            .when(can_expand, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(20.))
+                        .rounded(px(4.))
+                        .child(file_icons::render_icon(
+                            &chevron_icon,
+                            14.0,
+                            chevron_color.opacity(0.4),
+                            "▾",
+                        )),
+                )
+            });
+
+        container = container.child(header);
+
+        // Expanded output area
+        if is_expanded && has_output {
+            if let Some(output_el) = renderer.render(block, self.is_generating, &theme, window, cx)
+            {
+                container = container.child(output_el);
+            }
+        }
+
+        container
+    }
 }
 
 impl Render for BlockView {
@@ -1162,6 +1325,26 @@ impl Render for BlockView {
                     .into_any_element()
             }
             BlockData::ToolUse(block) => {
+                // --- Inline tool rendering (Phase 1 of tool block redesign) ---
+                // Check if this tool has a registered inline renderer.
+                if let Some(registry) =
+                    crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
+                {
+                    if let Some(renderer) = registry.get(&block.name) {
+                        if renderer.style()
+                            == crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Inline
+                        {
+                            // Clone block data to avoid borrow conflict with &mut self
+                            let block_clone = block.clone();
+                            return self
+                                .render_inline_tool(&block_clone, renderer.as_ref(), window, cx)
+                                .into_any_element();
+                        }
+                    }
+                }
+
+                // --- Card tool rendering (existing path) ---
+
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);
 

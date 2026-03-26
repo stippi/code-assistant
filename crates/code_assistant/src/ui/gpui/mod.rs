@@ -22,6 +22,7 @@ pub mod terminal_executor;
 pub mod terminal_output_renderer;
 pub mod terminal_pool;
 pub mod theme;
+pub mod tool_block_renderers;
 pub mod tool_output_renderers;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
@@ -275,6 +276,14 @@ impl Gpui {
             terminal_output_renderer::ExecuteCommandOutputRenderer,
         ));
         ToolOutputRendererRegistry::set_global(Arc::new(tool_output_registry));
+
+        // Initialize unified tool block renderer registry
+        {
+            use tool_block_renderers::{InlineToolRenderer, ToolBlockRendererRegistry};
+            let mut tbr_registry = ToolBlockRendererRegistry::new();
+            tbr_registry.register(Arc::new(InlineToolRenderer::new()));
+            ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
+        }
 
         // Create a channel to send and receive UiEvents
         let (tx, rx) = async_channel::unbounded::<UiEvent>();
