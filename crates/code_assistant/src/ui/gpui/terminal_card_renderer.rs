@@ -413,9 +413,9 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .items_center()
                 .map(|d| {
                     if scale <= 0.0 {
-                        d.rounded_md()
+                        d.rounded(px(4.))
                     } else {
-                        d.rounded_t_md()
+                        d.rounded_t(px(4.))
                     }
                 })
                 .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
@@ -432,7 +432,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             let body_inner = div()
                 .flex()
                 .flex_col()
-                .rounded_b_md()
+                .rounded_b(px(4.))
                 .overflow_hidden()
                 // Command line with copy-on-hover button
                 .child(

@@ -174,9 +174,9 @@ impl ToolBlockRenderer for DiffCardRenderer {
             .items_center()
             .map(|d| {
                 if scale <= 0.0 {
-                    d.rounded_md()
+                    d.rounded(px(4.))
                 } else {
-                    d.rounded_t_md()
+                    d.rounded_t(px(4.))
                 }
             })
             .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
@@ -225,7 +225,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
                     .w_full()
                     .py_1()
                     .bg(body_bg)
-                    .rounded_b_md()
+                    .rounded_b(px(4.))
                     .flex()
                     .flex_col()
                     .text_size(px(12.5))

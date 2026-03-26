@@ -251,9 +251,9 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 .items_center()
                 .map(|d| {
                     if scale <= 0.0 {
-                        d.rounded_md()
+                        d.rounded(px(4.))
                     } else {
-                        d.rounded_t_md()
+                        d.rounded_t(px(4.))
                     }
                 })
                 .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
@@ -276,7 +276,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 .px_3()
                 .py_1p5()
                 .bg(body_bg)
-                .rounded_b_md()
+                .rounded_b(px(4.))
                 .flex()
                 .flex_col()
                 .gap_0p5()
@@ -295,8 +295,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                                 div()
                                     .text_size(px(12.))
                                     .text_color(theme.muted_foreground.opacity(0.7))
-                                    .overflow_hidden()
-                                    .child(truncate_str(instructions, 200)),
+                                    .child(instructions.to_string()),
                             ),
                     );
                 }

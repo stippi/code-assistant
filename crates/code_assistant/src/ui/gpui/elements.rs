@@ -2088,8 +2088,6 @@ impl ThinkingBlock {
 
     /// Get expanded content based on generating state
     pub fn get_expanded_content(&self, is_generating: bool) -> String {
-        use tracing::warn;
-
         let result = if is_generating {
             // While generating, show current item content
             let content = self
@@ -2118,10 +2116,6 @@ impl ThinkingBlock {
             }
         } else {
             // Traditional thinking block
-            warn!(
-                "get_expanded_content(generating=false, is_reasoning=false): content_len={}",
-                self.content.len()
-            );
             self.content.clone()
         };
 
