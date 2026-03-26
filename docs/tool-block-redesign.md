@@ -202,16 +202,18 @@ Create the inline rendering path alongside the existing card rendering. This is 
 6. Handle error state: red ✕ icon + inline error message
 7. Handle expand/collapse: on expand, show output below with left-border style
 
-### Phase 2: Terminal Card
+### Phase 2: Terminal Card ✅
 
 Redesign the `execute_command` rendering as a proper terminal card.
 
-1. Create `TerminalCardRenderer` implementing `ToolBlockRenderer`
-2. Card header: CWD (from working_dir param or terminal), elapsed time, stop button
-3. Card body: command line in monospace + `TerminalElement` output
-4. Note: The terminal view rendering must keep `overflow_hidden` and the existing card structure (GPUI layout requirement discovered in this session)
-5. Footer collapse bar for tall output
-6. Stop button: sends kill signal to the PTY terminal via the pool
+1. ✅ Create `TerminalCardRenderer` implementing `ToolBlockRenderer` (`terminal_card_renderer.rs`)
+2. ✅ Card header: CWD (from working_dir param), terminal icon, elapsed time, stop button
+3. ✅ Card body: command line in monospace (`$ command`) + `TerminalElement` output
+4. ✅ Note: The terminal view rendering must keep `overflow_hidden` and the existing card structure (GPUI layout requirement discovered in this session)
+5. ✅ Collapse/expand via header click with chevron icon
+6. ✅ Stop button: sends Ctrl-C (ETX) to the PTY terminal
+7. ✅ Card dispatch added to `elements.rs` for `ToolBlockStyle::Card`
+8. ✅ `ExecuteCommandOutputRenderer` deregistered from old `ToolOutputRendererRegistry`
 
 ### Phase 3: Edit/Write Card
 
@@ -287,7 +289,8 @@ Redesign the edit tool rendering.
 | `src/ui/gpui/terminal_card_renderer.rs` | **New**: Terminal card renderer |
 | `src/ui/gpui/edit_card_renderer.rs` | **New**: Edit/write card renderer |
 | `src/ui/gpui/mod.rs` | Register new renderers, phase out old registries |
-| `src/ui/gpui/terminal_output_renderer.rs` | Absorbed into `terminal_card_renderer.rs` |
+| `src/ui/gpui/terminal_card_renderer.rs` | **New (Phase 2)**: Terminal card renderer (replaces terminal_output_renderer) |
+| `src/ui/gpui/terminal_output_renderer.rs` | Deprecated (superseded by terminal_card_renderer.rs) |
 | `src/ui/gpui/parameter_renderers.rs` | Deprecated (logic moves into card renderers) |
 | `src/ui/gpui/tool_output_renderers.rs` | Deprecated (logic moves into card renderers) |
 

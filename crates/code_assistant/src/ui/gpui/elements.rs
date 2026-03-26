@@ -1325,25 +1325,38 @@ impl Render for BlockView {
                     .into_any_element()
             }
             BlockData::ToolUse(block) => {
-                // --- Inline tool rendering (Phase 1 of tool block redesign) ---
-                // Check if this tool has a registered inline renderer.
+                // --- Unified tool block rendering (Phase 1 inline + Phase 2 card) ---
+                // Check if this tool has a registered renderer (inline or card).
                 if let Some(registry) =
                     crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
                 {
                     if let Some(renderer) = registry.get(&block.name) {
-                        if renderer.style()
-                            == crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Inline
-                        {
-                            // Clone block data to avoid borrow conflict with &mut self
-                            let block_clone = block.clone();
-                            return self
-                                .render_inline_tool(&block_clone, renderer.as_ref(), window, cx)
-                                .into_any_element();
+                        match renderer.style() {
+                            crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Inline => {
+                                let block_clone = block.clone();
+                                return self
+                                    .render_inline_tool(&block_clone, renderer.as_ref(), window, cx)
+                                    .into_any_element();
+                            }
+                            crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Card => {
+                                let block_clone = block.clone();
+                                let theme = cx.theme().clone();
+                                if let Some(element) = renderer.render(
+                                    &block_clone,
+                                    self.is_generating,
+                                    &theme,
+                                    window,
+                                    cx,
+                                ) {
+                                    return element;
+                                }
+                                // If render returns None, fall through to legacy path
+                            }
                         }
                     }
                 }
 
-                // --- Card tool rendering (existing path) ---
+                // --- Legacy card tool rendering (fallback for unregistered tools) ---
 
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);

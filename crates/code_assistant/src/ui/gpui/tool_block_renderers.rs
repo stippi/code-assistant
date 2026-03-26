@@ -29,8 +29,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub enum ToolBlockStyle {
     /// Minimal inline rendering — icon + description text.
     Inline,
-    /// Full card with border, header, body (Phase 2).
-    #[allow(dead_code)]
+    /// Full card with border, header, body.
     Card,
 }
 

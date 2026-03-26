@@ -1,3 +1,6 @@
+//! Legacy terminal output renderer — superseded by `terminal_card_renderer.rs`.
+//! Kept for reference; will be removed in Phase 4 cleanup.
+
 use crate::ui::gpui::elements::BlockView;
 use crate::ui::gpui::terminal_pool::TerminalPool;
 use crate::ui::ToolStatus;

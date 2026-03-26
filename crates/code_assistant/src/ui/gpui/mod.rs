@@ -18,7 +18,9 @@ mod root;
 pub mod sandbox_selector;
 pub mod simple_renderers;
 pub mod spawn_agent_renderer;
+pub mod terminal_card_renderer;
 pub mod terminal_executor;
+#[allow(dead_code)]
 pub mod terminal_output_renderer;
 pub mod terminal_pool;
 pub mod theme;
@@ -272,9 +274,8 @@ impl Gpui {
         // Initialize tool output renderers registry
         let mut tool_output_registry = ToolOutputRendererRegistry::new();
         tool_output_registry.register_renderer(Box::new(SpawnAgentOutputRenderer));
-        tool_output_registry.register_renderer(Box::new(
-            terminal_output_renderer::ExecuteCommandOutputRenderer,
-        ));
+        // Note: ExecuteCommandOutputRenderer is no longer registered here — it has
+        // been replaced by TerminalCardRenderer in the ToolBlockRendererRegistry.
         ToolOutputRendererRegistry::set_global(Arc::new(tool_output_registry));
 
         // Initialize unified tool block renderer registry
@@ -282,6 +283,7 @@ impl Gpui {
             use tool_block_renderers::{InlineToolRenderer, ToolBlockRendererRegistry};
             let mut tbr_registry = ToolBlockRendererRegistry::new();
             tbr_registry.register(Arc::new(InlineToolRenderer::new()));
+            tbr_registry.register(Arc::new(terminal_card_renderer::TerminalCardRenderer));
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 
