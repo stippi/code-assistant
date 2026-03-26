@@ -4,6 +4,7 @@ pub mod auto_scroll;
 pub mod branch_switcher;
 pub mod chat_sidebar;
 pub mod content_renderer;
+pub mod diff_card_renderer;
 pub mod diff_renderer;
 pub mod edit_diff_renderer;
 pub mod elements;
@@ -284,6 +285,7 @@ impl Gpui {
             let mut tbr_registry = ToolBlockRendererRegistry::new();
             tbr_registry.register(Arc::new(InlineToolRenderer::new()));
             tbr_registry.register(Arc::new(terminal_card_renderer::TerminalCardRenderer));
+            tbr_registry.register(Arc::new(diff_card_renderer::DiffCardRenderer));
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 

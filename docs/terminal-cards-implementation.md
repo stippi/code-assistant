@@ -173,6 +173,116 @@ The card wrapper (header with command, status, border colors) is already impleme
 
 ---
 
+## Phase 5: Diff Card (edit, replace_in_file, write_file)
+
+### Overview
+
+Replace the legacy parameter-renderer-based cards for `edit`, `replace_in_file`, and `write_file` with a single `DiffCardRenderer` implementing `ToolBlockRenderer` (Card style). Same slim card look as the terminal card.
+
+### Card Design
+
+```
+┌──────────────────────────────────────────────────┐
+│ [icon] src/ui/gpui/mod.rs                    [✕] │  ← header: file path, red ✕ only on error
+├──────────────────────────────────────────────────┤
+│  unchanged line                                  │  ← left-border gray
+│- deleted line                                    │  ← left-border red, red text
+│+ added line                                      │  ← left-border green, green text
+│  unchanged line                                  │
+└──────────────────────────────────────────────────┘
+```
+
+- **Header**: tool icon + file path (from `path` param). Red ✕ icon on failure, nothing on success. Chevron for collapse/expand.
+- **Body**: diff view (for `edit` and `replace_in_file`) or content preview (for `write_file`).
+- **Collapse/expand**: same pattern as terminal card — click header to toggle.
+- **Height**: as tall as needed, no artificial cap.
+
+### Per-Tool Details
+
+| Tool | Path param | Diff source | Body content |
+|------|-----------|-------------|-------------|
+| `edit` | `path` | `old_text` vs `new_text` | Unified diff (similar crate) |
+| `replace_in_file` | `path` | `diff` param (SEARCH/REPLACE markers) | Parsed diff sections |
+| `write_file` | `path` | `content` param | Content preview (green, all additions) |
+
+### Streaming Behavior
+
+During streaming (before all params have arrived):
+- **`edit`**: Show `old_text` as red block, `new_text` as green block (individually, like current EditDiffRenderer streaming mode). Once both complete, switch to unified diff.
+- **`replace_in_file`**: Show diff sections as they stream (parser handles partial SEARCH/REPLACE blocks).
+- **`write_file`**: Show content as green block as it streams.
+
+### Implementation
+
+**File**: `src/ui/gpui/diff_card_renderer.rs` — new file.
+
+Reuses diff logic from existing `diff_renderer.rs` and `edit_diff_renderer.rs` (parse_diff_sections, create_diff_lines, group_consecutive_lines, etc.) — extracted or inlined.
+
+**Registration**: Add to `ToolBlockRendererRegistry` in `mod.rs`. The old `DiffParameterRenderer`, `EditDiffRenderer`, and `ContentRenderer` parameter renderers remain registered (they're still used by the legacy fallback path) but will no longer be reached for these three tools since the new card renderer takes priority.
+
+### Checklist
+
+- [x] **5.1** Create `diff_card_renderer.rs` with `DiffCardRenderer` implementing `ToolBlockRenderer`
+- [x] **5.2** Handle `edit` tool: unified diff from `old_text`/`new_text`, streaming fallback
+- [x] **5.3** Handle `replace_in_file` tool: parse SEARCH/REPLACE markers from `diff` param
+- [x] **5.4** Handle `write_file` tool: content preview as all-green additions
+- [x] **5.5** Card header: icon + path, red ✕ on error, chevron toggle
+- [x] **5.6** Collapse/expand state (same pattern as terminal card)
+- [x] **5.7** Register in `ToolBlockRendererRegistry`
+- [ ] **5.8** Test: edit tool shows diff card with correct colors
+- [ ] **5.9** Test: replace_in_file shows parsed diff sections
+- [ ] **5.10** Test: write_file shows content card
+- [ ] **5.11** Test: streaming shows incremental content then switches to final view
+
+---
+
+## Phase 6: Sub-Agent Card (spawn_agent)
+
+### Overview
+
+Replace the legacy parameter+output renderer for `spawn_agent` with a `SubAgentCardRenderer` implementing `ToolBlockRenderer` (Card style). Reuses the existing `SpawnAgentOutputRenderer` rendering logic (tool lines, activity spinner, cancel button, markdown response) but wraps it in the standard card chrome.
+
+### Card Design
+
+```
+┌──────────────────────────────────────────────────┐
+│ [icon] Sub-agent                  [Cancel] [✕/▾] │  ← header: icon, label, cancel while running
+├──────────────────────────────────────────────────┤
+│ Instructions: "Find all TODO comments..."        │  ← instructions (collapsible)
+│──────────────────────────────────────────────────│
+│ ✓ Read src/main.rs                               │  ← tool call history (existing render)
+│ ✓ Search for "TODO"                              │
+│ ⟳ Responding...                     [Cancel]     │  ← activity spinner (existing render)
+│──────────────────────────────────────────────────│
+│ Here is the answer...                            │  ← markdown response (existing render)
+└──────────────────────────────────────────────────┘
+```
+
+- **Header**: spawn_agent icon + "Sub-agent" label. Cancel button while running. Red ✕ on error, chevron for collapse/expand.
+- **Body**: Reuses `SpawnAgentOutputRenderer` rendering (tool lines, activity, status, markdown response) directly — just wrapped in card chrome instead of the legacy tool block.
+- **Instructions**: shown in body as a collapsible section (compact, muted text).
+
+### Implementation
+
+**File**: `src/ui/gpui/sub_agent_card_renderer.rs` — new file.
+
+Moves rendering logic from `SpawnAgentOutputRenderer` into the new card renderer. The old `SpawnAgentOutputRenderer` and `SpawnAgentInstructionsRenderer` can be kept for the legacy fallback path but will no longer be reached.
+
+### Checklist
+
+- [ ] **6.1** Create `sub_agent_card_renderer.rs` with `SubAgentCardRenderer`
+- [ ] **6.2** Card header: icon + "Sub-agent" + cancel button + error indicator + chevron
+- [ ] **6.3** Instructions section in body
+- [ ] **6.4** Reuse tool call history rendering from `SpawnAgentOutputRenderer`
+- [ ] **6.5** Reuse activity/spinner/cancel rendering
+- [ ] **6.6** Reuse markdown response rendering
+- [ ] **6.7** Collapse/expand state
+- [ ] **6.8** Register in `ToolBlockRendererRegistry`
+- [ ] **6.9** Test: running sub-agent shows spinner and tool history
+- [ ] **6.10** Test: completed sub-agent shows response
+
+---
+
 ## Key File References
 
 ### Existing code (to modify)
