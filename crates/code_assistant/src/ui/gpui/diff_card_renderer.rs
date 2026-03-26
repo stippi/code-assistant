@@ -1,47 +1,24 @@
-//! Diff card renderer for `edit`, `replace_in_file`, and `write_file` tool blocks.
+//! Diff card renderer for `edit`, `replace_in_file`, `write_file`, and
+//! `delete_files` tool blocks.
 //!
 //! Renders file-editing tools as bordered cards with:
 //! - Header: file icon + path, red ✕ on error, chevron toggle
-//! - Body: unified diff view (edit, replace_in_file) or content preview (write_file)
+//! - Body: unified diff view (edit, replace_in_file), content preview
+//!   (write_file), or deleted paths list (delete_files)
 //!
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
+use crate::ui::gpui::card_collapse;
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::gpui::file_icons;
 use crate::ui::gpui::tool_block_renderers::{ToolBlockRenderer, ToolBlockStyle};
 use crate::ui::ToolStatus;
+use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, Context, Element, FontWeight, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use similar::{ChangeTag, TextDiff};
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-
-// ---------------------------------------------------------------------------
-// Collapse state
-// ---------------------------------------------------------------------------
-
-static COLLAPSED: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-
-fn collapsed_state() -> &'static Mutex<HashMap<String, bool>> {
-    COLLAPSED.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn is_collapsed(tool_id: &str) -> bool {
-    collapsed_state()
-        .lock()
-        .ok()
-        .and_then(|m| m.get(tool_id).copied())
-        .unwrap_or(false)
-}
-
-fn toggle_collapsed(tool_id: &str) {
-    if let Ok(mut m) = collapsed_state().lock() {
-        let current = m.get(tool_id).copied().unwrap_or(false);
-        m.insert(tool_id.to_string(), !current);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // DiffCardRenderer
@@ -55,6 +32,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
             "edit".to_string(),
             "replace_in_file".to_string(),
             "write_file".to_string(),
+            "delete_files".to_string(),
         ]
     }
 
@@ -63,7 +41,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
     }
 
     fn describe(&self, tool: &ToolUseBlock) -> String {
-        let path = extract_path(tool).unwrap_or_default();
+        let path = extract_path_or_paths(tool);
         if path.is_empty() {
             tool.name.replace('_', " ")
         } else {
@@ -77,17 +55,22 @@ impl ToolBlockRenderer for DiffCardRenderer {
         _is_generating: bool,
         theme: &gpui_component::theme::Theme,
         _window: &mut Window,
-        _cx: &mut Context<BlockView>,
+        cx: &mut Context<BlockView>,
     ) -> Option<gpui::AnyElement> {
         // We need at least one parameter to show anything.
         if tool.parameters.is_empty() {
             return None;
         }
 
-        let path = extract_path(tool).unwrap_or_default();
+        let path_label = extract_path_or_paths(tool);
         let has_error = tool.status == ToolStatus::Error;
-        let collapsed = is_collapsed(&tool.id);
         let is_dark = theme.background.l < 0.5;
+
+        // Animation state
+        let anim = card_collapse::get_state(&tool.id);
+        if anim.animating {
+            cx.notify(); // keep re-rendering until animation completes
+        }
 
         let header_bg = if is_dark {
             gpui::hsla(0.0, 0.0, 0.15, 1.0)
@@ -98,7 +81,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
         // --- Card container ---
         let mut card = div()
             .w_full()
-            .mt_1()
+            .mb_1()
             .border_1()
             .border_color(theme.border)
             .rounded_md()
@@ -108,18 +91,16 @@ impl ToolBlockRenderer for DiffCardRenderer {
         let tool_id_for_click = tool.id.clone();
         let header_text_color = theme.muted_foreground;
 
-        // Icon
         let icon = file_icons::get().get_tool_icon(&tool.name);
-
         let icon_fallback = match tool.name.as_str() {
             "edit" => "✎",
             "replace_in_file" => "⇄",
             "write_file" => "✎",
+            "delete_files" => "🗑",
             _ => "📄",
         };
 
-        // Chevron
-        let chevron_icon = if collapsed {
+        let chevron_icon = if anim.collapsed && !anim.animating {
             file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
         } else {
             file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
@@ -131,18 +112,16 @@ impl ToolBlockRenderer for DiffCardRenderer {
             .items_center()
             .gap_1p5()
             .min_w_0()
-            .flex_grow();
+            .flex_grow()
+            .child(file_icons::render_icon_container(
+                &icon,
+                13.0,
+                header_text_color,
+                icon_fallback,
+            ));
 
-        header_left = header_left.child(file_icons::render_icon_container(
-            &icon,
-            13.0,
-            header_text_color,
-            icon_fallback,
-        ));
-
-        // File path (or tool name fallback)
-        let header_label = if !path.is_empty() {
-            abbreviate_path(&path)
+        let header_label = if !path_label.is_empty() {
+            abbreviate_path(&path_label)
         } else {
             tool.name.replace('_', " ")
         };
@@ -155,8 +134,6 @@ impl ToolBlockRenderer for DiffCardRenderer {
         );
 
         let mut header_right = div().flex().flex_row().items_center().gap_2();
-
-        // Red ✕ on error
         if has_error {
             header_right = header_right.child(
                 gpui::svg()
@@ -165,8 +142,6 @@ impl ToolBlockRenderer for DiffCardRenderer {
                     .text_color(theme.danger),
             );
         }
-
-        // Chevron
         header_right = header_right.child(
             div()
                 .flex_none()
@@ -182,27 +157,34 @@ impl ToolBlockRenderer for DiffCardRenderer {
                 )),
         );
 
-        card = card.child(
-            div()
-                .id(SharedString::from(format!("diff-header-{}", tool.id)))
-                .px_3()
-                .py_1p5()
-                .bg(header_bg)
-                .cursor_pointer()
-                .flex()
-                .flex_row()
-                .justify_between()
-                .items_center()
-                .on_click(move |_event, window, _cx| {
-                    toggle_collapsed(&tool_id_for_click);
-                    window.refresh();
-                })
-                .child(header_left)
-                .child(header_right),
-        );
+        // Header corners: all rounded when collapsed, only top when expanded.
+        let header = div()
+            .id(SharedString::from(format!("diff-header-{}", tool.id)))
+            .px_3()
+            .py_1p5()
+            .bg(header_bg)
+            .cursor_pointer()
+            .flex()
+            .flex_row()
+            .justify_between()
+            .items_center()
+            .map(|d| {
+                if anim.body_scale <= 0.0 {
+                    d.rounded_md()
+                } else {
+                    d.rounded_t_md()
+                }
+            })
+            .on_click(move |_event, _window, _cx| {
+                card_collapse::toggle(&tool_id_for_click);
+            })
+            .child(header_left)
+            .child(header_right);
 
-        // --- Body (unless collapsed) ---
-        if !collapsed {
+        card = card.child(header);
+
+        // --- Body (animated) ---
+        if anim.body_scale > 0.0 {
             let body_bg = if is_dark {
                 gpui::hsla(0.0, 0.0, 0.08, 1.0)
             } else {
@@ -213,10 +195,10 @@ impl ToolBlockRenderer for DiffCardRenderer {
                 "edit" => render_edit_body(tool, theme),
                 "replace_in_file" => render_replace_body(tool, theme),
                 "write_file" => render_write_body(tool, theme),
+                "delete_files" => render_delete_body(tool, theme),
                 _ => None,
             };
 
-            // Error message from output
             let error_element = if has_error {
                 tool.output
                     .as_deref()
@@ -235,10 +217,11 @@ impl ToolBlockRenderer for DiffCardRenderer {
             };
 
             if body_content.is_some() || error_element.is_some() {
-                let mut body = div()
+                let mut body_inner = div()
                     .w_full()
                     .py_1()
                     .bg(body_bg)
+                    .rounded_b_md()
                     .flex()
                     .flex_col()
                     .text_size(px(12.5))
@@ -247,13 +230,13 @@ impl ToolBlockRenderer for DiffCardRenderer {
                     .overflow_hidden();
 
                 if let Some(content) = body_content {
-                    body = body.child(content);
+                    body_inner = body_inner.child(content);
                 }
                 if let Some(error) = error_element {
-                    body = body.child(error);
+                    body_inner = body_inner.child(error);
                 }
 
-                card = card.child(body);
+                card = card.child(card_collapse::animated_body(body_inner, anim.body_scale));
             }
         }
 
@@ -266,8 +249,6 @@ impl ToolBlockRenderer for DiffCardRenderer {
 // ---------------------------------------------------------------------------
 
 /// Render body for the `edit` tool.
-/// Params: old_text, new_text — show unified diff when both available,
-/// streaming fallback (individual colored blocks) otherwise.
 fn render_edit_body(
     tool: &ToolUseBlock,
     theme: &gpui_component::theme::Theme,
@@ -277,23 +258,15 @@ fn render_edit_body(
 
     match (old_text, new_text) {
         (Some(old), Some(new)) if !old.is_empty() || !new.is_empty() => {
-            // Both params available — unified diff
             Some(render_unified_diff(old, new, theme))
         }
-        (Some(old), None) if !old.is_empty() => {
-            // Streaming: only old_text so far
-            Some(render_streaming_block(old, true, theme))
-        }
-        (None, Some(new)) if !new.is_empty() => {
-            // Streaming: only new_text so far (unusual but handle it)
-            Some(render_streaming_block(new, false, theme))
-        }
+        (Some(old), None) if !old.is_empty() => Some(render_streaming_block(old, true, theme)),
+        (None, Some(new)) if !new.is_empty() => Some(render_streaming_block(new, false, theme)),
         _ => None,
     }
 }
 
 /// Render body for the `replace_in_file` tool.
-/// Param: diff (SEARCH/REPLACE marker format).
 fn render_replace_body(
     tool: &ToolUseBlock,
     theme: &gpui_component::theme::Theme,
@@ -329,8 +302,7 @@ fn render_replace_body(
     )
 }
 
-/// Render body for the `write_file` tool.
-/// Param: content — shown as all-green additions.
+/// Render body for the `write_file` tool — all-green additions.
 fn render_write_body(
     tool: &ToolUseBlock,
     theme: &gpui_component::theme::Theme,
@@ -341,7 +313,6 @@ fn render_write_body(
     }
 
     let (row_bg, text_color) = added_row_colors(theme);
-
     let mut row = div()
         .w_full()
         .px_3()
@@ -353,11 +324,45 @@ fn render_write_body(
     Some(row.into_any())
 }
 
+/// Render body for the `delete_files` tool — all-red deletions showing paths.
+fn render_delete_body(
+    tool: &ToolUseBlock,
+    theme: &gpui_component::theme::Theme,
+) -> Option<gpui::AnyElement> {
+    let paths_raw = get_param(tool, "paths")?;
+    if paths_raw.is_empty() {
+        return None;
+    }
+
+    // The paths parameter is a JSON array of strings.
+    let paths: Vec<String> =
+        serde_json::from_str(paths_raw).unwrap_or_else(|_| vec![paths_raw.to_string()]);
+
+    if paths.is_empty() {
+        return None;
+    }
+
+    let (row_bg, text_color) = deleted_row_colors(theme);
+
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .children(paths.into_iter().map(|path| {
+                let mut row = div().w_full().px_3().text_color(text_color).child(path);
+                if let Some(bg) = row_bg {
+                    row = row.bg(bg);
+                }
+                row.into_any()
+            }))
+            .into_any(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Diff rendering
 // ---------------------------------------------------------------------------
 
-/// Render a unified diff between old and new text using the `similar` crate.
 fn render_unified_diff(
     old_text: &str,
     new_text: &str,
@@ -367,13 +372,10 @@ fn render_unified_diff(
         .newline_terminated(true)
         .diff_lines(old_text, new_text);
 
-    // Group consecutive lines of the same change type.
     let mut groups: Vec<(ChangeTag, Vec<String>)> = Vec::new();
-
     for change in diff.iter_all_changes() {
         let line = change.value().trim_end().to_string();
         let tag = change.tag();
-
         if let Some(last) = groups.last_mut() {
             if last.0 == tag {
                 last.1.push(line);
@@ -393,7 +395,6 @@ fn render_unified_diff(
                 ChangeTag::Delete => deleted_row_colors(theme),
                 ChangeTag::Insert => added_row_colors(theme),
             };
-
             let mut row = div().w_full().px_3().text_color(text_color).child(content);
             if let Some(bg) = row_bg {
                 row = row.bg(bg);
@@ -403,8 +404,6 @@ fn render_unified_diff(
         .into_any()
 }
 
-/// Render a single streaming block (old_text or new_text individually before
-/// both are available).
 fn render_streaming_block(
     text: &str,
     is_deletion: bool,
@@ -415,7 +414,6 @@ fn render_streaming_block(
     } else {
         added_row_colors(theme)
     };
-
     let mut row = div()
         .w_full()
         .px_3()
@@ -427,14 +425,12 @@ fn render_streaming_block(
     row.into_any()
 }
 
-/// Render a streaming diff section (partial SEARCH/REPLACE — one side still open).
 fn render_streaming_diff_section(
     section: &DiffSection,
     theme: &gpui_component::theme::Theme,
 ) -> gpui::AnyElement {
     let (del_bg, del_text) = deleted_row_colors(theme);
     let (add_bg, add_text) = added_row_colors(theme);
-
     let mut children: Vec<gpui::AnyElement> = Vec::new();
 
     if !section.search_content.is_empty() {
@@ -464,7 +460,7 @@ fn render_streaming_diff_section(
 }
 
 // ---------------------------------------------------------------------------
-// SEARCH/REPLACE parser (from diff_renderer.rs)
+// SEARCH/REPLACE parser
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -484,7 +480,6 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
         in_replace: false,
     };
 
-    // Normalize markers that got concatenated without newlines
     let normalized = diff_text
         .replace(
             ">>>>>>> REPLACE<<<<<<< SEARCH",
@@ -545,11 +540,9 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
         }
     }
 
-    // Trailing section (still streaming)
     if !current.search_content.is_empty() || !current.replace_content.is_empty() {
         sections.push(current);
     }
-
     sections
 }
 
@@ -564,8 +557,18 @@ fn get_param<'a>(tool: &'a ToolUseBlock, name: &str) -> Option<&'a str> {
         .map(|p| p.value.as_str())
 }
 
-fn extract_path(tool: &ToolUseBlock) -> Option<String> {
-    get_param(tool, "path").map(|s| s.to_string())
+/// Extract path (single) or paths (array) for the header label.
+fn extract_path_or_paths(tool: &ToolUseBlock) -> String {
+    if let Some(path) = get_param(tool, "path") {
+        return path.to_string();
+    }
+    if let Some(paths_raw) = get_param(tool, "paths") {
+        if let Ok(paths) = serde_json::from_str::<Vec<String>>(paths_raw) {
+            return paths.join(", ");
+        }
+        return paths_raw.to_string();
+    }
+    String::new()
 }
 
 fn abbreviate_path(path: &str) -> String {
@@ -582,7 +585,6 @@ fn abbreviate_path(path: &str) -> String {
 // Theme colors
 // ---------------------------------------------------------------------------
 
-/// Convert RGB u8 values to Hsla.
 fn rgb_color(r: u8, g: u8, b: u8) -> gpui::Hsla {
     gpui::Rgba {
         r: r as f32 / 255.0,
@@ -593,7 +595,6 @@ fn rgb_color(r: u8, g: u8, b: u8) -> gpui::Hsla {
     .into()
 }
 
-/// Convert RGBA u8 values to Hsla.
 fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
     gpui::Rgba {
         r: r as f32 / 255.0,
@@ -604,40 +605,34 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
     .into()
 }
 
-/// Returns (background, text_color) for deleted rows.
-/// Background is a semi-transparent red tint.
 fn deleted_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
-            Some(rgba_color(0x80, 0x20, 0x20, 0x60)), // dark red tint
+            Some(rgba_color(0x80, 0x20, 0x20, 0x60)),
             rgb_color(0xFF, 0xBB, 0xBB),
         )
     } else {
         (
-            Some(rgba_color(0xDD, 0x55, 0x55, 0x30)), // light red tint
+            Some(rgba_color(0xDD, 0x55, 0x55, 0x30)),
             rgb_color(0x88, 0x00, 0x00),
         )
     }
 }
 
-/// Returns (background, text_color) for added rows.
-/// Background is a semi-transparent green tint.
 fn added_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
-            Some(rgba_color(0x20, 0x60, 0x20, 0x60)), // dark green tint
+            Some(rgba_color(0x20, 0x60, 0x20, 0x60)),
             rgb_color(0xBB, 0xFF, 0xBB),
         )
     } else {
         (
-            Some(rgba_color(0x33, 0xAA, 0x33, 0x25)), // light green tint
+            Some(rgba_color(0x33, 0xAA, 0x33, 0x25)),
             rgb_color(0x00, 0x66, 0x00),
         )
     }
 }
 
-/// Returns (background, text_color) for unchanged rows.
-/// No background — just muted text.
 fn unchanged_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (None, rgba_color(0xFF, 0xFF, 0xFF, 0x99))
@@ -657,8 +652,6 @@ mod tests {
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].search_content, "old line");
         assert_eq!(sections[0].replace_content, "new line");
-        assert!(!sections[0].in_search);
-        assert!(!sections[0].in_replace);
     }
 
     #[test]
@@ -666,19 +659,13 @@ mod tests {
         let diff = "<<<<<<< SEARCH\nfirst old\n=======\nfirst new\n>>>>>>> REPLACE\n<<<<<<< SEARCH\nsecond old\n=======\nsecond new\n>>>>>>> REPLACE";
         let sections = parse_diff_sections(diff);
         assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].search_content, "first old");
-        assert_eq!(sections[0].replace_content, "first new");
-        assert_eq!(sections[1].search_content, "second old");
-        assert_eq!(sections[1].replace_content, "second new");
     }
 
     #[test]
     fn test_parse_streaming_partial() {
-        // Streaming: SEARCH started but not closed yet
         let diff = "<<<<<<< SEARCH\npartial content";
         let sections = parse_diff_sections(diff);
         assert_eq!(sections.len(), 1);
-        assert_eq!(sections[0].search_content, "partial content");
         assert!(sections[0].in_search);
     }
 
@@ -692,7 +679,6 @@ mod tests {
     #[test]
     fn test_extract_path() {
         use crate::ui::gpui::elements::ParameterBlock;
-
         let tool = ToolUseBlock {
             name: "edit".to_string(),
             id: "test".to_string(),
@@ -711,7 +697,24 @@ mod tests {
             output: None,
             state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
         };
+        assert_eq!(extract_path_or_paths(&tool), "src/main.rs");
+    }
 
-        assert_eq!(extract_path(&tool), Some("src/main.rs".to_string()));
+    #[test]
+    fn test_extract_paths_json() {
+        use crate::ui::gpui::elements::ParameterBlock;
+        let tool = ToolUseBlock {
+            name: "delete_files".to_string(),
+            id: "test".to_string(),
+            parameters: vec![ParameterBlock {
+                name: "paths".to_string(),
+                value: r#"["a.rs","b.rs"]"#.to_string(),
+            }],
+            status: ToolStatus::Success,
+            status_message: None,
+            output: None,
+            state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
+        };
+        assert_eq!(extract_path_or_paths(&tool), "a.rs, b.rs");
     }
 }

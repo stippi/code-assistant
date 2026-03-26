@@ -2,6 +2,7 @@ pub mod assets;
 pub mod attachment;
 pub mod auto_scroll;
 pub mod branch_switcher;
+pub mod card_collapse;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_card_renderer;
@@ -19,6 +20,7 @@ mod root;
 pub mod sandbox_selector;
 pub mod simple_renderers;
 pub mod spawn_agent_renderer;
+pub mod sub_agent_card_renderer;
 pub mod terminal_card_renderer;
 pub mod terminal_executor;
 #[allow(dead_code)]
@@ -286,6 +288,7 @@ impl Gpui {
             tbr_registry.register(Arc::new(InlineToolRenderer::new()));
             tbr_registry.register(Arc::new(terminal_card_renderer::TerminalCardRenderer));
             tbr_registry.register(Arc::new(diff_card_renderer::DiffCardRenderer));
+            tbr_registry.register(Arc::new(sub_agent_card_renderer::SubAgentCardRenderer));
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 

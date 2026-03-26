@@ -270,14 +270,14 @@ Moves rendering logic from `SpawnAgentOutputRenderer` into the new card renderer
 
 ### Checklist
 
-- [ ] **6.1** Create `sub_agent_card_renderer.rs` with `SubAgentCardRenderer`
-- [ ] **6.2** Card header: icon + "Sub-agent" + cancel button + error indicator + chevron
-- [ ] **6.3** Instructions section in body
-- [ ] **6.4** Reuse tool call history rendering from `SpawnAgentOutputRenderer`
-- [ ] **6.5** Reuse activity/spinner/cancel rendering
-- [ ] **6.6** Reuse markdown response rendering
-- [ ] **6.7** Collapse/expand state
-- [ ] **6.8** Register in `ToolBlockRendererRegistry`
+- [x] **6.1** Create `sub_agent_card_renderer.rs` with `SubAgentCardRenderer`
+- [x] **6.2** Card header: icon + "Sub-agent" + cancel button + error indicator + chevron
+- [x] **6.3** Instructions section in body
+- [x] **6.4** Reuse tool call history rendering from `SpawnAgentOutputRenderer`
+- [x] **6.5** Reuse activity/spinner/cancel rendering
+- [x] **6.6** Reuse markdown response rendering
+- [x] **6.7** Collapse/expand state
+- [x] **6.8** Register in `ToolBlockRendererRegistry`
 - [ ] **6.9** Test: running sub-agent shows spinner and tool history
 - [ ] **6.10** Test: completed sub-agent shows response
 

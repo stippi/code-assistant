@@ -7,11 +7,13 @@
 //! This replaces the old `ExecuteCommandOutputRenderer` (ToolOutputRenderer)
 //! with a unified `ToolBlockRenderer` that controls the entire card.
 
+use crate::ui::gpui::card_collapse;
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::gpui::file_icons;
 use crate::ui::gpui::terminal_pool::TerminalPool;
 use crate::ui::gpui::tool_block_renderers::{ToolBlockRenderer, ToolBlockStyle};
 use crate::ui::ToolStatus;
+use gpui::prelude::FluentBuilder;
 use gpui::AppContext as _; // brings .new() into scope on Context
 use gpui::{
     div, px, App, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -125,31 +127,6 @@ fn get_or_create_view(
 }
 
 // ---------------------------------------------------------------------------
-// Collapse state — track which tool cards are collapsed
-// ---------------------------------------------------------------------------
-
-static COLLAPSED: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-
-fn collapsed_state() -> &'static Mutex<HashMap<String, bool>> {
-    COLLAPSED.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn is_collapsed(tool_id: &str) -> bool {
-    collapsed_state()
-        .lock()
-        .ok()
-        .and_then(|m| m.get(tool_id).copied())
-        .unwrap_or(false)
-}
-
-fn toggle_collapsed(tool_id: &str) {
-    if let Ok(mut m) = collapsed_state().lock() {
-        let current = m.get(tool_id).copied().unwrap_or(false);
-        m.insert(tool_id.to_string(), !current);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // TerminalCardRenderer
 // ---------------------------------------------------------------------------
 
@@ -258,7 +235,11 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             tv.set_theme_colors(theme_colors.clone(), cx);
         });
 
-        let collapsed = is_collapsed(&tool.id);
+        // Animation state
+        let anim = card_collapse::get_state(&tool.id);
+        if anim.animating {
+            cx.notify();
+        }
 
         // --- Build the card ---
         let is_dark = is_dark_theme(theme);
@@ -271,7 +252,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         let mut card = div()
             .w_full()
-            .mt_1()
+            .mb_1()
             .border_1()
             .border_color(theme.border)
             .rounded_md()
@@ -300,7 +281,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         };
 
         // Chevron (right-aligned, matching inline tool style)
-        let chevron_icon = if collapsed {
+        let chevron_icon = if anim.collapsed && !anim.animating {
             file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
         } else {
             file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
@@ -428,88 +409,100 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .flex_row()
                 .justify_between()
                 .items_center()
-                .on_click(move |_event, window, _cx| {
-                    toggle_collapsed(&tool_id_for_click);
-                    window.refresh();
+                .map(|d| {
+                    if anim.body_scale <= 0.0 {
+                        d.rounded_md()
+                    } else {
+                        d.rounded_t_md()
+                    }
+                })
+                .on_click(move |_event, _window, _cx| {
+                    card_collapse::toggle(&tool_id_for_click);
                 })
                 .child(header_left)
                 .child(header_right),
         );
 
-        // ---- Body (unless collapsed) ----
-        if !collapsed {
-            // Command line with copy-on-hover button
+        // ---- Body (animated) ----
+        if anim.body_scale > 0.0 {
+            // Build body content
             let cmd_for_copy = display_command.clone();
-            card = card.child(
-                div()
-                    .id(SharedString::from(format!("cmd-row-{}", tool.id)))
-                    .group("cmd-row")
-                    .px_3()
-                    .py_1()
-                    .bg(theme_colors.background)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1p5()
-                            .min_w_0()
-                            .flex_grow()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(theme.muted_foreground.opacity(0.6))
-                                    .child("$"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .text_color(theme.foreground)
-                                    .overflow_hidden()
-                                    .child(truncate_str(&display_command, 200)),
-                            ),
-                    )
-                    // Copy button — visible on hover
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("copy-cmd-{}", tool.id)))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(22.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .opacity(0.0)
-                            .group_hover("cmd-row", |s| s.opacity(1.0))
-                            .hover(|s| s.bg(theme.secondary.opacity(0.5)))
-                            .child(
-                                gpui::svg()
-                                    .size(px(13.0))
-                                    .path(SharedString::from("icons/copy.svg"))
-                                    .text_color(theme.muted_foreground),
-                            )
-                            .on_click(move |_event, _window, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    cmd_for_copy.clone(),
-                                ));
-                            }),
-                    ),
-            );
+            let body_inner = div()
+                .flex()
+                .flex_col()
+                .rounded_b_md()
+                .overflow_hidden()
+                // Command line with copy-on-hover button
+                .child(
+                    div()
+                        .id(SharedString::from(format!("cmd-row-{}", tool.id)))
+                        .group("cmd-row")
+                        .px_3()
+                        .py_1()
+                        .bg(theme_colors.background)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_1p5()
+                                .min_w_0()
+                                .flex_grow()
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(theme.muted_foreground.opacity(0.6))
+                                        .child("$"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.5))
+                                        .text_color(theme.foreground)
+                                        .overflow_hidden()
+                                        .child(truncate_str(&display_command, 200)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("copy-cmd-{}", tool.id)))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(22.0))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .opacity(0.0)
+                                .group_hover("cmd-row", |s| s.opacity(1.0))
+                                .hover(|s| s.bg(theme.secondary.opacity(0.5)))
+                                .child(
+                                    gpui::svg()
+                                        .size(px(13.0))
+                                        .path(SharedString::from("icons/copy.svg"))
+                                        .text_color(theme.muted_foreground),
+                                )
+                                .on_click(move |_event, _window, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        cmd_for_copy.clone(),
+                                    ));
+                                }),
+                        ),
+                )
+                // Terminal view
+                .child(
+                    div()
+                        .w_full()
+                        .px_3()
+                        .pb_1()
+                        .bg(theme_colors.background)
+                        .child(view),
+                );
 
-            // Terminal view (with padding matching the command line)
-            card = card.child(
-                div()
-                    .w_full()
-                    .px_3()
-                    .pb_1()
-                    .bg(theme_colors.background)
-                    .child(view),
-            );
+            card = card.child(card_collapse::animated_body(body_inner, anim.body_scale));
         }
 
         Some(card.into_any_element())
@@ -546,7 +539,7 @@ impl TerminalCardRenderer {
 
         div()
             .w_full()
-            .mt_1()
+            .mb_1()
             .border_1()
             .border_color(border_color)
             .rounded_md()
