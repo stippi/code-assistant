@@ -12,4 +12,4 @@ path = "src/main.rs"
 terminal = { path = "../terminal" }
 terminal_view = { path = "../terminal_view" }
 gpui = "0.2.2"
-gpui-component = "0.4.0"
+gpui-component = "0.5.1"
