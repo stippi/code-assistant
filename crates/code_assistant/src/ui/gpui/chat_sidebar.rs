@@ -6,7 +6,7 @@ use gpui::{
     ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     SharedString, StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
 };
-use gpui_component::scroll::ScrollbarAxis;
+use gpui_component::scroll::ScrollableElement;
 
 use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::collections::HashMap;
@@ -780,7 +780,7 @@ impl Render for ChatSidebar {
                         .py_1()
                         .w_full()
                         .h_full()
-                        .scrollable(ScrollbarAxis::Vertical)
+                        .overflow_y_scrollbar()
                         .flex()
                         .flex_col()
                         .children(children)

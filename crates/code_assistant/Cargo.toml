@@ -37,7 +37,7 @@ derive_more = { version = "2", features = ["is_variant"] }
 
 # GPUI related
 gpui = "0.2.2"
-gpui-component = "0.4.0"
+gpui-component = "0.5.1"
 smallvec = "1.15"
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
