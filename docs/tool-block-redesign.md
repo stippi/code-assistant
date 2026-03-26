@@ -109,47 +109,35 @@ Keeps the current rendering (already has a custom output renderer). Could adopt 
 
 ## Architecture
 
-### Replace Plugin Systems with a ToolBlockRenderer Trait
+### ToolBlockRenderer Trait
 
-The current two-level plugin system (`ParameterRenderer` + `ToolOutputRenderer`) gets replaced by a single `ToolBlockRenderer` trait that controls the **entire** rendering of a tool block.
+The current two-level plugin system (`ParameterRenderer` + `ToolOutputRenderer`) is replaced by a single `ToolBlockRenderer` trait that controls the **entire** rendering of a tool block.
 
 ```rust
-/// How a tool block should be rendered
-enum ToolBlockStyle {
-    /// Minimal inline rendering — icon + description text
-    Inline,
-    /// Full card with border, header, body
-    Card,
-}
+enum ToolBlockStyle { Inline, Card }
 
 trait ToolBlockRenderer: Send + Sync {
-    /// Which tools this renderer handles
     fn supported_tools(&self) -> Vec<String>;
-
-    /// Whether this tool renders as inline or card
     fn style(&self) -> ToolBlockStyle;
-
-    /// Render the complete tool block.
-    /// For Inline: returns the single-line element.
-    /// For Card: returns the full card element.
+    fn describe(&self, tool: &ToolUseBlock) -> String;
     fn render(
         &self,
         tool: &ToolUseBlock,
         is_generating: bool,
         theme: &Theme,
+        card_ctx: Option<&CardRenderContext>,  // None for inline tools
         window: &mut Window,
         cx: &mut Context<BlockView>,
-    ) -> AnyElement;
+    ) -> Option<AnyElement>;
+}
+```
 
-    /// Generate a one-line description from parameters (for inline tools)
-    fn describe(&self, tool: &ToolUseBlock) -> String {
-        tool.name.clone()  // default: just the tool name
-    }
-
-    /// Whether this tool should auto-collapse on completion
-    fn auto_collapse_on_success(&self) -> bool {
-        true  // inline tools stay collapsed; cards may override
-    }
+Card renderers receive a `CardRenderContext` containing animation state from `BlockView`:
+```rust
+struct CardRenderContext {
+    animation_scale: f32,          // 0.0 collapsed → 1.0 expanded
+    is_collapsed: bool,            // target state
+    content_height: Rc<Cell<Pixels>>, // persistent height for animated body
 }
 ```
 
@@ -158,21 +146,18 @@ trait ToolBlockRenderer: Send + Sync {
 ```rust
 struct ToolBlockRendererRegistry {
     renderers: HashMap<String, Arc<dyn ToolBlockRenderer>>,
-    default_inline_renderer: Arc<dyn ToolBlockRenderer>,
 }
 ```
 
-Tools without a registered renderer get the `default_inline_renderer`, which renders them inline with just `{tool_name} {params}`.
+Tools without a registered renderer fall through to the legacy rendering path.
 
 ### Registered Renderers
 
 | Renderer | Tools | Style |
 |----------|-------|-------|
-| `InlineReadRenderer` | `read_files`, `list_files` | Inline |
-| `InlineSearchRenderer` | `search_files`, `glob_files` | Inline |
-| `InlineWebRenderer` | `web_search`, `web_fetch`, `perplexity_ask` | Inline |
+| `InlineToolRenderer` | `read_files`, `list_files`, `search_files`, `glob_files`, `web_search`, `web_fetch`, `perplexity_ask` | Inline |
 | `TerminalCardRenderer` | `execute_command` | Card |
-| `EditCardRenderer` | `edit`, `replace_in_file`, `write_file`, `delete_files` | Card |
+| `DiffCardRenderer` | `edit`, `replace_in_file`, `write_file`, `delete_files` | Card |
 | `SubAgentCardRenderer` | `spawn_agent` | Card |
 
 ### Rendering Flow in `elements.rs`
@@ -182,54 +167,85 @@ BlockData::ToolUse(block) →
   registry.get_renderer(&block.name) →
     match renderer.style() {
       Inline => render_inline_tool(renderer, block, ...)
-      Card   => render_card_tool(renderer, block, ...)
+      Card   => {
+                  build CardRenderContext from BlockView animation state
+                  renderer.render(block, ..., Some(&card_ctx), ...)
+                }
     }
 ```
 
-The `render_inline_tool` and `render_card_tool` functions handle the shared chrome (hover behavior, collapse animation, error indicators) while delegating content to the renderer.
+### Card Collapse Animation
 
-## Implementation Phases
+Card collapse/expand reuses `BlockView`'s existing animation infrastructure (the same system used by thinking blocks):
 
-### Phase 1: Inline Tool Rendering
+- **State**: `BlockView.animation_state` (`AnimationState::Idle` or `AnimationState::Animating { height_scale, target, start_time }`)
+- **Height measurement**: `BlockView.content_height` — a persistent `Rc<Cell<Pixels>>` shared with the `animated_card_body()` wrapper via `CardRenderContext`
+- **Frame driver**: `BlockView.animation_task` — a spawned foreground task that loops at ~120fps, advancing `height_scale` with ease-out cubic easing, calling `cx.notify()` each frame
+- **Toggle**: Card header `on_click` uses `cx.listener(|view, ...| view.toggle_tool_collapsed(cx))` which flips `ToolBlockState`, sets up the animation, and starts the task
+- **Body wrapper**: `animated_card_body(content, scale, content_height)` constrains height to `measured_height * scale` using `on_children_prepainted` for measurement
 
-Create the inline rendering path alongside the existing card rendering. This is the highest-impact visual change.
+Card-style tools start with `ToolBlockState::Expanded`. The `has_custom_renderer` check in `elements.rs` recognizes both old `ToolOutputRendererRegistry` entries and new `ToolBlockRendererRegistry` card-style entries.
 
-1. Define `ToolBlockRenderer` trait and `ToolBlockRendererRegistry`
-2. Implement `render_inline_tool()` in `elements.rs` — single line with icon, description, hover chevron
-3. Create `InlineReadRenderer` (for `read_files`, `list_files`) with `describe()` templates
-4. Create `InlineSearchRenderer` (for `search_files`, `glob_files`)
-5. Wire up: tools with inline renderers go through the new path; all others keep the existing rendering
-6. Handle error state: red ✕ icon + inline error message
-7. Handle expand/collapse: on expand, show output below with left-border style
+## Implementation Progress
+
+### Phase 1: Inline Tool Rendering ✅
+
+1. ✅ Defined `ToolBlockRenderer` trait and `ToolBlockRendererRegistry` in `tool_block_renderers.rs`
+2. ✅ Implemented `render_inline_tool()` in `elements.rs` — single line with icon, description, hover chevron
+3. ✅ Created `InlineToolRenderer` with `describe()` templates for all 7 inline tools
+4. ✅ Wired up: tools with inline renderers go through the new path; all others keep existing rendering
+5. ✅ Error state: red ✕ icon + inline error message
+6. ✅ Expand/collapse: on expand, output shown below with left-border style
 
 ### Phase 2: Terminal Card ✅
 
-Redesign the `execute_command` rendering as a proper terminal card.
-
-1. ✅ Create `TerminalCardRenderer` implementing `ToolBlockRenderer` (`terminal_card_renderer.rs`)
-2. ✅ Card header: CWD (from working_dir param), terminal icon, elapsed time, stop button
-3. ✅ Card body: command line in monospace (`$ command`) + `TerminalElement` output
-4. ✅ Note: The terminal view rendering must keep `overflow_hidden` and the existing card structure (GPUI layout requirement discovered in this session)
-5. ✅ Collapse/expand via header click with chevron icon
-6. ✅ Stop button: sends Ctrl-C (ETX) to the PTY terminal
+1. ✅ Created `TerminalCardRenderer` implementing `ToolBlockRenderer` (`terminal_card_renderer.rs`)
+2. ✅ Card header: terminal icon, CWD path, elapsed time, status text, stop button, chevron
+3. ✅ Card body: command line in monospace (`$ command`, copy-on-hover) + `TerminalView` output
+4. ✅ Collapse/expand via header click with smooth animated height transition
+5. ✅ Stop button: sends Ctrl-C (ETX) to the PTY terminal
+6. ✅ Session restoration: display-only terminal fallback + view cache for persisted output
 7. ✅ Card dispatch added to `elements.rs` for `ToolBlockStyle::Card`
 8. ✅ `ExecuteCommandOutputRenderer` deregistered from old `ToolOutputRendererRegistry`
 
-### Phase 3: Edit/Write Card
+### Phase 3: Diff Card ✅
 
-Redesign the edit tool rendering.
+Renamed from "Edit/Write Card" — covers all file-mutation tools.
 
-1. Create `EditCardRenderer` implementing `ToolBlockRenderer`
-2. Card header: file icon + "Editing {path}"
-3. Card body: diff view (reuse existing `EditDiffRenderer` logic)
-4. Handle `write_file` (new file creation) vs `edit`/`replace_in_file` (modifications)
+1. ✅ Created `DiffCardRenderer` implementing `ToolBlockRenderer` (`diff_card_renderer.rs`)
+2. ✅ Card header: file-type icon + path (abbreviated with `~/`), red ✕ on error, chevron
+3. ✅ `edit` tool body: unified diff view via `similar` crate (red bg for deletions, green bg for additions, Zed-style colored row backgrounds)
+4. ✅ `replace_in_file` tool body: SEARCH/REPLACE section parser with streaming support (shows partial sections during streaming, full diff after completion)
+5. ✅ `write_file` tool body: all-green additions (full content as inserted lines)
+6. ✅ `delete_files` tool body: all-red deletion rows showing file paths; handles both `path` (single) and `paths` (JSON array) parameters
+7. ✅ Error output shown below diff content in danger color
+8. ✅ Smooth collapse/expand animation via `BlockView` animation infrastructure
 
-### Phase 4: Cleanup
+### Phase 4: Sub-Agent Card ✅
 
-1. Migrate remaining tools to the new system
+1. ✅ Created `SubAgentCardRenderer` implementing `ToolBlockRenderer` (`sub_agent_card_renderer.rs`)
+2. ✅ Card header: icon + "Sub-agent", activity spinner (while running), cancel button, red ✕ on error, chevron
+3. ✅ Card body: instructions (muted, truncated), tool call history with status icons, activity line, error/cancelled status, markdown response via `TextView`
+4. ✅ Cancel button sends `UiEvent::CancelSubAgent` via `UiEventSender` global
+5. ✅ Smooth collapse/expand animation via `BlockView` animation infrastructure
+
+### Phase 5: Cleanup (TODO)
+
+1. Migrate remaining tools to the new system (if any unregistered tools exist)
 2. Remove old `ParameterRendererRegistry` and `ToolOutputRendererRegistry` (or keep as internal implementation details within card renderers)
 3. Remove the generic tool block rendering code from `elements.rs`
-4. Unify collapse/expand animation across inline and card modes
+4. Remove old renderer files: `spawn_agent_renderer.rs`, `edit_diff_renderer.rs`, `diff_renderer.rs`, etc.
+
+## Key Files
+
+| File | Role |
+|------|------|
+| `src/ui/gpui/tool_block_renderers.rs` | Trait, registry, `InlineToolRenderer`, `CardRenderContext`, `animated_card_body()` |
+| `src/ui/gpui/terminal_card_renderer.rs` | Terminal card for `execute_command` |
+| `src/ui/gpui/diff_card_renderer.rs` | Diff card for `edit`, `replace_in_file`, `write_file`, `delete_files` |
+| `src/ui/gpui/sub_agent_card_renderer.rs` | Sub-agent card for `spawn_agent` |
+| `src/ui/gpui/elements.rs` | Dispatch logic, `BlockView` animation infrastructure, `toggle_tool_collapsed()` |
+| `src/ui/gpui/mod.rs` | Registry initialization, renderer registration |
 
 ## Visual Reference
 
@@ -269,32 +285,34 @@ Redesign the edit tool rendering.
 └─────────────────────────────────────────────────────┘
 ```
 
-### Edit card
+### Diff card
 ```
 ┌─────────────────────────────────────────────────────┐
-│ ✎  Editing crates/terminal_view/src/lib.rs          │
+│ ✎  crates/terminal_view/src/lib.rs                  │
 │                                                     │
-│     div().w_full().child(TerminalElement::new(       │  green
+│     div().w_full().child(TerminalElement::new(      │  green bg
 │                                                     │
-│     div().size_full().child(TerminalElement::new(    │  red
+│     div().size_full().child(TerminalElement::new(   │  red bg
 └─────────────────────────────────────────────────────┘
 ```
 
-## Key Files to Modify
-
-| File | Changes |
-|------|---------|
-| `src/ui/gpui/elements.rs` | New `render_inline_tool()` and `render_card_tool()` dispatch |
-| `src/ui/gpui/tool_block_renderers.rs` | **New**: Trait + registry + inline renderers |
-| `src/ui/gpui/terminal_card_renderer.rs` | **New**: Terminal card renderer |
-| `src/ui/gpui/edit_card_renderer.rs` | **New**: Edit/write card renderer |
-| `src/ui/gpui/mod.rs` | Register new renderers, phase out old registries |
-| `src/ui/gpui/terminal_card_renderer.rs` | **New (Phase 2)**: Terminal card renderer (replaces terminal_output_renderer) |
-| `src/ui/gpui/terminal_output_renderer.rs` | Deprecated (superseded by terminal_card_renderer.rs) |
-| `src/ui/gpui/parameter_renderers.rs` | Deprecated (logic moves into card renderers) |
-| `src/ui/gpui/tool_output_renderers.rs` | Deprecated (logic moves into card renderers) |
+### Sub-agent card
+```
+┌─────────────────────────────────────────────────────┐
+│ ⚙  Sub-agent          Executing tools…      Cancel  │
+│                                                     │
+│ Implement the feature as described...               │  instructions
+│─────────────────────────────────────────────────────│
+│ 🔧 read_files                                       │  tool history
+│ 🔧 edit                                             │
+│                                                     │
+│ Final response text rendered as markdown...         │  response
+└─────────────────────────────────────────────────────┘
+```
 
 ## Known Constraints
 
-- **Terminal card must use `overflow_hidden()` + `rounded_md()`** on the card wrapper for the `TerminalElement` to render correctly inside `Entity<TerminalView>`. This is a GPUI layout requirement discovered during this session.
-- The `TerminalElement`'s `content_lines()` now reads from the live grid cursor (fixed in this session), which is needed for correct inline height sizing.
+- **Terminal card must use `overflow_hidden()` + `rounded_md()`** on the card wrapper for the `TerminalElement` to render correctly inside `Entity<TerminalView>`. This is a GPUI layout requirement discovered during implementation.
+- The `TerminalElement`'s `content_lines()` now reads from the live grid cursor (fixed during implementation), which is needed for correct inline height sizing.
+- **Card header rounding**: Header uses `rounded_md()` when body is fully collapsed (`scale <= 0.0`) and `rounded_t_md()` when body is visible, preventing inner backgrounds from bleeding past the card's border-radius. Body uses `rounded_b_md()`.
+- **`FluentBuilder::map()`** is used instead of `.when()` for conditional rounding on `Stateful<Div>` elements, since `.when()` closures on generic types require explicit type annotations that clutter the code.
