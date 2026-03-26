@@ -46,9 +46,10 @@ pub trait ParameterRenderer: Send + Sync {
         theme: &gpui_component::theme::Theme,
     ) -> gpui::AnyElement;
 
-    /// Indicates if this parameter should be rendered with full width
-    /// Default is false (normal inline parameter)
-    fn is_full_width(&self, _tool_name: &str, _param_name: &str) -> bool {
+    /// Indicates if this parameter should be rendered with full width.
+    /// Receives the parameter value so renderers can decide dynamically
+    /// (e.g. short values inline, long values full-width).
+    fn is_full_width(&self, _tool_name: &str, _param_name: &str, _param_value: &str) -> bool {
         false
     }
 

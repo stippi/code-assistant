@@ -1264,8 +1264,11 @@ impl Render for BlockView {
                     Vec<&ParameterBlock>,
                 ) = visible_params.into_iter().partition(|param| {
                     !registry.as_ref().is_some_and(|reg| {
-                        reg.get_renderer(&block.name, &param.name)
-                            .is_full_width(&block.name, &param.name)
+                        reg.get_renderer(&block.name, &param.name).is_full_width(
+                            &block.name,
+                            &param.name,
+                            &param.value,
+                        )
                     })
                 });
 
@@ -1483,7 +1486,6 @@ impl Render for BlockView {
                                                                             // Use custom renderer output
                                                                             expandable_elements.push(
                                                                                 div()
-                                                                                    .px_2()
                                                                                     .mt_1()
                                                                                     .w_full()
                                                                                     .child(custom_element)

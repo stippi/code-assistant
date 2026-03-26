@@ -52,7 +52,7 @@ impl ParameterRenderer for DiffParameterRenderer {
         }
     }
 
-    fn is_full_width(&self, tool_name: &str, param_name: &str) -> bool {
+    fn is_full_width(&self, tool_name: &str, param_name: &str, _param_value: &str) -> bool {
         // All diff-style parameters are full-width
         matches!((tool_name, param_name), ("replace_in_file", "diff"))
     }

@@ -301,9 +301,12 @@ impl Terminal {
     /// views so they grow with content rather than showing empty rows.
     pub fn content_lines(&self) -> usize {
         let term = self.term.lock_unfair();
-        // The cursor line (0-indexed within the visible grid). Lines above
-        // the visible grid are in scrollback (negative line indices).
-        let cursor_line = self.last_content.cursor.point.line.0;
+        // Read the cursor position from the live grid, NOT from
+        // `last_content` which is a snapshot only updated during sync().
+        // Using the stale snapshot causes a chicken-and-egg problem:
+        // height depends on content_lines, which depends on last_content,
+        // which is only updated after a paint cycle.
+        let cursor_line = term.grid().cursor.point.line.0;
         // Scrollback lines that have content (topmost_line is negative).
         let scrollback_lines = (-term.topmost_line().0).max(0) as usize;
         // Content = scrollback + visible lines up to and including cursor.

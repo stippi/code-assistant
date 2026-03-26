@@ -789,7 +789,6 @@ impl TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content_mode = self.content_mode(cx);
-
         div().size_full().child(TerminalElement::new(
             self.terminal.clone(),
             self.font_family.clone(),

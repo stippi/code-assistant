@@ -243,7 +243,6 @@ impl Gpui {
         // Register simple renderers for parameters that don't need labels
         registry.register_renderer(Box::new(SimpleParameterRenderer::new(
             vec![
-                ("execute_command".to_string(), "command_line".to_string()),
                 ("read_files".to_string(), "paths".to_string()),
                 ("list_files".to_string(), "paths".to_string()),
                 ("replace_in_file".to_string(), "path".to_string()),
@@ -252,6 +251,12 @@ impl Gpui {
                 ("glob_files".to_string(), "pattern".to_string()),
             ],
             false, // These are not full-width
+        )));
+
+        // command_line: short commands inline, long commands full-width
+        registry.register_renderer(Box::new(SimpleParameterRenderer::with_dynamic_width(
+            vec![("execute_command".to_string(), "command_line".to_string())],
+            60, // threshold in characters
         )));
 
         // Register spawn_agent instructions renderer (full-width markdown)

@@ -66,7 +66,7 @@ impl ParameterRenderer for EditDiffRenderer {
         }
     }
 
-    fn is_full_width(&self, _tool_name: &str, param_name: &str) -> bool {
+    fn is_full_width(&self, _tool_name: &str, param_name: &str, _param_value: &str) -> bool {
         matches!(param_name, "old_text" | "new_text" | "diff")
     }
 }
@@ -369,10 +369,10 @@ mod tests {
     fn test_edit_diff_renderer_is_full_width() {
         let renderer = EditDiffRenderer;
 
-        assert!(renderer.is_full_width("edit", "old_text"));
-        assert!(renderer.is_full_width("edit", "new_text"));
-        assert!(renderer.is_full_width("edit", "diff"));
-        assert!(!renderer.is_full_width("edit", "other_param"));
+        assert!(renderer.is_full_width("edit", "old_text", ""));
+        assert!(renderer.is_full_width("edit", "new_text", ""));
+        assert!(renderer.is_full_width("edit", "diff", ""));
+        assert!(!renderer.is_full_width("edit", "other_param", ""));
     }
 
     #[test]

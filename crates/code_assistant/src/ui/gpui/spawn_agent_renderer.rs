@@ -47,7 +47,7 @@ impl ParameterRenderer for SpawnAgentInstructionsRenderer {
             .into_any_element()
     }
 
-    fn is_full_width(&self, _tool_name: &str, _param_name: &str) -> bool {
+    fn is_full_width(&self, _tool_name: &str, _param_name: &str, _param_value: &str) -> bool {
         true
     }
 }

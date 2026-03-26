@@ -31,7 +31,7 @@ impl ParameterRenderer for ContentRenderer {
             .into_any()
     }
 
-    fn is_full_width(&self, _tool_name: &str, _param_name: &str) -> bool {
+    fn is_full_width(&self, _tool_name: &str, _param_name: &str, _param_value: &str) -> bool {
         true // Content parameter is always full-width
     }
 }
