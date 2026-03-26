@@ -16,9 +16,34 @@
 
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::ToolStatus;
-use gpui::{AnyElement, Context, Element, Window};
+use gpui::{px, AnyElement, Context, Element, Pixels, Window};
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
+
+// ---------------------------------------------------------------------------
+// CardRenderContext — passed to Card-style renderers
+// ---------------------------------------------------------------------------
+
+/// Animation and layout state passed from `BlockView` to card renderers.
+///
+/// Card renderers use this to:
+/// - read the current collapse/expand animation progress (`animation_scale`)
+/// - share a persistent height measurement cell with the layout engine
+///   (`content_height`) so the animated wrapper can constrain the body height
+///   across frames
+pub struct CardRenderContext {
+    /// Current animation scale: 0.0 = fully collapsed, 1.0 = fully expanded.
+    /// Intermediate values occur during the ease-out animation.
+    pub animation_scale: f32,
+    /// Whether the tool block is logically collapsed (target state).
+    pub is_collapsed: bool,
+    /// Persistent height cell shared with `BlockView`.  The card renderer
+    /// should use this in its animated body wrapper (via
+    /// `on_children_prepainted`) so the measured height survives across frames.
+    pub content_height: Rc<Cell<Pixels>>,
+}
 
 // ---------------------------------------------------------------------------
 // ToolBlockStyle
@@ -54,14 +79,17 @@ pub trait ToolBlockRenderer: Send + Sync {
     ///
     /// For **Inline** renderers this returns the expanded output area
     /// (the single-line description + collapse chrome is handled by the
-    /// caller in `elements.rs`).
+    /// caller in `elements.rs`).  `card_ctx` is `None` for inline tools.
     ///
     /// For **Card** renderers this returns the complete card element.
+    /// `card_ctx` carries the current animation scale and a persistent
+    /// height cell for smooth collapse/expand transitions.
     fn render(
         &self,
         tool: &ToolUseBlock,
         is_generating: bool,
         theme: &gpui_component::theme::Theme,
+        card_ctx: Option<&CardRenderContext>,
         window: &mut Window,
         cx: &mut Context<BlockView>,
     ) -> Option<AnyElement>;
@@ -113,6 +141,48 @@ impl ToolBlockRendererRegistry {
             .and_then(|m| m.lock().ok())
             .and_then(|guard| guard.clone())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Animated card body helper
+// ---------------------------------------------------------------------------
+
+/// Wrap the card body in an animated height container.
+///
+/// Uses the persistent `content_height` from `CardRenderContext` so the
+/// measured natural height survives across frames.  The wrapper constrains
+/// the visible height to `natural_height × animation_scale`.
+pub fn animated_card_body(
+    body_content: impl gpui::IntoElement,
+    animation_scale: f32,
+    content_height: Rc<Cell<Pixels>>,
+) -> gpui::Div {
+    use gpui::prelude::FluentBuilder;
+    use gpui::{div, Bounds, ParentElement, Styled};
+
+    let height_for_render = content_height.clone();
+
+    div()
+        .overflow_hidden()
+        .when(animation_scale < 1.0, move |d| {
+            let h = height_for_render.get();
+            if h > px(0.0) {
+                d.h(h * animation_scale)
+            } else {
+                d
+            }
+        })
+        .on_children_prepainted({
+            move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
+                if let Some(first) = bounds_vec.first() {
+                    let new_h = first.size.height;
+                    if content_height.get() != new_h {
+                        content_height.set(new_h);
+                    }
+                }
+            }
+        })
+        .child(body_content)
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +291,7 @@ impl ToolBlockRenderer for InlineToolRenderer {
         tool: &ToolUseBlock,
         _is_generating: bool,
         theme: &gpui_component::theme::Theme,
+        _card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
         _cx: &mut Context<BlockView>,
     ) -> Option<AnyElement> {

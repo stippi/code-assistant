@@ -330,10 +330,15 @@ impl MessageContainer {
                                 // (e.g. execute_command with terminal cards, spawn_agent).
                                 // Tools with custom renderers stay expanded so
                                 // their visual output remains visible.
+
                                 let has_custom_renderer = crate::ui::gpui::tool_output_renderers::ToolOutputRendererRegistry::global()
                                     .is_some_and(|registry| registry.has_renderer(&tool.name));
+                                let has_card_renderer = crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
+                                    .as_ref()
+                                    .and_then(|registry| registry.get(&tool.name).cloned())
+                                    .is_some_and(|r| r.style() == crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Card);
 
-                                if has_custom_renderer {
+                                if has_custom_renderer || has_card_renderer {
                                     tool.state = ToolBlockState::Expanded;
                                 } else {
                                     // Auto-collapse tools without custom renderers
@@ -827,7 +832,7 @@ impl BlockView {
         self.start_expand_collapse_animation(should_expand, cx);
     }
 
-    fn toggle_tool_collapsed(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_tool_collapsed(&mut self, cx: &mut Context<Self>) {
         // Check if we can toggle expansion
         if !self.can_toggle_expansion() {
             return;
@@ -1125,7 +1130,8 @@ impl BlockView {
 
         // Expanded output area
         if is_expanded && has_output {
-            if let Some(output_el) = renderer.render(block, self.is_generating, &theme, window, cx)
+            if let Some(output_el) =
+                renderer.render(block, self.is_generating, &theme, None, window, cx)
             {
                 container = container.child(output_el);
             }
@@ -1338,13 +1344,31 @@ impl Render for BlockView {
                                     .render_inline_tool(&block_clone, renderer.as_ref(), window, cx)
                                     .into_any_element();
                             }
+
                             crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Card => {
                                 let block_clone = block.clone();
                                 let theme = cx.theme().clone();
+
+                                // Build animation context from BlockView state
+                                let scale = match &self.animation_state {
+                                    AnimationState::Animating { height_scale, .. } => *height_scale,
+                                    AnimationState::Idle => match block.state {
+                                        ToolBlockState::Collapsed => 0.0,
+                                        ToolBlockState::Expanded => 1.0,
+                                    },
+                                };
+                                let card_ctx =
+                                    crate::ui::gpui::tool_block_renderers::CardRenderContext {
+                                        animation_scale: scale,
+                                        is_collapsed: block.state == ToolBlockState::Collapsed,
+                                        content_height: self.content_height.clone(),
+                                    };
+
                                 if let Some(element) = renderer.render(
                                     &block_clone,
                                     self.is_generating,
                                     &theme,
+                                    Some(&card_ctx),
                                     window,
                                     cx,
                                 ) {

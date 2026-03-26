@@ -7,17 +7,18 @@
 //! This replaces the old `ExecuteCommandOutputRenderer` (ToolOutputRenderer)
 //! with a unified `ToolBlockRenderer` that controls the entire card.
 
-use crate::ui::gpui::card_collapse;
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::gpui::file_icons;
 use crate::ui::gpui::terminal_pool::TerminalPool;
-use crate::ui::gpui::tool_block_renderers::{ToolBlockRenderer, ToolBlockStyle};
+use crate::ui::gpui::tool_block_renderers::{
+    animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle,
+};
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::AppContext as _; // brings .new() into scope on Context
 use gpui::{
-    div, px, App, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window,
+    div, px, App, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -158,9 +159,11 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         tool: &ToolUseBlock,
         _is_generating: bool,
         theme: &gpui_component::theme::Theme,
+        card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
         cx: &mut Context<BlockView>,
     ) -> Option<gpui::AnyElement> {
+        let card_ctx = card_ctx?;
         let theme_colors = theme_to_terminal_colors(theme);
 
         // Extract parameters
@@ -235,11 +238,8 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             tv.set_theme_colors(theme_colors.clone(), cx);
         });
 
-        // Animation state
-        let anim = card_collapse::get_state(&tool.id);
-        if anim.animating {
-            cx.notify();
-        }
+        let scale = card_ctx.animation_scale;
+        let is_collapsed = card_ctx.is_collapsed;
 
         // --- Build the card ---
         let is_dark = is_dark_theme(theme);
@@ -259,7 +259,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             .overflow_hidden();
 
         // ---- Header ----
-        let tool_id_for_click = tool.id.clone();
+
         let terminal_for_stop = terminal.clone();
 
         // CWD display
@@ -281,7 +281,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         };
 
         // Chevron (right-aligned, matching inline tool style)
-        let chevron_icon = if anim.collapsed && !anim.animating {
+        let chevron_icon = if is_collapsed {
             file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
         } else {
             file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
@@ -410,21 +410,21 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .justify_between()
                 .items_center()
                 .map(|d| {
-                    if anim.body_scale <= 0.0 {
+                    if scale <= 0.0 {
                         d.rounded_md()
                     } else {
                         d.rounded_t_md()
                     }
                 })
-                .on_click(move |_event, _window, _cx| {
-                    card_collapse::toggle(&tool_id_for_click);
-                })
+                .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                    view.toggle_tool_collapsed(cx);
+                }))
                 .child(header_left)
                 .child(header_right),
         );
 
         // ---- Body (animated) ----
-        if anim.body_scale > 0.0 {
+        if scale > 0.0 {
             // Build body content
             let cmd_for_copy = display_command.clone();
             let body_inner = div()
@@ -502,7 +502,11 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                         .child(view),
                 );
 
-            card = card.child(card_collapse::animated_body(body_inner, anim.body_scale));
+            card = card.child(animated_card_body(
+                body_inner,
+                scale,
+                card_ctx.content_height.clone(),
+            ));
         }
 
         Some(card.into_any_element())

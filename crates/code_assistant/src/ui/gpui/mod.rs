@@ -2,7 +2,6 @@ pub mod assets;
 pub mod attachment;
 pub mod auto_scroll;
 pub mod branch_switcher;
-pub mod card_collapse;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_card_renderer;
