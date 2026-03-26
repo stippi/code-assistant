@@ -247,6 +247,8 @@ async fn run_command(
 
     loop {
         tokio::select! {
+            biased;
+
             Some(exit_code) = exit_rx.recv() => {
                 // Child exited. Read final output.
                 let output = cx.update(|cx| {
@@ -265,8 +267,9 @@ async fn run_command(
             }
             Some(()) = wakeup_rx.recv() => {
                 // Terminal content changed. Stream the delta.
-                let output = cx.update(|cx| {
-                    terminal.read(cx).get_content_text()
+                let (output, exited, exit_status) = cx.update(|cx| {
+                    let t = terminal.read(cx);
+                    (t.get_content_text(), t.has_exited(), t.exit_status())
                 })?;
 
                 let total_chars = output.chars().count();
@@ -274,6 +277,41 @@ async fn run_command(
                     let chunk: String = output.chars().skip(seen_chars).collect();
                     let _ = event_tx.send(TerminalWorkerEvent::OutputChunk(chunk));
                     seen_chars = total_chars;
+                }
+
+                // Polling fallback: if the terminal has exited but we never
+                // received ChildExit via subscription (can happen due to event
+                // ordering in GPUI), detect it here and return.
+                if exited {
+                    debug!("Terminal exit detected via wakeup polling fallback");
+                    let success = exit_status
+                        .flatten()
+                        .map(|c| c == 0)
+                        .unwrap_or(false);
+                    return Ok(CommandOutput { success, output });
+                }
+            }
+            // Periodic poll: check for exit even if no events arrive.
+            // This catches the case where ChildExit is emitted but the
+            // subscription callback or wakeup events are not delivered.
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                let (exited, exit_status, output) = cx.update(|cx| {
+                    let t = terminal.read(cx);
+                    (t.has_exited(), t.exit_status(), t.get_content_text())
+                })?;
+
+                if exited {
+                    debug!("Terminal exit detected via periodic poll fallback");
+                    let total_chars = output.chars().count();
+                    if total_chars > seen_chars {
+                        let chunk: String = output.chars().skip(seen_chars).collect();
+                        let _ = event_tx.send(TerminalWorkerEvent::OutputChunk(chunk));
+                    }
+                    let success = exit_status
+                        .flatten()
+                        .map(|c| c == 0)
+                        .unwrap_or(false);
+                    return Ok(CommandOutput { success, output });
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {

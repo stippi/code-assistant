@@ -287,8 +287,8 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             .map(abbreviate_path)
             .unwrap_or_default();
 
-        // Elapsed time
-        let elapsed = if is_live {
+        // Elapsed time (only while running)
+        let elapsed = if is_live && is_running {
             let elapsed_secs = started_at.elapsed().as_secs();
             if elapsed_secs >= 2 {
                 Some(format_elapsed(elapsed_secs))
@@ -337,7 +337,6 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .text_size(px(12.0))
                 .text_color(header_text_color)
                 .overflow_hidden()
-                .text_overflow(gpui::TextOverflow::Truncate(SharedString::from("…")))
                 .child(header_label),
         );
 
@@ -471,10 +470,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                                     .text_size(px(12.5))
                                     .text_color(theme.foreground)
                                     .overflow_hidden()
-                                    .text_overflow(gpui::TextOverflow::Truncate(
-                                        SharedString::from("…"),
-                                    ))
-                                    .child(display_command.clone()),
+                                    .child(truncate_str(&display_command, 200)),
                             ),
                     )
                     // Copy button — visible on hover
