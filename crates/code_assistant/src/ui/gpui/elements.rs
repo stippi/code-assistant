@@ -1332,13 +1332,14 @@ impl Render for BlockView {
                                 ) {
                                     return element;
                                 }
+                                // Renderer returned None (e.g. parameters still
+                                // streaming) — fall through to placeholder.
                             }
                         }
+                    } else {
+                        tracing::warn!("No ToolBlockRenderer registered for tool '{}'", block.name);
                     }
                 }
-
-                // Fallback for tools without a registered renderer: render tool name only
-                tracing::warn!("No ToolBlockRenderer registered for tool '{}'", block.name);
                 div()
                     .px_2()
                     .py_1()
