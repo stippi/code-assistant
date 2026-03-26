@@ -1007,13 +1007,12 @@ impl BlockView {
             .flex()
             .flex_row()
             .items_center()
+            .justify_between()
             .gap_1()
-            .py(px(2.))
-            .px(px(4.))
-            .rounded(px(4.))
+            .py_1p5()
+            .px_3()
             .cursor_pointer()
             .when(!can_expand && !is_expanded, |d| d.cursor_default())
-            .hover(|s| s.bg(theme.secondary.opacity(0.5)))
             .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
                 view.toggle_tool_collapsed(cx);
             }))
@@ -1061,7 +1060,7 @@ impl BlockView {
                             .child(description),
                     ),
             )
-            // Chevron (shown when expandable; muted by default)
+            // Chevron — highlights on header hover via group
             .when(can_expand, |d| {
                 d.child(
                     div()
@@ -1069,8 +1068,9 @@ impl BlockView {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(20.))
-                        .rounded(px(4.))
+                        .size(px(24.))
+                        .rounded(px(6.))
+                        .group_hover("inline-tool", |s| s.bg(theme.muted_foreground.opacity(0.1)))
                         .child(file_icons::render_icon(
                             &chevron_icon,
                             14.0,
@@ -1141,19 +1141,25 @@ impl Render for BlockView {
 
                 div()
                     .rounded_md()
-                    .p_2()
                     .bg(thinking_bg)
                     .flex()
                     .flex_col()
                     .children(vec![
-                        // Header row with icon and text
+                        // Header row — entire row is clickable
                         div()
+                            .id("thinking-header")
+                            .group("thinking-header")
                             .flex()
                             .flex_row()
                             .items_center()
-                            .justify_between() // Spread items
+                            .justify_between()
                             .w_full()
-                            .mb_1()
+                            .px_3()
+                            .py_1p5()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                                view.toggle_thinking_collapsed(cx);
+                            }))
                             .children(vec![
                                 // Left side with icon and text
                                 div()
@@ -1164,7 +1170,6 @@ impl Render for BlockView {
                                     .children(vec![
                                         // Rotating arrow or brain icon
                                         if block.is_completed {
-                                            // Just render the brain icon normally
                                             file_icons::render_icon_container(
                                                 &icon, 18.0, blue_base, icon_text,
                                             )
@@ -1197,26 +1202,21 @@ impl Render for BlockView {
                                             .into_any(),
                                     ])
                                     .into_any(),
-                                // Right side with the expand/collapse button
+                                // Chevron — highlights on header hover via group
                                 div()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .cursor_pointer()
                                     .size(px(24.))
-                                    .rounded_full()
-                                    .id("thinking-toggle")
-                                    .hover(|s| s.bg(blue_base.opacity(0.1)))
+                                    .rounded(px(6.))
+                                    .group_hover("thinking-header", |s| {
+                                        s.bg(blue_base.opacity(0.1))
+                                    })
                                     .child(file_icons::render_icon(
                                         &chevron_icon,
                                         16.0,
                                         chevron_color,
                                         chevron_text,
-                                    ))
-                                    .on_click(cx.listener(
-                                        move |view, _event: &ClickEvent, _window, cx| {
-                                            view.toggle_thinking_collapsed(cx);
-                                        },
                                     ))
                                     .into_any(),
                             ])
@@ -1262,7 +1262,9 @@ impl Render for BlockView {
                                             let content =
                                                 block.get_expanded_content(self.is_generating);
                                             div()
+                                                .px_3()
                                                 .pt_1()
+                                                .pb_2()
                                                 .text_size(px(14.))
                                                 .italic()
                                                 .text_color(text_color)

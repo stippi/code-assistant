@@ -381,14 +381,16 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             );
         }
 
-        // Chevron (right-aligned)
+        // Chevron — highlights on header hover via group
         header_right = header_right.child(
             div()
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .size(px(20.))
+                .size(px(24.))
+                .rounded(px(6.))
+                .group_hover("term-header", |s| s.bg(header_text_color.opacity(0.1)))
                 .child(file_icons::render_icon(
                     &chevron_icon,
                     14.0,
@@ -400,6 +402,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         card = card.child(
             div()
                 .id(SharedString::from(format!("term-header-{}", tool.id)))
+                .group("term-header")
                 .px_3()
                 .py_1p5()
                 .bg(header_bg)
