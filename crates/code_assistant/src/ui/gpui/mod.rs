@@ -350,8 +350,12 @@ impl Gpui {
             // Spawn task to handle chat management responses from agent
             let chat_gpui_clone = gpui_clone.clone();
             let chat_response_task = cx.spawn(async move |cx: &mut AsyncApp| {
-                // Wait a bit for the communication channels to be set up
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                // Wait a bit for the communication channels to be set up.
+                // NOTE: Use GPUI-native timer, not tokio::time::sleep, because
+                // this runs on the GPUI foreground executor, not a tokio runtime.
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
 
                 loop {
                     // Check if we have a response receiver
@@ -372,7 +376,9 @@ impl Gpui {
                         }
                     } else {
                         // No receiver yet, wait and try again
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(100))
+                            .await;
                     }
                 }
             });

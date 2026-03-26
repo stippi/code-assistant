@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use futures::FutureExt;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -243,13 +244,29 @@ async fn run_command(
     // get_content_text() can reflow between reads and byte offsets become
     // invalid across multi-byte UTF-8 characters).
     let mut seen_chars = 0usize;
-    let deadline = tokio::time::Instant::now() + timeout;
+    let started_at = std::time::Instant::now();
+
+    // IMPORTANT: This function runs on the GPUI foreground thread (inside
+    // cx.spawn()), NOT on a tokio runtime. tokio::select!, tokio::time::sleep,
+    // and tokio::time::sleep_until require the tokio timer driver and will
+    // either panic or never resolve on GPUI's async executor. We use
+    // futures::select! with GPUI-native timers instead.
 
     loop {
-        tokio::select! {
-            biased;
+        // Create a GPUI-native timer for the periodic poll. This uses GPUI's
+        // background executor which has its own timer implementation that works
+        // regardless of the async runtime.
+        let poll_timer = cx
+            .background_executor()
+            .timer(std::time::Duration::from_millis(500));
 
-            Some(exit_code) = exit_rx.recv() => {
+        // Use futures::select! which is runtime-agnostic (no tokio dependency).
+        futures::select_biased! {
+            exit_code = exit_rx.recv().fuse() => {
+                let Some(exit_code) = exit_code else {
+                    return Err(anyhow!("Terminal exit channel closed unexpectedly"));
+                };
+
                 // Child exited. Read final output.
                 let output = cx.update(|cx| {
                     terminal.read(cx).get_content_text()
@@ -265,7 +282,11 @@ async fn run_command(
                 let success = exit_code.map(|c| c == 0).unwrap_or(false);
                 return Ok(CommandOutput { success, output });
             }
-            Some(()) = wakeup_rx.recv() => {
+            wakeup = wakeup_rx.recv().fuse() => {
+                if wakeup.is_none() {
+                    return Err(anyhow!("Terminal wakeup channel closed unexpectedly"));
+                }
+
                 // Terminal content changed. Stream the delta.
                 let (output, exited, exit_status) = cx.update(|cx| {
                     let t = terminal.read(cx);
@@ -294,7 +315,12 @@ async fn run_command(
             // Periodic poll: check for exit even if no events arrive.
             // This catches the case where ChildExit is emitted but the
             // subscription callback or wakeup events are not delivered.
-            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+            _ = poll_timer.fuse() => {
+                // Check timeout first.
+                if started_at.elapsed() >= timeout {
+                    return Err(anyhow!("Command timed out after {timeout:?}"));
+                }
+
                 let (exited, exit_status, output) = cx.update(|cx| {
                     let t = terminal.read(cx);
                     (t.has_exited(), t.exit_status(), t.get_content_text())
@@ -313,11 +339,6 @@ async fn run_command(
                         .unwrap_or(false);
                     return Ok(CommandOutput { success, output });
                 }
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                // Timeout — kill the process by dropping the terminal entity.
-                // The PTY will be closed, sending SIGHUP to the child.
-                return Err(anyhow!("Command timed out after {timeout:?}"));
             }
         }
     }
