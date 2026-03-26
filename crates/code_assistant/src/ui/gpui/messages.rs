@@ -138,7 +138,7 @@ impl Render for MessagesView {
 
                 // Create message container with appropriate styling based on role.
                 // Assistant messages use flex-col + gap for uniform inter-block spacing.
-                let mut message_container = div().p_3().flex().flex_col().gap(px(6.));
+                let mut message_container = div().p_3().flex().flex_col().gap(px(10.));
 
                 if is_user_message {
                     message_container = message_container
