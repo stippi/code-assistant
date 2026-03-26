@@ -53,7 +53,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
     fn render(
         &self,
         tool: &ToolUseBlock,
-        _is_generating: bool,
+        is_generating: bool,
         theme: &gpui_component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
@@ -192,8 +192,8 @@ impl ToolBlockRenderer for DiffCardRenderer {
             };
 
             let body_content = match tool.name.as_str() {
-                "edit" => render_edit_body(tool, theme),
-                "replace_in_file" => render_replace_body(tool, theme),
+                "edit" => render_edit_body(tool, is_generating, theme),
+                "replace_in_file" => render_replace_body(tool, is_generating, theme),
                 "write_file" => render_write_body(tool, theme),
                 "delete_files" => render_delete_body(tool, theme),
                 _ => None,
@@ -253,26 +253,52 @@ impl ToolBlockRenderer for DiffCardRenderer {
 // ---------------------------------------------------------------------------
 
 /// Render body for the `edit` tool.
+///
+/// During streaming (`is_generating`), parameters are still being built up so
+/// we show raw red/green blocks.  Once the tool is complete we compute a real
+/// unified diff so only the actually-changed lines are highlighted — matching
+/// what is shown after a session reload.
 fn render_edit_body(
     tool: &ToolUseBlock,
+    is_generating: bool,
     theme: &gpui_component::theme::Theme,
 ) -> Option<gpui::AnyElement> {
     let old_text = get_param(tool, "old_text");
     let new_text = get_param(tool, "new_text");
 
-    match (old_text, new_text) {
-        (Some(old), Some(new)) if !old.is_empty() || !new.is_empty() => {
-            Some(render_unified_diff(old, new, theme))
+    if is_generating {
+        // Streaming: show whatever we have so far as raw blocks
+        let mut children: Vec<gpui::AnyElement> = Vec::new();
+        if let Some(old) = old_text.filter(|s| !s.is_empty()) {
+            children.push(render_streaming_block(old, true, theme));
         }
-        (Some(old), None) if !old.is_empty() => Some(render_streaming_block(old, true, theme)),
-        (None, Some(new)) if !new.is_empty() => Some(render_streaming_block(new, false, theme)),
-        _ => None,
+        if let Some(new) = new_text.filter(|s| !s.is_empty()) {
+            children.push(render_streaming_block(new, false, theme));
+        }
+        if children.is_empty() {
+            return None;
+        }
+        Some(div().flex().flex_col().children(children).into_any())
+    } else {
+        // Completed: compute a proper unified diff
+        match (old_text, new_text) {
+            (Some(old), Some(new)) if !old.is_empty() || !new.is_empty() => {
+                Some(render_unified_diff(old, new, theme))
+            }
+            (Some(old), None) if !old.is_empty() => Some(render_streaming_block(old, true, theme)),
+            (None, Some(new)) if !new.is_empty() => Some(render_streaming_block(new, false, theme)),
+            _ => None,
+        }
     }
 }
 
 /// Render body for the `replace_in_file` tool.
+///
+/// Same streaming/completed split as `render_edit_body`: during streaming we
+/// show raw search/replace blocks, after completion we show unified diffs.
 fn render_replace_body(
     tool: &ToolUseBlock,
+    is_generating: bool,
     theme: &gpui_component::theme::Theme,
 ) -> Option<gpui::AnyElement> {
     let diff_text = get_param(tool, "diff")?;
@@ -288,9 +314,11 @@ fn render_replace_body(
     let children: Vec<gpui::AnyElement> = sections
         .into_iter()
         .map(|section| {
-            if section.in_search || section.in_replace {
+            if is_generating || section.in_search || section.in_replace {
+                // Streaming or incomplete section: show raw blocks
                 render_streaming_diff_section(&section, theme)
             } else {
+                // Completed section: compute proper unified diff
                 render_unified_diff(&section.search_content, &section.replace_content, theme)
             }
         })
