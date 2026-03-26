@@ -777,7 +777,7 @@ impl Render for ChatSidebar {
                 div().flex_1().min_h(px(0.)).w_full().child(
                     div()
                         .id("chat-items")
-                        .py_1()
+                        .px(px(12.))
                         .w_full()
                         .h_full()
                         .overflow_y_scrollbar()
