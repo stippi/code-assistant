@@ -252,7 +252,6 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         let mut card = div()
             .w_full()
-            .mb_1()
             .border_1()
             .border_color(theme.border)
             .rounded_md()
@@ -543,7 +542,6 @@ impl TerminalCardRenderer {
 
         div()
             .w_full()
-            .mb_1()
             .border_1()
             .border_color(border_color)
             .rounded_md()

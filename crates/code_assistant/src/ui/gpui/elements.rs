@@ -278,14 +278,32 @@ impl MessageContainer {
 
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
+        let name = name.into();
+
+        // Card-style tools start expanded; inline/other tools start collapsed
+        let initial_state = {
+            let is_card =
+                crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
+                    .as_ref()
+                    .and_then(|registry| registry.get(&name).cloned())
+                    .is_some_and(|r| {
+                        r.style() == crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Card
+                    });
+            if is_card {
+                ToolBlockState::Expanded
+            } else {
+                ToolBlockState::Collapsed
+            }
+        };
+
         let block = BlockData::ToolUse(ToolUseBlock {
-            name: name.into(),
+            name,
             id: id.into(),
             parameters: Vec::new(),
             status: ToolStatus::Pending,
             status_message: None,
             output: None,
-            state: ToolBlockState::Collapsed, // Default to collapsed
+            state: initial_state,
         });
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
@@ -305,14 +323,9 @@ impl MessageContainer {
         let mut updated = false;
 
         for element in elements.iter() {
-            let mut should_animate_collapse = false;
-            let mut should_animate_expand = false;
-
-            element.update(cx, |view, _cx| {
+            element.update(cx, |view, cx| {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
-                        let was_generating = view.is_generating;
-
                         tool.status = status;
                         tool.status_message = message.clone();
 
@@ -323,80 +336,21 @@ impl MessageContainer {
                             tool.output = Some(new_output.clone());
                         }
 
-                        // Update generating state based on tool completion
+                        // Update generating flag on completion — no automatic state changes.
+                        // The tool's collapse/expand state stays exactly as it was set at
+                        // creation time (Card=Expanded, Inline=Collapsed) or as toggled
+                        // by the user. The user is always in control.
                         if status == ToolStatus::Success || status == ToolStatus::Error {
-                            if was_generating {
-                                // Check if this tool has a custom output renderer
-                                // (e.g. execute_command with terminal cards, spawn_agent).
-                                // Tools with custom renderers stay expanded so
-                                // their visual output remains visible.
-
-                                let has_custom_renderer = crate::ui::gpui::tool_output_renderers::ToolOutputRendererRegistry::global()
-                                    .is_some_and(|registry| registry.has_renderer(&tool.name));
-                                let has_card_renderer = crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
-                                    .as_ref()
-                                    .and_then(|registry| registry.get(&tool.name).cloned())
-                                    .is_some_and(|r| r.style() == crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Card);
-
-                                if has_custom_renderer || has_card_renderer {
-                                    tool.state = ToolBlockState::Expanded;
-                                } else {
-                                    // Auto-collapse tools without custom renderers
-                                    // This keeps the UI clean regardless of streaming behavior
-                                    tool.state = ToolBlockState::Collapsed;
-                                    should_animate_collapse = true;
-                                }
-                            }
-                            // If already not generating, no automatic state change
-                        } else {
-                            // For pending or in-progress status, ensure it's in generating state
-                            if !view.is_generating {
-                                // Tool is transitioning back to generating - trigger animation
-                                should_animate_expand = true;
-                            }
-                            // If already generating, no need to animate
+                            view.set_generating(false);
+                        } else if !view.is_generating {
+                            view.set_generating(true);
                         }
 
                         updated = true;
+                        cx.notify();
                     }
                 }
             });
-
-            // Handle generating state changes after the closure
-            if should_animate_collapse || should_animate_expand {
-                element.update(cx, |view, cx| {
-                    if status == ToolStatus::Success || status == ToolStatus::Error {
-                        view.set_generating(false);
-                        if should_animate_collapse {
-                            view.start_expand_collapse_animation(false, cx);
-                        }
-                    } else if should_animate_expand {
-                        view.set_generating(true);
-                        view.start_expand_collapse_animation(true, cx);
-                    }
-                });
-            } else if updated && (status == ToolStatus::Success || status == ToolStatus::Error) {
-                // Just update generating state without animation
-                element.update(cx, |view, _cx| {
-                    view.set_generating(false);
-                });
-            }
-
-            // Handle animation in a separate update to avoid borrowing conflicts
-            if should_animate_collapse || should_animate_expand {
-                element.update(cx, |view, cx| {
-                    if should_animate_collapse {
-                        view.start_expand_collapse_animation(false, cx);
-                    } else if should_animate_expand {
-                        view.start_expand_collapse_animation(true, cx);
-                    }
-                });
-            } else if updated {
-                // If we updated but don't need animation, still notify for re-render
-                element.update(cx, |_view, cx| {
-                    cx.notify();
-                });
-            }
         }
 
         updated
@@ -812,11 +766,11 @@ impl BlockView {
         self.is_generating = generating;
     }
 
-    /// Check if this block can toggle expansion (some blocks can't while generating)
+    /// Check if this block can toggle expansion
     pub fn can_toggle_expansion(&self) -> bool {
         match &self.block {
-            BlockData::ToolUse(_) => !self.is_generating, // Tools can't toggle while generating
-            BlockData::ThinkingBlock(_) => true,          // Thinking blocks can always toggle
+            BlockData::ToolUse(_) => true, // Tools can always toggle, even while generating
+            BlockData::ThinkingBlock(_) => true,
             BlockData::CompactionSummary(_) => true,
             _ => false, // Other blocks don't have expansion
         }
@@ -1026,13 +980,13 @@ impl BlockView {
             renderer.describe(block)
         };
 
-        // Determine expansion state
-        let is_expanded = self.is_generating || block.state == ToolBlockState::Expanded;
+        // Determine expansion state — purely based on ToolBlockState, no is_generating override
+        let is_expanded = block.state == ToolBlockState::Expanded;
         let has_output = block.output.as_ref().is_some_and(|o| !o.is_empty());
-        let can_expand = has_output && !self.is_generating;
+        let can_expand = has_output;
 
         // Chevron icon (only visible on hover, via group)
-        let chevron_icon = if is_expanded && !self.is_generating {
+        let chevron_icon = if is_expanded {
             file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
         } else {
             file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
@@ -1044,7 +998,7 @@ impl BlockView {
             && (block.status == ToolStatus::Pending || block.status == ToolStatus::Running);
 
         // --- Build the element ---
-        let mut container = div().w_full().my(px(1.));
+        let mut container = div().w_full();
 
         // Header line: clickable area with icon + description + chevron-on-hover
         let header = div()
@@ -1058,7 +1012,7 @@ impl BlockView {
             .px(px(4.))
             .rounded(px(4.))
             .cursor_pointer()
-            .when(!can_expand && !self.is_generating, |d| d.cursor_default())
+            .when(!can_expand && !is_expanded, |d| d.cursor_default())
             .hover(|s| s.bg(theme.secondary.opacity(0.5)))
             .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
                 view.toggle_tool_collapsed(cx);
@@ -1188,7 +1142,6 @@ impl Render for BlockView {
                 div()
                     .rounded_md()
                     .p_2()
-                    .mb_2()
                     .bg(thinking_bg)
                     .flex()
                     .flex_col()
@@ -1386,18 +1339,13 @@ impl Render for BlockView {
                 let icon = file_icons::get().get_tool_icon(&block.name);
 
                 // Get the chevron icon based on block state
-                let (chevron_icon, chevron_text) = if self.is_generating {
-                    // Show disabled/different icon while generating
-                    (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
-                } else {
-                    match block.state {
-                        ToolBlockState::Collapsed => (
-                            file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
-                            "▼",
-                        ),
-                        ToolBlockState::Expanded => {
-                            (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
-                        }
+                let (chevron_icon, chevron_text) = match block.state {
+                    ToolBlockState::Collapsed => (
+                        file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
+                        "▼",
+                    ),
+                    ToolBlockState::Expanded => {
+                        (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
                     }
                 };
 
@@ -1494,7 +1442,6 @@ impl Render for BlockView {
 
                 div()
                     .rounded(px(4.))
-                    .my_2()
                     .bg(tool_bg)
                     .shadow_xs()
                     .flex()
@@ -1592,16 +1539,10 @@ impl Render for BlockView {
                                 {
                                     let scale = match &self.animation_state {
                                         AnimationState::Animating { height_scale, .. } => *height_scale,
-                                        AnimationState::Idle => {
-                                            if self.is_generating {
-                                                1.0 // Show content while generating
-                                            } else {
-                                                match block.state {
-                                                    ToolBlockState::Collapsed => 0.0,  // Hide content when collapsed
-                                                    ToolBlockState::Expanded => 1.0,   // Show content when expanded
-                                                }
-                                            }
-                                        }
+                                        AnimationState::Idle => match block.state {
+                                            ToolBlockState::Collapsed => 0.0,
+                                            ToolBlockState::Expanded => 1.0,
+                                        },
                                     };
 
                                     let content_height_rc = self.content_height.clone();
@@ -1609,7 +1550,7 @@ impl Render for BlockView {
                                         has_virtual_elements ||
                                         block.output.as_ref().is_some_and(|o| !o.is_empty());
 
-                                    if has_expandable_content && (self.is_generating || block.state != ToolBlockState::Collapsed || scale > 0.0) {
+                                    if has_expandable_content && (block.state != ToolBlockState::Collapsed || scale > 0.0) {
                                         elements.push(
                                             div()
                                                 .overflow_hidden()
@@ -1674,15 +1615,8 @@ impl Render for BlockView {
                                                             // Smart output rendering based on streaming vs batch
                                                             if let Some(output_content) = &block.output {
                                                                 if !output_content.is_empty() {
-                                                                    let should_show_output = if self.is_generating {
-                                                                        // While generating: show output only if we have any
-                                                                        // (This means we received ToolOutput fragments)
-                                                                        true
-                                                                    } else {
-                                                                        // After completion: show output only when expanded
-                                                                        // (User can manually expand to see batch output)
-                                                                        block.state == ToolBlockState::Expanded
-                                                                    };
+                                                                    // Show output when block is expanded (state-driven, no is_generating override)
+                                                                    let should_show_output = block.state == ToolBlockState::Expanded;
 
 
                                                                     if should_show_output {
@@ -1739,11 +1673,11 @@ impl Render for BlockView {
                                                             expandable_elements
                                                         })
                                                         // Add bottom padding to prevent content overlapping with collapse bar
+
                                                         .when(
                                                             !fullwidth_params.is_empty() ||
                                                             has_virtual_elements ||
-                                                            (!self.is_generating &&
-                                                             block.output.as_ref().is_some_and(|o| !o.is_empty())),
+                                                            block.output.as_ref().is_some_and(|o| !o.is_empty()),
                                                             |div| div.pb(px(24.0))
                                                         )
                                                 )
@@ -1753,9 +1687,10 @@ impl Render for BlockView {
                                 }
 
                                 // Error message (only shown for error status when collapsed, or when there's no output)
+
                                 if block.status == crate::ui::ToolStatus::Error
                                     && block.status_message.is_some()
-                                    && ((!self.is_generating && block.state == ToolBlockState::Collapsed)
+                                    && (block.state == ToolBlockState::Collapsed
                                         || block.output.as_ref().is_none_or(|o| o.is_empty()))
                                 {
                                     elements.push(
@@ -1774,30 +1709,24 @@ impl Render for BlockView {
                             }),
                         ).child({
                             // Absolutely positioned collapse bar on top of the content
+
                             let (scale, is_expanding) = match &self.animation_state {
                                 AnimationState::Animating { height_scale, target, .. } => (*height_scale, *target == 1.0),
-                                AnimationState::Idle => {
-                                    if self.is_generating {
-                                        (1.0, false)
-                                    } else {
-                                        match block.state {
-                                            ToolBlockState::Collapsed => (0.0, false),
-                                            ToolBlockState::Expanded => (1.0, false),
-                                        }
-                                    }
-                                }
+                                AnimationState::Idle => match block.state {
+                                    ToolBlockState::Collapsed => (0.0, false),
+                                    ToolBlockState::Expanded => (1.0, false),
+                                },
                             };
 
                             let has_expandable_content = !fullwidth_params.is_empty() ||
                                 has_virtual_elements ||
-                                (!self.is_generating &&
-                                 block.output.as_ref().is_some_and(|o| !o.is_empty()));
+                                block.output.as_ref().is_some_and(|o| !o.is_empty());
 
-                            if has_expandable_content && (self.is_generating || block.state != ToolBlockState::Collapsed || scale > 0.0) {
+                            if has_expandable_content && (block.state != ToolBlockState::Collapsed || scale > 0.0) {
                                 // Calculate opacity based on animation phase and direction
                                 let footer_opacity = match &self.animation_state {
                                     AnimationState::Idle => {
-                                        if self.is_generating || block.state == ToolBlockState::Expanded {
+                                        if block.state == ToolBlockState::Expanded {
                                             1.0
                                         } else {
                                             0.0 // Collapsed

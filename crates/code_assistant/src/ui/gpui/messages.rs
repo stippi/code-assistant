@@ -136,8 +136,9 @@ impl Render for MessagesView {
                 let node_id = msg.read(cx).node_id();
                 let branch_info = msg.read(cx).branch_info();
 
-                // Create message container with appropriate styling based on role
-                let mut message_container = div().p_3();
+                // Create message container with appropriate styling based on role.
+                // Assistant messages use flex-col + gap for uniform inter-block spacing.
+                let mut message_container = div().p_3().flex().flex_col().gap(px(6.));
 
                 if is_user_message {
                     message_container = message_container
