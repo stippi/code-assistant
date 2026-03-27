@@ -399,14 +399,35 @@ fn render_delete_body(
 // Diff rendering
 // ---------------------------------------------------------------------------
 
+/// Normalize text for diff display.
+///
+/// LLMs frequently emit a spurious leading `\n` at the start of `old_text` or
+/// `new_text` JSON string values, and the two sides are not always consistent.
+/// Additionally, format-on-save only updates `new_text` (the replace side) while
+/// `old_text` keeps the raw LLM value, which can introduce trailing-newline
+/// mismatches.
+///
+/// We strip one leading `\n` (if present) so both sides start at real content,
+/// then ensure both end with exactly one `\n` so `TextDiff` with
+/// `newline_terminated(true)` treats the last line consistently.  Interior blank
+/// lines (intentional insertions) are preserved.
+fn normalize_for_diff(text: &str) -> String {
+    let trimmed = text.strip_prefix('\n').unwrap_or(text);
+    let trimmed = trimmed.strip_suffix('\n').unwrap_or(trimmed);
+    format!("{trimmed}\n")
+}
+
 fn render_unified_diff(
     old_text: &str,
     new_text: &str,
     theme: &gpui_component::theme::Theme,
 ) -> gpui::AnyElement {
+    let old_norm = normalize_for_diff(old_text);
+    let new_norm = normalize_for_diff(new_text);
+
     let diff = TextDiff::configure()
         .newline_terminated(true)
-        .diff_lines(old_text, new_text);
+        .diff_lines(&old_norm, &new_norm);
 
     let mut groups: Vec<(ChangeTag, Vec<String>)> = Vec::new();
     for change in diff.iter_all_changes() {
@@ -754,5 +775,84 @@ mod tests {
             duration_seconds: None,
         };
         assert_eq!(extract_path_or_paths(&tool), "a.rs, b.rs");
+    }
+
+    /// Helper: compute diff tags after the same normalization `render_unified_diff` uses.
+    fn diff_tags(old: &str, new: &str) -> Vec<(ChangeTag, String)> {
+        let old_norm = normalize_for_diff(old);
+        let new_norm = normalize_for_diff(new);
+        let diff = TextDiff::configure()
+            .newline_terminated(true)
+            .diff_lines(&old_norm, &new_norm);
+        diff.iter_all_changes()
+            .map(|c| (c.tag(), c.value().trim_end().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn test_diff_no_spurious_leading_green_line() {
+        // LLMs sometimes emit new_text with a leading \n that old_text lacks.
+        // The normalization should prevent a spurious "added empty line" at top.
+        let tags = diff_tags(
+            "/// comment\n#[derive(Debug)]",
+            "\n/// comment\n#[derive(Debug)]\npub new_field: u32,",
+        );
+        // First line should be Equal, not Insert
+        assert_eq!(
+            tags[0].0,
+            ChangeTag::Equal,
+            "first line should be equal, got {:?}",
+            tags
+        );
+        assert_eq!(tags[0].1, "/// comment");
+        // The actually new line should be Insert
+        assert!(tags
+            .iter()
+            .any(|(t, l)| *t == ChangeTag::Insert && l == "pub new_field: u32,"));
+    }
+
+    #[test]
+    fn test_diff_trailing_newline_mismatch_no_spurious_change() {
+        // old has no trailing \n, new does — should not produce a spurious change
+        let tags = diff_tags("line1\nline2", "line1\nline2\n");
+        assert!(
+            tags.iter().all(|(t, _)| *t == ChangeTag::Equal),
+            "trailing newline mismatch should not produce changes: {:?}",
+            tags
+        );
+    }
+
+    #[test]
+    fn test_diff_normal_addition() {
+        let tags = diff_tags("line1\nline2\n", "line1\nline2\nnew_line\n");
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags[0], (ChangeTag::Equal, "line1".to_string()));
+        assert_eq!(tags[1], (ChangeTag::Equal, "line2".to_string()));
+        assert_eq!(tags[2], (ChangeTag::Insert, "new_line".to_string()));
+    }
+
+    #[test]
+    fn test_diff_intentional_blank_line_insertion_preserved() {
+        // Adding a blank line between two functions is a real change that must be shown.
+        let tags = diff_tags("fn a() {}\nfn b() {}", "fn a() {}\n\nfn b() {}");
+        let inserts: Vec<_> = tags
+            .iter()
+            .filter(|(t, _)| *t == ChangeTag::Insert)
+            .collect();
+        assert_eq!(inserts.len(), 1, "should insert one blank line: {:?}", tags);
+        assert_eq!(inserts[0].1, "", "the inserted line should be blank");
+    }
+
+    #[test]
+    fn test_diff_leading_newline_mismatch_both_directions() {
+        // old has leading \n, new doesn't — should not produce spurious change
+        let tags = diff_tags("\nline1\nline2", "line1\nline2\nnew");
+        assert_eq!(
+            tags[0].0,
+            ChangeTag::Equal,
+            "first line should be equal: {:?}",
+            tags
+        );
+        assert_eq!(tags[0].1, "line1");
     }
 }
