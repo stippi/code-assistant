@@ -326,10 +326,20 @@ impl ToolUseBlock {
         }
     }
 
-    /// Add or update a parameter value
+    /// Add or update a parameter value (append semantics for streaming).
     pub fn add_or_update_parameter(&mut self, name: String, value: String) {
         match self.parameters.get_mut(&name) {
             Some(param) => param.append_value(&value),
+            None => {
+                self.parameters.insert(name, ParameterValue::new(value));
+            }
+        }
+    }
+
+    /// Replace a parameter value entirely (used by post-execution updates).
+    pub fn replace_parameter(&mut self, name: String, value: String) {
+        match self.parameters.get_mut(&name) {
+            Some(param) => param.value = value,
             None => {
                 self.parameters.insert(name, ParameterValue::new(value));
             }

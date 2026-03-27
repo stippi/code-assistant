@@ -2244,6 +2244,7 @@ impl Agent {
                     tool_id: tool_id.to_string(),
                     name: key.clone(),
                     value: value_str,
+                    replace: true,
                 })
                 .await?;
         }

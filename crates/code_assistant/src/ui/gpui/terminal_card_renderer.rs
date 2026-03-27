@@ -124,8 +124,12 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .map(|e| e.terminal.clone())
         });
 
-        // If there's no live terminal and no output, show skeleton or bail.
-        if live_terminal.is_none() && output.is_empty() {
+        // If there's no live terminal and no output, show skeleton or bail —
+        // but only when the tool hasn't finished yet. A completed tool with empty
+        // output (e.g. `cargo fmt` with no findings) must fall through to the
+        // static-output path so the card shows the finished state.
+        let tool_finished = matches!(tool.status, ToolStatus::Success | ToolStatus::Error);
+        if live_terminal.is_none() && output.is_empty() && !tool_finished {
             if !command_line_param.is_empty() {
                 return Some(
                     self.render_skeleton(

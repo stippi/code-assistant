@@ -281,17 +281,23 @@ impl UserInterface for TerminalUI {
                     renderer_guard.start_tool_use_block(name, id);
                 }
             }
+
             UiEvent::UpdateToolParameter {
                 tool_id,
                 name,
                 value,
+                replace,
             } => {
                 debug!("Updating tool parameter: {name} = '{value}'");
 
                 // Update parameter in current message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
+                    if replace {
+                        renderer_guard.replace_tool_parameter(&tool_id, name, value);
+                    } else {
+                        renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
+                    }
                 }
             }
 
@@ -448,6 +454,7 @@ impl UserInterface for TerminalUI {
                     tool_id: tool_id.clone(),
                     name: name.clone(),
                     value: value.clone(),
+                    replace: false,
                 });
             }
             DisplayFragment::ToolEnd { id } => {

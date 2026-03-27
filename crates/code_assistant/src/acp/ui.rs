@@ -639,18 +639,27 @@ impl UserInterface for ACPUserUI {
                     "ACPUserUI: streaming event received via send_event; handled via display_fragment"
                 );
             }
+
             UiEvent::UpdateToolParameter {
                 tool_id,
                 name,
                 value,
+                replace,
             } => {
                 if tool_id.is_empty() {
                     tracing::warn!("ACPUserUI: UpdateToolParameter with empty tool_id");
                 } else {
                     let name = name.clone();
                     let value = value.clone();
+
                     let tool_call_update = self.update_tool_call(&tool_id, |state| {
-                        state.replace_parameter(&name, &value);
+                        if replace {
+                            state.replace_parameter(&name, &value);
+                        } else {
+                            // Streaming: append (ACP already handled this correctly
+                            // via display_fragment, but for consistency handle it here too)
+                            state.replace_parameter(&name, &value);
+                        }
                     });
                     self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                         .await?;

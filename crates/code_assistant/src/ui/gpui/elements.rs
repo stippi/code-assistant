@@ -4,9 +4,8 @@ use crate::ui::gpui::image;
 
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, ClickEvent,
-    Context, Entity, ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task,
-    Timer, Transformation,
+    div, img, percentage, px, svg, Animation, AnimationExt, ClickEvent, Context, Entity,
+    ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task, Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{text::TextView, ActiveTheme};
@@ -545,6 +544,50 @@ impl MessageContainer {
         }
     }
 
+    /// Replace a tool parameter value entirely (used by post-execution updates
+    /// like format-on-save, where the tool modified its own input).
+    pub fn replace_tool_parameter(
+        &self,
+        tool_id: impl Into<String>,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let tool_id = tool_id.into();
+        let name = name.into();
+        let value = value.into();
+        let elements = self.elements.lock().unwrap();
+
+        for element in elements.iter().rev() {
+            let mut found = false;
+            element.update(cx, |view, cx| {
+                if let Some(tool) = view.block.as_tool_mut() {
+                    if tool.id == tool_id {
+                        for param in tool.parameters.iter_mut() {
+                            if param.name == name {
+                                param.value = value.clone();
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            // Parameter doesn't exist yet — add it
+                            tool.parameters.push(ParameterBlock {
+                                name: name.clone(),
+                                value: value.clone(),
+                            });
+                            found = true;
+                        }
+                        cx.notify();
+                    }
+                }
+            });
+            if found {
+                return;
+            }
+        }
+    }
+
     // Mark a tool as ended (could add visual indicator)
     pub fn end_tool_use(&self, id: impl Into<String>, cx: &mut Context<Self>) {
         let id = id.into();
@@ -935,6 +978,60 @@ impl BlockView {
     }
 
     // ------------------------------------------------------------------
+    // Card skeleton (shown while parameters are still streaming)
+    // ------------------------------------------------------------------
+
+    /// Render a minimal card header for a tool whose renderer returned `None`
+    /// (typically because parameters haven't arrived yet). This prevents the
+    /// ugly `[edit]` / `[spawn_agent]` text flash.
+    fn render_card_skeleton(
+        &self,
+        block: &ToolUseBlock,
+        renderer: &dyn crate::ui::gpui::tool_block_renderers::ToolBlockRenderer,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
+        let is_dark = theme.background.l < 0.5;
+        let header_bg = if is_dark {
+            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+        } else {
+            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+        };
+        let header_text_color = theme.muted_foreground;
+        let icon = file_icons::get().get_tool_icon(&block.name);
+        let label = renderer.describe(block);
+
+        div()
+            .w_full()
+            .border_1()
+            .border_color(theme.border)
+            .rounded_md()
+            .overflow_hidden()
+            .child(
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .bg(header_bg)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .child(file_icons::render_icon_container(
+                        &icon,
+                        13.0,
+                        header_text_color,
+                        "⚙",
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(header_text_color)
+                            .child(label),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    // ------------------------------------------------------------------
     // Inline tool rendering
     // ------------------------------------------------------------------
 
@@ -1041,23 +1138,30 @@ impl BlockView {
                     .gap_1p5()
                     .flex_grow()
                     .min_w_0()
-                    // Icon (or spinner)
+                    // Icon (or spinner) — both wrapped in a 14×14 container
+                    // to prevent layout shift when transitioning.
                     .when(show_spinner, |d| {
                         d.child(
-                            gpui::svg()
-                                .size(px(14.))
-                                .path(SharedString::from("icons/arrow_circle.svg"))
-                                .text_color(icon_color)
-                                .with_animation(
-                                    "inline_spinner",
-                                    Animation::new(Duration::from_secs(2))
-                                        .repeat()
-                                        .with_easing(bounce(ease_in_out)),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(percentage(
-                                            delta,
-                                        )))
-                                    },
+                            div()
+                                .w(px(14.))
+                                .h(px(14.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    gpui::svg()
+                                        .size(px(14.))
+                                        .path(SharedString::from("icons/arrow_circle.svg"))
+                                        .text_color(icon_color)
+                                        .with_animation(
+                                            "inline_spinner",
+                                            Animation::new(Duration::from_secs(2)).repeat(),
+                                            |svg, delta| {
+                                                svg.with_transformation(Transformation::rotate(
+                                                    percentage(delta),
+                                                ))
+                                            },
+                                        ),
                                 ),
                         )
                     })
@@ -1076,25 +1180,27 @@ impl BlockView {
                             .child(description),
                     ),
             )
-            // Chevron — highlights on header hover via group
-            .when(can_expand, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(24.))
-                        .rounded(px(6.))
-                        .group_hover("inline-tool", |s| s.bg(theme.muted_foreground.opacity(0.1)))
-                        .child(file_icons::render_icon(
-                            &chevron_icon,
-                            14.0,
-                            chevron_color.opacity(0.4),
-                            "▾",
-                        )),
-                )
-            });
+            // Chevron area — always laid out to prevent height changes when
+            // output becomes available. The icon itself is only visible when
+            // expandable, with a highlight on hover.
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(24.))
+                    .rounded(px(6.))
+                    .when(can_expand, |d| {
+                        d.group_hover("inline-tool", |s| s.bg(theme.muted_foreground.opacity(0.1)))
+                            .child(file_icons::render_icon(
+                                &chevron_icon,
+                                14.0,
+                                chevron_color.opacity(0.4),
+                                "▾",
+                            ))
+                    }),
+            );
 
         container = container.child(header);
 
@@ -1202,9 +1308,7 @@ impl Render for BlockView {
                                                 .text_color(blue_base)
                                                 .with_animation(
                                                     "image_circle",
-                                                    Animation::new(Duration::from_secs(2))
-                                                        .repeat()
-                                                        .with_easing(bounce(ease_in_out)),
+                                                    Animation::new(Duration::from_secs(2)).repeat(),
                                                     |svg, delta| {
                                                         svg.with_transformation(
                                                             Transformation::rotate(percentage(
@@ -1329,7 +1433,10 @@ impl Render for BlockView {
                                     return element;
                                 }
                                 // Renderer returned None (e.g. parameters still
-                                // streaming) — fall through to placeholder.
+                                // streaming) — show a skeleton card with just
+                                // the header so we don't flash a raw "[name]"
+                                // placeholder.
+                                return self.render_card_skeleton(block, renderer.as_ref(), &theme);
                             }
                         }
                     } else {

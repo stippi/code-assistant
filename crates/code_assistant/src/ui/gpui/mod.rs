@@ -454,8 +454,9 @@ impl Gpui {
                     },
                     |window, cx| {
                         // Create MessagesView
-                        let messages_view =
-                            cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
+                        let activity_state = gpui_clone.current_session_activity_state.clone();
+                        let messages_view = cx
+                            .new(|cx| MessagesView::new(message_queue.clone(), activity_state, cx));
 
                         // Store MessagesView reference in Gpui
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
@@ -592,14 +593,22 @@ impl Gpui {
                 });
                 self.auto_scroll_if_following(cx);
             }
+
             UiEvent::UpdateToolParameter {
                 tool_id,
                 name,
                 value,
+                replace,
             } => {
-                self.update_last_message(cx, |message, cx| {
-                    message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
-                });
+                if replace {
+                    self.update_all_messages(cx, |message, cx| {
+                        message.replace_tool_parameter(&tool_id, &name, &value, cx);
+                    });
+                } else {
+                    self.update_last_message(cx, |message, cx| {
+                        message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
+                    });
+                }
                 self.auto_scroll_if_following(cx);
             }
             UiEvent::UpdateToolStatus {
@@ -1890,6 +1899,7 @@ impl UserInterface for Gpui {
                     tool_id: tool_id.clone(),
                     name: name.clone(),
                     value: value.clone(),
+                    replace: false,
                 });
             }
             DisplayFragment::ToolEnd { id } => {

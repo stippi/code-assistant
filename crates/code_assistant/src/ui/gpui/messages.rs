@@ -1,5 +1,6 @@
 use super::branch_switcher::BranchSwitcherElement;
 use super::elements::MessageContainer;
+use crate::session::instance::SessionActivityState;
 use gpui::{
     div, list, prelude::*, px, rgb, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     ListAlignment, ListState, Point, SharedString, Task, Timer, Window,
@@ -11,6 +12,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::trace;
+
+/// Braille spinner frames for the activity indicator.
+const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Maximum width of the message content area. On wide viewports, messages
 /// stay centered rather than stretching edge-to-edge for comfortable reading.
@@ -50,6 +54,8 @@ pub struct MessagesView {
     #[allow(dead_code)]
     current_project: Arc<Mutex<String>>,
     current_session_id: Arc<Mutex<Option<String>>>,
+    /// Current session activity state (shared with Gpui).
+    activity_state: Arc<Mutex<Option<SessionActivityState>>>,
     focus_handle: FocusHandle,
     /// The virtualized list state that tracks item count, scroll position,
     /// and cached item heights.
@@ -65,11 +71,14 @@ pub struct MessagesView {
     /// The pixel offset we last wrote via the animation loop. Kept in sync
     /// so the animation can track its own state across frames.
     last_animation_offset: Rc<Cell<f32>>,
+    /// Task that ticks the braille spinner animation.
+    _spinner_task: Option<Task<()>>,
 }
 
 impl MessagesView {
     pub fn new(
         message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
+        activity_state: Arc<Mutex<Option<SessionActivityState>>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let initial_count = message_queue.lock().unwrap().len();
@@ -131,17 +140,42 @@ impl MessagesView {
             });
         });
 
+        // Spawn a periodic task that triggers a repaint every 80ms while the
+        // activity indicator is visible. This drives the braille spinner.
+        let activity_for_tick = activity_state.clone();
+        let spinner_task = cx.spawn(async move |weak_entity, cx| {
+            loop {
+                Timer::after(Duration::from_millis(80)).await;
+                // Only notify when there's an active activity state
+                let should_tick = activity_for_tick
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .is_some_and(|s| !matches!(s, SessionActivityState::Idle));
+                if should_tick {
+                    let ok = weak_entity.update(cx, |_this, cx| {
+                        cx.notify();
+                    });
+                    if ok.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
         Self {
             message_queue,
             current_pending_message: Arc::new(Mutex::new(None)),
             current_project: Arc::new(Mutex::new(String::new())),
             current_session_id: Arc::new(Mutex::new(None)),
+            activity_state,
             focus_handle: cx.focus_handle(),
             list_state,
             follow_tail: true,
             smooth_scroll_task: None,
             animation_active,
             last_animation_offset,
+            _spinner_task: Some(spinner_task),
         }
     }
 
@@ -586,7 +620,25 @@ impl Render for MessagesView {
             .as_ref()
             .is_some_and(|m| !m.is_empty());
 
-        let item_count = total_items + if has_pending { 1 } else { 0 };
+        // Activity indicator is rendered as the very last list item, but only
+        // for WaitingForResponse and RateLimited. During AgentRunning the
+        // streaming content itself shows activity.
+        let has_activity = self
+            .activity_state
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .is_some_and(|s| {
+                matches!(
+                    s,
+                    SessionActivityState::WaitingForResponse
+                        | SessionActivityState::RateLimited { .. }
+                )
+            });
+
+        let pending_index = total_items;
+        let activity_index = total_items + if has_pending { 1 } else { 0 };
+        let item_count = activity_index + if has_activity { 1 } else { 0 };
 
         // Build the virtualized list. The render callback is only invoked for
         // items that are within the visible viewport + overdraw zone.
@@ -595,9 +647,11 @@ impl Render for MessagesView {
             cx.processor(move |this: &mut Self, index: usize, window, cx| {
                 if index < total_items {
                     this.render_message(index, window, cx)
-                } else {
-                    // Render pending message
+                } else if index == pending_index && has_pending {
                     this.render_pending_message(window, cx)
+                } else {
+                    // Activity indicator (last item)
+                    this.render_activity_indicator(cx)
                 }
             }),
         )
@@ -707,5 +761,71 @@ impl MessagesView {
             );
 
         pending_card.into_any_element()
+    }
+
+    /// Render the inline activity indicator (braille spinner or rate-limit text).
+    ///
+    /// Only shown for `WaitingForResponse` (pre-stream) and `RateLimited`.
+    /// During `AgentRunning` the streaming content itself signals activity.
+    fn render_activity_indicator(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let activity = self.activity_state.lock().ok().and_then(|g| g.clone());
+
+        let Some(activity) = activity else {
+            return div().into_any_element();
+        };
+
+        // Pick the current braille frame based on wall-clock time (~80ms per frame)
+        let frame_index = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 80) as usize
+            % BRAILLE_FRAMES.len();
+        let braille_char = BRAILLE_FRAMES[frame_index];
+
+        match activity {
+            SessionActivityState::RateLimited { seconds_remaining } => {
+                // Orange rate-limit message with spinner
+                let color = cx.theme().warning;
+                div()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(color)
+                            .child(braille_char.to_string()),
+                    )
+                    .child(div().text_size(px(13.0)).text_color(color).child(format!(
+                        "Rate limited — retrying in {}s…",
+                        seconds_remaining
+                    )))
+                    .into_any_element()
+            }
+            SessionActivityState::WaitingForResponse => {
+                // Blue braille spinner, no text
+                let color = cx.theme().primary;
+                div()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(color)
+                            .child(braille_char.to_string()),
+                    )
+                    .into_any_element()
+            }
+            _ => {
+                // AgentRunning / Idle — no indicator
+                div().into_any_element()
+            }
+        }
     }
 }

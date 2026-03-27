@@ -44,11 +44,18 @@ pub enum UiEvent {
     AppendToThinkingBlock { content: String },
     /// Start a tool invocation
     StartTool { name: String, id: String },
-    /// Add or update a tool parameter
+    /// Add or update a tool parameter.
+    ///
+    /// When `replace` is `false` (the default for streaming), the value is
+    /// **appended** to any existing parameter with the same name.
+    /// When `replace` is `true` (used by post-execution format-on-save updates),
+    /// the value **replaces** the existing parameter value entirely.
     UpdateToolParameter {
         tool_id: String,
         name: String,
         value: String,
+        /// If true, replace the parameter value instead of appending.
+        replace: bool,
     },
     /// Update a tool status
     UpdateToolStatus {

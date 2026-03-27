@@ -374,7 +374,7 @@ impl TerminalRenderer {
         self.streaming_open = false;
     }
 
-    /// Add or update a tool parameter in the current message
+    /// Add or update a tool parameter in the current message (append semantics).
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
         let Some(live_message) = self.transcript.active_message_mut() else {
             tracing::warn!("Ignoring tool parameter update without active message");
@@ -383,6 +383,18 @@ impl TerminalRenderer {
 
         if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
             tool_block.add_or_update_parameter(name, value);
+        }
+    }
+
+    /// Replace a tool parameter value entirely (used by post-execution updates).
+    pub fn replace_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            tracing::warn!("Ignoring tool parameter replace without active message");
+            return;
+        };
+
+        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+            tool_block.replace_parameter(name, value);
         }
     }
 
