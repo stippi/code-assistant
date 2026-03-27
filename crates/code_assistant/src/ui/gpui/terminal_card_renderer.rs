@@ -116,6 +116,13 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             .find(|p| p.name == "working_dir")
             .map(|p| p.value.clone());
 
+        let project_param = tool
+            .parameters
+            .iter()
+            .find(|p| p.name == "project")
+            .map(|p| p.value.clone())
+            .unwrap_or_default();
+
         let output = tool.output.as_deref().unwrap_or("");
 
         // --- Resolve live terminal or use static output ---
@@ -242,19 +249,51 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             "$",
         ));
 
-        // CWD or command (show CWD if available, else show truncated command)
-        let header_label = if !cwd_text.is_empty() {
-            cwd_text
+        // Header label: collapsed → command, expanded → CWD (+ project if cross-project)
+        if is_collapsed {
+            // Collapsed: always show the command
+            header_left = header_left.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(header_text_color)
+                    .overflow_hidden()
+                    .child(truncate_str(&display_command, 50)),
+            );
         } else {
-            truncate_str(&display_command, 50)
-        };
-        header_left = header_left.child(
-            div()
-                .text_size(px(12.0))
-                .text_color(header_text_color)
+            // Expanded: show CWD if available, else command
+            let label = if !cwd_text.is_empty() {
+                cwd_text
+            } else {
+                truncate_str(&display_command, 50)
+            };
+            let mut label_row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
                 .overflow_hidden()
-                .child(header_label),
-        );
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(header_text_color)
+                        .flex_shrink_0()
+                        .child(label),
+                );
+
+            // Show project name in parentheses if it differs from the session project
+            let current_project = &card_ctx.current_project;
+            if !project_param.is_empty() && project_param != *current_project {
+                label_row = label_row.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(header_text_color.opacity(0.5))
+                        .flex_shrink_0()
+                        .child(format!("({})", project_param)),
+                );
+            }
+
+            header_left = header_left.child(label_row);
+        }
 
         let mut header_right = div().flex().flex_row().items_center().gap_2();
 

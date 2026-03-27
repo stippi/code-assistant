@@ -1461,6 +1461,11 @@ impl Render for BlockView {
                                         animation_scale: scale,
                                         is_collapsed: block.state == ToolBlockState::Collapsed,
                                         content_height: self.content_height.clone(),
+                                        current_project: self
+                                            .current_project
+                                            .lock()
+                                            .unwrap()
+                                            .clone(),
                                     };
 
                                 if let Some(element) = renderer.render(

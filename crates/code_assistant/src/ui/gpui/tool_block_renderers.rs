@@ -43,6 +43,9 @@ pub struct CardRenderContext {
     /// should use this in its animated body wrapper (via
     /// `on_children_prepainted`) so the measured height survives across frames.
     pub content_height: Rc<Cell<Pixels>>,
+    /// The session's current/default project name.  Card renderers can compare
+    /// this against the tool's `project` parameter to decide whether to show it.
+    pub current_project: String,
 }
 
 // ---------------------------------------------------------------------------
