@@ -590,6 +590,7 @@ impl Gpui {
                 self.update_last_message(cx, |message, cx| {
                     message.add_tool_use_block(&name, &id, cx);
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::UpdateToolParameter {
                 tool_id,
@@ -599,6 +600,7 @@ impl Gpui {
                 self.update_last_message(cx, |message, cx| {
                     message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::UpdateToolStatus {
                 tool_id,
@@ -615,18 +617,21 @@ impl Gpui {
                         cx,
                     );
                 });
+                self.auto_scroll_if_following(cx);
             }
 
             UiEvent::EndTool { id } => {
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.end_tool_use(&id, cx);
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::HiddenToolCompleted => {
                 // Mark that a hidden tool completed - message container handles paragraph breaks
                 self.update_last_message(cx, |message, cx| {
                     message.mark_hidden_tool_completed(cx);
                 });
+                self.auto_scroll_if_following(cx);
             }
 
             UiEvent::UpdatePlan { plan } => {

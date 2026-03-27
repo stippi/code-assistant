@@ -31,6 +31,11 @@ const DAMPING_C: f32 = 0.32;
 const MIN_DISTANCE_TO_STOP: f32 = 0.5;
 /// Stop threshold: speed in pixels/frame.
 const MIN_SPEED_TO_STOP: f32 = 0.5;
+/// How long the animation idles at the bottom before shutting down.
+/// While idling, it keeps checking for new content growth and instantly
+/// resumes scrolling — this avoids the race where content arrives between
+/// animation stop and the next `scroll_to_bottom()` call.
+const ANIMATION_IDLE_MS: u64 = 2000;
 
 /// MessagesView - Component responsible for displaying the message history.
 ///
@@ -57,9 +62,8 @@ pub struct MessagesView {
     smooth_scroll_task: Option<Task<()>>,
     /// Shared flag read by the animation loop — set to `false` to request stop.
     animation_active: Rc<Cell<bool>>,
-    /// The pixel offset we last wrote via the animation loop. Used to detect
-    /// whether the user scrolled manually (the scroll handler fires with a
-    /// different offset than we set).
+    /// The pixel offset we last wrote via the animation loop. Kept in sync
+    /// so the animation can track its own state across frames.
     last_animation_offset: Rc<Cell<f32>>,
 }
 
@@ -76,34 +80,52 @@ impl MessagesView {
         let animation_active: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         let last_animation_offset: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
 
-        // Install scroll handler to detect when user scrolls away from bottom.
-        // If an animation is running and the user scrolls manually, stop it.
+        // Install scroll handler to detect manual user scrolling.
+        //
+        // This handler is ONLY called on real ScrollWheelEvent (mouse/trackpad),
+        // never for programmatic offset changes (set_offset_from_scrollbar).
+        //
+        // Strategy: we only care about *direction*. If the user scrolls upward
+        // (away from bottom), we disable follow_tail and stop the animation.
+        // If they scroll downward, we check if they reached the bottom and
+        // re-enable follow_tail. We track the previous offset to compute the
+        // direction.
         let entity = cx.entity().downgrade();
         let anim_active_for_handler = animation_active.clone();
-        let last_anim_offset_for_handler = last_animation_offset.clone();
+        let prev_scroll_offset: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
         list_state.set_scroll_handler(move |_event, _window, cx| {
             let entity = entity.clone();
             let anim_active = anim_active_for_handler.clone();
-            let last_offset = last_anim_offset_for_handler.clone();
+            let prev_offset = prev_scroll_offset.clone();
             cx.defer(move |cx| {
                 let _ = entity.update(cx, |this, _cx| {
-                    if anim_active.get() {
-                        // Animation is running. Check whether this scroll event
-                        // was caused by the user (manual) vs. our animation loop.
-                        let current: f32 =
-                            this.list_state.scroll_px_offset_for_scrollbar().y.into();
-                        let expected = last_offset.get();
-                        if (current - expected).abs() > 1.5 {
-                            // User scrolled manually during animation — stop it
-                            // and re-evaluate follow_tail based on new position.
-                            anim_active.set(false);
-                            this.smooth_scroll_task = None;
-                            this.update_follow_tail();
+                    // offset.y is negative: 0 = top, -max = bottom
+                    let current: f32 = this.list_state.scroll_px_offset_for_scrollbar().y.into();
+                    let previous = prev_offset.get();
+                    prev_offset.set(current);
+
+                    // delta > 0 means offset.y moved toward 0 (= scrolled UP)
+                    let delta = current - previous;
+
+                    if delta > 0.5 {
+                        // User scrolled UP → disable follow
+                        trace!(
+                            "User scrolled up (delta={:.1}px) — disabling follow_tail",
+                            delta
+                        );
+                        this.follow_tail = false;
+                        anim_active.set(false);
+                        this.smooth_scroll_task = None;
+                    } else if delta < -0.5 {
+                        // User scrolled DOWN → check if near bottom, re-enable follow
+                        let max: f32 = this.list_state.max_offset_for_scrollbar().height.into();
+                        let distance_from_bottom = max + current; // current is negative
+                        if distance_from_bottom < 50.0 && !this.follow_tail {
+                            trace!("User scrolled to bottom — re-enabling follow_tail");
+                            this.follow_tail = true;
+                            // Kick off smooth scroll to snap to exact bottom
+                            this.ensure_animation_running();
                         }
-                        // Animation-driven scroll — don't touch follow_tail.
-                    } else {
-                        // No animation running — this is a manual user scroll.
-                        this.update_follow_tail();
                     }
                 });
             });
@@ -209,6 +231,14 @@ impl MessagesView {
     }
 
     /// Actually spawn the animation task. Must be called with a `Context<Self>`.
+    ///
+    /// The animation loop has two phases:
+    /// 1. **Active**: spring-damper physics scrolling toward the bottom.
+    /// 2. **Idle**: we've converged to the bottom. Instead of stopping, we
+    ///    keep polling at a lower rate. If new content pushes the bottom
+    ///    further away, we seamlessly resume the spring animation. After
+    ///    `ANIMATION_IDLE_MS` of idling without new movement, we shut down.
+    ///    (A new `scroll_to_bottom()` call will restart us.)
     fn spawn_animation_task(&mut self, cx: &mut Context<Self>) {
         // Cancel any prior task.
         self.smooth_scroll_task = None;
@@ -217,18 +247,13 @@ impl MessagesView {
             return;
         }
 
-        // Seed the expected offset to the current position so the scroll
-        // handler doesn't immediately detect a "manual scroll" on the first
-        // frame.
-        let current: f32 = self.list_state.scroll_px_offset_for_scrollbar().y.into();
-        self.last_animation_offset.set(current);
-
         let list_state = self.list_state.clone();
         let active = self.animation_active.clone();
         let last_offset = self.last_animation_offset.clone();
 
         let task = cx.spawn(async move |weak_entity, cx| {
             let mut velocity: f32 = 0.0;
+            let mut idle_elapsed_ms: u64 = 0;
 
             loop {
                 Timer::after(Duration::from_millis(ANIMATION_FRAME_MS)).await;
@@ -249,20 +274,31 @@ impl MessagesView {
                 let displacement = current_offset - target;
 
                 if displacement.abs() < MIN_DISTANCE_TO_STOP && velocity.abs() < MIN_SPEED_TO_STOP {
-                    // Close enough — snap to exact bottom and stop.
-                    list_state.set_offset_from_scrollbar(Point {
-                        x: px(0.),
-                        y: px(max),
-                    });
-                    last_offset.set(-max);
-                    active.set(false);
+                    // We've converged. Snap to exact bottom and enter idle phase.
+                    if displacement.abs() > 0.01 {
+                        list_state.set_offset_from_scrollbar(Point {
+                            x: px(0.),
+                            y: px(max),
+                        });
+                        last_offset.set(-max);
+                        let _ = weak_entity.update(cx, |_this, cx| {
+                            cx.notify();
+                        });
+                    }
 
-                    // One final notify to paint the snapped position.
-                    let _ = weak_entity.update(cx, |_this, cx| {
-                        cx.notify();
-                    });
-                    break;
+                    velocity = 0.0;
+                    idle_elapsed_ms += ANIMATION_FRAME_MS;
+
+                    if idle_elapsed_ms >= ANIMATION_IDLE_MS {
+                        // Idle timeout — shut down. Will be restarted by
+                        // the next scroll_to_bottom() call.
+                        break;
+                    }
+                    continue;
                 }
+
+                // We have work to do — reset idle timer.
+                idle_elapsed_ms = 0;
 
                 // Spring-damper physics.
                 let spring_force = -SPRING_K * displacement;
@@ -309,21 +345,12 @@ impl MessagesView {
         self.smooth_scroll_task = Some(task);
     }
 
-    /// Check if we're near the bottom and update follow_tail state
-    fn update_follow_tail(&mut self) {
-        // Use the scrollbar offset to determine if we're near the bottom
-        let offset = self.list_state.scroll_px_offset_for_scrollbar();
-        let max_offset = self.list_state.max_offset_for_scrollbar();
-
-        // If max scroll is very small (content fits in viewport), always follow
-        if max_offset.height <= px(50.0) {
-            self.follow_tail = true;
-            return;
-        }
-
-        // Check if we're within ~50px of the bottom
-        let distance_from_bottom = max_offset.height + offset.y; // offset.y is negative
-        self.follow_tail = distance_from_bottom < px(50.0);
+    /// Force-enable follow_tail and kick off smooth scrolling.
+    /// Called when the user explicitly wants to go to the bottom (e.g. button click).
+    #[allow(dead_code)]
+    pub fn activate_follow_tail(&mut self) {
+        self.follow_tail = true;
+        self.scroll_to_bottom();
     }
 
     /// Get the list state (for scrollbar integration)
@@ -576,11 +603,24 @@ impl Render for MessagesView {
         .max_w(px(MAX_MESSAGE_WIDTH))
         .w_full();
 
-        // Sync item count with ListState — the list element needs the correct count
-        // for its internal SumTree. We do a reset-style sync if count diverged.
+        // Sync item count with ListState if it diverged (e.g. pending message
+        // appeared/disappeared). Use splice instead of reset to preserve the
+        // current scroll position and cached item heights.
         let current_count = self.list_state.item_count();
         if current_count != item_count {
-            self.list_state.reset(item_count);
+            if item_count > current_count {
+                // Items were added at the end (e.g. pending message appeared)
+                self.list_state
+                    .splice(current_count..current_count, item_count - current_count);
+            } else {
+                // Items were removed from the end (e.g. pending message disappeared)
+                self.list_state.splice(item_count..current_count, 0);
+            }
+            trace!(
+                "ListState count sync: {} → {} (splice, not reset)",
+                current_count,
+                item_count
+            );
         }
 
         // If the animation flag was set but the task hasn't been spawned yet,
