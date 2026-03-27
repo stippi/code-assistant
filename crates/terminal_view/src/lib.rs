@@ -10,12 +10,11 @@
 //! 1. `prepaint()`: Read the terminal content snapshot, compute font metrics,
 //!    convert cells to `BatchedTextRun`s (styled text) and `LayoutRect`s (backgrounds)
 //! 2. `paint()`: Draw backgrounds, then text, then cursor
-
 use gpui::{div, Font, FontStyle, FontWeight, TextRun};
 use gpui::{
-    fill, point, px, relative, size, App, Bounds, ContentMask, Context, Element, Entity,
-    EventEmitter, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, ParentElement,
-    Pixels, Point, Render, SharedString, Size, Style, Styled, Window,
+    fill, outline, point, px, relative, size, App, BorderStyle, Bounds, ContentMask, Context,
+    Element, Entity, EventEmitter, GlobalElementId, Hsla, InspectorElementId, IntoElement,
+    LayoutId, ParentElement, Pixels, Point, Render, SharedString, Size, Style, Styled, Window,
 };
 use terminal::{AlacCell, AlacCellFlags, GridPoint, IndexedCell, Terminal, TerminalBounds};
 
@@ -253,12 +252,102 @@ impl BatchedTextRun {
 }
 
 // ---------------------------------------------------------------------------
+// CursorLayout — precomputed cursor rendering data
+// ---------------------------------------------------------------------------
+
+struct CursorLayout {
+    /// Screen-row-remapped grid point (line = sequential row, column = raw).
+    point: GridPoint,
+    /// Shape to render.
+    shape: terminal::AlacCursorShape,
+    /// Cursor color.
+    color: Hsla,
+    /// The character under the cursor (painted on top of a Block cursor).
+    cursor_char: char,
+    /// Font used to re-draw the cursor character on Block shape.
+    font: Font,
+    font_size: Pixels,
+}
+
+impl CursorLayout {
+    fn paint(
+        &self,
+        origin: Point<Pixels>,
+        dimensions: &TerminalBounds,
+        background_color: &Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        use terminal::AlacCursorShape;
+
+        let x = origin.x + self.point.column.0 as f32 * dimensions.cell_width;
+        let y = origin.y + self.point.line.0 as f32 * dimensions.line_height;
+
+        match self.shape {
+            AlacCursorShape::Block => {
+                // Filled rectangle covering the cell.
+                let cursor_bounds = Bounds::new(
+                    point(x, y),
+                    size(dimensions.cell_width, dimensions.line_height),
+                );
+                window.paint_quad(fill(cursor_bounds, self.color));
+
+                // Re-draw the character under the cursor in the background
+                // color so it remains readable.
+                if self.cursor_char != ' ' {
+                    let text = String::from(self.cursor_char);
+                    let run = TextRun {
+                        len: text.len(),
+                        font: self.font.clone(),
+                        color: *background_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let _ = window
+                        .text_system()
+                        .shape_line(
+                            SharedString::from(text),
+                            self.font_size,
+                            std::slice::from_ref(&run),
+                            Some(dimensions.cell_width),
+                        )
+                        .paint(point(x, y), dimensions.line_height, window, cx);
+                }
+            }
+            AlacCursorShape::Beam => {
+                // Thin vertical bar (2px wide) at the left edge of the cell.
+                let bar_bounds = Bounds::new(point(x, y), size(px(2.), dimensions.line_height));
+                window.paint_quad(fill(bar_bounds, self.color));
+            }
+            AlacCursorShape::Underline => {
+                // Horizontal bar (2px tall) at the bottom of the cell.
+                let underline_y = y + dimensions.line_height - px(2.);
+                let bar_bounds =
+                    Bounds::new(point(x, underline_y), size(dimensions.cell_width, px(2.)));
+                window.paint_quad(fill(bar_bounds, self.color));
+            }
+            AlacCursorShape::HollowBlock => {
+                // Outlined rectangle (no fill), inset 1px top/bottom.
+                let cursor_bounds = Bounds::new(
+                    point(x, y + px(1.)),
+                    size(dimensions.cell_width, dimensions.line_height - px(2.)),
+                );
+                window.paint_quad(outline(cursor_bounds, self.color, BorderStyle::Solid));
+            }
+            AlacCursorShape::Hidden => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LayoutState — precomputed data for painting
 // ---------------------------------------------------------------------------
 
 pub struct LayoutState {
     batched_text_runs: Vec<BatchedTextRun>,
     rects: Vec<LayoutRect>,
+    cursor: Option<CursorLayout>,
     background_color: Hsla,
     dimensions: TerminalBounds,
 }
@@ -405,9 +494,47 @@ impl Element for TerminalElement {
             &terminal_bounds,
         );
 
+        // Compute cursor layout — remap raw alacritty line to screen row.
+        // Compute directly from the first raw line in the snapshot.
+        // No upper-bound check against viewport rows: the content_mask
+        // in paint() clips anything outside the element bounds, and
+        // the card height (which lags one frame) will catch up next
+        // frame.  This avoids the cursor flickering off when a new
+        // line arrives but the card hasn't grown yet.
+        let cursor_layout = {
+            let rc = &last_content.cursor;
+            // In inline mode, use a hollow block cursor — less intrusive
+            // for what is essentially a read-only output view.
+            let shape = if matches!(self.content_mode, ContentMode::Inline { .. }) {
+                terminal::AlacCursorShape::HollowBlock
+            } else {
+                rc.shape
+            };
+            let first_raw_line = last_content
+                .cells
+                .first()
+                .map(|c| c.point.line.0)
+                .unwrap_or(0);
+            let screen_row = rc.point.line.0 - first_raw_line;
+
+            if matches!(shape, terminal::AlacCursorShape::Hidden) || screen_row < 0 {
+                None
+            } else {
+                Some(CursorLayout {
+                    point: GridPoint::new(terminal::AlacLine(screen_row), rc.point.column),
+                    shape,
+                    color: self.theme_colors.cursor,
+                    cursor_char: last_content.cursor_char,
+                    font: font.clone(),
+                    font_size: self.font_size,
+                })
+            }
+        };
+
         Some(LayoutState {
             batched_text_runs: text_runs,
             rects,
+            cursor: cursor_layout,
             background_color: self.theme_colors.background,
             dimensions: terminal_bounds,
         })
@@ -442,6 +569,17 @@ impl Element for TerminalElement {
             // 3. Paint text
             for batch in &layout.batched_text_runs {
                 batch.paint(origin, &layout.dimensions, window, cx);
+            }
+
+            // 4. Paint cursor
+            if let Some(cursor) = &layout.cursor {
+                cursor.paint(
+                    origin,
+                    &layout.dimensions,
+                    &layout.background_color,
+                    window,
+                    cx,
+                );
             }
         });
     }
