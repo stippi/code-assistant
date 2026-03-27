@@ -207,12 +207,6 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         // ---- Header ----
 
-        // CWD display
-        let cwd_text = working_dir_param
-            .as_deref()
-            .map(abbreviate_path)
-            .unwrap_or_default();
-
         // Elapsed time (while running: shown after 2s; when done: always shown).
         // For restored sessions without a live terminal, use the persisted duration
         // from ContentBlock timestamps stored on the ToolUseBlock.
@@ -231,7 +225,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         let header_text_color = theme.muted_foreground;
 
-        // Build header: [icon] [CWD]      [elapsed] [status/✕] [stop] [▾]
+        // Build header: [icon] [command]   [elapsed] [status/✕] [stop] [copy] [▾]
         let mut header_left = div()
             .flex()
             .flex_row()
@@ -249,35 +243,21 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             "$",
         ));
 
-        // Header label: collapsed → command, expanded → CWD (+ project if cross-project)
-        if is_collapsed {
-            // Collapsed: always show the command
-            header_left = header_left.child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(header_text_color)
-                    .overflow_hidden()
-                    .child(truncate_str(&display_command, 50)),
-            );
-        } else {
-            // Expanded: show CWD if available, else command
-            let label = if !cwd_text.is_empty() {
-                cwd_text
-            } else {
-                truncate_str(&display_command, 50)
-            };
+        // Command label (always shown) + cross-project indicator
+        {
             let mut label_row = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_1p5()
+                .min_w_0()
                 .overflow_hidden()
                 .child(
                     div()
                         .text_size(px(12.0))
                         .text_color(header_text_color)
-                        .flex_shrink_0()
-                        .child(label),
+                        .overflow_hidden()
+                        .child(truncate_str(&display_command, 200)),
                 );
 
             // Show project name in parentheses if it differs from the session project
@@ -389,6 +369,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                             )
                         })
                         .on_click(move |_event, _window, cx| {
+                            cx.stop_propagation();
                             // Send Ctrl-C (ETX) to the PTY to terminate the running process
                             term_for_stop.update(cx, |terminal, _cx| {
                                 terminal.write_to_pty(&b"\x03"[..]);
@@ -397,6 +378,33 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 );
             }
         }
+
+        // Copy button — visible on header hover
+        let cmd_for_copy = display_command.clone();
+        header_right = header_right.child(
+            div()
+                .id(SharedString::from(format!("copy-cmd-{}", tool.id)))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(22.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .opacity(0.0)
+                .group_hover("term-header", |s| s.opacity(1.0))
+                .hover(|s| s.bg(header_text_color.opacity(0.15)))
+                .child(
+                    gpui::svg()
+                        .size(px(13.0))
+                        .path(SharedString::from("icons/copy.svg"))
+                        .text_color(header_text_color),
+                )
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(cmd_for_copy.clone()));
+                }),
+        );
 
         // Chevron — highlights on header hover via group
         header_right = header_right.child(
@@ -444,67 +452,6 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         // ---- Body (animated) ----
         if scale > 0.0 {
-            let cmd_for_copy = display_command.clone();
-
-            // Command line row (shared between live and static paths)
-            let cmd_row = div()
-                .id(SharedString::from(format!("cmd-row-{}", tool.id)))
-                .group("cmd-row")
-                .px_3()
-                .py_1()
-                .bg(theme_colors.background)
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1p5()
-                        .min_w_0()
-                        .flex_grow()
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(theme.muted_foreground.opacity(0.6))
-                                .child("$"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.5))
-                                .text_color(theme.foreground)
-                                .overflow_hidden()
-                                .child(truncate_str(&display_command, 200)),
-                        ),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("copy-cmd-{}", tool.id)))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(22.0))
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .opacity(0.0)
-                        .group_hover("cmd-row", |s| s.opacity(1.0))
-                        .hover(|s| s.bg(theme.secondary.opacity(0.5)))
-                        .child(
-                            gpui::svg()
-                                .size(px(13.0))
-                                .path(SharedString::from("icons/copy.svg"))
-                                .text_color(theme.muted_foreground),
-                        )
-                        .on_click(move |_event, _window, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                cmd_for_copy.clone(),
-                            ));
-                        }),
-                );
-
             // Output area: live TerminalView or static text
             let output_area = if let Some(view) = view {
                 // Live terminal — embedded TerminalView
@@ -526,7 +473,6 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .flex_col()
                 .rounded_b(px(4.))
                 .overflow_hidden()
-                .child(cmd_row)
                 .child(output_area);
 
             card = card.child(animated_card_body(
