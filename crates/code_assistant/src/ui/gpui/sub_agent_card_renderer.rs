@@ -18,9 +18,9 @@ use crate::ui::gpui::tool_block_renderers::{
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, ClickEvent, Context,
-    Element, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Transformation, Window,
+    div, percentage, px, svg, Animation, AnimationExt, ClickEvent, Context, Element,
+    InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
+    Styled, Transformation, Window,
 };
 use gpui_component::text::TextView;
 use std::time::Duration;
@@ -154,9 +154,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                                         .text_color(color)
                                         .with_animation(
                                             "sub_agent_header_spinner",
-                                            Animation::new(Duration::from_secs(2))
-                                                .repeat()
-                                                .with_easing(bounce(ease_in_out)),
+                                            Animation::new(Duration::from_secs(2)).repeat(),
                                             |svg, delta| {
                                                 svg.with_transformation(Transformation::rotate(
                                                     percentage(delta),

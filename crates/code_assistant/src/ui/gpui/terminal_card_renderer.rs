@@ -17,11 +17,13 @@ use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::AppContext as _; // brings .new() into scope on Context
 use gpui::{
-    div, px, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window,
+    div, percentage, px, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
 };
+use gpui::{svg, Animation, AnimationExt, Transformation};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use terminal::Terminal;
 use terminal_view::{TerminalThemeColors, TerminalView};
 
@@ -200,14 +202,9 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             .map(abbreviate_path)
             .unwrap_or_default();
 
-        // Elapsed time (only while running)
-        let elapsed = if is_live && is_running {
-            let elapsed_secs = started_at.elapsed().as_secs();
-            if elapsed_secs >= 2 {
-                Some(format_elapsed(elapsed_secs))
-            } else {
-                None
-            }
+        // Elapsed time (while running: shown after 2s; when done: always shown)
+        let elapsed_secs = if is_live {
+            Some(started_at.elapsed().as_secs())
         } else {
             None
         };
@@ -255,32 +252,72 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         let mut header_right = div().flex().flex_row().items_center().gap_2();
 
-        // Elapsed time badge
-        if let Some(ref elapsed_str) = elapsed {
+        if is_running {
+            // Running: spinning icon + elapsed time (after 2s)
+            let elapsed_str = elapsed_secs.and_then(|s| {
+                if s >= 2 {
+                    Some(format_elapsed(s))
+                } else {
+                    None
+                }
+            });
             header_right = header_right.child(
                 div()
-                    .text_size(px(11.0))
-                    .text_color(theme.muted_foreground.opacity(0.7))
-                    .child(elapsed_str.clone()),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        svg()
+                            .size(px(12.))
+                            .path(SharedString::from("icons/arrow_circle.svg"))
+                            .text_color(header_text_color)
+                            .with_animation(
+                                SharedString::from(format!("term-spin-{}", tool.id)),
+                                Animation::new(Duration::from_secs(2)).repeat(),
+                                |svg, delta| {
+                                    svg.with_transformation(Transformation::rotate(percentage(
+                                        delta,
+                                    )))
+                                },
+                            ),
+                    )
+                    .when_some(elapsed_str, |el, text| {
+                        el.child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(header_text_color.opacity(0.7))
+                                .child(text),
+                        )
+                    }),
             );
-        }
-
-        // Status: show red ✕ on error, otherwise status text
-        if has_error {
-            header_right = header_right.child(
-                gpui::svg()
-                    .size(px(13.0))
-                    .path(SharedString::from("icons/close.svg"))
-                    .text_color(theme.danger),
-            );
+        } else if has_error {
+            // Error: red ✕ + optional elapsed
+            header_right = header_right
+                .when_some(elapsed_secs.map(format_elapsed), |el, text| {
+                    el.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(header_text_color.opacity(0.7))
+                            .child(format!("({text})")),
+                    )
+                })
+                .child(
+                    gpui::svg()
+                        .size(px(13.0))
+                        .path(SharedString::from("icons/close.svg"))
+                        .text_color(theme.danger),
+                );
         } else {
-            let status_text = card_status_text(is_running, exit_status, is_live, &tool.status);
-            header_right = header_right.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(theme.muted_foreground)
-                    .child(status_text),
-            );
+            // Finished successfully: just elapsed time in parentheses
+            if let Some(secs) = elapsed_secs {
+                header_right = header_right.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(header_text_color.opacity(0.7))
+                        .child(format!("({})", format_elapsed(secs))),
+                );
+            }
         }
 
         // Stop button (only while running)
@@ -623,33 +660,6 @@ fn is_card_error(
         exit_status != Some(Some(0))
     } else {
         matches!(status, ToolStatus::Error)
-    }
-}
-
-fn card_status_text(
-    is_running: bool,
-    exit_status: Option<Option<i32>>,
-    is_live: bool,
-    status: &ToolStatus,
-) -> String {
-    if is_live {
-        if is_running {
-            "Running…".to_string()
-        } else if let Some(Some(code)) = exit_status {
-            if code == 0 {
-                "Done".to_string()
-            } else {
-                format!("Exit {}", code)
-            }
-        } else {
-            "Exited".to_string()
-        }
-    } else {
-        match status {
-            ToolStatus::Pending | ToolStatus::Running => "Running…".to_string(),
-            ToolStatus::Success => "Done".to_string(),
-            ToolStatus::Error => "Error".to_string(),
-        }
     }
 }
 
