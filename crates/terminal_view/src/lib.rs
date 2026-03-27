@@ -365,33 +365,31 @@ impl Element for TerminalElement {
 
         let font_id = window.text_system().resolve_font(&font);
 
-        // Compute cell dimensions from font metrics
+        // Compute cell dimensions from font metrics.
+        // Cell width uses the actual font advance for 'm'.
         let cell_width = window
             .text_system()
             .advance(font_id, self.font_size, 'm')
             .map(|s| s.width)
             .unwrap_or(self.font_size * 0.6);
 
-        // Line height: use the advance height if available, or font_size * 1.4
-        let line_height = window
-            .text_system()
-            .advance(font_id, self.font_size, 'M')
-            .map(|s| {
-                // advance height is typically 0 for horizontal fonts, so use a multiplier
-                if s.height > px(0.) {
-                    s.height
-                } else {
-                    self.font_size * 1.4
-                }
-            })
-            .unwrap_or(self.font_size * 1.4);
+        // Line height: use the same `font_size * 1.4` multiplier as in
+        // `request_layout` so that the grid row count computed from pixel
+        // bounds matches the `displayed_lines` used for sizing.  A mismatch
+        // (e.g. from using actual font metrics here) can cause the grid to
+        // have fewer rows than expected, leaving scrollback lines invisible.
+        let line_height = self.font_size * 1.4;
 
         let terminal_bounds = TerminalBounds::new(line_height, cell_width, bounds);
 
-        // Update terminal dimensions and get content snapshot
+        // Update terminal dimensions and get content snapshot.
+        // In inline mode, scroll to top under the same lock so any
+        // scrollback lines (from PTY writes between render and prepaint)
+        // are included in the rendered cells.
+        let scroll_to_top = matches!(self.content_mode, ContentMode::Inline { .. });
         self.terminal.update(cx, |terminal, cx| {
             terminal.set_size(terminal_bounds);
-            terminal.sync(cx);
+            terminal.sync(scroll_to_top, cx);
         });
 
         let content = self.terminal.read(cx);
@@ -464,8 +462,14 @@ fn layout_grid(
     let mut rects: Vec<LayoutRect> = Vec::new();
     let mut text_runs: Vec<BatchedTextRun> = Vec::new();
 
-    // Group cells by line
-    let mut current_line: Option<i32> = None;
+    // Group cells by line.
+    // We track the raw alacritty line number (`current_raw_line`) to detect
+    // line changes, but use a sequential `screen_row` counter (starting at 0)
+    // for the actual y-position.  This is critical when `display_offset > 0`
+    // because `display_iter` returns negative `point.line` values for
+    // scrollback rows, which would otherwise paint above the element bounds.
+    let mut current_raw_line: Option<i32> = None;
+    let mut screen_row: i32 = -1; // incremented to 0 on the first line
 
     // Background region tracking
     let mut bg_start: Option<(GridPoint, Hsla)> = None;
@@ -478,8 +482,8 @@ fn layout_grid(
         let point = indexed_cell.point;
         let cell = &indexed_cell.cell;
 
-        // Detect line change
-        if current_line != Some(point.line.0) {
+        // Detect line change — use sequential screen_row for positioning
+        if current_raw_line != Some(point.line.0) {
             // Flush background region
             flush_bg_region(&mut rects, &mut bg_start, bg_count);
             bg_count = 0;
@@ -487,8 +491,12 @@ fn layout_grid(
             // Flush text batch
             flush_text_batch(&mut text_runs, &mut current_batch);
 
-            current_line = Some(point.line.0);
+            current_raw_line = Some(point.line.0);
+            screen_row += 1;
         }
+
+        // Remap the point to use the sequential screen row
+        let point = GridPoint::new(terminal::AlacLine(screen_row), point.column);
 
         // Handle cell flags
         let mut fg = cell.fg;
@@ -751,6 +759,12 @@ impl TerminalView {
     }
 
     /// Compute the content mode based on the terminal mode and content.
+    ///
+    /// Uses `total_lines` (scrollback + screen lines) for sizing, matching
+    /// Zed's approach.  This ensures the element height accounts for all
+    /// content that `renderable_content().display_iter()` will return,
+    /// avoiding a mismatch where scrollback lines are counted for height
+    /// but not rendered.
     pub fn content_mode(&self, cx: &App) -> ContentMode {
         match &self.mode {
             TerminalMode::Standalone => ContentMode::Scrollable,
@@ -759,16 +773,13 @@ impl TerminalView {
             } => {
                 let terminal = self.terminal.read(cx);
                 let total_lines = terminal.total_lines();
-                // Use content_lines() for height so the card grows with
-                // actual output rather than showing empty grid rows.
-                let content_lines = terminal.content_lines();
                 if total_lines > MAX_EMBEDDED_LINES {
                     ContentMode::Scrollable
                 } else {
                     let displayed_lines = if let Some(max) = max_lines_when_unfocused {
-                        content_lines.min(*max)
+                        total_lines.min(*max)
                     } else {
-                        content_lines
+                        total_lines
                     };
                     ContentMode::Inline {
                         displayed_lines: displayed_lines.max(1),

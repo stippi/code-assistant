@@ -52,10 +52,13 @@ const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
 pub const MAX_SCROLL_HISTORY_LINES: usize = 100_000;
 
 /// Default dimensions used before the first real layout.
-const DEBUG_CELL_WIDTH: Pixels = px(8.0);
-const DEBUG_LINE_HEIGHT: Pixels = px(16.0);
-const DEBUG_TERMINAL_WIDTH: Pixels = px(640.0);
-const DEBUG_TERMINAL_HEIGHT: Pixels = px(480.0);
+/// These are intentionally small so that embedded terminals (inline mode)
+/// start with a tiny grid that grows as content arrives, matching Zed's
+/// approach (where defaults are 5px line height / 30px height = 6 rows).
+const DEBUG_CELL_WIDTH: Pixels = px(5.0);
+const DEBUG_LINE_HEIGHT: Pixels = px(5.0);
+const DEBUG_TERMINAL_WIDTH: Pixels = px(500.0);
+const DEBUG_TERMINAL_HEIGHT: Pixels = px(30.0);
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -296,24 +299,6 @@ impl Terminal {
         self.exit_status.is_some()
     }
 
-    /// Number of lines that actually have content (cursor line + 1, plus
-    /// any scrollback lines). This is useful for sizing embedded terminal
-    /// views so they grow with content rather than showing empty rows.
-    pub fn content_lines(&self) -> usize {
-        let term = self.term.lock_unfair();
-        // Read the cursor position from the live grid, NOT from
-        // `last_content` which is a snapshot only updated during sync().
-        // Using the stale snapshot causes a chicken-and-egg problem:
-        // height depends on content_lines, which depends on last_content,
-        // which is only updated after a paint cycle.
-        let cursor_line = term.grid().cursor.point.line.0;
-        // Scrollback lines that have content (topmost_line is negative).
-        let scrollback_lines = (-term.topmost_line().0).max(0) as usize;
-        // Content = scrollback + visible lines up to and including cursor.
-        // cursor_line is 0-based, so +1 for count.
-        scrollback_lines + (cursor_line.max(0) as usize) + 1
-    }
-
     /// Get the full terminal text content as a string.
     pub fn get_content_text(&self) -> String {
         let term = self.term.lock_unfair();
@@ -365,12 +350,23 @@ impl Terminal {
 
     /// Synchronize the terminal state: process queued events and take a fresh
     /// content snapshot. This should be called during layout/prepaint.
-    pub fn sync(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// When `scroll_to_top` is true the viewport is scrolled to the topmost
+    /// content *under the same lock* before taking the snapshot.  This is
+    /// used by inline/embedded terminals so that any scrollback lines
+    /// (which are counted in `total_lines` for height sizing) are included
+    /// in the rendered cells.  Doing it under a single lock prevents a PTY
+    /// write race between resize and snapshot.
+    pub fn sync(&mut self, scroll_to_top: bool, cx: &mut Context<Self>) {
         let term = self.term.clone();
         let mut terminal = term.lock_unfair();
 
         while let Some(event) = self.events.pop_front() {
             self.process_internal_event(&event, &mut terminal, cx);
+        }
+
+        if scroll_to_top {
+            terminal.scroll_display(alacritty_terminal::grid::Scroll::Top);
         }
 
         self.last_content = Self::make_content(&terminal, &self.last_content);
