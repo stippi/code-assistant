@@ -202,6 +202,14 @@ pub struct TerminalContent {
     pub cursor: RenderableCursor,
     pub cursor_char: char,
     pub terminal_bounds: TerminalBounds,
+    /// Raw content line count: scrollback + cursor_line + 1.
+    /// Always includes the cursor's line, which may be empty after a
+    /// trailing newline.  See `Terminal::content_lines()` which trims
+    /// that extra line once the process has exited.
+    pub raw_content_lines: usize,
+    /// Whether the grid cursor sits at column 0 (i.e. on a fresh empty
+    /// line after a trailing newline).
+    pub cursor_at_line_start: bool,
 }
 
 impl Default for TerminalContent {
@@ -216,6 +224,8 @@ impl Default for TerminalContent {
             },
             cursor_char: ' ',
             terminal_bounds: TerminalBounds::default(),
+            raw_content_lines: 1,
+            cursor_at_line_start: true,
         }
     }
 }
@@ -278,15 +288,24 @@ impl Terminal {
         self.term.lock_unfair().screen_lines()
     }
 
-    /// Number of lines that actually have content (scrollback + cursor
-    /// position + 1).  Unlike `total_lines()` this excludes empty grid
-    /// rows below the cursor, so embedded terminals don't show trailing
-    /// blank space.
+    /// Number of lines that actually have content.  Unlike `total_lines()`
+    /// this excludes empty grid rows below the cursor, so embedded
+    /// terminals don't show trailing blank space.
+    ///
+    /// While the process is **running**, returns `cursor_line + 1 +
+    /// scrollback` which is stable (monotonically increasing) and avoids
+    /// frame-to-frame height oscillation.
+    ///
+    /// Once the process has **exited** and the cursor sits at column 0
+    /// (typical after a trailing newline), the empty cursor line is
+    /// trimmed so the final card has no blank row at the bottom.
     pub fn content_lines(&self) -> usize {
-        let term = self.term.lock_unfair();
-        let cursor_line = term.grid().cursor.point.line.0;
-        let scrollback_lines = (-term.topmost_line().0).max(0) as usize;
-        scrollback_lines + (cursor_line.max(0) as usize) + 1
+        let raw = self.last_content.raw_content_lines;
+        if self.has_exited() && self.last_content.cursor_at_line_start && raw > 1 {
+            raw - 1
+        } else {
+            raw
+        }
     }
 
     /// When this terminal was created.
@@ -474,6 +493,11 @@ impl Terminal {
             })
             .collect();
 
+        // Snapshot cursor state for content_lines calculation.
+        let cursor = term.grid().cursor.point;
+        let cursor_line = cursor.line.0.max(0) as usize;
+        let scrollback = (-term.topmost_line().0).max(0) as usize;
+
         TerminalContent {
             cells,
             mode: content.mode,
@@ -481,6 +505,8 @@ impl Terminal {
             cursor: content.cursor,
             cursor_char: term.grid()[content.cursor.point].c,
             terminal_bounds: last_content.terminal_bounds,
+            raw_content_lines: scrollback + cursor_line + 1,
+            cursor_at_line_start: cursor.column.0 == 0,
         }
     }
 }
