@@ -87,20 +87,24 @@ impl MessagesView {
             let last_offset = last_anim_offset_for_handler.clone();
             cx.defer(move |cx| {
                 let _ = entity.update(cx, |this, _cx| {
-                    // If an animation is running, check whether this scroll event
-                    // was caused by the user (manual) vs. our animation loop.
                     if anim_active.get() {
+                        // Animation is running. Check whether this scroll event
+                        // was caused by the user (manual) vs. our animation loop.
                         let current: f32 =
                             this.list_state.scroll_px_offset_for_scrollbar().y.into();
                         let expected = last_offset.get();
-                        // Allow small floating-point jitter.
                         if (current - expected).abs() > 1.5 {
-                            // User scrolled manually — stop animation.
+                            // User scrolled manually during animation — stop it
+                            // and re-evaluate follow_tail based on new position.
                             anim_active.set(false);
                             this.smooth_scroll_task = None;
+                            this.update_follow_tail();
                         }
+                        // Animation-driven scroll — don't touch follow_tail.
+                    } else {
+                        // No animation running — this is a manual user scroll.
+                        this.update_follow_tail();
                     }
-                    this.update_follow_tail();
                 });
             });
         });
@@ -373,18 +377,6 @@ impl MessagesView {
         result
     }
 
-    /// Wrap a message div in a full-width flex column that centers its child
-    /// horizontally via `items_center` (cross-axis). The main axis stays
-    /// vertical so the list's height measurement works correctly.
-    fn centered_list_item(content: gpui::Div) -> gpui::Div {
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .child(content.max_w(px(MAX_MESSAGE_WIDTH)))
-    }
-
     /// Update the pending message for the current session
     pub fn update_pending_message(&self, message: Option<String>) {
         *self.current_pending_message.lock().unwrap() = message;
@@ -543,9 +535,7 @@ impl MessagesView {
             message_container
         };
 
-        // Wrap in a full-width centering container so that on wide viewports
-        // the message content stays centered rather than left-aligned.
-        Self::centered_list_item(message_container).into_any_element()
+        message_container.into_any_element()
     }
 }
 
@@ -582,7 +572,9 @@ impl Render for MessagesView {
                 }
             }),
         )
-        .flex_grow();
+        .flex_grow()
+        .max_w(px(MAX_MESSAGE_WIDTH))
+        .w_full();
 
         // Sync item count with ListState — the list element needs the correct count
         // for its internal SumTree. We do a reset-style sync if count diverged.
@@ -602,6 +594,7 @@ impl Render for MessagesView {
             .relative()
             .flex()
             .flex_col()
+            .items_center()
             .size_full()
             .bg(cx.theme().popover)
             .text_size(px(16.))
@@ -671,6 +664,6 @@ impl MessagesView {
                     ),
             );
 
-        Self::centered_list_item(pending_card).into_any_element()
+        pending_card.into_any_element()
     }
 }
