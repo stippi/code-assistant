@@ -488,7 +488,31 @@ impl SessionManager {
 
         let task_handle = tokio::spawn(async move {
             debug!("Starting agent for session {}", session_id_clone);
-            let result = agent.run_single_iteration().await;
+
+            // Use catch_unwind to ensure cleanup runs even if the agent panics.
+            // Without this, a panic leaves the session permanently stuck in
+            // AgentRunning state because the cleanup code below is never reached.
+            let result = {
+                use futures::FutureExt;
+                let iteration_future = std::panic::AssertUnwindSafe(agent.run_single_iteration());
+                match iteration_future.catch_unwind().await {
+                    Ok(result) => result,
+                    Err(panic_payload) => {
+                        let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "unknown panic".to_string()
+                        };
+                        error!(
+                            "Agent task panicked for session {}: {}",
+                            session_id_clone, panic_msg
+                        );
+                        Err(anyhow::anyhow!("Agent panicked: {}", panic_msg))
+                    }
+                }
+            };
 
             // Always set session state back to Idle when agent task ends
             debug!(
