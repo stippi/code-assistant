@@ -17,79 +17,13 @@ use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::AppContext as _; // brings .new() into scope on Context
 use gpui::{
-    div, px, App, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    div, px, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use terminal::Terminal;
 use terminal_view::{TerminalThemeColors, TerminalView};
-
-// ---------------------------------------------------------------------------
-// Display-only Terminal Store — fallback for session restoration
-// ---------------------------------------------------------------------------
-
-static DISPLAY_TERMINAL_STORE: OnceLock<Mutex<DisplayTerminalStore>> = OnceLock::new();
-
-struct DisplayTerminalStore {
-    /// Map from tool_id to a display-only terminal entity
-    terminals: HashMap<String, Entity<Terminal>>,
-    /// Track the last output length fed into each terminal, to avoid re-feeding
-    fed_lengths: HashMap<String, usize>,
-}
-
-impl DisplayTerminalStore {
-    fn new() -> Self {
-        Self {
-            terminals: HashMap::new(),
-            fed_lengths: HashMap::new(),
-        }
-    }
-
-    fn global() -> &'static Mutex<DisplayTerminalStore> {
-        DISPLAY_TERMINAL_STORE.get_or_init(|| Mutex::new(DisplayTerminalStore::new()))
-    }
-}
-
-/// Create a display-only terminal and feed text into it (fallback path).
-fn get_or_create_display_terminal(tool_id: &str, cx: &mut Context<BlockView>) -> Entity<Terminal> {
-    if let Ok(store) = DisplayTerminalStore::global().lock() {
-        if let Some(terminal) = store.terminals.get(tool_id) {
-            return terminal.clone();
-        }
-    }
-
-    let builder = terminal::TerminalBuilder::new_display_only(Some(10_000));
-    let terminal = cx.new(|cx| builder.subscribe(cx));
-
-    if let Ok(mut store) = DisplayTerminalStore::global().lock() {
-        store
-            .terminals
-            .insert(tool_id.to_string(), terminal.clone());
-    }
-
-    terminal
-}
-
-/// Feed output text into a display-only terminal. Only feeds new bytes since
-/// the last call for this tool_id.
-fn feed_display_output(tool_id: &str, output: &str, terminal: &Entity<Terminal>, cx: &mut App) {
-    let prev_len = DisplayTerminalStore::global()
-        .lock()
-        .ok()
-        .and_then(|store| store.fed_lengths.get(tool_id).copied())
-        .unwrap_or(0);
-
-    if output.len() > prev_len {
-        let new_bytes = &output[prev_len..];
-        terminal.update(cx, |terminal, cx| {
-            terminal.write_output(new_bytes.as_bytes(), cx);
-        });
-        if let Ok(mut store) = DisplayTerminalStore::global().lock() {
-            store.fed_lengths.insert(tool_id.to_string(), output.len());
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // View cache — reuse TerminalView entities across re-renders
@@ -182,60 +116,61 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         let output = tool.output.as_deref().unwrap_or("");
 
-        // --- Resolve the Terminal entity ---
-        // Try the global pool first (live PTY terminals).
-        let (terminal, is_live) = if let Some(entry) =
-            TerminalPool::global().lock().ok().and_then(|pool| {
-                pool.get_terminal_by_tool_id_any_session(&tool.id)
-                    .map(|e| e.terminal.clone())
-            }) {
-            (entry, true)
-        } else if !output.is_empty() {
-            // Fallback: display-only terminal for persisted output.
-            let t = get_or_create_display_terminal(&tool.id, cx);
-            feed_display_output(&tool.id, output, &t, cx);
-            (t, false)
-        } else if !command_line_param.is_empty() {
-            // No terminal and no output yet, but we have the command — show card skeleton
-            return Some(
-                self.render_skeleton(
-                    &tool.id,
-                    &command_line_param,
-                    working_dir_param.as_deref(),
-                    theme,
-                )
-                .into_any_element(),
-            );
-        } else {
+        // --- Resolve live terminal or use static output ---
+        let live_terminal = TerminalPool::global().lock().ok().and_then(|pool| {
+            pool.get_terminal_by_tool_id_any_session(&tool.id)
+                .map(|e| e.terminal.clone())
+        });
+
+        // If there's no live terminal and no output, show skeleton or bail.
+        if live_terminal.is_none() && output.is_empty() {
+            if !command_line_param.is_empty() {
+                return Some(
+                    self.render_skeleton(
+                        &tool.id,
+                        &command_line_param,
+                        working_dir_param.as_deref(),
+                        theme,
+                    )
+                    .into_any_element(),
+                );
+            }
             return None;
-        };
+        }
 
-        // --- Read terminal state ---
-        let (is_running, exit_status, command, started_at) = {
-            let t = terminal.read(cx);
-            (
-                !t.has_exited(),
-                t.exit_status(),
-                t.command().unwrap_or("").to_string(),
-                t.started_at(),
-            )
-        };
+        // Terminal state (only meaningful for live terminals)
+        let (is_live, is_running, exit_status, display_command, started_at) =
+            if let Some(ref terminal) = live_terminal {
+                let t = terminal.read(cx);
+                let cmd = if !command_line_param.is_empty() {
+                    command_line_param.clone()
+                } else {
+                    t.command().unwrap_or("command").to_string()
+                };
+                (true, !t.has_exited(), t.exit_status(), cmd, t.started_at())
+            } else {
+                let cmd = if !command_line_param.is_empty() {
+                    command_line_param.clone()
+                } else {
+                    "command".to_string()
+                };
+                (
+                    false,
+                    false,
+                    None,
+                    cmd,
+                    std::time::Instant::now(), // not used when !is_live
+                )
+            };
 
-        let display_command = if !command_line_param.is_empty() {
-            command_line_param
-        } else if !command.is_empty() {
-            command
-        } else {
-            "command".to_string()
-        };
-
-        // --- Get or create the TerminalView ---
-        let cache_key = format!("exec-{}", tool.id);
-        let view = get_or_create_view(&cache_key, &terminal, theme_colors.clone(), cx);
-
-        // Update theme colors on the view (in case theme changed).
-        view.update(cx, |tv, cx| {
-            tv.set_theme_colors(theme_colors.clone(), cx);
+        // Prepare the TerminalView for the live path
+        let view = live_terminal.as_ref().map(|terminal| {
+            let cache_key = format!("exec-{}", tool.id);
+            let v = get_or_create_view(&cache_key, terminal, theme_colors.clone(), cx);
+            v.update(cx, |tv, cx| {
+                tv.set_theme_colors(theme_colors.clone(), cx);
+            });
+            v
         });
 
         let scale = card_ctx.animation_scale;
@@ -258,8 +193,6 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             .overflow_hidden();
 
         // ---- Header ----
-
-        let terminal_for_stop = terminal.clone();
 
         // CWD display
         let cwd_text = working_dir_param
@@ -351,34 +284,36 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         }
 
         // Stop button (only while running)
-        if is_live && is_running {
-            let term_for_stop = terminal_for_stop.clone();
-            header_right = header_right.child(
-                div()
-                    .id(SharedString::from(format!("stop-{}", tool.id)))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(20.0))
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.2)))
-                    .child({
-                        let stop_icon = file_icons::get().get_type_icon(file_icons::STOP);
-                        file_icons::render_icon(
-                            &stop_icon,
-                            12.0,
-                            gpui::hsla(0.0, 0.7, 0.55, 1.0),
-                            "■",
-                        )
-                    })
-                    .on_click(move |_event, _window, cx| {
-                        // Send Ctrl-C (ETX) to the PTY to terminate the running process
-                        term_for_stop.update(cx, |terminal, _cx| {
-                            terminal.write_to_pty(&b"\x03"[..]);
-                        });
-                    }),
-            );
+        if let Some(ref terminal) = live_terminal {
+            if is_running {
+                let term_for_stop = terminal.clone();
+                header_right = header_right.child(
+                    div()
+                        .id(SharedString::from(format!("stop-{}", tool.id)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(20.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.2)))
+                        .child({
+                            let stop_icon = file_icons::get().get_type_icon(file_icons::STOP);
+                            file_icons::render_icon(
+                                &stop_icon,
+                                12.0,
+                                gpui::hsla(0.0, 0.7, 0.55, 1.0),
+                                "■",
+                            )
+                        })
+                        .on_click(move |_event, _window, cx| {
+                            // Send Ctrl-C (ETX) to the PTY to terminate the running process
+                            term_for_stop.update(cx, |terminal, _cx| {
+                                terminal.write_to_pty(&b"\x03"[..]);
+                            });
+                        }),
+                );
+            }
         }
 
         // Chevron — highlights on header hover via group
@@ -427,82 +362,90 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         // ---- Body (animated) ----
         if scale > 0.0 {
-            // Build body content
             let cmd_for_copy = display_command.clone();
+
+            // Command line row (shared between live and static paths)
+            let cmd_row = div()
+                .id(SharedString::from(format!("cmd-row-{}", tool.id)))
+                .group("cmd-row")
+                .px_3()
+                .py_1()
+                .bg(theme_colors.background)
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
+                        .min_w_0()
+                        .flex_grow()
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(theme.muted_foreground.opacity(0.6))
+                                .child("$"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(theme.foreground)
+                                .overflow_hidden()
+                                .child(truncate_str(&display_command, 200)),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("copy-cmd-{}", tool.id)))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(22.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .opacity(0.0)
+                        .group_hover("cmd-row", |s| s.opacity(1.0))
+                        .hover(|s| s.bg(theme.secondary.opacity(0.5)))
+                        .child(
+                            gpui::svg()
+                                .size(px(13.0))
+                                .path(SharedString::from("icons/copy.svg"))
+                                .text_color(theme.muted_foreground),
+                        )
+                        .on_click(move |_event, _window, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                cmd_for_copy.clone(),
+                            ));
+                        }),
+                );
+
+            // Output area: live TerminalView or static text
+            let output_area = if let Some(view) = view {
+                // Live terminal — embedded TerminalView
+                div()
+                    .w_full()
+                    .px_3()
+                    .pb_1()
+                    .bg(theme_colors.background)
+                    .child(view)
+            } else {
+                // Static output — plain monospace text (no display-only terminal).
+                // This avoids resize/reflow instability that caused flickering
+                // when using a terminal emulator for static content.
+                render_static_output(output, &theme_colors, theme)
+            };
+
             let body_inner = div()
                 .flex()
                 .flex_col()
                 .rounded_b(px(4.))
                 .overflow_hidden()
-                // Command line with copy-on-hover button
-                .child(
-                    div()
-                        .id(SharedString::from(format!("cmd-row-{}", tool.id)))
-                        .group("cmd-row")
-                        .px_3()
-                        .py_1()
-                        .bg(theme_colors.background)
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_1p5()
-                                .min_w_0()
-                                .flex_grow()
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(theme.muted_foreground.opacity(0.6))
-                                        .child("$"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.5))
-                                        .text_color(theme.foreground)
-                                        .overflow_hidden()
-                                        .child(truncate_str(&display_command, 200)),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("copy-cmd-{}", tool.id)))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(22.0))
-                                .rounded(px(4.0))
-                                .cursor_pointer()
-                                .opacity(0.0)
-                                .group_hover("cmd-row", |s| s.opacity(1.0))
-                                .hover(|s| s.bg(theme.secondary.opacity(0.5)))
-                                .child(
-                                    gpui::svg()
-                                        .size(px(13.0))
-                                        .path(SharedString::from("icons/copy.svg"))
-                                        .text_color(theme.muted_foreground),
-                                )
-                                .on_click(move |_event, _window, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        cmd_for_copy.clone(),
-                                    ));
-                                }),
-                        ),
-                )
-                // Terminal view
-                .child(
-                    div()
-                        .w_full()
-                        .px_3()
-                        .pb_1()
-                        .bg(theme_colors.background)
-                        .child(view),
-                );
+                .child(cmd_row)
+                .child(output_area);
 
             card = card.child(animated_card_body(
                 body_inner,
@@ -613,6 +556,61 @@ impl TerminalCardRenderer {
 // ---------------------------------------------------------------------------
 // Card helpers
 // ---------------------------------------------------------------------------
+
+/// Maximum lines to show in static output before truncating.
+const MAX_STATIC_OUTPUT_LINES: usize = 50;
+
+/// Render command output as static monospace text.
+///
+/// Used when no live PTY terminal exists (session restore, pool cleanup).
+/// Plain text avoids the resize/reflow instability of display-only terminals.
+fn render_static_output(
+    output: &str,
+    theme_colors: &TerminalThemeColors,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::Div {
+    let lines: Vec<&str> = output.trim_end().lines().collect();
+    let truncated = lines.len() > MAX_STATIC_OUTPUT_LINES;
+    let visible_lines = if truncated {
+        &lines[..MAX_STATIC_OUTPUT_LINES]
+    } else {
+        &lines[..]
+    };
+
+    let mut container = div()
+        .w_full()
+        .px_3()
+        .py_1()
+        .bg(theme_colors.background)
+        .text_size(px(13.))
+        .font_family("Menlo")
+        .text_color(theme_colors.foreground)
+        .overflow_hidden();
+
+    for line in visible_lines {
+        container = container.child(div().w_full().child(if line.is_empty() {
+            // Empty lines need non-breaking space to maintain line height
+            "\u{00a0}".to_string()
+        } else {
+            line.to_string()
+        }));
+    }
+
+    if truncated {
+        container = container.child(
+            div()
+                .text_size(px(11.))
+                .text_color(theme.muted_foreground.opacity(0.6))
+                .pt_1()
+                .child(format!(
+                    "… {} more lines",
+                    lines.len() - MAX_STATIC_OUTPUT_LINES
+                )),
+        );
+    }
+
+    container
+}
 
 /// Whether the card represents a failed command.
 fn is_card_error(

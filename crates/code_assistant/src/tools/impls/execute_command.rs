@@ -68,7 +68,7 @@ impl Render for ExecuteCommandOutput {
     /// causes visual flicker when the card switches between live-PTY and
     /// display-only terminal paths.
     fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
-        self.output.clone()
+        self.output.trim_end().to_string()
     }
 }
 
