@@ -760,11 +760,11 @@ impl TerminalView {
 
     /// Compute the content mode based on the terminal mode and content.
     ///
-    /// Uses `total_lines` (scrollback + screen lines) for sizing, matching
-    /// Zed's approach.  This ensures the element height accounts for all
-    /// content that `renderable_content().display_iter()` will return,
-    /// avoiding a mismatch where scrollback lines are counted for height
-    /// but not rendered.
+    /// Uses `content_lines` (scrollback + cursor position + 1) for sizing
+    /// so the element height matches the actual content rather than the
+    /// full grid (which includes empty rows below the cursor).  The
+    /// `total_lines` value is still tracked so the caller can decide when
+    /// to switch to scrollable mode.
     pub fn content_mode(&self, cx: &App) -> ContentMode {
         match &self.mode {
             TerminalMode::Standalone => ContentMode::Scrollable,
@@ -776,10 +776,14 @@ impl TerminalView {
                 if total_lines > MAX_EMBEDDED_LINES {
                     ContentMode::Scrollable
                 } else {
+                    // Use content_lines (scrollback + cursor + 1) for sizing
+                    // so we don't allocate height for empty grid rows below
+                    // the cursor.
+                    let content_lines = terminal.content_lines();
                     let displayed_lines = if let Some(max) = max_lines_when_unfocused {
-                        total_lines.min(*max)
+                        content_lines.min(*max)
                     } else {
-                        total_lines
+                        content_lines
                     };
                     ContentMode::Inline {
                         displayed_lines: displayed_lines.max(1),

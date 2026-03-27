@@ -1047,6 +1047,9 @@ impl Gpui {
                 self.update_last_message(cx, |message, cx| {
                     message.append_tool_output(tool_id, chunk, cx);
                 });
+                // Terminal card height grows as new output lines arrive;
+                // keep the chat scrolled to the bottom when following.
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::ToolTerminalAttached {
                 tool_id,

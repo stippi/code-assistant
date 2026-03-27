@@ -278,6 +278,17 @@ impl Terminal {
         self.term.lock_unfair().screen_lines()
     }
 
+    /// Number of lines that actually have content (scrollback + cursor
+    /// position + 1).  Unlike `total_lines()` this excludes empty grid
+    /// rows below the cursor, so embedded terminals don't show trailing
+    /// blank space.
+    pub fn content_lines(&self) -> usize {
+        let term = self.term.lock_unfair();
+        let cursor_line = term.grid().cursor.point.line.0;
+        let scrollback_lines = (-term.topmost_line().0).max(0) as usize;
+        scrollback_lines + (cursor_line.max(0) as usize) + 1
+    }
+
     /// When this terminal was created.
     pub fn started_at(&self) -> Instant {
         self.started_at
