@@ -1,4 +1,3 @@
-use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
 
 use super::input_area::{InputArea, InputAreaEvent};
@@ -23,7 +22,7 @@ use tracing::{debug, error, trace, warn};
 pub struct RootView {
     input_area: Entity<InputArea>,
     chat_sidebar: Entity<ChatSidebar>,
-    auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
+    messages_view: Entity<MessagesView>,
     plan_banner: Entity<plan_banner::PlanBanner>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
@@ -46,10 +45,6 @@ impl RootView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Create the auto-scroll container that wraps the messages view
-        let auto_scroll_container =
-            cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
-
         // Create the plan banner
         let plan_banner = cx.new(plan_banner::PlanBanner::new);
 
@@ -71,7 +66,7 @@ impl RootView {
         let mut root_view = Self {
             input_area,
             chat_sidebar,
-            auto_scroll_container,
+            messages_view,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
@@ -888,8 +883,8 @@ impl Render for RootView {
                                     .flex_1()
                                     .min_h_0()
                                     .child(
-                                        // Messages display area - AutoScrollContainer
-                                        self.auto_scroll_container.clone(),
+                                        // Messages display area - virtualized list
+                                        self.messages_view.clone(),
                                     )
                                     // Status popover - overlaid at bottom of scroll area
                                     .children(self.render_status_popover(cx)),

@@ -210,6 +210,40 @@ impl Gpui {
             .expect("Failed to update message container");
     }
 
+    /// Notify the MessagesView that items were appended to the message_queue.
+    /// This splices the new items into the ListState (preserving cached heights
+    /// of existing items) and triggers auto-scroll if following tail.
+    fn notify_messages_appended(&self, old_len: usize, cx: &mut gpui::AsyncApp) {
+        let new_len = self.message_queue.lock().unwrap().len();
+        if new_len != old_len {
+            self.update_messages_view(cx, |view, cx| {
+                view.messages_spliced(old_len, new_len);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Notify the MessagesView that the message_queue was fully reset (cleared + reloaded).
+    /// This resets the ListState, discarding all cached heights.
+    fn notify_messages_reset(&self, cx: &mut gpui::AsyncApp) {
+        let new_len = self.message_queue.lock().unwrap().len();
+        self.update_messages_view(cx, |view, cx| {
+            view.messages_reset(new_len);
+            cx.notify();
+        });
+    }
+
+    /// Keep the list scrolled to the bottom if the user is following the tail.
+    /// Called after streaming content is appended to the last message, which
+    /// changes the height of the last list item without changing the item count.
+    fn auto_scroll_if_following(&self, cx: &mut gpui::AsyncApp) {
+        self.update_messages_view(cx, |view, _cx| {
+            if view.follow_tail {
+                view.scroll_to_bottom();
+            }
+        });
+    }
+
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
@@ -463,79 +497,92 @@ impl Gpui {
                 attachments,
                 node_id,
             } => {
-                let mut queue = self.message_queue.lock().unwrap();
-                let result = cx.new(|cx| {
-                    let new_message = MessageContainer::with_role(MessageRole::User, cx);
+                let old_len;
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    old_len = queue.len();
+                    let result = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::User, cx);
 
-                    // Set node_id for edit button support
-                    new_message.set_node_id(node_id);
+                        // Set node_id for edit button support
+                        new_message.set_node_id(node_id);
 
-                    // Add text content if not empty
-                    if !content.is_empty() {
-                        new_message.add_text_block(&content, cx);
-                    }
+                        // Add text content if not empty
+                        if !content.is_empty() {
+                            new_message.add_text_block(&content, cx);
+                        }
 
-                    // Add attachments
-                    for attachment in attachments {
-                        match attachment {
-                            crate::persistence::DraftAttachment::Image {
-                                content,
-                                mime_type,
-                                ..
-                            } => {
-                                new_message.add_image_block(&mime_type, &content, cx);
-                            }
-                            crate::persistence::DraftAttachment::Text { content } => {
-                                new_message.add_text_block(&content, cx);
-                            }
-                            crate::persistence::DraftAttachment::File {
-                                content, filename, ..
-                            } => {
-                                let file_text = format!("File: {filename}\n{content}");
-                                new_message.add_text_block(&file_text, cx);
+                        // Add attachments
+                        for attachment in attachments {
+                            match attachment {
+                                crate::persistence::DraftAttachment::Image {
+                                    content,
+                                    mime_type,
+                                    ..
+                                } => {
+                                    new_message.add_image_block(&mime_type, &content, cx);
+                                }
+                                crate::persistence::DraftAttachment::Text { content } => {
+                                    new_message.add_text_block(&content, cx);
+                                }
+                                crate::persistence::DraftAttachment::File {
+                                    content,
+                                    filename,
+                                    ..
+                                } => {
+                                    let file_text = format!("File: {filename}\n{content}");
+                                    new_message.add_text_block(&file_text, cx);
+                                }
                             }
                         }
-                    }
 
-                    new_message
-                });
-                if let Ok(new_message) = result {
-                    queue.push(new_message);
-                } else {
-                    warn!("Failed to create message entity");
+                        new_message
+                    });
+                    if let Ok(new_message) = result {
+                        queue.push(new_message);
+                    } else {
+                        warn!("Failed to create message entity");
+                    }
                 }
 
-                // Reset pending message when a user message is displayed
-                self.update_messages_view(cx, |messages_view, cx| {
+                // Sync ListState and reset pending message
+                self.notify_messages_appended(old_len, cx);
+                self.update_messages_view(cx, |messages_view, _cx| {
                     messages_view.update_pending_message(None);
-                    cx.notify();
                 });
             }
             UiEvent::DisplayCompactionSummary { summary } => {
-                let mut queue = self.message_queue.lock().unwrap();
-                let result = cx.new(|cx| {
-                    let message = MessageContainer::with_role(MessageRole::User, cx);
-                    message.add_compaction_divider(summary.clone(), cx);
-                    message
-                });
-                if let Ok(new_message) = result {
-                    queue.push(new_message);
-                } else {
-                    warn!("Failed to create compaction summary message");
+                let old_len;
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    old_len = queue.len();
+                    let result = cx.new(|cx| {
+                        let message = MessageContainer::with_role(MessageRole::User, cx);
+                        message.add_compaction_divider(summary.clone(), cx);
+                        message
+                    });
+                    if let Ok(new_message) = result {
+                        queue.push(new_message);
+                    } else {
+                        warn!("Failed to create compaction summary message");
+                    }
                 }
-                cx.refresh().expect("Failed to refresh windows");
+                self.notify_messages_appended(old_len, cx);
             }
+
             UiEvent::AppendToTextBlock { content } => {
                 // Since StreamingStarted ensures last container is Assistant, we can safely append
                 self.update_last_message(cx, |message, cx| {
                     message.add_or_append_to_text_block(&content, cx)
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::AppendToThinkingBlock { content } => {
                 // Since StreamingStarted ensures last container is Assistant, we can safely append
                 self.update_last_message(cx, |message, cx| {
                     message.add_or_append_to_thinking_block(&content, cx)
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::StartTool { name, id } => {
                 // Since StreamingStarted ensures last container is Assistant, we can safely add tool
@@ -736,44 +783,50 @@ impl Gpui {
                     }
                 }
 
-                cx.refresh().expect("Failed to refresh windows");
+                self.notify_messages_reset(cx);
             }
+
             UiEvent::StreamingStarted(request_id) => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let old_len;
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    old_len = queue.len();
 
-                // Grab the last container so we can reuse it without holding the lock
-                let last_container = queue.last().cloned();
+                    // Grab the last container so we can reuse it without holding the lock
+                    let last_container = queue.last().cloned();
 
-                // Check if we need to create a new assistant container
-                let needs_new_container = if let Some(last) = last_container.as_ref() {
-                    cx.update_entity(last, |message, _cx| message.is_user_message())
-                        .expect("Failed to update entity")
-                } else {
-                    true
-                };
+                    // Check if we need to create a new assistant container
+                    let needs_new_container = if let Some(last) = last_container.as_ref() {
+                        cx.update_entity(last, |message, _cx| message.is_user_message())
+                            .expect("Failed to update entity")
+                    } else {
+                        true
+                    };
 
-                if needs_new_container {
-                    // Create new assistant container
-                    let assistant_container = cx
-                        .new(|cx| {
-                            let container = MessageContainer::with_role(MessageRole::Assistant, cx);
+                    if needs_new_container {
+                        // Create new assistant container
+                        let assistant_container = cx
+                            .new(|cx| {
+                                let container =
+                                    MessageContainer::with_role(MessageRole::Assistant, cx);
+                                container.set_current_request_id(request_id);
+                                container
+                            })
+                            .expect("Failed to create new container");
+                        queue.push(assistant_container);
+                    } else if let Some(last_container) = last_container {
+                        // Reuse existing container — no push, just update request_id
+                        drop(queue);
+                        self.update_container(&last_container, cx, |container, cx| {
                             container.set_current_request_id(request_id);
-                            container
-                        })
-                        .expect("Failed to create new container");
-                    queue.push(assistant_container);
-                } else if let Some(last_container) = last_container {
-                    // Drop the queue lock before updating the container to avoid re-locking
-                    drop(queue);
-                    self.update_container(&last_container, cx, |container, cx| {
-                        container.set_current_request_id(request_id);
-                        cx.notify();
-                    });
-                    return;
+                            cx.notify();
+                        });
+                        return;
+                    }
                 }
 
-                // Drop the lock before falling through to avoid holding it longer than necessary
-                drop(queue);
+                // Sync ListState if we pushed a new container
+                self.notify_messages_appended(old_len, cx);
             }
             UiEvent::StreamingStopped {
                 id,
@@ -808,11 +861,14 @@ impl Gpui {
                 debug!("UI: Refreshing windows for chat list update");
                 cx.refresh().expect("Failed to refresh windows");
             }
+
             UiEvent::ClearMessages => {
                 debug!("UI: ClearMessages event");
-                let mut queue = self.message_queue.lock().unwrap();
-                queue.clear();
-                cx.refresh().expect("Failed to refresh windows");
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+                self.notify_messages_reset(cx);
             }
 
             UiEvent::SendUserMessage {
@@ -1229,6 +1285,9 @@ impl Gpui {
                         queue.push(assistant_container);
                     }
                 }
+
+                // Sync ListState with fully rebuilt queue
+                self.notify_messages_reset(cx);
 
                 // Store pending edit state for RootView to pick up on refresh
                 self.set_pending_edit(PendingEdit {

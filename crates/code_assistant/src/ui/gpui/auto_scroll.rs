@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use gpui::{
     div, prelude::*, px, Bounds, Context, Entity, Pixels, Point, ScrollHandle, SharedString, Size,
     Task, Timer, Window,
