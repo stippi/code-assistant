@@ -732,6 +732,7 @@ mod tests {
             status_message: None,
             output: None,
             state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
+            duration_seconds: None,
         };
         assert_eq!(extract_path_or_paths(&tool), "src/main.rs");
     }
@@ -750,6 +751,7 @@ mod tests {
             status_message: None,
             output: None,
             state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
+            duration_seconds: None,
         };
         assert_eq!(extract_path_or_paths(&tool), "a.rs, b.rs");
     }

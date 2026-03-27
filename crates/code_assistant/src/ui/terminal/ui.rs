@@ -163,11 +163,13 @@ impl UserInterface for TerminalUI {
                     renderer_guard.set_pending_user_message(message);
                 }
             }
+
             UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
                 message,
                 output,
+                ..
             } => {
                 debug!("Updating tool status for {}: {:?}", tool_id, status);
                 {
@@ -340,6 +342,13 @@ impl UserInterface for TerminalUI {
                 // Don't finalize the message yet - keep it live for tool status updates
                 // It will be finalized when the next StreamingStarted event arrives
             }
+            UiEvent::RollbackStreaming { id } => {
+                debug!("Rolling back streamed content for request {}", id);
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.discard_active_message();
+                }
+            }
             UiEvent::DisplayError { message } => {
                 debug!("Displaying error: {}", message);
                 // Set error in renderer
@@ -348,9 +357,26 @@ impl UserInterface for TerminalUI {
                     renderer_guard.set_error(message);
                 }
             }
+
             UiEvent::ClearError => {
                 debug!("Clearing error");
                 // Clear error in renderer
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.clear_error();
+                }
+            }
+            UiEvent::ShowTransientStatus { message } => {
+                debug!("Transient status: {}", message);
+                // In the terminal UI, show as a brief info message via the error strip
+                // (it will be replaced by the next StreamingStarted)
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.set_error(message);
+                }
+            }
+            UiEvent::ClearTransientStatus => {
+                // Clear the transient status (auto-dismiss timer fired)
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.clear_error();
@@ -415,12 +441,14 @@ impl UserInterface for TerminalUI {
                     content: text.clone(),
                 });
             }
-            DisplayFragment::ThinkingText(text) => {
+
+            DisplayFragment::ThinkingText { ref text, .. } => {
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: text.clone(),
                 });
             }
-            DisplayFragment::ToolName { name, id } => {
+
+            DisplayFragment::ToolName { name, id, .. } => {
                 if id.is_empty() {
                     warn!(
                         "StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!",

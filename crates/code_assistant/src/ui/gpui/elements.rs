@@ -275,6 +275,17 @@ impl MessageContainer {
         id: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
+        self.add_tool_use_block_with_duration(name, id, None, cx);
+    }
+
+    /// Add a new tool use block with optional pre-computed duration from persisted ContentBlock timestamps
+    pub fn add_tool_use_block_with_duration(
+        &self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        duration_seconds: Option<f64>,
+        cx: &mut Context<Self>,
+    ) {
         self.finish_any_thinking_blocks(cx);
 
         let request_id = *self.current_request_id.lock().unwrap();
@@ -305,6 +316,7 @@ impl MessageContainer {
             status_message: None,
             output: None,
             state: initial_state,
+            duration_seconds,
         });
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
@@ -318,6 +330,7 @@ impl MessageContainer {
         status: ToolStatus,
         message: Option<String>,
         output: Option<String>,
+        duration_seconds: Option<f64>,
         cx: &mut Context<Self>,
     ) -> bool {
         let elements = self.elements.lock().unwrap();
@@ -335,6 +348,11 @@ impl MessageContainer {
                         // AppendToolOutput is used for streaming append behavior
                         if let Some(ref new_output) = output {
                             tool.output = Some(new_output.clone());
+                        }
+
+                        // Store duration from ContentBlock timestamps (stable across restores)
+                        if duration_seconds.is_some() {
+                            tool.duration_seconds = duration_seconds;
                         }
 
                         // Update generating flag on completion — no automatic state changes.
@@ -410,6 +428,16 @@ impl MessageContainer {
         content: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
+        self.add_or_append_to_thinking_block_with_duration(content, None, cx);
+    }
+
+    /// Add or append to thinking block, with optional pre-computed duration from persisted timestamps
+    pub fn add_or_append_to_thinking_block_with_duration(
+        &self,
+        content: impl Into<String>,
+        duration_seconds: Option<f64>,
+        cx: &mut Context<Self>,
+    ) {
         // Check if we need to insert a paragraph break after a hidden tool
         let paragraph_prefix = self.get_paragraph_break_if_needed(HiddenToolBlockType::Thinking);
 
@@ -428,6 +456,11 @@ impl MessageContainer {
                         thinking_block.content.push_str(prefix);
                     }
                     thinking_block.content.push_str(&content);
+                    // Store duration if provided (from session restore)
+                    if duration_seconds.is_some() {
+                        thinking_block.duration_seconds = duration_seconds;
+                        thinking_block.is_completed = true;
+                    }
                     was_appended = true;
                     cx.notify();
                 }
@@ -445,7 +478,13 @@ impl MessageContainer {
         } else {
             content.to_string()
         };
-        let block = BlockData::ThinkingBlock(ThinkingBlock::new(final_content));
+
+        let mut thinking = ThinkingBlock::new(final_content);
+        if let Some(dur) = duration_seconds {
+            thinking.duration_seconds = Some(dur);
+            thinking.is_completed = true;
+        }
+        let block = BlockData::ThinkingBlock(thinking);
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
@@ -521,6 +560,7 @@ impl MessageContainer {
         // If we didn't find a matching tool, create a new one with this parameter
         if !tool_found {
             let request_id = *self.current_request_id.lock().unwrap();
+
             let mut tool = ToolUseBlock {
                 name: "unknown".to_string(), // Default name since we only have ID
                 id: tool_id.clone(),
@@ -529,6 +569,7 @@ impl MessageContainer {
                 status_message: None,
                 output: None,
                 state: ToolBlockState::Collapsed, // Default to collapsed
+                duration_seconds: None,
             };
 
             tool.parameters.push(ParameterBlock {
@@ -1615,6 +1656,9 @@ pub struct ThinkingBlock {
     pub is_completed: bool,
     pub start_time: std::time::Instant,
     pub end_time: std::time::Instant,
+    /// Pre-computed duration in seconds from persisted ContentBlock timestamps.
+    /// When set (e.g. after session restore), this takes precedence over Instant-based measurement.
+    pub duration_seconds: Option<f64>,
     // NEW: OpenAI reasoning fields
     pub reasoning_summary_items: Vec<llm::ReasoningSummaryItem>,
     pub current_generating_title: Option<String>,
@@ -1638,6 +1682,7 @@ impl ThinkingBlock {
             is_completed: false, // Default is not completed
             start_time: now,
             end_time: now, // Initially same as start_time
+            duration_seconds: None,
             // Initialize reasoning fields
             reasoning_summary_items: Vec::new(),
             current_generating_title: None,
@@ -1646,20 +1691,20 @@ impl ThinkingBlock {
     }
 
     pub fn formatted_duration(&self) -> String {
-        // Calculate duration based on status
-        let duration = if self.is_completed {
-            // For completed blocks, use the stored end_time
-            self.end_time.duration_since(self.start_time)
+        // Prefer pre-computed duration from persisted timestamps (survives session restore)
+        let secs = if let Some(dur) = self.duration_seconds {
+            dur as u64
+        } else if self.is_completed {
+            self.end_time.duration_since(self.start_time).as_secs()
         } else {
-            // For ongoing blocks, show elapsed time
-            self.start_time.elapsed()
+            self.start_time.elapsed().as_secs()
         };
 
-        if duration.as_secs() < 60 {
-            format!("{}s", duration.as_secs())
+        if secs < 60 {
+            format!("{secs}s")
         } else {
-            let minutes = duration.as_secs() / 60;
-            let seconds = duration.as_secs() % 60;
+            let minutes = secs / 60;
+            let seconds = secs % 60;
             format!("{minutes}m{seconds}s")
         }
     }
@@ -1810,6 +1855,9 @@ pub struct ToolUseBlock {
     pub status_message: Option<String>,
     pub output: Option<String>,
     pub state: ToolBlockState, // Only collapsed/expanded, no generating
+    /// Execution duration in seconds, computed from persisted ContentBlock timestamps.
+    /// Stable across session restores (unlike Instant-based measurement).
+    pub duration_seconds: Option<f64>,
 }
 
 /// Parameter for a tool

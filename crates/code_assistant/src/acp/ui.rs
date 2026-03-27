@@ -588,6 +588,7 @@ impl UserInterface for ACPUserUI {
                 status,
                 message,
                 output,
+                ..
             } => {
                 let tool_status = map_tool_status(status);
                 let message_clone = message.clone();
@@ -730,8 +731,12 @@ impl UserInterface for ACPUserUI {
             | UiEvent::SwitchBranch { .. }
             | UiEvent::MessageEditReady { .. }
             | UiEvent::BranchSwitched { .. }
-            | UiEvent::UpdateBranchInfo { .. } => {
+            | UiEvent::UpdateBranchInfo { .. }
+            | UiEvent::RollbackStreaming { .. }
+            | UiEvent::ShowTransientStatus { .. }
+            | UiEvent::ClearTransientStatus => {
                 // These are UI management events, not relevant for ACP
+                // (RollbackStreaming: ACP cannot retract already-sent notifications)
             }
             UiEvent::ToolTerminalAttached { .. } => {
                 // Terminal pool mapping — only relevant for GPUI
@@ -769,7 +774,8 @@ impl UserInterface for ACPUserUI {
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
-            DisplayFragment::ThinkingText(text) => {
+
+            DisplayFragment::ThinkingText { ref text, .. } => {
                 // Check if we need a paragraph break after a hidden tool
                 self.maybe_emit_paragraph_break(LastContentType::Thinking)?;
 
@@ -780,7 +786,7 @@ impl UserInterface for ACPUserUI {
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk(chunk));
             }
-            DisplayFragment::ToolName { name, id } => {
+            DisplayFragment::ToolName { name, id, .. } => {
                 if id.is_empty() {
                     tracing::warn!(
                         "ACPUserUI: StreamingProcessor provided empty tool ID for tool '{}'",
@@ -973,11 +979,8 @@ mod tests {
     fn tool_name_fragment_emits_tool_call_notification() {
         let (ui, mut rx) = create_ui();
 
-        ui.display_fragment(&DisplayFragment::ToolName {
-            name: "execute_command".into(),
-            id: "tool-1".into(),
-        })
-        .unwrap();
+        ui.display_fragment(&DisplayFragment::tool_name("execute_command", "tool-1"))
+            .unwrap();
 
         let (notification, _ack) = rx.try_recv().expect("expected tool call notification");
         match notification.update {
@@ -994,11 +997,8 @@ mod tests {
     fn tool_output_fragments_accumulate_raw_output() {
         let (ui, mut rx) = create_ui();
 
-        ui.display_fragment(&DisplayFragment::ToolName {
-            name: "read_files".into(),
-            id: "tool-1".into(),
-        })
-        .unwrap();
+        ui.display_fragment(&DisplayFragment::tool_name("read_files", "tool-1"))
+            .unwrap();
         rx.try_recv().unwrap(); // discard ToolCall notification
 
         ui.display_fragment(&DisplayFragment::ToolOutput {

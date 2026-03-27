@@ -38,7 +38,12 @@ impl TestUI {
             }
 
             // Merge thinking text fragments
-            (DisplayFragment::ThinkingText(last_text), DisplayFragment::ThinkingText(new_text)) => {
+            (
+                DisplayFragment::ThinkingText {
+                    text: last_text, ..
+                },
+                DisplayFragment::ThinkingText { text: new_text, .. },
+            ) => {
                 last_text.push_str(new_text);
                 true
             }
@@ -141,8 +146,11 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                 media_type: _,
                 data: _,
             } => println!("  [{i}] Image: ..."),
-            DisplayFragment::ThinkingText(text) => println!("  [{i}] ThinkingText: {text}"),
-            DisplayFragment::ToolName { name, id } => {
+
+            DisplayFragment::ThinkingText { ref text, .. } => {
+                println!("  [{i}] ThinkingText: {text}")
+            }
+            DisplayFragment::ToolName { name, id, .. } => {
                 println!("  [{i}] ToolName: {name} (id: {id})")
             }
             DisplayFragment::ToolParameter {
@@ -185,9 +193,15 @@ pub fn fragments_match(expected: &DisplayFragment, actual: &DisplayFragment) -> 
         (DisplayFragment::PlainText(expected_text), DisplayFragment::PlainText(actual_text)) => {
             expected_text == actual_text
         }
+
         (
-            DisplayFragment::ThinkingText(expected_text),
-            DisplayFragment::ThinkingText(actual_text),
+            DisplayFragment::ThinkingText {
+                text: expected_text,
+                ..
+            },
+            DisplayFragment::ThinkingText {
+                text: actual_text, ..
+            },
         ) => expected_text == actual_text,
         (
             DisplayFragment::ToolName {

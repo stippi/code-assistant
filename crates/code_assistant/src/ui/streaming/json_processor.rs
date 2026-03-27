@@ -120,7 +120,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
         match chunk {
             StreamingChunk::Thinking(text) => self
                 .ui
-                .display_fragment(&DisplayFragment::ThinkingText(text.clone())),
+                .display_fragment(&DisplayFragment::thinking_text(text.clone())),
 
             StreamingChunk::RateLimit { seconds_remaining } => {
                 // Notify UI about rate limit with countdown
@@ -193,10 +193,10 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                                     );
 
                                 // Emit fragment (will be filtered if tool is hidden)
-                                self.emit_fragment(DisplayFragment::ToolName {
-                                    name: self.state.tool_name.clone(),
-                                    id: self.state.tool_id.clone(),
-                                })?;
+                                self.emit_fragment(DisplayFragment::tool_name(
+                                    self.state.tool_name.clone(),
+                                    self.state.tool_id.clone(),
+                                ))?;
                             } else {
                                 // If tool_name is not provided with the id, it's a bit strange.
                                 // For now, we rely on tool_name being present if id is.
@@ -262,7 +262,10 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 for block in blocks {
                     match block {
                         ContentBlock::Thinking { thinking, .. } => {
-                            fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
+                            fragments.push(DisplayFragment::ThinkingText {
+                                text: thinking.clone(),
+                                duration_seconds: block.duration().map(|d| d.as_secs_f64()),
+                            });
                         }
                         ContentBlock::Text { text, .. } => {
                             // Process text for any thinking tags
@@ -278,11 +281,13 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                                 ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
                             // Only add fragments if tool is not hidden
+
                             if !tool_hidden {
-                                // Add tool name fragment
+                                // Add tool name fragment with duration from the ToolUse block
                                 fragments.push(DisplayFragment::ToolName {
                                     name: name.clone(),
                                     id: id.clone(),
+                                    duration_seconds: block.duration().map(|d| d.as_secs_f64()),
                                 });
 
                                 // Parse JSON input into tool parameters
@@ -856,7 +861,7 @@ impl JsonStreamProcessor {
 
                     if !processed_pre_text.is_empty() {
                         if self.state.in_thinking {
-                            self.emit_fragment(DisplayFragment::ThinkingText(processed_pre_text))?;
+                            self.emit_fragment(DisplayFragment::thinking_text(processed_pre_text))?;
                         } else {
                             let mut final_pre_text = processed_pre_text;
 
@@ -906,7 +911,7 @@ impl JsonStreamProcessor {
 
                         if !single_char_slice_str.is_empty() {
                             if self.state.in_thinking {
-                                self.emit_fragment(DisplayFragment::ThinkingText(
+                                self.emit_fragment(DisplayFragment::thinking_text(
                                     single_char_slice_str.to_string(),
                                 ))?;
                             } else {
@@ -939,7 +944,7 @@ impl JsonStreamProcessor {
 
                     if !processed_remaining_text.is_empty() {
                         if self.state.in_thinking {
-                            self.emit_fragment(DisplayFragment::ThinkingText(
+                            self.emit_fragment(DisplayFragment::thinking_text(
                                 processed_remaining_text,
                             ))?;
                         } else {
@@ -1037,7 +1042,7 @@ impl JsonStreamProcessor {
 
                         if !final_pre_text.is_empty() {
                             if local_in_thinking {
-                                fragments.push(DisplayFragment::ThinkingText(final_pre_text));
+                                fragments.push(DisplayFragment::thinking_text(final_pre_text));
                             } else {
                                 fragments.push(DisplayFragment::PlainText(final_pre_text));
                             }
@@ -1069,8 +1074,9 @@ impl JsonStreamProcessor {
 
                             if !char_text.is_empty() {
                                 if local_in_thinking {
-                                    fragments
-                                        .push(DisplayFragment::ThinkingText(char_text.to_string()));
+                                    fragments.push(DisplayFragment::thinking_text(
+                                        char_text.to_string(),
+                                    ));
                                 } else {
                                     fragments
                                         .push(DisplayFragment::PlainText(char_text.to_string()));
@@ -1089,7 +1095,7 @@ impl JsonStreamProcessor {
 
                     if !char_text.is_empty() {
                         if local_in_thinking {
-                            fragments.push(DisplayFragment::ThinkingText(char_text.to_string()));
+                            fragments.push(DisplayFragment::thinking_text(char_text.to_string()));
                         } else {
                             fragments.push(DisplayFragment::PlainText(char_text.to_string()));
                         }
@@ -1118,7 +1124,8 @@ impl JsonStreamProcessor {
 
                     if !processed_remaining_text.is_empty() {
                         if local_in_thinking {
-                            fragments.push(DisplayFragment::ThinkingText(processed_remaining_text));
+                            fragments
+                                .push(DisplayFragment::thinking_text(processed_remaining_text));
                         } else {
                             fragments.push(DisplayFragment::PlainText(processed_remaining_text));
                         }

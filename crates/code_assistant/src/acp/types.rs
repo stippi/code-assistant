@@ -7,8 +7,9 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
         DisplayFragment::PlainText(text) => {
             acp::ContentBlock::Text(acp::TextContent::new(text.clone()))
         }
+
         // Thinking text is just regular text in ACP (no special annotation)
-        DisplayFragment::ThinkingText(text) => {
+        DisplayFragment::ThinkingText { ref text, .. } => {
             acp::ContentBlock::Text(acp::TextContent::new(text.clone()))
         }
         DisplayFragment::CompactionDivider { summary } => acp::ContentBlock::Text(

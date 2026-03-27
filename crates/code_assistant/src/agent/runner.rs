@@ -105,6 +105,12 @@ pub struct Agent {
 const CONTEXT_USAGE_THRESHOLD: f32 = 0.8;
 const CONTEXT_COMPACTION_PROMPT: &str = include_str!("../../resources/compaction_prompt.md");
 
+/// Maximum number of retries for transient streaming errors (e.g. HTTP chunk errors, connection resets).
+const MAX_STREAMING_RETRIES: u32 = 2;
+
+/// Base delay between streaming retries (doubles on each attempt).
+const STREAMING_RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl Agent {
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
     fn format_error_for_user(error: &anyhow::Error) -> String {
@@ -404,6 +410,8 @@ impl Agent {
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
+        let mut streaming_retry_count: u32 = 0;
+
         loop {
             // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_message) = self.get_and_clear_pending_message() {
@@ -429,7 +437,11 @@ impl Agent {
 
             // 1. Get LLM response (without adding to history yet)
             let (llm_response, request_id) = match self.get_next_assistant_message(messages).await {
-                Ok(result) => result,
+                Ok(result) => {
+                    // Successful response — reset the retry counter
+                    streaming_retry_count = 0;
+                    result
+                }
                 Err(e) if Self::is_prompt_too_long_error(&e) => {
                     warn!("Prompt too long error detected, replacing large tool results with error messages");
                     let replaced = self.replace_large_tool_results();
@@ -443,6 +455,7 @@ impl Agent {
                                     status: crate::ui::ToolStatus::Error,
                                     message: Some("Prompt Too Long".to_string()),
                                     output: Some(error_message.clone()),
+                                    duration_seconds: None,
                                 })
                                 .await;
                         }
@@ -460,6 +473,45 @@ impl Agent {
                     warn!("No large tool results to replace — dropping last exchange and forcing compaction");
                     self.drop_last_tool_exchange();
                     self.perform_compaction().await?;
+                    continue;
+                }
+                Err(e)
+                    if Self::is_retryable_streaming_error(&e)
+                        && streaming_retry_count < MAX_STREAMING_RETRIES =>
+                {
+                    streaming_retry_count += 1;
+                    let delay =
+                        STREAMING_RETRY_BASE_DELAY * 2u32.saturating_pow(streaming_retry_count - 1);
+                    warn!(
+                        "Transient streaming error (attempt {}/{}), retrying in {:?}: {}",
+                        streaming_retry_count, MAX_STREAMING_RETRIES, delay, e
+                    );
+
+                    // Tell the UI to discard all partial content from the failed request.
+                    // get_next_assistant_message already sent StreamingStopped{error: ...}
+                    // for the failed request, so the UI knows streaming ended. Now we tell
+                    // it to also remove whatever was already rendered.
+                    let _ = self
+                        .ui
+                        .send_event(UiEvent::RollbackStreaming {
+                            id: self.next_request_id - 1,
+                        })
+                        .await;
+
+                    // Show a transient notification so the user knows what's happening
+                    let _ = self
+                        .ui
+                        .send_event(UiEvent::ShowTransientStatus {
+                            message: format!(
+                                "Stream interrupted — retrying ({}/{})\u{2026}",
+                                streaming_retry_count, MAX_STREAMING_RETRIES
+                            ),
+                        })
+                        .await;
+
+                    tokio::time::sleep(delay).await;
+
+                    // `continue` re-renders messages and retries get_next_assistant_message
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -946,6 +998,7 @@ impl Agent {
                 status: crate::ui::ToolStatus::Running,
                 message: None,
                 output: None,
+                duration_seconds: None,
             })
             .await;
 
@@ -961,6 +1014,7 @@ impl Agent {
                         status: crate::ui::ToolStatus::Error,
                         message: Some(error_msg.clone()),
                         output: Some(error_msg.clone()),
+                        duration_seconds: None,
                     })
                     .await;
                 return (
@@ -1006,6 +1060,7 @@ impl Agent {
                         status,
                         message: Some(status_msg),
                         output: Some(ui_output),
+                        duration_seconds: None,
                     })
                     .await;
 
@@ -1030,6 +1085,7 @@ impl Agent {
                         status: crate::ui::ToolStatus::Error,
                         message: Some(error_msg.clone()),
                         output: Some(error_msg.clone()),
+                        duration_seconds: None,
                     })
                     .await;
 
@@ -1623,6 +1679,33 @@ impl Agent {
             || msg.contains("request too large")
     }
 
+    /// Check if an error from the LLM provider is a transient streaming/connection
+    /// error that is safe to retry (the request itself was valid, only the
+    /// transport failed mid-stream).
+    fn is_retryable_streaming_error(error: &anyhow::Error) -> bool {
+        let msg = error.to_string().to_lowercase();
+        // HTTP chunked transfer errors
+        msg.contains("http chunk error")
+            || msg.contains("chunk size line")
+            || msg.contains("unexpected eof")
+            // hyper / reqwest body errors
+            || msg.contains("error reading a body from connection")
+            || msg.contains("request or response body error")
+            // Connection-level errors
+            || msg.contains("connection reset")
+            || msg.contains("connection closed")
+            || msg.contains("broken pipe")
+            || msg.contains("connection abort")
+            // Timeout errors (read timeouts, not connect timeouts)
+            || msg.contains("operation timed out")
+            || msg.contains("timed out reading")
+            // Server errors that are transient
+            || msg.contains("502 bad gateway")
+            || msg.contains("503 service")
+            || msg.contains("529")
+            || msg.contains("overloaded")
+    }
+
     /// Replace the largest tool execution results **from the most recent turn**
     /// with [`PromptTooLongError`] placeholders so that the next LLM request has a
     /// chance to succeed.
@@ -2051,6 +2134,7 @@ impl Agent {
                     status: crate::ui::ToolStatus::Running,
                     message: None,
                     output: None,
+                    duration_seconds: None,
                 })
                 .await?;
         }
@@ -2116,6 +2200,7 @@ impl Agent {
                             status,
                             message: Some(short_output),
                             output: Some(ui_output),
+                            duration_seconds: None,
                         })
                         .await?;
                 }
@@ -2184,6 +2269,7 @@ impl Agent {
                             status: crate::ui::ToolStatus::Error,
                             message: Some(error_text.clone()),
                             output: Some(error_text.clone()),
+                            duration_seconds: None,
                         })
                         .await?;
                 }

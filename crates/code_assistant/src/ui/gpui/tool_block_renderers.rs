@@ -347,8 +347,10 @@ mod tests {
                 .collect(),
             status: ToolStatus::Success,
             status_message: None,
+
             output: None,
             state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
+            duration_seconds: None,
         }
     }
 

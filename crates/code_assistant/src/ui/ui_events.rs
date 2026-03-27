@@ -24,6 +24,8 @@ pub struct ToolResultData {
     pub status: ToolStatus,
     pub message: Option<String>,
     pub output: Option<String>,
+    /// Duration of the tool execution in seconds, computed from persisted ContentBlock timestamps.
+    pub duration_seconds: Option<f64>,
 }
 
 /// Events for UI updates from the agent thread
@@ -57,12 +59,15 @@ pub enum UiEvent {
         /// If true, replace the parameter value instead of appending.
         replace: bool,
     },
+
     /// Update a tool status
     UpdateToolStatus {
         tool_id: String,
         status: ToolStatus,
         message: Option<String>,
         output: Option<String>,
+        /// Execution duration in seconds, set from ContentBlock timestamps on completion.
+        duration_seconds: Option<f64>,
     },
 
     /// End a tool invocation
@@ -94,6 +99,9 @@ pub enum UiEvent {
         cancelled: bool,
         error: Option<String>,
     },
+    /// Rollback all UI content produced by a failed streaming request.
+    /// Sent before a retry so that UIs can discard the partial output.
+    RollbackStreaming { id: u64 },
     /// Refresh the chat list from session manager
     RefreshChatList,
     /// Update the chat list display
@@ -131,6 +139,10 @@ pub enum UiEvent {
     DisplayError { message: String },
     /// Clear the current error display
     ClearError,
+    /// Show a brief, auto-dismissing status notification (e.g. "Stream interrupted — retrying")
+    ShowTransientStatus { message: String },
+    /// Clear the transient status notification (sent by the auto-dismiss timer)
+    ClearTransientStatus,
     /// Start a new reasoning summary item
     StartReasoningSummaryItem,
     /// Append delta content to the current reasoning summary item

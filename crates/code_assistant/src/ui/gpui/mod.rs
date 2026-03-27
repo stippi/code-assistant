@@ -85,6 +85,8 @@ pub struct Gpui {
 
     // Error state management
     current_error: Arc<Mutex<Option<String>>>,
+    // Transient status notification (auto-dismisses after a few seconds)
+    transient_status: Arc<Mutex<Option<String>>>,
 
     // Current model selection
     current_model: Arc<Mutex<Option<String>>>,
@@ -307,6 +309,7 @@ impl Gpui {
 
             // Error state management
             current_error: Arc::new(Mutex::new(None)),
+            transient_status: Arc::new(Mutex::new(None)),
 
             // Current model selection
             current_model: Arc::new(Mutex::new(None)),
@@ -616,6 +619,7 @@ impl Gpui {
                 status,
                 message,
                 output,
+                duration_seconds,
             } => {
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.update_tool_status(
@@ -623,6 +627,7 @@ impl Gpui {
                         status,
                         message.clone(),
                         output.clone(),
+                        duration_seconds,
                         cx,
                     );
                 });
@@ -774,6 +779,7 @@ impl Gpui {
                             tool_result.status,
                             tool_result.message.clone(),
                             tool_result.output.clone(),
+                            tool_result.duration_seconds,
                             cx,
                         );
                     });
@@ -853,6 +859,13 @@ impl Gpui {
                         message_container.remove_blocks_with_request_id(id, cx);
                     });
                 }
+            }
+            UiEvent::RollbackStreaming { id } => {
+                // Discard all blocks produced by the failed request so the retry
+                // starts with a clean slate (same mechanism as cancellation).
+                self.update_all_messages(cx, |message_container, cx| {
+                    message_container.remove_blocks_with_request_id(id, cx);
+                });
             }
             UiEvent::RefreshChatList => {
                 debug!("UI: RefreshChatList event received");
@@ -1062,6 +1075,23 @@ impl Gpui {
                 // Clear the error message from state
                 *self.current_error.lock().unwrap() = None;
                 // Refresh UI to hide the error popover
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::ShowTransientStatus { message } => {
+                debug!("UI: ShowTransientStatus: {}", message);
+                *self.transient_status.lock().unwrap() = Some(message);
+                cx.refresh().expect("Failed to refresh windows");
+
+                // Schedule auto-dismiss after 3 seconds via a background thread
+                // that sends ClearTransientStatus back through the event channel.
+                let sender = self.event_sender.lock().unwrap().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let _ = sender.try_send(UiEvent::ClearTransientStatus);
+                });
+            }
+            UiEvent::ClearTransientStatus => {
+                *self.transient_status.lock().unwrap() = None;
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::StartReasoningSummaryItem => {
@@ -1278,6 +1308,7 @@ impl Gpui {
                             tool_result.status,
                             tool_result.message.clone(),
                             tool_result.output.clone(),
+                            tool_result.duration_seconds,
                             cx,
                         );
                     });
@@ -1384,14 +1415,27 @@ impl Gpui {
                         container.add_or_append_to_text_block(text, cx);
                     });
                 }
-                DisplayFragment::ThinkingText(text) => {
+
+                DisplayFragment::ThinkingText {
+                    text,
+                    duration_seconds,
+                } => {
                     self.update_container(container, cx, |container, cx| {
-                        container.add_or_append_to_thinking_block(text, cx);
+                        container.add_or_append_to_thinking_block_with_duration(
+                            text,
+                            duration_seconds,
+                            cx,
+                        );
                     });
                 }
-                DisplayFragment::ToolName { name, id } => {
+
+                DisplayFragment::ToolName {
+                    name,
+                    id,
+                    duration_seconds,
+                } => {
                     self.update_container(container, cx, |container, cx| {
-                        container.add_tool_use_block(name, id, cx);
+                        container.add_tool_use_block_with_duration(name, id, duration_seconds, cx);
                     });
                 }
                 DisplayFragment::ToolParameter {
@@ -1507,6 +1551,10 @@ impl Gpui {
 
     pub fn get_current_error(&self) -> Option<String> {
         self.current_error.lock().unwrap().clone()
+    }
+
+    pub fn get_transient_status(&self) -> Option<String> {
+        self.transient_status.lock().unwrap().clone()
     }
 
     pub fn get_current_model(&self) -> Option<String> {
@@ -1829,9 +1877,11 @@ impl UserInterface for Gpui {
         match &event {
             UiEvent::StreamingStarted(request_id) => {
                 // Store the request ID
+
                 *self.current_request_id.lock().unwrap() = *request_id;
-                // Clear any existing error when new operation starts
+                // Clear any existing error/notification when new operation starts
                 *self.current_error.lock().unwrap() = None;
+                *self.transient_status.lock().unwrap() = None;
             }
             UiEvent::StreamingStopped { .. } => {
                 // Clear stop request for current session since streaming has stopped
@@ -1860,12 +1910,13 @@ impl UserInterface for Gpui {
                     content: text.clone(),
                 });
             }
-            DisplayFragment::ThinkingText(text) => {
+
+            DisplayFragment::ThinkingText { ref text, .. } => {
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: text.clone(),
                 });
             }
-            DisplayFragment::ToolName { name, id } => {
+            DisplayFragment::ToolName { name, id, .. } => {
                 if id.is_empty() {
                     warn!(
                         "StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!",

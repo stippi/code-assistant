@@ -25,11 +25,20 @@ pub enum DisplayFragment {
     /// Regular plain text
     PlainText(String),
     /// Thinking text (shown differently)
-    ThinkingText(String),
+    /// `duration_seconds` is set during session restore from persisted ContentBlock timestamps.
+    ThinkingText {
+        text: String,
+        duration_seconds: Option<f64>,
+    },
     /// Image content
     Image { media_type: String, data: String },
-    /// Tool invocation start
-    ToolName { name: String, id: String },
+    /// Tool invocation start.
+    /// `duration_seconds` is set during session restore from the corresponding ToolUse ContentBlock.
+    ToolName {
+        name: String,
+        id: String,
+        duration_seconds: Option<f64>,
+    },
     /// Parameter for a tool
     ToolParameter {
         name: String,
@@ -55,6 +64,25 @@ pub enum DisplayFragment {
     CompactionDivider { summary: String },
     /// A hidden tool completed - UI may need to insert paragraph break if next fragment is same type
     HiddenToolCompleted,
+}
+
+impl DisplayFragment {
+    /// Create a ThinkingText fragment without duration (used during live streaming)
+    pub fn thinking_text(text: impl Into<String>) -> Self {
+        DisplayFragment::ThinkingText {
+            text: text.into(),
+            duration_seconds: None,
+        }
+    }
+
+    /// Create a ToolName fragment without duration (used during live streaming)
+    pub fn tool_name(name: impl Into<String>, id: impl Into<String>) -> Self {
+        DisplayFragment::ToolName {
+            name: name.into(),
+            id: id.into(),
+            duration_seconds: None,
+        }
+    }
 }
 
 /// Common trait for stream processors

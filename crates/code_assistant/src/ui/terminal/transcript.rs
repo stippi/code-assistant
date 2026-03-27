@@ -37,6 +37,12 @@ impl TranscriptState {
         self.active_message = Some(LiveMessage::new());
     }
 
+    /// Discard the current active message without finalizing it.
+    /// Used to roll back partially-streamed content before a retry.
+    pub fn discard_active_message(&mut self) {
+        self.active_message = None;
+    }
+
     pub fn finalize_active_if_content(&mut self) {
         if let Some(mut current_message) = self.active_message.take() {
             current_message.finalized = true;

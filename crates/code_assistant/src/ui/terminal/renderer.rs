@@ -147,6 +147,16 @@ impl TerminalRenderer {
         })
     }
 
+    /// Discard the current active message and reset streaming state.
+    /// Used to roll back partially-streamed content before a retry.
+    pub fn discard_active_message(&mut self) {
+        self.streaming_controller.clear();
+        self.last_stream_kind = None;
+        self.spinner_state = SpinnerState::Hidden;
+        self.streaming_open = false;
+        self.transcript.discard_active_message();
+    }
+
     /// Start a new message (called on StreamingStarted)
     pub fn start_new_message(&mut self, _request_id: u64) {
         // Flush any buffered tail chunks into the currently active message before

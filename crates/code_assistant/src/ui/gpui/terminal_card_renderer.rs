@@ -206,11 +206,13 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             .map(abbreviate_path)
             .unwrap_or_default();
 
-        // Elapsed time (while running: shown after 2s; when done: always shown)
+        // Elapsed time (while running: shown after 2s; when done: always shown).
+        // For restored sessions without a live terminal, use the persisted duration
+        // from ContentBlock timestamps stored on the ToolUseBlock.
         let elapsed_secs = if is_live {
             Some(started_at.elapsed().as_secs())
         } else {
-            None
+            tool.duration_seconds.map(|d| d as u64)
         };
 
         // Chevron (right-aligned, matching inline tool style)

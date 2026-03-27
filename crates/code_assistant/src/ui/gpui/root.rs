@@ -507,6 +507,77 @@ impl RootView {
                 .into_any_element()];
         }
 
+        // Transient status notification (lower priority than errors)
+        let transient_status = if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.get_transient_status()
+        } else {
+            None
+        };
+
+        if let Some(status_message) = transient_status {
+            let (bg_color, border_color, text_color, icon_color) = if cx.theme().is_dark() {
+                (
+                    rgba(0x78350F80), // Dark amber background with transparency
+                    rgba(0xF59E0BFF), // Amber border
+                    rgba(0xFDE68AFF), // Light amber text
+                    rgba(0xFBBF24FF), // Amber icon
+                )
+            } else {
+                (
+                    rgba(0xFFFBEBFF), // Light amber background
+                    rgba(0xF59E0BFF), // Amber border
+                    rgba(0x92400EFF), // Dark amber text
+                    rgba(0xD97706FF), // Amber icon
+                )
+            };
+
+            return vec![div()
+                .absolute()
+                .bottom_2()
+                .left(px(0.))
+                .right(px(0.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .bg(bg_color)
+                        .border_1()
+                        .border_color(border_color)
+                        .rounded_lg()
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .max_w(px(600.))
+                        .min_w(px(200.))
+                        .child(
+                            div().flex_none().child(
+                                svg()
+                                    .size(px(14.))
+                                    .path(SharedString::from("icons/arrow_circle.svg"))
+                                    .text_color(icon_color),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .text_color(text_color)
+                                .text_size(px(11.))
+                                .font_weight(gpui::FontWeight(500.0))
+                                .flex_grow()
+                                .flex_shrink()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_normal()
+                                .line_height(px(14.))
+                                .child(status_message),
+                        ),
+                )
+                .into_any_element()];
+        }
+
         // Activity states (WaitingForResponse, RateLimited) are now shown
         // inline at the bottom of the messages list — no floating popover.
 

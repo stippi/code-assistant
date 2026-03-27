@@ -64,6 +64,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "test-123".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -92,7 +93,7 @@ mod tests {
         // Check if we have the tool name fragment
         assert!(fragments.iter().any(|fragment| {
             match fragment {
-                DisplayFragment::ToolName { name, id } => {
+                DisplayFragment::ToolName { name, id, .. } => {
                     name == "search_files" && id == "search-123"
                 }
                 _ => false,
@@ -151,6 +152,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "write_file".to_string(),
                 id: "write-123".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "content".to_string(),
@@ -181,6 +183,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "write_file".to_string(),
                 id: "write-123".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "content".to_string(),
@@ -206,6 +209,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "list_files".to_string(),
                 id: "list-123".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "options".to_string(),
@@ -232,7 +236,7 @@ mod tests {
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me think about this.".to_string()),
-            DisplayFragment::ThinkingText("This is a complex problem.".to_string()),
+            DisplayFragment::thinking_text("This is a complex problem.".to_string()),
             DisplayFragment::PlainText("I've decided.".to_string()),
         ];
 
@@ -249,9 +253,11 @@ mod tests {
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Working on it.".to_string()),
-            DisplayFragment::ThinkingText("First consideration.".to_string()),
+            DisplayFragment::thinking_text("First consideration.".to_string()),
             DisplayFragment::PlainText("Progress.".to_string()),
-            DisplayFragment::ThinkingText("Second consideration with\nmultiple lines.".to_string()),
+            DisplayFragment::thinking_text(
+                "Second consideration with\nmultiple lines.".to_string(),
+            ),
             DisplayFragment::PlainText("Result.".to_string()),
         ];
 
@@ -269,7 +275,7 @@ mod tests {
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me analyze:".to_string()),
-            DisplayFragment::ThinkingText(
+            DisplayFragment::thinking_text(
                 "This requires careful analysis of the problem.".to_string(),
             ),
             DisplayFragment::PlainText("Done.".to_string()),
@@ -334,7 +340,7 @@ mod tests {
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me think".to_string()),
-            DisplayFragment::ThinkingText("Analysis goes here.".to_string()),
+            DisplayFragment::thinking_text("Analysis goes here.".to_string()),
             DisplayFragment::PlainText("Done.".to_string()),
         ];
 
@@ -408,6 +414,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "write_file".to_string(),
                 id: tool_id_str.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "project".to_string(),
@@ -467,7 +474,7 @@ mod tests {
         println!("Collected {} merged fragments:", fragments.len());
         for (i, fragment) in fragments.iter().enumerate() {
             match fragment {
-                DisplayFragment::ToolName { name, id } => {
+                DisplayFragment::ToolName { name, id, .. } => {
                     println!("  [{i}] ToolName: {name} (id: {id})");
                 }
                 DisplayFragment::ToolParameter {
@@ -490,7 +497,7 @@ mod tests {
         // Check tool name
         assert!(
             fragments.iter().any(|f| matches!(f,
-                DisplayFragment::ToolName { name, id }
+                DisplayFragment::ToolName { name, id, .. }
                 if name == "write_file" && id == "toolu_01UMyVAc3ZiT4V2jNAiBgRoq"
             )),
             "Should have correct tool name"
@@ -683,6 +690,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "test_tool".to_string(),
                 id: tool_id_str.to_string(),
+                duration_seconds: None,
             },
             // For an empty string "", the InValueString state will transition to ExpectCommaOrCloseBrace
             // upon seeing the closing quote. However, the empty value needs to be emited.
@@ -703,6 +711,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "test_tool".to_string(),
                 id: tool_id_str.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "key".to_string(),
@@ -753,6 +762,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "esc_tool".to_string(),
                 id: tool_id_str.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "esc_key".to_string(),
@@ -785,6 +795,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "esc_tool".to_string(),
                 id: tool_id_str.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "esc_key".to_string(),
@@ -814,6 +825,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: tool_name.to_string(),
                 id: tool_id.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "key1".to_string(),
@@ -848,6 +860,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: tool_name.to_string(),
                 id: tool_id.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "count".to_string(),
@@ -908,6 +921,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "multi_tool".to_string(),
                 id: tool_id_str.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "str_param".to_string(),
@@ -943,6 +957,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "multi_tool".to_string(),
                 id: tool_id_str.to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "str_param".to_string(),
@@ -1003,12 +1018,13 @@ mod tests {
         print_fragments(&raw_fragments);
 
         let expected_raw_fragments_subset = vec![
-            DisplayFragment::ThinkingText("Start of a ".to_string()),
-            DisplayFragment::ThinkingText("thinki".to_string()),
-            DisplayFragment::ThinkingText("ng block".to_string()),
+            DisplayFragment::thinking_text("Start of a ".to_string()),
+            DisplayFragment::thinking_text("thinki".to_string()),
+            DisplayFragment::thinking_text("ng block".to_string()),
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool-id".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "project".to_string(),
@@ -1065,7 +1081,7 @@ mod tests {
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me analyze this.".to_string()),
-            DisplayFragment::ThinkingText("This is complex.".to_string()),
+            DisplayFragment::thinking_text("This is complex.".to_string()),
             DisplayFragment::PlainText("Here's my answer.".to_string()),
         ];
 
@@ -1097,6 +1113,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool_123".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "project".to_string(),
@@ -1143,13 +1160,14 @@ mod tests {
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
         let expected_fragments = vec![
-            DisplayFragment::ThinkingText("Let me think about this request.".to_string()),
+            DisplayFragment::thinking_text("Let me think about this request.".to_string()),
             DisplayFragment::PlainText("I understand.".to_string()),
-            DisplayFragment::ThinkingText("More thinking here.".to_string()),
+            DisplayFragment::thinking_text("More thinking here.".to_string()),
             DisplayFragment::PlainText("Let me help.".to_string()),
             DisplayFragment::ToolName {
                 name: "write_file".to_string(),
                 id: "write_123".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "content".to_string(),

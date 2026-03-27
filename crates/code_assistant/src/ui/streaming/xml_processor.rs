@@ -86,7 +86,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
             // For native thinking chunks, send directly as ThinkingText
             StreamingChunk::Thinking(text) => self
                 .ui
-                .display_fragment(&DisplayFragment::ThinkingText(text.clone())),
+                .display_fragment(&DisplayFragment::thinking_text(text.clone())),
 
             StreamingChunk::RateLimit { seconds_remaining } => {
                 // Notify UI about rate limit with countdown
@@ -113,10 +113,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                         self.state.current_tool_hidden =
                             ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
-                        self.emit_fragment(DisplayFragment::ToolName {
-                            name: name.clone(),
-                            id: id.clone(),
-                        })?;
+                        self.emit_fragment(DisplayFragment::tool_name(name.clone(), id.clone()))?;
                     }
                 }
 
@@ -193,7 +190,10 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                     for block in blocks {
                         match block {
                             ContentBlock::Thinking { thinking, .. } => {
-                                fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
+                                fragments.push(DisplayFragment::ThinkingText {
+                                    text: thinking.clone(),
+                                    duration_seconds: block.duration().map(|d| d.as_secs_f64()),
+                                });
                             }
                             ContentBlock::Text { text, .. } => {
                                 // Process text for XML tags, using request_id for consistent tool ID generation
@@ -201,6 +201,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                     self.extract_fragments_from_text(text, message.request_id)?,
                                 );
                             }
+
                             ContentBlock::ToolUse {
                                 id, name, input, ..
                             } => {
@@ -214,6 +215,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                     fragments.push(DisplayFragment::ToolName {
                                         name: name.clone(),
                                         id: id.clone(),
+                                        duration_seconds: block.duration().map(|d| d.as_secs_f64()),
                                     });
 
                                     // Parse JSON input into XML-style tool parameters
@@ -420,10 +422,10 @@ impl XmlStreamProcessor {
                                 .is_tool_hidden(&self.state.tool_name, ToolScope::Agent);
 
                             // Send fragment with tool name
-                            self.emit_fragment(DisplayFragment::ToolName {
-                                name: self.state.tool_name.clone(),
-                                id: self.state.tool_id.clone(),
-                            })?;
+                            self.emit_fragment(DisplayFragment::tool_name(
+                                self.state.tool_name.clone(),
+                                self.state.tool_id.clone(),
+                            ))?;
                         }
 
                         // Skip past this tag
@@ -564,7 +566,7 @@ impl XmlStreamProcessor {
     fn emit_text(&mut self, text: &str) -> Result<(), UIError> {
         let fragment = if self.state.in_thinking {
             // In thinking mode, text is displayed as thinking text
-            DisplayFragment::ThinkingText(text.to_string())
+            DisplayFragment::thinking_text(text.to_string())
         } else if self.state.in_param {
             // In parameter mode, text is collected as a parameter value
             // Only send if we have a valid tool_id
@@ -728,8 +730,9 @@ impl XmlStreamProcessor {
                         // Tool parameter - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }
+
                     DisplayFragment::PlainText(_)
-                    | DisplayFragment::ThinkingText(_)
+                    | DisplayFragment::ThinkingText { .. }
                     | DisplayFragment::CompactionDivider { .. } => {
                         // Text or thinking - buffer it
                         if let StreamingState::BufferingAfterTool {
@@ -895,7 +898,7 @@ impl XmlStreamProcessor {
 
                     if !processed_text.is_empty() {
                         if local_in_thinking {
-                            fragments.push(DisplayFragment::ThinkingText(processed_text));
+                            fragments.push(DisplayFragment::thinking_text(processed_text));
                         } else if local_in_param {
                             fragments.push(DisplayFragment::ToolParameter {
                                 name: local_param_name.clone(),
@@ -936,10 +939,10 @@ impl XmlStreamProcessor {
                                     String::new()
                                 };
 
-                                fragments.push(DisplayFragment::ToolName {
-                                    name: local_tool_name.clone(),
-                                    id: local_tool_id.clone(),
-                                });
+                                fragments.push(DisplayFragment::tool_name(
+                                    local_tool_name.clone(),
+                                    local_tool_id.clone(),
+                                ));
                             }
                             current_pos = absolute_tag_pos + tag_len;
                         }
@@ -975,7 +978,7 @@ impl XmlStreamProcessor {
 
                             if local_in_thinking {
                                 fragments
-                                    .push(DisplayFragment::ThinkingText(char_text.to_string()));
+                                    .push(DisplayFragment::thinking_text(char_text.to_string()));
                             } else if local_in_param {
                                 fragments.push(DisplayFragment::ToolParameter {
                                     name: local_param_name.clone(),
@@ -994,7 +997,7 @@ impl XmlStreamProcessor {
                     let char_text = &text[absolute_tag_pos..absolute_tag_pos + char_len];
 
                     if local_in_thinking {
-                        fragments.push(DisplayFragment::ThinkingText(char_text.to_string()));
+                        fragments.push(DisplayFragment::thinking_text(char_text.to_string()));
                     } else if local_in_param {
                         fragments.push(DisplayFragment::ToolParameter {
                             name: local_param_name.clone(),
@@ -1014,7 +1017,7 @@ impl XmlStreamProcessor {
 
                     if !processed_text.is_empty() {
                         if local_in_thinking {
-                            fragments.push(DisplayFragment::ThinkingText(processed_text));
+                            fragments.push(DisplayFragment::thinking_text(processed_text));
                         } else if local_in_param {
                             fragments.push(DisplayFragment::ToolParameter {
                                 name: local_param_name.clone(),

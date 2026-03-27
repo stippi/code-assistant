@@ -164,7 +164,10 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                     for block in blocks {
                         match block {
                             llm::ContentBlock::Thinking { thinking, .. } => {
-                                fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
+                                fragments.push(DisplayFragment::ThinkingText {
+                                    text: thinking.clone(),
+                                    duration_seconds: block.duration().map(|d| d.as_secs_f64()),
+                                });
                             }
                             llm::ContentBlock::Text { text, .. } => {
                                 // Process text for caret syntax
@@ -180,11 +183,13 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                                     ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
                                 // Only add fragments if tool is not hidden
+
                                 if !tool_hidden {
                                     // Convert JSON ToolUse to caret-style fragments
                                     fragments.push(DisplayFragment::ToolName {
                                         name: name.clone(),
                                         id: id.clone(),
+                                        duration_seconds: block.duration().map(|d| d.as_secs_f64()),
                                     });
 
                                     // Parse JSON input into caret-style tool parameters
@@ -345,10 +350,10 @@ impl CaretStreamProcessor {
                 let mut fragments = Vec::new();
 
                 // Add tool name fragment
-                fragments.push(DisplayFragment::ToolName {
-                    name: tool_name.to_string(),
-                    id: tool_id.clone(),
-                });
+                fragments.push(DisplayFragment::tool_name(
+                    tool_name.to_string(),
+                    tool_id.clone(),
+                ));
 
                 // Parse parameters between start and end
                 let param_lines = &lines[1..end_idx];
@@ -893,8 +898,9 @@ impl CaretStreamProcessor {
                         // Tool parameter - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }
+
                     DisplayFragment::PlainText(_)
-                    | DisplayFragment::ThinkingText(_)
+                    | DisplayFragment::ThinkingText { .. }
                     | DisplayFragment::CompactionDivider { .. } => {
                         // Text or thinking - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
@@ -975,10 +981,7 @@ impl CaretStreamProcessor {
     }
 
     fn send_tool_start(&mut self, name: &str, id: &str) -> Result<(), UIError> {
-        self.emit_fragment(DisplayFragment::ToolName {
-            name: name.to_string(),
-            id: id.to_string(),
-        })
+        self.emit_fragment(DisplayFragment::tool_name(name, id))
     }
 
     fn send_tool_parameter(
