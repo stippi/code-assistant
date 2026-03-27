@@ -169,7 +169,11 @@ pub fn animated_card_body(
             if h > px(0.0) {
                 d.h(h * animation_scale)
             } else {
-                d
+                // Height not yet measured — constrain to zero so content
+                // stays hidden until on_children_prepainted provides the
+                // real value on the next frame.  Without this the content
+                // flashes at full height for one frame.
+                d.h(px(0.0))
             }
         })
         .on_children_prepainted({

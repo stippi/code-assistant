@@ -4,9 +4,9 @@ use crate::ui::gpui::image;
 
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, Bounds,
-    ClickEvent, Context, Entity, ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled,
-    Task, Timer, Transformation,
+    bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, ClickEvent,
+    Context, Entity, ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task,
+    Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{text::TextView, ActiveTheme};
@@ -989,6 +989,18 @@ impl BlockView {
         let has_output = block.output.as_ref().is_some_and(|o| !o.is_empty());
         let can_expand = has_output;
 
+        // Animation scale for smooth expand/collapse
+        let animation_scale = match &self.animation_state {
+            AnimationState::Animating { height_scale, .. } => *height_scale,
+            AnimationState::Idle => {
+                if is_expanded {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        };
+
         // Chevron icon (only visible on hover, via group)
         let chevron_icon = if is_expanded {
             file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
@@ -1086,12 +1098,17 @@ impl BlockView {
 
         container = container.child(header);
 
-        // Expanded output area
-        if is_expanded && has_output {
+        // Animated output area
+        if (is_expanded || animation_scale > 0.0) && has_output {
             if let Some(output_el) =
                 renderer.render(block, self.is_generating, &theme, None, window, cx)
             {
-                container = container.child(output_el);
+                container =
+                    container.child(crate::ui::gpui::tool_block_renderers::animated_card_body(
+                        output_el,
+                        animation_scale,
+                        self.content_height.clone(),
+                    ));
             }
         }
 
@@ -1225,7 +1242,7 @@ impl Render for BlockView {
                                     .into_any(),
                             ])
                             .into_any(),
-                        // Animated content container
+                        // Animated content container (uses shared helper)
                         {
                             let scale = match &self.animation_state {
                                 AnimationState::Animating { height_scale, .. } => *height_scale,
@@ -1238,53 +1255,32 @@ impl Render for BlockView {
                                 }
                             };
 
-                            let content_height_rc = self.content_height.clone();
+                            let body_content = if !block.is_collapsed || scale > 0.0 {
+                                let content = block.get_expanded_content(self.is_generating);
+                                div()
+                                    .px_3()
+                                    .pt_1()
+                                    .pb_2()
+                                    .text_size(px(14.))
+                                    .italic()
+                                    .text_color(text_color)
+                                    .child(TextView::markdown(
+                                        "thinking-content",
+                                        content,
+                                        window,
+                                        cx,
+                                    ))
+                                    .into_any()
+                            } else {
+                                div().into_any()
+                            };
 
-                            div()
-                                .overflow_hidden()
-                                .when(scale > 0.0, |div| {
-                                    let actual_height = content_height_rc.get();
-                                    let animated_height = actual_height * scale;
-                                    div.h(animated_height)
-                                })
-                                .child(
-                                    div()
-                                        .on_children_prepainted({
-                                            let content_height_rc = content_height_rc.clone();
-                                            move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
-                                                if let Some(first_child_bounds) = bounds_vec.first()
-                                                {
-                                                    let new_height = first_child_bounds.size.height;
-                                                    if content_height_rc.get() != new_height {
-                                                        content_height_rc.set(new_height);
-                                                    }
-                                                }
-                                            }
-                                        })
-                                        .child(if !block.is_collapsed || scale > 0.0 {
-                                            // Expanded view - use reasoning-aware content
-                                            let content =
-                                                block.get_expanded_content(self.is_generating);
-                                            div()
-                                                .px_3()
-                                                .pt_1()
-                                                .pb_2()
-                                                .text_size(px(14.))
-                                                .italic()
-                                                .text_color(text_color)
-                                                .child(TextView::markdown(
-                                                    "thinking-content",
-                                                    content,
-                                                    window,
-                                                    cx,
-                                                ))
-                                                .into_any()
-                                        } else {
-                                            // If collapsed, don't show any preview content
-                                            div().into_any()
-                                        }),
-                                )
-                                .into_any()
+                            crate::ui::gpui::tool_block_renderers::animated_card_body(
+                                body_content,
+                                scale,
+                                self.content_height.clone(),
+                            )
+                            .into_any()
                         },
                     ])
                     .into_any_element()
