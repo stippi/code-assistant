@@ -225,9 +225,11 @@ impl MessagesView {
             // Already running — it will keep chasing the bottom.
             return;
         }
-        // Will be started in the next render cycle when we have a Context.
-        // We set a flag and start the task in render() or via a dedicated method.
+        // Flag for restart. Clear the old (completed) task so the render
+        // check `animation_active && smooth_scroll_task.is_none()` will
+        // trigger a new spawn.
         self.animation_active.set(true);
+        self.smooth_scroll_task = None;
     }
 
     /// Actually spawn the animation task. Must be called with a `Context<Self>`.
