@@ -2,9 +2,9 @@ use super::file_icons;
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use gpui::{
-    bounce, div, ease_in_out, percentage, prelude::*, px, Animation, AnimationExt, AppContext,
-    ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
+    div, percentage, prelude::*, px, Animation, AnimationExt, AppContext, ClickEvent, Context,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
 };
 use gpui_component::scroll::ScrollableElement;
 
@@ -193,9 +193,7 @@ impl Render for ChatListItem {
                                         "activity-spin-{}",
                                         self.metadata.id
                                     )),
-                                    Animation::new(std::time::Duration::from_secs(2))
-                                        .repeat()
-                                        .with_easing(bounce(ease_in_out)),
+                                    Animation::new(std::time::Duration::from_secs(2)).repeat(),
                                     |svg, delta| {
                                         svg.with_transformation(Transformation::rotate(percentage(
                                             delta,
