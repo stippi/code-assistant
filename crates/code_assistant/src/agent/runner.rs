@@ -2170,8 +2170,11 @@ impl Agent {
 
         // Execute the tool - could fail with ParseError or other errors
         let mut input = tool_request.input.clone();
+        let execution_start = std::time::Instant::now();
         let result = match tool.invoke(&mut context, &mut input).await {
             Ok(result) => {
+                let execution_duration = Some(execution_start.elapsed().as_secs_f64());
+
                 // Tool executed successfully (but may have failed functionally)
                 let success = result.is_success();
 
@@ -2200,7 +2203,7 @@ impl Agent {
                             status,
                             message: Some(short_output),
                             output: Some(ui_output),
-                            duration_seconds: None,
+                            duration_seconds: execution_duration,
                         })
                         .await?;
                 }
@@ -2257,7 +2260,10 @@ impl Agent {
 
                 Ok(success)
             }
+
             Err(e) => {
+                let execution_duration = Some(execution_start.elapsed().as_secs_f64());
+
                 // Tool execution failed (parameter error, etc.)
                 let error_text = Self::format_error_for_user(&e);
 
@@ -2269,7 +2275,7 @@ impl Agent {
                             status: crate::ui::ToolStatus::Error,
                             message: Some(error_text.clone()),
                             output: Some(error_text.clone()),
-                            duration_seconds: None,
+                            duration_seconds: execution_duration,
                         })
                         .await?;
                 }

@@ -460,6 +460,7 @@ impl MessageContainer {
                     if duration_seconds.is_some() {
                         thinking_block.duration_seconds = duration_seconds;
                         thinking_block.is_completed = true;
+                        view.set_generating(false);
                     }
                     was_appended = true;
                     cx.notify();
@@ -479,13 +480,20 @@ impl MessageContainer {
             content.to_string()
         };
 
+        let has_duration = duration_seconds.is_some();
         let mut thinking = ThinkingBlock::new(final_content);
         if let Some(dur) = duration_seconds {
             thinking.duration_seconds = Some(dur);
             thinking.is_completed = true;
         }
         let block = BlockData::ThinkingBlock(thinking);
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view = cx.new(|cx| {
+            let mut bv = BlockView::new(block, request_id, self.current_project.clone(), cx);
+            if has_duration {
+                bv.set_generating(false);
+            }
+            bv
+        });
         elements.push(view);
         cx.notify();
     }

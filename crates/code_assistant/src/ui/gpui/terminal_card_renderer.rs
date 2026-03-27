@@ -208,12 +208,21 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         // ---- Header ----
 
         // Elapsed time (while running: shown after 2s; when done: always shown).
-        // For restored sessions without a live terminal, use the persisted duration
-        // from ContentBlock timestamps stored on the ToolUseBlock.
-        let elapsed_secs = if is_live {
+        // Once the tool has finished (Success/Error), use the stable duration_seconds
+        // from ContentBlock timestamps — this works for both restored sessions and
+        // live terminals that have completed (prevents the timer from counting up forever).
+        let elapsed_secs = if tool_finished {
+            tool.duration_seconds.map(|d| d as u64).or_else(|| {
+                if is_live {
+                    Some(started_at.elapsed().as_secs())
+                } else {
+                    None
+                }
+            })
+        } else if is_live {
             Some(started_at.elapsed().as_secs())
         } else {
-            tool.duration_seconds.map(|d| d as u64)
+            None
         };
 
         // Chevron (right-aligned, matching inline tool style)
