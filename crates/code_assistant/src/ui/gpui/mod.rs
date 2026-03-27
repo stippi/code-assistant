@@ -237,9 +237,10 @@ impl Gpui {
     /// Called after streaming content is appended to the last message, which
     /// changes the height of the last list item without changing the item count.
     fn auto_scroll_if_following(&self, cx: &mut gpui::AsyncApp) {
-        self.update_messages_view(cx, |view, _cx| {
+        self.update_messages_view(cx, |view, cx| {
             if view.follow_tail {
                 view.scroll_to_bottom();
+                cx.notify(); // Trigger render so animation task can be spawned
             }
         });
     }

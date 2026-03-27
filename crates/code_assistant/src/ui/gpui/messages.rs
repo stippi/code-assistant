@@ -2,12 +2,31 @@ use super::branch_switcher::BranchSwitcherElement;
 use super::elements::MessageContainer;
 use gpui::{
     div, list, prelude::*, px, rgb, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    ListAlignment, ListState, SharedString, Window,
+    ListAlignment, ListState, Point, SharedString, Task, Timer, Window,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::trace;
+
+// ---------------------------------------------------------------------------
+// Smooth-scroll configuration (spring-damper model, same tuning as the old
+// AutoScrollContainer).
+// ---------------------------------------------------------------------------
+
+/// How often the animation loop ticks (~120 FPS).
+const ANIMATION_FRAME_MS: u64 = 8;
+/// Spring constant.
+const SPRING_K: f32 = 0.035;
+/// Damping constant.
+const DAMPING_C: f32 = 0.32;
+/// Stop threshold: distance in pixels.
+const MIN_DISTANCE_TO_STOP: f32 = 0.5;
+/// Stop threshold: speed in pixels/frame.
+const MIN_SPEED_TO_STOP: f32 = 0.5;
 
 /// MessagesView - Component responsible for displaying the message history.
 ///
@@ -28,6 +47,16 @@ pub struct MessagesView {
     list_state: ListState,
     /// Whether auto-scroll to bottom is active (user is following the tail).
     pub follow_tail: bool,
+
+    // -- Smooth-scroll animation state --
+    /// Running animation task. Dropping it cancels the animation.
+    smooth_scroll_task: Option<Task<()>>,
+    /// Shared flag read by the animation loop — set to `false` to request stop.
+    animation_active: Rc<Cell<bool>>,
+    /// The pixel offset we last wrote via the animation loop. Used to detect
+    /// whether the user scrolled manually (the scroll handler fires with a
+    /// different offset than we set).
+    last_animation_offset: Rc<Cell<f32>>,
 }
 
 impl MessagesView {
@@ -40,13 +69,33 @@ impl MessagesView {
         // are pre-rendered, avoiding flicker when scrolling.
         let list_state = ListState::new(initial_count, ListAlignment::Top, px(1024.));
 
-        // Install scroll handler to detect when user scrolls away from bottom
+        let animation_active: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let last_animation_offset: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
+
+        // Install scroll handler to detect when user scrolls away from bottom.
+        // If an animation is running and the user scrolls manually, stop it.
         let entity = cx.entity().downgrade();
+        let anim_active_for_handler = animation_active.clone();
+        let last_anim_offset_for_handler = last_animation_offset.clone();
         list_state.set_scroll_handler(move |_event, _window, cx| {
-            // Must defer to avoid double-borrow of ListState's internal RefCell
             let entity = entity.clone();
+            let anim_active = anim_active_for_handler.clone();
+            let last_offset = last_anim_offset_for_handler.clone();
             cx.defer(move |cx| {
                 let _ = entity.update(cx, |this, _cx| {
+                    // If an animation is running, check whether this scroll event
+                    // was caused by the user (manual) vs. our animation loop.
+                    if anim_active.get() {
+                        let current: f32 =
+                            this.list_state.scroll_px_offset_for_scrollbar().y.into();
+                        let expected = last_offset.get();
+                        // Allow small floating-point jitter.
+                        if (current - expected).abs() > 1.5 {
+                            // User scrolled manually — stop animation.
+                            anim_active.set(false);
+                            this.smooth_scroll_task = None;
+                        }
+                    }
                     this.update_follow_tail();
                 });
             });
@@ -59,7 +108,10 @@ impl MessagesView {
             current_session_id: Arc::new(Mutex::new(None)),
             focus_handle: cx.focus_handle(),
             list_state,
-            follow_tail: true, // Start following tail by default
+            follow_tail: true,
+            smooth_scroll_task: None,
+            animation_active,
+            last_animation_offset,
         }
     }
 
@@ -98,18 +150,155 @@ impl MessagesView {
     pub fn messages_reset(&mut self, new_count: usize) {
         self.list_state.reset(new_count);
         self.follow_tail = true;
+        // For a full reset, jump instantly — no need to animate.
+        self.stop_animation();
         if new_count > 0 {
-            self.scroll_to_bottom();
+            self.scroll_to_bottom_instant();
         }
         trace!("ListState reset with {} items", new_count);
     }
 
-    /// Scroll to the bottom of the list
-    pub fn scroll_to_bottom(&self) {
+    // -----------------------------------------------------------------
+    // Scrolling helpers
+    // -----------------------------------------------------------------
+
+    /// Scroll to the bottom smoothly. Always uses the spring animation so
+    /// that irregular content growth during streaming (whole lines, tool
+    /// blocks, etc.) doesn't jerk the viewport. The animation loop
+    /// recalculates the target each frame from `max_offset_for_scrollbar()`,
+    /// so it naturally chases a continuously moving bottom.
+    pub fn scroll_to_bottom(&mut self) {
+        if self.list_state.item_count() == 0 {
+            return;
+        }
+        self.ensure_animation_running();
+    }
+
+    /// Jump to the bottom instantly (no animation).
+    fn scroll_to_bottom_instant(&self) {
         let count = self.list_state.item_count();
         if count > 0 {
             self.list_state.scroll_to_reveal_item(count - 1);
         }
+    }
+
+    /// Stop any running smooth-scroll animation.
+    fn stop_animation(&mut self) {
+        self.animation_active.set(false);
+        self.smooth_scroll_task = None;
+    }
+
+    /// Ensure the spring animation task is running. If it's already running
+    /// the task will naturally pick up the new target (always: scroll to bottom).
+    fn ensure_animation_running(&mut self) {
+        if self.animation_active.get() {
+            // Already running — it will keep chasing the bottom.
+            return;
+        }
+        // Will be started in the next render cycle when we have a Context.
+        // We set a flag and start the task in render() or via a dedicated method.
+        self.animation_active.set(true);
+    }
+
+    /// Actually spawn the animation task. Must be called with a `Context<Self>`.
+    fn spawn_animation_task(&mut self, cx: &mut Context<Self>) {
+        // Cancel any prior task.
+        self.smooth_scroll_task = None;
+
+        if !self.animation_active.get() {
+            return;
+        }
+
+        // Seed the expected offset to the current position so the scroll
+        // handler doesn't immediately detect a "manual scroll" on the first
+        // frame.
+        let current: f32 = self.list_state.scroll_px_offset_for_scrollbar().y.into();
+        self.last_animation_offset.set(current);
+
+        let list_state = self.list_state.clone();
+        let active = self.animation_active.clone();
+        let last_offset = self.last_animation_offset.clone();
+
+        let task = cx.spawn(async move |weak_entity, cx| {
+            let mut velocity: f32 = 0.0;
+
+            loop {
+                Timer::after(Duration::from_millis(ANIMATION_FRAME_MS)).await;
+
+                if !active.get() {
+                    break;
+                }
+
+                // Compute current position (negative) and target.
+                let current_offset: f32 = list_state.scroll_px_offset_for_scrollbar().y.into();
+                let max: f32 = list_state.max_offset_for_scrollbar().height.into();
+
+                // Target offset is -max (fully scrolled to bottom). The
+                // scrollbar API returns offset.y as negative.
+                let target: f32 = -max;
+
+                // displacement > 0 means we're above the target (need to scroll down).
+                let displacement = current_offset - target;
+
+                if displacement.abs() < MIN_DISTANCE_TO_STOP && velocity.abs() < MIN_SPEED_TO_STOP {
+                    // Close enough — snap to exact bottom and stop.
+                    list_state.set_offset_from_scrollbar(Point {
+                        x: px(0.),
+                        y: px(max),
+                    });
+                    last_offset.set(-max);
+                    active.set(false);
+
+                    // One final notify to paint the snapped position.
+                    let _ = weak_entity.update(cx, |_this, cx| {
+                        cx.notify();
+                    });
+                    break;
+                }
+
+                // Spring-damper physics.
+                let spring_force = -SPRING_K * displacement;
+                let damping_force = -DAMPING_C * velocity;
+                velocity += spring_force + damping_force;
+
+                let mut delta = velocity;
+
+                // Prevent overshooting past the target.
+                if displacement.abs() > f32::EPSILON {
+                    let new_offset = current_offset + delta;
+                    let new_displacement = new_offset - target;
+                    if new_displacement.signum() != displacement.signum() {
+                        // Would overshoot — clamp to exactly the target.
+                        delta = -displacement;
+                    }
+                }
+                if delta.abs() > displacement.abs() {
+                    delta = -displacement;
+                }
+
+                // Convert the new offset back to the absolute (positive)
+                // offset that `set_offset_from_scrollbar` expects.
+                let new_y = current_offset + delta;
+                let abs_offset = (-new_y).max(0.0);
+                list_state.set_offset_from_scrollbar(Point {
+                    x: px(0.),
+                    y: px(abs_offset),
+                });
+                last_offset.set(new_y);
+
+                // Request repaint.
+                let ok = weak_entity.update(cx, |_this, cx| {
+                    cx.notify();
+                });
+                if ok.is_err() {
+                    break;
+                }
+            }
+
+            active.set(false);
+        });
+
+        self.smooth_scroll_task = Some(task);
     }
 
     /// Check if we're near the bottom and update follow_tail state
@@ -378,6 +567,12 @@ impl Render for MessagesView {
         let current_count = self.list_state.item_count();
         if current_count != item_count {
             self.list_state.reset(item_count);
+        }
+
+        // If the animation flag was set but the task hasn't been spawned yet,
+        // spawn it now (we need a Context<Self> to call cx.spawn).
+        if self.animation_active.get() && self.smooth_scroll_task.is_none() {
+            self.spawn_animation_task(cx);
         }
 
         div()
