@@ -12,6 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::trace;
 
+/// Maximum width of the message content area. On wide viewports, messages
+/// stay centered rather than stretching edge-to-edge for comfortable reading.
+const MAX_MESSAGE_WIDTH: f32 = 900.0;
+
 // ---------------------------------------------------------------------------
 // Smooth-scroll configuration (spring-damper model, same tuning as the old
 // AutoScrollContainer).
@@ -369,6 +373,18 @@ impl MessagesView {
         result
     }
 
+    /// Wrap a message div in a full-width flex column that centers its child
+    /// horizontally via `items_center` (cross-axis). The main axis stays
+    /// vertical so the list's height measurement works correctly.
+    fn centered_list_item(content: gpui::Div) -> gpui::Div {
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(content.max_w(px(MAX_MESSAGE_WIDTH)))
+    }
+
     /// Update the pending message for the current session
     pub fn update_pending_message(&self, message: Option<String>) {
         *self.current_pending_message.lock().unwrap() = message;
@@ -414,8 +430,8 @@ impl MessagesView {
         };
 
         // Create message container with appropriate styling.
-        // w_full() is required because list items don't inherit parent flex width.
-        // p_3 provides interior padding, pb_2 at the end provides gap between items.
+        // p_3 provides interior padding. max_w is applied via the centering
+        // wrapper returned at the end of this function.
         let mut message_container = div().w_full().p_3().flex().flex_col().gap(px(10.));
 
         if is_user_message {
@@ -512,18 +528,24 @@ impl MessagesView {
         };
 
         // Add branch switcher if applicable
-        if is_user_message {
+        let message_container = if is_user_message {
             if let (Some(branch_info), Some(session_id)) = (branch_info, current_session_id.clone())
             {
                 if branch_info.sibling_ids.len() > 1 {
-                    return message_container
-                        .child(BranchSwitcherElement::new(branch_info, session_id))
-                        .into_any_element();
+                    message_container.child(BranchSwitcherElement::new(branch_info, session_id))
+                } else {
+                    message_container
                 }
+            } else {
+                message_container
             }
-        }
+        } else {
+            message_container
+        };
 
-        message_container.into_any_element()
+        // Wrap in a full-width centering container so that on wide viewports
+        // the message content stays centered rather than left-aligned.
+        Self::centered_list_item(message_container).into_any_element()
     }
 }
 
@@ -603,7 +625,7 @@ impl MessagesView {
             return div().into_any_element();
         }
 
-        div()
+        let pending_card = div()
             .w_full()
             .m_3()
             .bg(cx.theme().muted)
@@ -647,7 +669,8 @@ impl MessagesView {
                         )
                         .selectable(true),
                     ),
-            )
-            .into_any_element()
+            );
+
+        Self::centered_list_item(pending_card).into_any_element()
     }
 }
