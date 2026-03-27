@@ -214,7 +214,8 @@ impl SandboxedCommandExecutor {
             policy_path,
         } = invocation;
 
-        let mut cmd = std::process::Command::new(executable);
+        // Use tokio's async Command to avoid blocking the runtime.
+        let mut cmd = TokioCommand::new(executable);
         cmd.args(&args);
         cmd.current_dir(cwd);
         cmd.env("CODE_ASSISTANT_SANDBOX", "seatbelt");
@@ -222,7 +223,7 @@ impl SandboxedCommandExecutor {
             cmd.env("CODE_ASSISTANT_SANDBOX_NETWORK_DISABLED", "1");
         }
 
-        let output = cmd.output()?;
+        let output = cmd.output().await?;
         drop(policy_path);
 
         let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
