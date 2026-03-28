@@ -425,6 +425,86 @@ impl acp::Agent for ACPAgentImpl {
 
             // Process each message to extract and send fragments
             for message in messages {
+                // Handle compaction summary messages
+                if message.is_compaction_summary {
+                    let summary = match &message.content {
+                        llm::MessageContent::Text(text) => text.trim().to_string(),
+                        llm::MessageContent::Structured(blocks) => blocks
+                            .iter()
+                            .filter_map(|block| match block {
+                                llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                llm::ContentBlock::Thinking { thinking, .. } => {
+                                    Some(thinking.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .trim()
+                            .to_string(),
+                    };
+                    let fragment = crate::ui::DisplayFragment::CompactionDivider { summary };
+                    ui.display_fragment(&fragment)
+                        .map_err(|_| acp::Error::internal_error())?;
+                    continue;
+                }
+
+                // For user messages: filter out tool-result messages and empty messages,
+                // then emit remaining ones as UserMessageChunk (not AgentMessageChunk)
+                if message.role == llm::MessageRole::User {
+                    match &message.content {
+                        llm::MessageContent::Text(text) if text.trim().is_empty() => continue,
+                        llm::MessageContent::Structured(blocks) => {
+                            let has_tool_results = blocks
+                                .iter()
+                                .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
+                            if has_tool_results {
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    // Emit user message text directly as UserMessageChunk
+                    let text = match &message.content {
+                        llm::MessageContent::Text(text) => text.clone(),
+                        llm::MessageContent::Structured(blocks) => blocks
+                            .iter()
+                            .filter_map(|block| match block {
+                                llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    };
+                    if !text.is_empty() {
+                        let content = acp::ContentBlock::Text(acp::TextContent::new(text));
+                        let chunk = ACPUserUI::content_chunk(content);
+                        ui.queue_session_update(acp::SessionUpdate::UserMessageChunk(chunk));
+                    }
+
+                    // Also emit any images in the user message
+                    if let llm::MessageContent::Structured(blocks) = &message.content {
+                        for block in blocks {
+                            if let llm::ContentBlock::Image {
+                                media_type, data, ..
+                            } = block
+                            {
+                                let content = acp::ContentBlock::Image(acp::ImageContent::new(
+                                    data.clone(),
+                                    media_type.clone(),
+                                ));
+                                let chunk = ACPUserUI::content_chunk(content);
+                                ui.queue_session_update(acp::SessionUpdate::UserMessageChunk(
+                                    chunk,
+                                ));
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Assistant messages: extract fragments and emit as AgentMessageChunk
                 let fragments = processor
                     .extract_fragments_from_message(&message)
                     .map_err(|_| acp::Error::internal_error())?;

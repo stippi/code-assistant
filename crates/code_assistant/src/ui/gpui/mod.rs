@@ -3,36 +3,26 @@ pub mod attachment;
 pub mod auto_scroll;
 pub mod branch_switcher;
 pub mod chat_sidebar;
-pub mod content_renderer;
-pub mod diff_renderer;
-pub mod edit_diff_renderer;
+pub mod diff_card_renderer;
 pub mod elements;
 pub mod file_icons;
 pub mod image;
 pub mod input_area;
 mod messages;
 pub mod model_selector;
-pub mod parameter_renderers;
 mod plan_banner;
 mod root;
 pub mod sandbox_selector;
-pub mod simple_renderers;
-pub mod spawn_agent_renderer;
+pub mod sub_agent_card_renderer;
+pub mod terminal_card_renderer;
+pub mod terminal_executor;
+pub mod terminal_pool;
 pub mod theme;
-pub mod tool_output_renderers;
+pub mod tool_block_renderers;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::PlanState;
-use crate::ui::gpui::{
-    content_renderer::ContentRenderer,
-    diff_renderer::DiffParameterRenderer,
-    edit_diff_renderer::EditDiffRenderer,
-    elements::MessageRole,
-    parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
-    simple_renderers::SimpleParameterRenderer,
-    spawn_agent_renderer::SpawnAgentInstructionsRenderer,
-    tool_output_renderers::{SpawnAgentOutputRenderer, ToolOutputRendererRegistry},
-};
+use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use assets::Assets;
 use async_channel;
@@ -73,8 +63,6 @@ pub struct Gpui {
     event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     session_event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
-    #[allow(dead_code)]
-    parameter_renderers: Arc<ParameterRendererRegistry>,
     // Unified backend communication
     backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
     backend_response_receiver: Arc<Mutex<Option<async_channel::Receiver<BackendResponse>>>>,
@@ -97,6 +85,8 @@ pub struct Gpui {
 
     // Error state management
     current_error: Arc<Mutex<Option<String>>>,
+    // Transient status notification (auto-dismisses after a few seconds)
+    transient_status: Arc<Mutex<Option<String>>>,
 
     // Current model selection
     current_model: Arc<Mutex<Option<String>>>,
@@ -222,6 +212,41 @@ impl Gpui {
             .expect("Failed to update message container");
     }
 
+    /// Notify the MessagesView that items were appended to the message_queue.
+    /// This splices the new items into the ListState (preserving cached heights
+    /// of existing items) and triggers auto-scroll if following tail.
+    fn notify_messages_appended(&self, old_len: usize, cx: &mut gpui::AsyncApp) {
+        let new_len = self.message_queue.lock().unwrap().len();
+        if new_len != old_len {
+            self.update_messages_view(cx, |view, cx| {
+                view.messages_spliced(old_len, new_len);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Notify the MessagesView that the message_queue was fully reset (cleared + reloaded).
+    /// This resets the ListState, discarding all cached heights.
+    fn notify_messages_reset(&self, cx: &mut gpui::AsyncApp) {
+        let new_len = self.message_queue.lock().unwrap().len();
+        self.update_messages_view(cx, |view, cx| {
+            view.messages_reset(new_len);
+            cx.notify();
+        });
+    }
+
+    /// Keep the list scrolled to the bottom if the user is following the tail.
+    /// Called after streaming content is appended to the last message, which
+    /// changes the height of the last list item without changing the item count.
+    fn auto_scroll_if_following(&self, cx: &mut gpui::AsyncApp) {
+        self.update_messages_view(cx, |view, cx| {
+            if view.follow_tail {
+                view.scroll_to_bottom();
+                cx.notify(); // Trigger render so animation task can be spawned
+            }
+        });
+    }
+
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
@@ -229,41 +254,16 @@ impl Gpui {
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
 
-        // Initialize parameter renderers registry with default renderer
-        let mut registry = ParameterRendererRegistry::new(Box::new(DefaultParameterRenderer));
-
-        // Register specialized renderers
-        registry.register_renderer(Box::new(DiffParameterRenderer));
-        registry.register_renderer(Box::new(EditDiffRenderer));
-        registry.register_renderer(Box::new(ContentRenderer));
-
-        // Register simple renderers for parameters that don't need labels
-        registry.register_renderer(Box::new(SimpleParameterRenderer::new(
-            vec![
-                ("execute_command".to_string(), "command_line".to_string()),
-                ("read_files".to_string(), "paths".to_string()),
-                ("list_files".to_string(), "paths".to_string()),
-                ("replace_in_file".to_string(), "path".to_string()),
-                ("write_file".to_string(), "path".to_string()),
-                ("search_files".to_string(), "regex".to_string()),
-                ("glob_files".to_string(), "pattern".to_string()),
-            ],
-            false, // These are not full-width
-        )));
-
-        // Register spawn_agent instructions renderer (full-width markdown)
-        registry.register_renderer(Box::new(SpawnAgentInstructionsRenderer));
-
-        // Wrap the registry in Arc for sharing
-        let parameter_renderers = Arc::new(registry);
-
-        // Set the global registry
-        ParameterRendererRegistry::set_global(parameter_renderers.clone());
-
-        // Initialize tool output renderers registry
-        let mut tool_output_registry = ToolOutputRendererRegistry::new();
-        tool_output_registry.register_renderer(Box::new(SpawnAgentOutputRenderer));
-        ToolOutputRendererRegistry::set_global(Arc::new(tool_output_registry));
+        // Initialize tool block renderer registry
+        {
+            use tool_block_renderers::{InlineToolRenderer, ToolBlockRendererRegistry};
+            let mut tbr_registry = ToolBlockRendererRegistry::new();
+            tbr_registry.register(Arc::new(InlineToolRenderer::new()));
+            tbr_registry.register(Arc::new(terminal_card_renderer::TerminalCardRenderer));
+            tbr_registry.register(Arc::new(diff_card_renderer::DiffCardRenderer));
+            tbr_registry.register(Arc::new(sub_agent_card_renderer::SubAgentCardRenderer));
+            ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
+        }
 
         // Create a channel to send and receive UiEvents
         let (tx, rx) = async_channel::unbounded::<UiEvent>();
@@ -292,7 +292,6 @@ impl Gpui {
             event_task,
             session_event_task,
             current_request_id,
-            parameter_renderers,
             backend_event_sender: Arc::new(Mutex::new(None)),
             backend_response_receiver: Arc::new(Mutex::new(None)),
 
@@ -310,6 +309,7 @@ impl Gpui {
 
             // Error state management
             current_error: Arc::new(Mutex::new(None)),
+            transient_status: Arc::new(Mutex::new(None)),
 
             // Current model selection
             current_model: Arc::new(Mutex::new(None)),
@@ -388,8 +388,12 @@ impl Gpui {
             // Spawn task to handle chat management responses from agent
             let chat_gpui_clone = gpui_clone.clone();
             let chat_response_task = cx.spawn(async move |cx: &mut AsyncApp| {
-                // Wait a bit for the communication channels to be set up
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                // Wait a bit for the communication channels to be set up.
+                // NOTE: Use GPUI-native timer, not tokio::time::sleep, because
+                // this runs on the GPUI foreground executor, not a tokio runtime.
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
 
                 loop {
                     // Check if we have a response receiver
@@ -410,7 +414,9 @@ impl Gpui {
                         }
                     } else {
                         // No receiver yet, wait and try again
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(100))
+                            .await;
                     }
                 }
             });
@@ -420,6 +426,13 @@ impl Gpui {
                 let mut task_guard = gpui_clone.session_event_task.lock().unwrap();
                 *task_guard = Some(chat_response_task);
             }
+
+            // Register the GPUI terminal worker so that
+            // GpuiTerminalCommandExecutor can create PTY terminals.
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                terminal_executor::register_gpui_terminal_worker(cx);
+            })
+            .detach();
 
             // Create window with larger size to accommodate chat sidebar and messages
             let bounds =
@@ -444,8 +457,9 @@ impl Gpui {
                     },
                     |window, cx| {
                         // Create MessagesView
-                        let messages_view =
-                            cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
+                        let activity_state = gpui_clone.current_session_activity_state.clone();
+                        let messages_view = cx
+                            .new(|cx| MessagesView::new(message_queue.clone(), activity_state, cx));
 
                         // Store MessagesView reference in Gpui
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
@@ -488,100 +502,124 @@ impl Gpui {
                 attachments,
                 node_id,
             } => {
-                let mut queue = self.message_queue.lock().unwrap();
-                let result = cx.new(|cx| {
-                    let new_message = MessageContainer::with_role(MessageRole::User, cx);
+                let old_len;
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    old_len = queue.len();
+                    let result = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::User, cx);
 
-                    // Set node_id for edit button support
-                    new_message.set_node_id(node_id);
+                        // Set node_id for edit button support
+                        new_message.set_node_id(node_id);
 
-                    // Add text content if not empty
-                    if !content.is_empty() {
-                        new_message.add_text_block(&content, cx);
-                    }
+                        // Add text content if not empty
+                        if !content.is_empty() {
+                            new_message.add_text_block(&content, cx);
+                        }
 
-                    // Add attachments
-                    for attachment in attachments {
-                        match attachment {
-                            crate::persistence::DraftAttachment::Image {
-                                content,
-                                mime_type,
-                                ..
-                            } => {
-                                new_message.add_image_block(&mime_type, &content, cx);
-                            }
-                            crate::persistence::DraftAttachment::Text { content } => {
-                                new_message.add_text_block(&content, cx);
-                            }
-                            crate::persistence::DraftAttachment::File {
-                                content, filename, ..
-                            } => {
-                                let file_text = format!("File: {filename}\n{content}");
-                                new_message.add_text_block(&file_text, cx);
+                        // Add attachments
+                        for attachment in attachments {
+                            match attachment {
+                                crate::persistence::DraftAttachment::Image {
+                                    content,
+                                    mime_type,
+                                    ..
+                                } => {
+                                    new_message.add_image_block(&mime_type, &content, cx);
+                                }
+                                crate::persistence::DraftAttachment::Text { content } => {
+                                    new_message.add_text_block(&content, cx);
+                                }
+                                crate::persistence::DraftAttachment::File {
+                                    content,
+                                    filename,
+                                    ..
+                                } => {
+                                    let file_text = format!("File: {filename}\n{content}");
+                                    new_message.add_text_block(&file_text, cx);
+                                }
                             }
                         }
-                    }
 
-                    new_message
-                });
-                if let Ok(new_message) = result {
-                    queue.push(new_message);
-                } else {
-                    warn!("Failed to create message entity");
+                        new_message
+                    });
+                    if let Ok(new_message) = result {
+                        queue.push(new_message);
+                    } else {
+                        warn!("Failed to create message entity");
+                    }
                 }
 
-                // Reset pending message when a user message is displayed
-                self.update_messages_view(cx, |messages_view, cx| {
+                // Sync ListState and reset pending message
+                self.notify_messages_appended(old_len, cx);
+                self.update_messages_view(cx, |messages_view, _cx| {
                     messages_view.update_pending_message(None);
-                    cx.notify();
                 });
             }
             UiEvent::DisplayCompactionSummary { summary } => {
-                let mut queue = self.message_queue.lock().unwrap();
-                let result = cx.new(|cx| {
-                    let message = MessageContainer::with_role(MessageRole::User, cx);
-                    message.add_compaction_divider(summary.clone(), cx);
-                    message
-                });
-                if let Ok(new_message) = result {
-                    queue.push(new_message);
-                } else {
-                    warn!("Failed to create compaction summary message");
+                let old_len;
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    old_len = queue.len();
+                    let result = cx.new(|cx| {
+                        let message = MessageContainer::with_role(MessageRole::User, cx);
+                        message.add_compaction_divider(summary.clone(), cx);
+                        message
+                    });
+                    if let Ok(new_message) = result {
+                        queue.push(new_message);
+                    } else {
+                        warn!("Failed to create compaction summary message");
+                    }
                 }
-                cx.refresh().expect("Failed to refresh windows");
+                self.notify_messages_appended(old_len, cx);
             }
+
             UiEvent::AppendToTextBlock { content } => {
                 // Since StreamingStarted ensures last container is Assistant, we can safely append
                 self.update_last_message(cx, |message, cx| {
                     message.add_or_append_to_text_block(&content, cx)
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::AppendToThinkingBlock { content } => {
                 // Since StreamingStarted ensures last container is Assistant, we can safely append
                 self.update_last_message(cx, |message, cx| {
                     message.add_or_append_to_thinking_block(&content, cx)
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::StartTool { name, id } => {
                 // Since StreamingStarted ensures last container is Assistant, we can safely add tool
                 self.update_last_message(cx, |message, cx| {
                     message.add_tool_use_block(&name, &id, cx);
                 });
+                self.auto_scroll_if_following(cx);
             }
+
             UiEvent::UpdateToolParameter {
                 tool_id,
                 name,
                 value,
+                replace,
             } => {
-                self.update_last_message(cx, |message, cx| {
-                    message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
-                });
+                if replace {
+                    self.update_all_messages(cx, |message, cx| {
+                        message.replace_tool_parameter(&tool_id, &name, &value, cx);
+                    });
+                } else {
+                    self.update_last_message(cx, |message, cx| {
+                        message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
+                    });
+                }
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
                 message,
                 output,
+                duration_seconds,
             } => {
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.update_tool_status(
@@ -589,21 +627,25 @@ impl Gpui {
                         status,
                         message.clone(),
                         output.clone(),
+                        duration_seconds,
                         cx,
                     );
                 });
+                self.auto_scroll_if_following(cx);
             }
 
             UiEvent::EndTool { id } => {
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.end_tool_use(&id, cx);
                 });
+                self.auto_scroll_if_following(cx);
             }
             UiEvent::HiddenToolCompleted => {
                 // Mark that a hidden tool completed - message container handles paragraph breaks
                 self.update_last_message(cx, |message, cx| {
                     message.mark_hidden_tool_completed(cx);
                 });
+                self.auto_scroll_if_following(cx);
             }
 
             UiEvent::UpdatePlan { plan } => {
@@ -642,6 +684,7 @@ impl Gpui {
                     warn!("Using initial project: '{}'", current_project);
 
                     // Update MessagesView with current project and session ID
+
                     let session_id_for_messages = session_id.clone();
                     self.update_messages_view(cx, |messages_view, _cx| {
                         messages_view.set_current_project(current_project.clone());
@@ -736,6 +779,7 @@ impl Gpui {
                             tool_result.status,
                             tool_result.message.clone(),
                             tool_result.output.clone(),
+                            tool_result.duration_seconds,
                             cx,
                         );
                     });
@@ -760,44 +804,50 @@ impl Gpui {
                     }
                 }
 
-                cx.refresh().expect("Failed to refresh windows");
+                self.notify_messages_reset(cx);
             }
+
             UiEvent::StreamingStarted(request_id) => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let old_len;
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    old_len = queue.len();
 
-                // Grab the last container so we can reuse it without holding the lock
-                let last_container = queue.last().cloned();
+                    // Grab the last container so we can reuse it without holding the lock
+                    let last_container = queue.last().cloned();
 
-                // Check if we need to create a new assistant container
-                let needs_new_container = if let Some(last) = last_container.as_ref() {
-                    cx.update_entity(last, |message, _cx| message.is_user_message())
-                        .expect("Failed to update entity")
-                } else {
-                    true
-                };
+                    // Check if we need to create a new assistant container
+                    let needs_new_container = if let Some(last) = last_container.as_ref() {
+                        cx.update_entity(last, |message, _cx| message.is_user_message())
+                            .expect("Failed to update entity")
+                    } else {
+                        true
+                    };
 
-                if needs_new_container {
-                    // Create new assistant container
-                    let assistant_container = cx
-                        .new(|cx| {
-                            let container = MessageContainer::with_role(MessageRole::Assistant, cx);
+                    if needs_new_container {
+                        // Create new assistant container
+                        let assistant_container = cx
+                            .new(|cx| {
+                                let container =
+                                    MessageContainer::with_role(MessageRole::Assistant, cx);
+                                container.set_current_request_id(request_id);
+                                container
+                            })
+                            .expect("Failed to create new container");
+                        queue.push(assistant_container);
+                    } else if let Some(last_container) = last_container {
+                        // Reuse existing container — no push, just update request_id
+                        drop(queue);
+                        self.update_container(&last_container, cx, |container, cx| {
                             container.set_current_request_id(request_id);
-                            container
-                        })
-                        .expect("Failed to create new container");
-                    queue.push(assistant_container);
-                } else if let Some(last_container) = last_container {
-                    // Drop the queue lock before updating the container to avoid re-locking
-                    drop(queue);
-                    self.update_container(&last_container, cx, |container, cx| {
-                        container.set_current_request_id(request_id);
-                        cx.notify();
-                    });
-                    return;
+                            cx.notify();
+                        });
+                        return;
+                    }
                 }
 
-                // Drop the lock before falling through to avoid holding it longer than necessary
-                drop(queue);
+                // Sync ListState if we pushed a new container
+                self.notify_messages_appended(old_len, cx);
             }
             UiEvent::StreamingStopped {
                 id,
@@ -809,6 +859,13 @@ impl Gpui {
                         message_container.remove_blocks_with_request_id(id, cx);
                     });
                 }
+            }
+            UiEvent::RollbackStreaming { id } => {
+                // Discard all blocks produced by the failed request so the retry
+                // starts with a clean slate (same mechanism as cancellation).
+                self.update_all_messages(cx, |message_container, cx| {
+                    message_container.remove_blocks_with_request_id(id, cx);
+                });
             }
             UiEvent::RefreshChatList => {
                 debug!("UI: RefreshChatList event received");
@@ -832,11 +889,14 @@ impl Gpui {
                 debug!("UI: Refreshing windows for chat list update");
                 cx.refresh().expect("Failed to refresh windows");
             }
+
             UiEvent::ClearMessages => {
                 debug!("UI: ClearMessages event");
-                let mut queue = self.message_queue.lock().unwrap();
-                queue.clear();
-                cx.refresh().expect("Failed to refresh windows");
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+                self.notify_messages_reset(cx);
             }
 
             UiEvent::SendUserMessage {
@@ -981,11 +1041,30 @@ impl Gpui {
                     message.add_image_block(media_type, data, cx);
                 });
             }
+
             UiEvent::AppendToolOutput { tool_id, chunk } => {
                 // Append tool output to the last message container
                 self.update_last_message(cx, |message, cx| {
                     message.append_tool_output(tool_id, chunk, cx);
                 });
+                // Terminal card height grows as new output lines arrive;
+                // keep the chat scrolled to the bottom when following.
+                self.auto_scroll_if_following(cx);
+            }
+            UiEvent::ToolTerminalAttached {
+                tool_id,
+                terminal_id,
+            } => {
+                tracing::debug!("UI event: Tool {tool_id} attached terminal {terminal_id}");
+                let session_id = self
+                    .current_session_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
+                    pool.register_tool_mapping(session_id, tool_id, terminal_id);
+                }
             }
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
@@ -999,6 +1078,23 @@ impl Gpui {
                 // Clear the error message from state
                 *self.current_error.lock().unwrap() = None;
                 // Refresh UI to hide the error popover
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::ShowTransientStatus { message } => {
+                debug!("UI: ShowTransientStatus: {}", message);
+                *self.transient_status.lock().unwrap() = Some(message);
+                cx.refresh().expect("Failed to refresh windows");
+
+                // Schedule auto-dismiss after 3 seconds via a background thread
+                // that sends ClearTransientStatus back through the event channel.
+                let sender = self.event_sender.lock().unwrap().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let _ = sender.try_send(UiEvent::ClearTransientStatus);
+                });
+            }
+            UiEvent::ClearTransientStatus => {
+                *self.transient_status.lock().unwrap() = None;
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::StartReasoningSummaryItem => {
@@ -1215,6 +1311,7 @@ impl Gpui {
                             tool_result.status,
                             tool_result.message.clone(),
                             tool_result.output.clone(),
+                            tool_result.duration_seconds,
                             cx,
                         );
                     });
@@ -1237,6 +1334,9 @@ impl Gpui {
                         queue.push(assistant_container);
                     }
                 }
+
+                // Sync ListState with fully rebuilt queue
+                self.notify_messages_reset(cx);
 
                 // Store pending edit state for RootView to pick up on refresh
                 self.set_pending_edit(PendingEdit {
@@ -1318,14 +1418,27 @@ impl Gpui {
                         container.add_or_append_to_text_block(text, cx);
                     });
                 }
-                DisplayFragment::ThinkingText(text) => {
+
+                DisplayFragment::ThinkingText {
+                    text,
+                    duration_seconds,
+                } => {
                     self.update_container(container, cx, |container, cx| {
-                        container.add_or_append_to_thinking_block(text, cx);
+                        container.add_or_append_to_thinking_block_with_duration(
+                            text,
+                            duration_seconds,
+                            cx,
+                        );
                     });
                 }
-                DisplayFragment::ToolName { name, id } => {
+
+                DisplayFragment::ToolName {
+                    name,
+                    id,
+                    duration_seconds,
+                } => {
                     self.update_container(container, cx, |container, cx| {
-                        container.add_tool_use_block(name, id, cx);
+                        container.add_tool_use_block_with_duration(name, id, duration_seconds, cx);
                     });
                 }
                 DisplayFragment::ToolParameter {
@@ -1367,13 +1480,25 @@ impl Gpui {
                         container.append_tool_output(tool_id, chunk, cx);
                     });
                 }
+
                 DisplayFragment::ToolTerminal {
                     tool_id,
                     terminal_id,
                 } => {
-                    tracing::debug!(
-                        "GPUI: Tool {tool_id} attached terminal {terminal_id}; GUI terminal embedding unsupported"
-                    );
+                    tracing::debug!("GPUI: Tool {tool_id} attached terminal {terminal_id}");
+                    let session_id = self
+                        .current_session_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_default();
+                    if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
+                        pool.register_tool_mapping(
+                            session_id,
+                            tool_id.clone(),
+                            terminal_id.clone(),
+                        );
+                    }
                 }
 
                 DisplayFragment::ReasoningComplete => {
@@ -1429,6 +1554,10 @@ impl Gpui {
 
     pub fn get_current_error(&self) -> Option<String> {
         self.current_error.lock().unwrap().clone()
+    }
+
+    pub fn get_transient_status(&self) -> Option<String> {
+        self.transient_status.lock().unwrap().clone()
     }
 
     pub fn get_current_model(&self) -> Option<String> {
@@ -1751,9 +1880,11 @@ impl UserInterface for Gpui {
         match &event {
             UiEvent::StreamingStarted(request_id) => {
                 // Store the request ID
+
                 *self.current_request_id.lock().unwrap() = *request_id;
-                // Clear any existing error when new operation starts
+                // Clear any existing error/notification when new operation starts
                 *self.current_error.lock().unwrap() = None;
+                *self.transient_status.lock().unwrap() = None;
             }
             UiEvent::StreamingStopped { .. } => {
                 // Clear stop request for current session since streaming has stopped
@@ -1782,12 +1913,13 @@ impl UserInterface for Gpui {
                     content: text.clone(),
                 });
             }
-            DisplayFragment::ThinkingText(text) => {
+
+            DisplayFragment::ThinkingText { ref text, .. } => {
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: text.clone(),
                 });
             }
-            DisplayFragment::ToolName { name, id } => {
+            DisplayFragment::ToolName { name, id, .. } => {
                 if id.is_empty() {
                     warn!(
                         "StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!",
@@ -1821,6 +1953,7 @@ impl UserInterface for Gpui {
                     tool_id: tool_id.clone(),
                     name: name.clone(),
                     value: value.clone(),
+                    replace: false,
                 });
             }
             DisplayFragment::ToolEnd { id } => {
@@ -1867,13 +2000,16 @@ impl UserInterface for Gpui {
                     chunk: chunk.clone(),
                 });
             }
+
             DisplayFragment::ToolTerminal {
                 tool_id,
                 terminal_id,
             } => {
-                tracing::debug!(
-                    "GPUI: Tool {tool_id} attached terminal {terminal_id}; no dedicated UI hook"
-                );
+                tracing::debug!("GPUI proxy: Tool {tool_id} attached terminal {terminal_id}");
+                self.push_event(UiEvent::ToolTerminalAttached {
+                    tool_id: tool_id.clone(),
+                    terminal_id: terminal_id.clone(),
+                });
             }
 
             DisplayFragment::CompactionDivider { summary } => {

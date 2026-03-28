@@ -1,4 +1,3 @@
-use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
 
 use super::input_area::{InputArea, InputAreaEvent};
@@ -10,9 +9,8 @@ use super::{CloseWindow, Gpui, UiEventSender};
 use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
-    bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
-    ClickEvent, Context, Entity, FocusHandle, Focusable, SharedString, Subscription,
-    Transformation,
+    div, prelude::*, px, rgba, svg, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    SharedString, Subscription,
 };
 
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -23,7 +21,7 @@ use tracing::{debug, error, trace, warn};
 pub struct RootView {
     input_area: Entity<InputArea>,
     chat_sidebar: Entity<ChatSidebar>,
-    auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
+    messages_view: Entity<MessagesView>,
     plan_banner: Entity<plan_banner::PlanBanner>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
@@ -46,10 +44,6 @@ impl RootView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Create the auto-scroll container that wraps the messages view
-        let auto_scroll_container =
-            cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
-
         // Create the plan banner
         let plan_banner = cx.new(plan_banner::PlanBanner::new);
 
@@ -71,7 +65,7 @@ impl RootView {
         let mut root_view = Self {
             input_area,
             chat_sidebar,
-            auto_scroll_container,
+            messages_view,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
@@ -413,16 +407,13 @@ impl RootView {
         cx.notify();
     }
 
-    /// Render the floating status popover if needed
+    /// Render the floating status popover if needed (currently: errors only).
     fn render_status_popover(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        // Get current error and session activity state from global Gpui
-        let (current_error, current_activity_state) = if let Some(gpui) = cx.try_global::<Gpui>() {
-            (
-                gpui.get_current_error(),
-                gpui.current_session_activity_state.lock().unwrap().clone(),
-            )
+        // Get current error from global Gpui
+        let current_error = if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.get_current_error()
         } else {
-            (None, None)
+            None
         };
 
         // Check for error first (higher priority than activity states)
@@ -516,102 +507,79 @@ impl RootView {
                 .into_any_element()];
         }
 
-        if let Some(activity_state) = current_activity_state {
-            if matches!(
-                activity_state,
-                crate::session::instance::SessionActivityState::WaitingForResponse
-                    | crate::session::instance::SessionActivityState::RateLimited { .. }
-            ) {
-                let (message_text, bg_color, border_color, text_color) = match activity_state {
-                    crate::session::instance::SessionActivityState::RateLimited {
-                        seconds_remaining,
-                    } => (
-                        format!("Rate limited - retrying in {seconds_remaining}s..."),
-                        if cx.theme().is_dark() {
-                            rgba(0x43140780) // Dark orange background with transparency
-                        } else {
-                            rgba(0xFFF7EDFF) // Light orange background
-                        },
-                        if cx.theme().is_dark() {
-                            rgba(0xF97316FF) // Orange border
-                        } else {
-                            rgba(0xFB923CFF) // Stronger orange border
-                        },
-                        if cx.theme().is_dark() {
-                            rgba(0xFB923CFF) // Orange text
-                        } else {
-                            rgba(0xEA580CFF) // Full orange text
-                        },
-                    ),
-                    crate::session::instance::SessionActivityState::WaitingForResponse => (
-                        "Waiting for response...".to_string(),
-                        if cx.theme().is_dark() {
-                            rgba(0x1E3A8A80) // Dark blue background with transparency
-                        } else {
-                            rgba(0xEFF6FFFF) // Light blue background
-                        },
-                        if cx.theme().is_dark() {
-                            rgba(0x3B82F6FF) // Blue border
-                        } else {
-                            rgba(0x60A5FAFF) // Stronger blue border
-                        },
-                        if cx.theme().is_dark() {
-                            rgba(0x60A5FAFF) // Blue text
-                        } else {
-                            rgba(0x2563EBFF) // Full blue text
-                        },
-                    ),
-                    _ => unreachable!(),
-                };
+        // Transient status notification (lower priority than errors)
+        let transient_status = if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.get_transient_status()
+        } else {
+            None
+        };
 
-                // Return the floating popover positioned at bottom of scroll area
-                return vec![div()
-                    .absolute()
-                    .bottom_2() // Small gap from the bottom of the scroll area
-                    .left(px(0.))
-                    .right(px(0.))
-                    .flex()
-                    .justify_center() // Center the content horizontally
-                    .child(
-                        div()
-                            .px_4()
-                            .py_2()
-                            .bg(bg_color)
-                            .border_1()
-                            .border_color(border_color)
-                            .rounded_lg()
-                            .shadow_lg()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
+        if let Some(status_message) = transient_status {
+            let (bg_color, border_color, text_color, icon_color) = if cx.theme().is_dark() {
+                (
+                    rgba(0x78350F80), // Dark amber background with transparency
+                    rgba(0xF59E0BFF), // Amber border
+                    rgba(0xFDE68AFF), // Light amber text
+                    rgba(0xFBBF24FF), // Amber icon
+                )
+            } else {
+                (
+                    rgba(0xFFFBEBFF), // Light amber background
+                    rgba(0xF59E0BFF), // Amber border
+                    rgba(0x92400EFF), // Dark amber text
+                    rgba(0xD97706FF), // Amber icon
+                )
+            };
+
+            return vec![div()
+                .absolute()
+                .bottom_2()
+                .left(px(0.))
+                .right(px(0.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .bg(bg_color)
+                        .border_1()
+                        .border_color(border_color)
+                        .rounded_lg()
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .max_w(px(600.))
+                        .min_w(px(200.))
+                        .child(
+                            div().flex_none().child(
                                 svg()
                                     .size(px(14.))
                                     .path(SharedString::from("icons/arrow_circle.svg"))
-                                    .text_color(text_color)
-                                    .with_animation(
-                                        "floating_loading_indicator",
-                                        Animation::new(std::time::Duration::from_secs(2))
-                                            .repeat()
-                                            .with_easing(bounce(ease_in_out)),
-                                        |svg, delta| {
-                                            svg.with_transformation(Transformation::rotate(
-                                                percentage(delta),
-                                            ))
-                                        },
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_color(text_color)
-                                    .text_size(px(11.))
-                                    .font_weight(gpui::FontWeight(500.0))
-                                    .child(message_text),
+                                    .text_color(icon_color),
                             ),
-                    )
-                    .into_any_element()];
-            }
+                        )
+                        .child(
+                            div()
+                                .text_color(text_color)
+                                .text_size(px(11.))
+                                .font_weight(gpui::FontWeight(500.0))
+                                .flex_grow()
+                                .flex_shrink()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_normal()
+                                .line_height(px(14.))
+                                .child(status_message),
+                        ),
+                )
+                .into_any_element()];
         }
+
+        // Activity states (WaitingForResponse, RateLimited) are now shown
+        // inline at the bottom of the messages list — no floating popover.
 
         vec![] // No popover to show
     }
@@ -888,8 +856,8 @@ impl Render for RootView {
                                     .flex_1()
                                     .min_h_0()
                                     .child(
-                                        // Messages display area - AutoScrollContainer
-                                        self.auto_scroll_container.clone(),
+                                        // Messages display area - virtualized list
+                                        self.messages_view.clone(),
                                     )
                                     // Status popover - overlaid at bottom of scroll area
                                     .children(self.render_status_popover(cx)),

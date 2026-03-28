@@ -147,6 +147,16 @@ impl TerminalRenderer {
         })
     }
 
+    /// Discard the current active message and reset streaming state.
+    /// Used to roll back partially-streamed content before a retry.
+    pub fn discard_active_message(&mut self) {
+        self.streaming_controller.clear();
+        self.last_stream_kind = None;
+        self.spinner_state = SpinnerState::Hidden;
+        self.streaming_open = false;
+        self.transcript.discard_active_message();
+    }
+
     /// Start a new message (called on StreamingStarted)
     pub fn start_new_message(&mut self, _request_id: u64) {
         // Flush any buffered tail chunks into the currently active message before
@@ -374,7 +384,7 @@ impl TerminalRenderer {
         self.streaming_open = false;
     }
 
-    /// Add or update a tool parameter in the current message
+    /// Add or update a tool parameter in the current message (append semantics).
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
         let Some(live_message) = self.transcript.active_message_mut() else {
             tracing::warn!("Ignoring tool parameter update without active message");
@@ -383,6 +393,18 @@ impl TerminalRenderer {
 
         if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
             tool_block.add_or_update_parameter(name, value);
+        }
+    }
+
+    /// Replace a tool parameter value entirely (used by post-execution updates).
+    pub fn replace_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
+        let Some(live_message) = self.transcript.active_message_mut() else {
+            tracing::warn!("Ignoring tool parameter replace without active message");
+            return;
+        };
+
+        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+            tool_block.replace_parameter(name, value);
         }
     }
 

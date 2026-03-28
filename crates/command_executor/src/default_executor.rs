@@ -34,19 +34,24 @@ impl CommandExecutor for DefaultCommandExecutor {
         #[cfg(target_family = "unix")]
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         #[cfg(target_family = "unix")]
-        let mut cmd = std::process::Command::new(shell);
+        let mut cmd = Command::new(shell);
         #[cfg(target_family = "unix")]
         cmd.args(["-c", &format!("{command_line} 2>&1")]);
 
         #[cfg(target_family = "windows")]
-        let mut cmd = std::process::Command::new("cmd");
+        let mut cmd = Command::new("cmd");
         #[cfg(target_family = "windows")]
         cmd.args(["/C", &format!("{} 2>&1", command_line)]);
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
-        let output = cmd.output()?;
+
+        // Use tokio's async Command to avoid blocking the runtime.
+        // A blocking std::process::Command::output() call here would stall
+        // the tokio worker thread, causing apparent hangs when the command
+        // takes time (e.g. `cargo fmt` during format-on-save).
+        let output = cmd.output().await?;
 
         Ok(CommandOutput {
             success: output.status.success(),

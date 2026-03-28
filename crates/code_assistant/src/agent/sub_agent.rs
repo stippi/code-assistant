@@ -457,6 +457,7 @@ impl SubAgentUiAdapter {
                 status: ToolStatus::Running,
                 message: Some("Sub-agent running".to_string()),
                 output: Some(json),
+                duration_seconds: None,
             })
             .await;
     }
@@ -641,7 +642,7 @@ impl UserInterface for SubAgentUiAdapter {
         use crate::ui::DisplayFragment;
 
         match fragment {
-            DisplayFragment::ToolName { name, id } => {
+            DisplayFragment::ToolName { name, id, .. } => {
                 // A sub-agent tool is starting - capture it in our internal state.
                 // This is called during LLM streaming when the tool name is parsed.
                 //

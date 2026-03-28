@@ -175,6 +175,7 @@ fn test_caret_must_start_at_line_beginning() {
         DisplayFragment::ToolName {
             name: "real_tool".to_string(),
             id: "tool-42-1".to_string(),
+            duration_seconds: None,
         },
         DisplayFragment::ToolEnd {
             id: "tool-42-1".to_string(),
@@ -301,6 +302,7 @@ fn test_caret_chunked_across_tool_closing() {
         DisplayFragment::ToolName {
             name: "list_projects".to_string(),
             id: "tool-42-1".to_string(),
+            duration_seconds: None,
         },
         DisplayFragment::ToolEnd {
             id: "tool-42-1".to_string(),
@@ -324,6 +326,7 @@ fn test_caret_array_syntax_proper_formatting() {
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
             id: "tool-42-1".to_string(),
+            duration_seconds: None,
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
@@ -355,6 +358,7 @@ fn test_caret_array_syntax_chunked() {
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
             id: "tool-42-1".to_string(),
+            duration_seconds: None,
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
@@ -388,6 +392,7 @@ fn test_caret_multiline_parameter_chunked() {
         DisplayFragment::ToolName {
             name: "write_file".to_string(),
             id: "tool-42-1".to_string(),
+            duration_seconds: None,
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
@@ -424,6 +429,7 @@ fn test_caret_false_positive_prevention() {
         DisplayFragment::ToolName {
             name: "list_projects".to_string(),
             id: "tool-42-1".to_string(),
+            duration_seconds: None,
         },
         DisplayFragment::ToolEnd {
             id: "tool-42-1".to_string(),
@@ -504,6 +510,7 @@ fn test_caret_raw_vs_merged_fragments() {
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
             id: "tool-42-1".to_string(),
+            duration_seconds: None,
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),

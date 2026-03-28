@@ -2,11 +2,11 @@ use super::file_icons;
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use gpui::{
-    bounce, div, ease_in_out, percentage, prelude::*, px, Animation, AnimationExt, AppContext,
-    ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
+    div, percentage, prelude::*, px, Animation, AnimationExt, AppContext, ClickEvent, Context,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
 };
-use gpui_component::scroll::ScrollbarAxis;
+use gpui_component::scroll::ScrollableElement;
 
 use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::collections::HashMap;
@@ -193,9 +193,7 @@ impl Render for ChatListItem {
                                         "activity-spin-{}",
                                         self.metadata.id
                                     )),
-                                    Animation::new(std::time::Duration::from_secs(2))
-                                        .repeat()
-                                        .with_easing(bounce(ease_in_out)),
+                                    Animation::new(std::time::Duration::from_secs(2)).repeat(),
                                     |svg, delta| {
                                         svg.with_transformation(Transformation::rotate(percentage(
                                             delta,
@@ -777,10 +775,10 @@ impl Render for ChatSidebar {
                 div().flex_1().min_h(px(0.)).w_full().child(
                     div()
                         .id("chat-items")
-                        .py_1()
+                        .px(px(12.))
                         .w_full()
                         .h_full()
-                        .scrollable(ScrollbarAxis::Vertical)
+                        .overflow_y_scrollbar()
                         .flex()
                         .flex_col()
                         .children(children)

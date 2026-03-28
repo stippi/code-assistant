@@ -60,6 +60,16 @@ impl Render for ExecuteCommandOutput {
 
         formatted
     }
+
+    /// UI display uses raw command output only. The status and delimiters
+    /// shown in render() are meant for the LLM context. The terminal card
+    /// already conveys success/failure through its header chrome, so
+    /// repeating "Status: Success" in the output body is redundant and
+    /// causes visual flicker when the card switches between live-PTY and
+    /// display-only terminal paths.
+    fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
+        self.output.trim_end().to_string()
+    }
 }
 
 // ToolResult implementation

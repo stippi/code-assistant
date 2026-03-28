@@ -35,11 +35,12 @@ mod tests {
         let input = "<thinking>The user has not provided a task.</thinking>\nI'll use the ask_user tool.\n<tool:ask_user>\n<param:question>What would you like to know?</param:question>\n</tool:ask_user>";
 
         let expected_fragments = vec![
-            DisplayFragment::ThinkingText("The user has not provided a task.".to_string()),
+            DisplayFragment::thinking_text("The user has not provided a task.".to_string()),
             DisplayFragment::PlainText("I'll use the ask_user tool.".to_string()),
             DisplayFragment::ToolName {
                 name: "ask_user".to_string(),
                 id: "ignored".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "question".to_string(),
@@ -67,6 +68,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "ignored".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -174,6 +176,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "search_files".to_string(),
                 id: "ignored".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "regex".to_string(),
@@ -201,6 +204,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "replace_in_file".to_string(),
                 id: "ignored".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -232,7 +236,7 @@ mod tests {
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me think about this.".to_string()),
-            DisplayFragment::ThinkingText("This is a complex problem.".to_string()),
+            DisplayFragment::thinking_text("This is a complex problem.".to_string()),
             DisplayFragment::PlainText("I've decided.".to_string()),
         ];
 
@@ -273,11 +277,12 @@ mod tests {
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("I'll help you.".to_string()),
-            DisplayFragment::ThinkingText("Let me plan this.".to_string()),
+            DisplayFragment::thinking_text("Let me plan this.".to_string()),
             DisplayFragment::PlainText("Here's what I'll do:".to_string()),
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "xml_tool_id".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -318,6 +323,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "search_files".to_string(),
                 id: "search_456".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "project".to_string(),
@@ -360,13 +366,14 @@ mod tests {
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
         let expected_fragments = vec![
-            DisplayFragment::ThinkingText("I should write a file.".to_string()),
+            DisplayFragment::thinking_text("I should write a file.".to_string()),
             DisplayFragment::PlainText("Let me create the file.".to_string()),
-            DisplayFragment::ThinkingText("What content should I write?".to_string()),
+            DisplayFragment::thinking_text("What content should I write?".to_string()),
             DisplayFragment::PlainText("I'll write something useful.".to_string()),
             DisplayFragment::ToolName {
                 name: "write_file".to_string(),
                 id: "write_789".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -398,6 +405,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool-42-1".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -487,6 +495,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool-42-1".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -514,6 +523,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool-42-1".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -542,6 +552,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "edit_file".to_string(),
                 id: "tool-42-1".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "diff".to_string(),
@@ -705,6 +716,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool-42-1".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
@@ -774,6 +786,7 @@ mod tests {
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool-42-1".to_string(),
+                duration_seconds: None,
             },
             DisplayFragment::ToolParameter {
                 name: "project".to_string(),

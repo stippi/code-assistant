@@ -1,9 +1,9 @@
 use crate::config::DefaultProjectManager;
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::session::SessionManager;
+use crate::ui::gpui::terminal_executor::GpuiTerminalCommandExecutor;
 use crate::ui::UserInterface;
 use crate::utils::content::content_blocks_from;
-use command_executor::DefaultCommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 use sandbox::SandboxPolicy;
@@ -437,7 +437,7 @@ async fn handle_send_user_message(
     // Start the agent (message already added)
     let result = {
         let project_manager = Box::new(DefaultProjectManager::new());
-        let command_executor = Box::new(DefaultCommandExecutor);
+        let command_executor = Box::new(GpuiTerminalCommandExecutor);
         let user_interface = ui.clone();
 
         // Check if session has stored model config, otherwise use global config

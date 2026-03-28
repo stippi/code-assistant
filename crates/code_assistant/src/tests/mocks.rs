@@ -255,7 +255,8 @@ impl UserInterface for MockUI {
             crate::ui::DisplayFragment::PlainText(text) => {
                 self.streaming.lock().unwrap().push(text.clone());
             }
-            crate::ui::DisplayFragment::ThinkingText(text) => {
+
+            crate::ui::DisplayFragment::ThinkingText { ref text, .. } => {
                 self.streaming.lock().unwrap().push(text.clone());
             }
             crate::ui::DisplayFragment::Image { media_type, .. } => {

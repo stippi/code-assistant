@@ -1,9 +1,9 @@
 use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
 use crate::session::{SessionConfig, SessionManager};
+use crate::ui::gpui::terminal_executor::GpuiTerminalCommandExecutor;
 use crate::ui::{self, UserInterface};
 use anyhow::Result;
-use command_executor::DefaultCommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -89,7 +89,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 }
 
                 let project_manager = Box::new(DefaultProjectManager::new());
-                let command_executor = Box::new(DefaultCommandExecutor);
+                let command_executor = Box::new(GpuiTerminalCommandExecutor);
                 let user_interface: Arc<dyn crate::ui::UserInterface> =
                     Arc::new(gui_for_thread.clone());
 

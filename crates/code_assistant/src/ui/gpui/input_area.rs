@@ -71,7 +71,7 @@ impl InputArea {
         // Create the text input
         let text_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .multi_line()
+                .multi_line(true)
                 .auto_grow(1, 8)
                 .placeholder("Type your message...")
         });

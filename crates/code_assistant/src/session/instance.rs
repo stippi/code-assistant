@@ -430,6 +430,10 @@ impl SessionInstance {
     ) -> Result<Vec<crate::ui::ui_events::ToolResultData>, anyhow::Error> {
         use crate::tools::core::ResourcesTracker;
 
+        // Build a lookup map: tool_use_id → duration (seconds) from ToolResult ContentBlocks
+        // in the persisted message tree. This gives us stable execution durations for restored sessions.
+        let tool_result_durations = self.build_tool_result_duration_map();
+
         let mut tool_results = Vec::new();
         let mut resources_tracker = ResourcesTracker::new();
 
@@ -452,15 +456,52 @@ impl SessionInstance {
                 .as_render()
                 .render_for_ui(&mut resources_tracker);
 
+            let duration_seconds = tool_result_durations
+                .get(&execution.tool_request.id)
+                .copied();
+
             tool_results.push(crate::ui::ui_events::ToolResultData {
                 tool_id: execution.tool_request.id,
                 status,
                 message: Some(short_output),
                 output: Some(output),
+                duration_seconds,
             });
         }
 
         Ok(tool_results)
+    }
+
+    /// Build a map from tool_use_id to execution duration (seconds) by scanning
+    /// ToolResult ContentBlocks in the persisted message tree.
+    fn build_tool_result_duration_map(&self) -> std::collections::HashMap<String, f64> {
+        let mut map = std::collections::HashMap::new();
+
+        // Iterate over all messages in the active path (tree) or legacy messages
+        let messages: Vec<&llm::Message> = if !self.session.message_nodes.is_empty() {
+            self.session
+                .active_path
+                .iter()
+                .filter_map(|node_id| self.session.message_nodes.get(node_id))
+                .map(|node| &node.message)
+                .collect()
+        } else {
+            self.session.messages.iter().collect()
+        };
+
+        for message in messages {
+            if let llm::MessageContent::Structured(blocks) = &message.content {
+                for block in blocks {
+                    if let llm::ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        if let Some(duration) = block.duration() {
+                            map.insert(tool_use_id.clone(), duration.as_secs_f64());
+                        }
+                    }
+                }
+            }
+        }
+
+        map
     }
 }
 
@@ -576,6 +617,12 @@ impl UserInterface for ProxyUI {
                         self.session_id, error_msg
                     );
                     // The agent task will set the state to Idle when it terminates
+                }
+            }
+            UiEvent::RollbackStreaming { .. } => {
+                // Clear fragment buffer — the partial content is being discarded before a retry
+                if let Ok(mut buffer) = self.fragment_buffer.lock() {
+                    buffer.clear();
                 }
             }
             UiEvent::UpdateSessionActivityState {

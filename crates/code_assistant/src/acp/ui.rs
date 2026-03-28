@@ -432,7 +432,7 @@ impl ACPUserUI {
         self.should_continue.store(false, Ordering::Relaxed);
     }
 
-    fn content_chunk(content: acp::ContentBlock) -> acp::ContentChunk {
+    pub(crate) fn content_chunk(content: acp::ContentBlock) -> acp::ContentChunk {
         acp::ContentChunk::new(content)
     }
 
@@ -494,7 +494,7 @@ impl ACPUserUI {
         tool_call
     }
 
-    fn queue_session_update(&self, update: acp::SessionUpdate) {
+    pub(crate) fn queue_session_update(&self, update: acp::SessionUpdate) {
         let (ack_tx, _ack_rx) = oneshot::channel();
         let notification = acp::SessionNotification::new(self.session_id.clone(), update);
 
@@ -588,6 +588,7 @@ impl UserInterface for ACPUserUI {
                 status,
                 message,
                 output,
+                ..
             } => {
                 let tool_status = map_tool_status(status);
                 let message_clone = message.clone();
@@ -639,18 +640,27 @@ impl UserInterface for ACPUserUI {
                     "ACPUserUI: streaming event received via send_event; handled via display_fragment"
                 );
             }
+
             UiEvent::UpdateToolParameter {
                 tool_id,
                 name,
                 value,
+                replace,
             } => {
                 if tool_id.is_empty() {
                     tracing::warn!("ACPUserUI: UpdateToolParameter with empty tool_id");
                 } else {
                     let name = name.clone();
                     let value = value.clone();
+
                     let tool_call_update = self.update_tool_call(&tool_id, |state| {
-                        state.replace_parameter(&name, &value);
+                        if replace {
+                            state.replace_parameter(&name, &value);
+                        } else {
+                            // Streaming: append (ACP already handled this correctly
+                            // via display_fragment, but for consistency handle it here too)
+                            state.replace_parameter(&name, &value);
+                        }
                     });
                     self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                         .await?;
@@ -721,8 +731,15 @@ impl UserInterface for ACPUserUI {
             | UiEvent::SwitchBranch { .. }
             | UiEvent::MessageEditReady { .. }
             | UiEvent::BranchSwitched { .. }
-            | UiEvent::UpdateBranchInfo { .. } => {
+            | UiEvent::UpdateBranchInfo { .. }
+            | UiEvent::RollbackStreaming { .. }
+            | UiEvent::ShowTransientStatus { .. }
+            | UiEvent::ClearTransientStatus => {
                 // These are UI management events, not relevant for ACP
+                // (RollbackStreaming: ACP cannot retract already-sent notifications)
+            }
+            UiEvent::ToolTerminalAttached { .. } => {
+                // Terminal pool mapping — only relevant for GPUI
             }
             UiEvent::DisplayError { message } => {
                 tracing::error!("ACPUserUI: Received DisplayError event: {}", message);
@@ -757,7 +774,8 @@ impl UserInterface for ACPUserUI {
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
-            DisplayFragment::ThinkingText(text) => {
+
+            DisplayFragment::ThinkingText { ref text, .. } => {
                 // Check if we need a paragraph break after a hidden tool
                 self.maybe_emit_paragraph_break(LastContentType::Thinking)?;
 
@@ -768,7 +786,7 @@ impl UserInterface for ACPUserUI {
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk(chunk));
             }
-            DisplayFragment::ToolName { name, id } => {
+            DisplayFragment::ToolName { name, id, .. } => {
                 if id.is_empty() {
                     tracing::warn!(
                         "ACPUserUI: StreamingProcessor provided empty tool ID for tool '{}'",
@@ -961,11 +979,8 @@ mod tests {
     fn tool_name_fragment_emits_tool_call_notification() {
         let (ui, mut rx) = create_ui();
 
-        ui.display_fragment(&DisplayFragment::ToolName {
-            name: "execute_command".into(),
-            id: "tool-1".into(),
-        })
-        .unwrap();
+        ui.display_fragment(&DisplayFragment::tool_name("execute_command", "tool-1"))
+            .unwrap();
 
         let (notification, _ack) = rx.try_recv().expect("expected tool call notification");
         match notification.update {
@@ -982,11 +997,8 @@ mod tests {
     fn tool_output_fragments_accumulate_raw_output() {
         let (ui, mut rx) = create_ui();
 
-        ui.display_fragment(&DisplayFragment::ToolName {
-            name: "read_files".into(),
-            id: "tool-1".into(),
-        })
-        .unwrap();
+        ui.display_fragment(&DisplayFragment::tool_name("read_files", "tool-1"))
+            .unwrap();
         rx.try_recv().unwrap(); // discard ToolCall notification
 
         ui.display_fragment(&DisplayFragment::ToolOutput {
