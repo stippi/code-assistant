@@ -21,6 +21,8 @@ thiserror = "1.0"
 regex = "1.12"
 dirs = "5.0"
 clap = { version = "4.5", features = ["derive"] }
+urlencoding = "2.1"
+rand = "0.8"
 
 [dev-dependencies]
 axum = "0.7"

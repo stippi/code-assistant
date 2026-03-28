@@ -17,6 +17,7 @@ pub mod aicore;
 pub mod anthropic;
 pub mod auth;
 pub mod cerebras;
+pub mod codex_auth;
 pub mod config_merge;
 pub mod display;
 pub mod factory;
