@@ -23,6 +23,15 @@ pub enum Mode {
         verbose: bool,
     },
 
+    /// Log in with your ChatGPT subscription (opens browser for OAuth)
+    CodexLogin,
+
+    /// Log out from ChatGPT subscription (removes stored tokens)
+    CodexLogout,
+
+    /// Show ChatGPT subscription auth status
+    CodexStatus,
+
     /// Run as ACP (Agent Client Protocol) agent
     Acp {
         /// Enable verbose logging

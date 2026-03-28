@@ -221,9 +221,17 @@ pub fn extract_account_id(id_token: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Storage path for Codex auth tokens.
+///
+/// Default: `~/.config/code-assistant/codex_auth.json`
+/// (falls back to `~/.config/codex_auth.json` if `dirs::config_dir()` is unavailable).
 fn default_auth_path() -> PathBuf {
     let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    config_dir.join("tutor").join("codex_auth.json")
+    config_dir.join("code-assistant").join("codex_auth.json")
+}
+
+/// Get the default auth path (public, for use by CLI commands and factory).
+pub fn default_codex_auth_path() -> PathBuf {
+    default_auth_path()
 }
 
 /// Save auth state to disk.
@@ -777,6 +785,27 @@ pub fn create_codex_responses_client(
     let request_customizer = Box::new(CodexRequestCustomizer);
 
     crate::openai_responses::OpenAIResponsesClient::with_customization(
+        model,
+        CHATGPT_BASE_URL.to_string(),
+        auth_provider,
+        request_customizer,
+    )
+}
+
+/// Create an `OpenAIResponsesWsClient` configured for ChatGPT-authenticated
+/// requests over WebSocket.
+///
+/// This uses the same Codex OAuth tokens but communicates via a persistent
+/// WebSocket connection instead of HTTP/SSE, matching the Codex CLI transport.
+pub fn create_codex_responses_ws_client(
+    auth_state: CodexAuthState,
+    model: String,
+    auth_state_path: Option<PathBuf>,
+) -> crate::openai_responses_ws::OpenAIResponsesWsClient {
+    let auth_provider = Box::new(CodexAuthProvider::new(auth_state, auth_state_path));
+    let request_customizer = Box::new(crate::openai_responses_ws::CodexWsRequestCustomizer);
+
+    crate::openai_responses_ws::OpenAIResponsesWsClient::with_customization(
         model,
         CHATGPT_BASE_URL.to_string(),
         auth_provider,

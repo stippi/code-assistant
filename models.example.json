@@ -44,6 +44,18 @@
       "max_tokens": 4096
     }
   },
+
+  "GPT-5.4 (ChatGPT)": {
+    "provider": "openai-chatgpt",
+    "id": "gpt-5.4",
+    "context_token_limit": 128000,
+    "config": {
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      }
+    }
+  },
   "Llama 3.2 8B": {
     "provider": "ollama-local",
     "id": "llama3.3:8b",

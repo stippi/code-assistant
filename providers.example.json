@@ -79,6 +79,14 @@
       "base_url": "https://openrouter.ai/api/v1"
     }
   },
+
+  "openai-chatgpt": {
+    "label": "ChatGPT Subscription (WebSocket)",
+    "provider": "openai-responses-ws",
+    "config": {
+      "codex_auth": true
+    }
+  },
   "ollama-local": {
     "label": "Ollama (Local)",
     "provider": "ollama",
