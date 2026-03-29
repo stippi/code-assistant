@@ -38,7 +38,7 @@ pub const ISSUER: &str = "https://auth.openai.com";
 
 /// Local redirect port. Must be 1455 to match the redirect URI registered
 /// for the OAuth client ID at auth.openai.com.
-const REDIRECT_PORT: u16 = 1455;
+pub const REDIRECT_PORT: u16 = 1455;
 
 /// Token refresh URL.
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -342,7 +342,7 @@ pub async fn start_login_flow(
 /// The parameters must match what the Codex CLI sends -- in particular
 /// `codex_cli_simplified_flow=true` is required for the server to accept
 /// the request with this client ID.
-fn build_authorize_url(challenge: &str, state: &str, redirect_uri: &str) -> String {
+pub fn build_authorize_url(challenge: &str, state: &str, redirect_uri: &str) -> String {
     format!(
         "{}/oauth/authorize?\
          response_type=code\
@@ -365,7 +365,7 @@ fn build_authorize_url(challenge: &str, state: &str, redirect_uri: &str) -> Stri
 }
 
 /// Generate a random state parameter for CSRF protection.
-fn generate_random_state() -> String {
+pub fn generate_random_state() -> String {
     let mut bytes = [0u8; 32];
     for byte in &mut bytes {
         *byte = rand::random();
@@ -474,7 +474,7 @@ async fn run_callback_server(
 }
 
 /// Exchange an authorization code for tokens.
-async fn exchange_code_for_tokens(
+pub async fn exchange_code_for_tokens(
     code: &str,
     verifier: &str,
     redirect_uri: &str,

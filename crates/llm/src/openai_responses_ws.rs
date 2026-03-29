@@ -469,9 +469,16 @@ impl OpenAIResponsesWsClient {
                         MessageRole::User => "user",
                         MessageRole::Assistant => "assistant",
                     };
+                    // Assistant text must use OutputText; InputText is only
+                    // valid for user-role messages.
+                    let content_item = if message.role == MessageRole::Assistant {
+                        WsContentItem::OutputText { text: text.clone() }
+                    } else {
+                        WsContentItem::InputText { text: text.clone() }
+                    };
                     items.push(WsInputItem::Message {
                         role: role.to_string(),
-                        content: vec![WsContentItem::InputText { text: text.clone() }],
+                        content: vec![content_item],
                     });
                 }
                 MessageContent::Structured(blocks) => {
