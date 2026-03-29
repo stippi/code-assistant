@@ -820,7 +820,7 @@ impl OpenAIResponsesWsClient {
         };
 
         // Apply custom config if present
-        let mut request_json = serde_json::to_value(&WsRequest::ResponseCreate(ws_request))?;
+        let mut request_json = serde_json::to_value(WsRequest::ResponseCreate(ws_request))?;
         if let Some(ref custom_config) = self.custom_config {
             // Merge custom config into the request (not the envelope `type` field)
             request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
