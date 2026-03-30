@@ -1,10 +1,11 @@
 {
-  "Claude Sonnet 4.5": {
+  "Claude Sonnet 4.6 (Thinking)": {
     "provider": "anthropic-main",
-    "id": "claude-sonnet-4-5",
+    "id": "claude-sonnet-4-6",
     "context_token_limit": 200000,
     "config": {
-      "max_tokens": 32768,
+      "max_tokens": 64000,
+      "temperature": 1.0,
       "thinking": {
         "type": "enabled",
         "budget_tokens": 8192
@@ -44,7 +45,6 @@
       "max_tokens": 4096
     }
   },
-
   "GPT-5.4 (ChatGPT)": {
     "provider": "openai-chatgpt",
     "id": "gpt-5.4",
