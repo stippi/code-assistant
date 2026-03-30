@@ -21,6 +21,10 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 
 **Auto-Loaded Repository Guidance**: Automatically includes `AGENTS.md` (or `CLAUDE.md` fallback) from the project root in the assistant's system context to align behavior with repo-specific instructions.
 
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/stippi-code-assistant).
+
 ## Installation
 
 ```bash
