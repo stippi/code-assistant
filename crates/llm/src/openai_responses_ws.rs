@@ -15,6 +15,13 @@
 //! - **Wrapped errors**: The server may send top-level `{"type": "error", "status": 429, ...}`
 //!   frames in addition to `response.failed` events.
 //!
+//! ## Keepalive
+//!
+//! A background reader task continuously reads from the WebSocket stream. It responds
+//! to server pings with pongs even when no request is active, preventing the server
+//! from closing the connection due to keepalive timeout. Application-level frames
+//! (Text, Close) are forwarded through an mpsc channel to `process_ws_stream`.
+//!
 //! ## Usage
 //!
 //! The provider is created via [`OpenAIResponsesWsClient::new`] (API-key auth) or
@@ -31,7 +38,9 @@ use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{
@@ -300,7 +309,7 @@ impl ModelCapabilities {
 }
 
 // ============================================================================
-// Connection wrapper
+// Connection wrapper with background keepalive
 // ============================================================================
 
 type WsSink = futures_util::stream::SplitSink<
@@ -312,10 +321,89 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-/// A persistent WebSocket connection.
+/// Frame forwarded from the background reader to the foreground consumer.
+/// Ping/Pong are handled internally by the reader task and never forwarded.
+enum ReaderFrame {
+    /// A JSON text frame (API event).
+    Text(String),
+    /// The server closed the connection.
+    Close(Option<tokio_tungstenite::tungstenite::protocol::CloseFrame<'static>>),
+    /// The WebSocket stream ended or encountered a read error.
+    Error(String),
+}
+
+/// A persistent WebSocket connection with background keepalive.
+///
+/// The background reader task continuously reads from the raw `WsStream`,
+/// responds to server pings with pongs (keeping the connection alive), and
+/// forwards application-level frames through the `rx` channel.
 struct WsConnection {
-    sink: WsSink,
-    stream: WsStream,
+    /// Shared sink — used by both the background reader (for pong) and the
+    /// foreground (for sending requests).
+    sink: Arc<TokioMutex<WsSink>>,
+    /// Receiver for frames forwarded by the background reader.
+    rx: mpsc::UnboundedReceiver<ReaderFrame>,
+    /// Handle to the background reader task (aborted on drop).
+    _reader_handle: tokio::task::JoinHandle<()>,
+}
+
+/// Spawn the background reader task.
+///
+/// Reads frames from `stream`, responds to Ping with Pong via `sink`,
+/// and forwards Text / Close / error frames through `tx`.
+fn spawn_reader_task(
+    mut stream: WsStream,
+    sink: Arc<TokioMutex<WsSink>>,
+    tx: mpsc::UnboundedSender<ReaderFrame>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match stream.next().await {
+                Some(Ok(msg)) => match msg {
+                    WsMessage::Ping(data) => {
+                        let mut sink_guard = sink.lock().await;
+                        if sink_guard.send(WsMessage::Pong(data)).await.is_err() {
+                            debug!("WS reader: failed to send pong, sink closed");
+                            let _ = tx.send(ReaderFrame::Error(
+                                "Failed to send pong — sink closed".into(),
+                            ));
+                            break;
+                        }
+                    }
+                    WsMessage::Pong(_) => {
+                        // Ignore unsolicited pongs
+                    }
+                    WsMessage::Text(text) => {
+                        if tx.send(ReaderFrame::Text(text)).is_err() {
+                            // Receiver dropped — stop reading
+                            break;
+                        }
+                    }
+                    WsMessage::Close(frame) => {
+                        let _ = tx.send(ReaderFrame::Close(frame));
+                        break;
+                    }
+                    WsMessage::Binary(_) => {
+                        debug!("WS reader: ignoring unexpected binary frame");
+                    }
+                    _ => {
+                        debug!("WS reader: ignoring unexpected frame type");
+                    }
+                },
+                Some(Err(e)) => {
+                    let _ = tx.send(ReaderFrame::Error(format!("WebSocket read error: {e}")));
+                    break;
+                }
+                None => {
+                    // Stream ended
+                    let _ = tx.send(ReaderFrame::Error(
+                        "WebSocket stream ended unexpectedly".into(),
+                    ));
+                    break;
+                }
+            }
+        }
+    })
 }
 
 // ============================================================================
@@ -445,13 +533,25 @@ impl OpenAIResponsesWsClient {
         );
 
         let (sink, stream) = ws_stream.split();
-        self.connection = Some(WsConnection { sink, stream });
+        let shared_sink = Arc::new(TokioMutex::new(sink));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let reader_handle = spawn_reader_task(stream, Arc::clone(&shared_sink), tx);
+
+        self.connection = Some(WsConnection {
+            sink: shared_sink,
+            rx,
+            _reader_handle: reader_handle,
+        });
         Ok(())
     }
 
     /// Drop the current connection (e.g. after an error).
+    ///
+    /// This aborts the background reader task and clears incremental state.
     fn drop_connection(&mut self) {
-        self.connection = None;
+        if let Some(conn) = self.connection.take() {
+            conn._reader_handle.abort();
+        }
         self.last_response_id = None;
         self.last_input_items.clear();
     }
@@ -838,16 +938,18 @@ impl OpenAIResponsesWsClient {
         // Ensure connection
         self.ensure_connection().await?;
 
-        let conn = self
-            .connection
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("WebSocket connection not established"))?;
-
-        // Send the request
-        conn.sink
-            .send(WsMessage::Text(request_text))
-            .await
-            .context("Failed to send WebSocket message")?;
+        // Send the request via the shared sink
+        {
+            let conn = self
+                .connection
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("WebSocket connection not established"))?;
+            let mut sink_guard = conn.sink.lock().await;
+            sink_guard
+                .send(WsMessage::Text(request_text))
+                .await
+                .context("Failed to send WebSocket message")?;
+        }
 
         // Process response events
         let request_start = SystemTime::now();
@@ -884,8 +986,8 @@ impl OpenAIResponsesWsClient {
         }
     }
 
-    /// Read events from the WebSocket stream until `response.completed` or error.
-    /// Returns (LLMResponse, Option<response_id>).
+    /// Read events from the channel (fed by the background reader) until
+    /// `response.completed` or error. Returns (LLMResponse, Option<response_id>).
     async fn process_ws_stream(
         &mut self,
         streaming_callback: Option<&StreamingCallback>,
@@ -906,14 +1008,13 @@ impl OpenAIResponsesWsClient {
             .ok_or_else(|| anyhow::anyhow!("No WebSocket connection"))?;
 
         loop {
-            let msg = tokio::time::timeout(idle_timeout, conn.stream.next())
+            let frame = tokio::time::timeout(idle_timeout, conn.rx.recv())
                 .await
                 .context("WebSocket idle timeout")?
-                .ok_or_else(|| anyhow::anyhow!("WebSocket stream ended unexpectedly"))?
-                .context("WebSocket read error")?;
+                .ok_or_else(|| anyhow::anyhow!("WebSocket reader task ended unexpectedly"))?;
 
-            match msg {
-                WsMessage::Text(text) => {
+            match frame {
+                ReaderFrame::Text(text) => {
                     debug!("WS event: {}", text);
 
                     let event: WsStreamEvent = serde_json::from_str(&text)
@@ -1192,12 +1293,7 @@ impl OpenAIResponsesWsClient {
                     }
                 }
 
-                WsMessage::Ping(data) => {
-                    // Respond with pong
-                    let _ = conn.sink.send(WsMessage::Pong(data)).await;
-                }
-
-                WsMessage::Close(frame) => {
+                ReaderFrame::Close(frame) => {
                     let (code, reason) = frame
                         .as_ref()
                         .map(|f| (f.code.into(), f.reason.as_ref()))
@@ -1212,9 +1308,9 @@ impl OpenAIResponsesWsClient {
                         reason
                     );
                 }
-                _ => {
-                    // Binary or other frames — unexpected
-                    debug!("Ignoring unexpected WS frame type");
+
+                ReaderFrame::Error(msg) => {
+                    bail!("WebSocket connection error: {}", msg);
                 }
             }
         }
@@ -1342,7 +1438,8 @@ impl LLMProvider for OpenAIResponsesWsClient {
                     let is_connection_error = e.to_string().contains("WebSocket connection")
                         || e.to_string().contains("connection limit")
                         || e.to_string().contains("idle timeout")
-                        || e.to_string().contains("closed by server");
+                        || e.to_string().contains("closed by server")
+                        || e.to_string().contains("reader task ended");
 
                     if is_connection_error && attempts < max_retries {
                         warn!(
