@@ -2,6 +2,7 @@ mod acp;
 mod agent;
 mod app;
 mod cli;
+mod codex_commands;
 mod config;
 mod logging;
 mod mcp;
@@ -30,6 +31,16 @@ async fn main() -> Result<()> {
     }
 
     match args.mode {
+        Some(Mode::CodexLogin) => {
+            setup_logging(1, true);
+            return codex_commands::run_codex_login().await;
+        }
+        Some(Mode::CodexLogout) => {
+            return codex_commands::run_codex_logout();
+        }
+        Some(Mode::CodexStatus) => {
+            return codex_commands::run_codex_status();
+        }
         Some(Mode::Server { verbose }) => app::server::run(verbose).await,
         Some(Mode::Acp {
             verbose,

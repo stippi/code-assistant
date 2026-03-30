@@ -4,7 +4,7 @@ use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
 use crate::{
     recording::PlaybackState, AnthropicClient, CerebrasClient, GroqClient, LLMProvider,
     MinimaxClient, MistralAiClient, MoonshotClient, OllamaClient, OpenAIClient,
-    OpenAIResponsesClient, OpenRouterClient, VertexClient, ZaiClient,
+    OpenAIResponsesClient, OpenAIResponsesWsClient, OpenRouterClient, VertexClient, ZaiClient,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -119,6 +119,12 @@ impl WithCustomConfig for OpenAIResponsesClient {
     }
 }
 
+impl WithCustomConfig for OpenAIResponsesWsClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
 impl WithCustomConfig for VertexClient {
     fn with_custom_config(self, custom_config: Value) -> Self {
         self.with_custom_config(custom_config)
@@ -192,6 +198,7 @@ pub enum LLMProviderType {
     Ollama,
     OpenAI,
     OpenAIResponses,
+    OpenAIResponsesWs,
     OpenRouter,
     Vertex,
 }
@@ -260,7 +267,9 @@ pub async fn create_llm_client_from_configs(
         "z-ai" => LLMProviderType::Zai,
         "ollama" => LLMProviderType::Ollama,
         "openai" => LLMProviderType::OpenAI,
+
         "openai-responses" => LLMProviderType::OpenAIResponses,
+        "openai-responses-ws" => LLMProviderType::OpenAIResponsesWs,
         "openrouter" => LLMProviderType::OpenRouter,
         "vertex" => LLMProviderType::Vertex,
         _ => {
@@ -295,6 +304,7 @@ pub async fn create_llm_client_from_configs(
         LLMProviderType::Moonshot => create_moonshot_client(model_config, provider_config).await,
         LLMProviderType::Zai => create_zai_client(model_config, provider_config).await,
         LLMProviderType::OpenAI => create_openai_client(model_config, provider_config).await,
+
         LLMProviderType::OpenAIResponses => {
             create_openai_responses_client(
                 model_config,
@@ -303,6 +313,9 @@ pub async fn create_llm_client_from_configs(
                 record_path,
             )
             .await
+        }
+        LLMProviderType::OpenAIResponsesWs => {
+            create_openai_responses_ws_client(model_config, provider_config).await
         }
         LLMProviderType::Vertex => {
             create_vertex_client(model_config, provider_config, record_path).await
@@ -586,6 +599,70 @@ async fn create_vertex_client(
             base_url.to_string(),
         )
     };
+
+    let client = apply_custom_config(client, model_config);
+    Ok(Box::new(client))
+}
+
+async fn create_openai_responses_ws_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    // Check if Codex (ChatGPT subscription) auth should be used.
+    // Priority: explicit codex_auth_path > "codex_auth": true (uses default path) > api_key
+    let codex_auth_path = config
+        .get("codex_auth_path")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from);
+
+    let use_codex_auth = codex_auth_path.is_some()
+        || config
+            .get("codex_auth")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+    if use_codex_auth {
+        let path = codex_auth_path.unwrap_or_else(crate::codex_auth::default_codex_auth_path);
+
+        let auth_state = crate::codex_auth::load_auth_state(Some(&path))?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No Codex auth tokens found at {}. Run `code-assistant codex-login` first.",
+                path.display()
+            )
+        })?;
+
+        let client = crate::codex_auth::create_codex_responses_ws_client(
+            auth_state,
+            model_config.id.clone(),
+            Some(path),
+        );
+        let client = apply_custom_config(client, model_config);
+        return Ok(Box::new(client));
+    }
+
+    // Fall back to API key auth
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "openai-responses-ws provider requires either 'api_key' or 'codex_auth: true' in config"
+            )
+        })?;
+
+    let default_base_url = OpenAIResponsesWsClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    let client = OpenAIResponsesWsClient::new(
+        api_key.to_string(),
+        model_config.id.clone(),
+        base_url.to_string(),
+    );
 
     let client = apply_custom_config(client, model_config);
     Ok(Box::new(client))
