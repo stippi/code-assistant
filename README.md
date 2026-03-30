@@ -118,6 +118,24 @@ code-assistant --task "Explain the purpose of this codebase"
 code-assistant --task "Add error handling" --model "GPT-5"
 ```
 
+### Working Directory Matters
+
+The directory from which you launch `code-assistant` determines the project context for your session. The assistant uses your current working directory (PWD) to understand which codebase you're working on — it scopes file operations, searches, and tool execution to that directory.
+
+**Best practice:** Always `cd` into your project's root directory before starting `code-assistant`.
+
+```bash
+cd ~/workspace/my-project
+code-assistant --ui
+```
+
+Chats are **grouped by directory**, so starting a new chat from the correct project directory ensures:
+- The assistant has the right file context and can navigate your codebase
+- Your conversation history stays organized per project
+- `AGENTS.md` or `CLAUDE.md` guidance files from that project are automatically loaded
+
+If you need to work on a different project, open a new chat from that project's directory rather than reusing an existing session from another location.
+
 ### MCP Server Mode
 
 ```bash
