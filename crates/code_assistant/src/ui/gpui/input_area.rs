@@ -2,6 +2,7 @@ use super::attachment::{AttachmentEvent, AttachmentView};
 use super::file_icons;
 use super::model_selector::{ModelSelector, ModelSelectorEvent};
 use super::sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
+use super::worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
 use crate::persistence::{DraftAttachment, NodeId};
 use base64::Engine;
 use gpui::{
@@ -35,10 +36,22 @@ pub enum InputAreaEvent {
     CancelEditRequested,
     /// Clear draft requested (before clearing input)
     ClearDraftRequested,
+
     /// Model selection changed
     ModelChanged { model_name: String },
     /// Sandbox mode changed
     SandboxChanged { policy: SandboxPolicy },
+    /// User wants to switch to local (no worktree)
+    WorktreeSwitchedToLocal,
+    /// User selected an existing worktree
+    WorktreeSwitched {
+        worktree_path: std::path::PathBuf,
+        branch: String,
+    },
+    /// User wants to create a new worktree
+    WorktreeCreateRequested,
+    /// Worktree selector opened — request fresh data from backend
+    WorktreeRefreshRequested,
 }
 
 /// Self-contained input area component that handles text input and attachments
@@ -46,6 +59,7 @@ pub struct InputArea {
     text_input: Entity<InputState>,
     model_selector: Entity<ModelSelector>,
     sandbox_selector: Entity<SandboxSelector>,
+    worktree_selector: Entity<WorktreeSelector>,
     current_model: Option<String>,
     current_sandbox_policy: SandboxPolicy,
     attachments: Vec<DraftAttachment>,
@@ -64,6 +78,7 @@ pub struct InputArea {
     _input_subscription: Subscription,
     _model_selector_subscription: Subscription,
     _sandbox_selector_subscription: Subscription,
+    _worktree_selector_subscription: Subscription,
 }
 
 impl InputArea {
@@ -82,17 +97,21 @@ impl InputArea {
         // Create the model selector
         let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
         let sandbox_selector = cx.new(|cx| SandboxSelector::new(window, cx));
+        let worktree_selector = cx.new(|cx| WorktreeSelector::new(window, cx));
 
         // Subscribe to model selector events
         let model_selector_subscription =
             cx.subscribe_in(&model_selector, window, Self::on_model_selector_event);
         let sandbox_selector_subscription =
             cx.subscribe_in(&sandbox_selector, window, Self::on_sandbox_selector_event);
+        let worktree_selector_subscription =
+            cx.subscribe_in(&worktree_selector, window, Self::on_worktree_selector_event);
 
         Self {
             text_input,
             model_selector,
             sandbox_selector,
+            worktree_selector,
             current_model: None,
             current_sandbox_policy: SandboxPolicy::DangerFullAccess,
             attachments: Vec::new(),
@@ -107,6 +126,7 @@ impl InputArea {
             _input_subscription: input_subscription,
             _model_selector_subscription: model_selector_subscription,
             _sandbox_selector_subscription: sandbox_selector_subscription,
+            _worktree_selector_subscription: worktree_selector_subscription,
         }
     }
 
@@ -385,6 +405,40 @@ impl InputArea {
         }
     }
 
+    fn on_worktree_selector_event(
+        &mut self,
+        _selector: &Entity<WorktreeSelector>,
+        event: &WorktreeSelectorEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            WorktreeSelectorEvent::SwitchedToLocal => {
+                cx.emit(InputAreaEvent::WorktreeSwitchedToLocal);
+            }
+            WorktreeSelectorEvent::SwitchedToWorktree {
+                worktree_path,
+                branch,
+            } => {
+                cx.emit(InputAreaEvent::WorktreeSwitched {
+                    worktree_path: worktree_path.clone(),
+                    branch: branch.clone(),
+                });
+            }
+            WorktreeSelectorEvent::CreateNewWorktreeRequested => {
+                cx.emit(InputAreaEvent::WorktreeCreateRequested);
+            }
+            WorktreeSelectorEvent::RefreshRequested => {
+                cx.emit(InputAreaEvent::WorktreeRefreshRequested);
+            }
+        }
+    }
+
+    /// Get the worktree selector entity for external updates.
+    pub fn worktree_selector(&self) -> &Entity<WorktreeSelector> {
+        &self.worktree_selector
+    }
+
     /// Handle submit button click
     fn on_submit_click(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let content = self.text_input.read(cx).value().to_string();
@@ -591,7 +645,7 @@ impl InputArea {
                         buttons
                     }),
             )
-            // Model selector row
+            // Selector row: model | worktree | sandbox
             .child(
                 div()
                     .flex()
@@ -599,7 +653,19 @@ impl InputArea {
                     .px_2()
                     .pb_2()
                     .child(div().flex_1().flex().child(self.model_selector.clone()))
-                    .child(div().flex_1().flex().child(self.sandbox_selector.clone())),
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .child(self.worktree_selector.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_row_reverse()
+                            .child(self.sandbox_selector.clone()),
+                    ),
             )
     }
 }

@@ -27,6 +27,12 @@ pub struct SessionConfig {
     pub use_diff_blocks: bool,
     #[serde(default)]
     pub sandbox_policy: SandboxPolicy,
+    /// If set, the session operates inside this git worktree instead of `init_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<PathBuf>,
+    /// The git branch name associated with this session (e.g. `feature/login`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 fn default_tool_syntax() -> ToolSyntax {
@@ -41,7 +47,19 @@ impl Default for SessionConfig {
             tool_syntax: default_tool_syntax(),
             use_diff_blocks: false,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            worktree_path: None,
+            branch: None,
         }
+    }
+}
+
+impl SessionConfig {
+    /// Returns the effective project path: worktree path if set, otherwise init_path.
+    ///
+    /// This is the directory where the agent should operate — file tools,
+    /// command execution, and the system prompt file tree all use this path.
+    pub fn effective_project_path(&self) -> Option<&PathBuf> {
+        self.worktree_path.as_ref().or(self.init_path.as_ref())
     }
 }
 

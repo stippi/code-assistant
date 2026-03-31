@@ -217,4 +217,12 @@ pub enum UiEvent {
     DirectoryListed { project: String, path: PathBuf },
     /// A file was deleted by a tool
     ResourceDeleted { project: String, path: PathBuf },
+
+    // === Git Worktree Events ===
+    /// Updated worktree/branch listing from the backend
+    UpdateWorktreeData {
+        worktrees: Vec<git::Worktree>,
+        current_worktree_path: Option<PathBuf>,
+        is_git_repo: bool,
+    },
 }

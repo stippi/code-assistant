@@ -405,6 +405,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -527,6 +528,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -652,6 +654,7 @@ async fn test_parse_error_handling() -> Result<()> {
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -791,6 +794,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -892,6 +896,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -1010,6 +1015,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -1137,6 +1143,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -1245,6 +1252,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
             tool_syntax: ToolSyntax::Xml,
             use_diff_blocks: false,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            ..SessionConfig::default()
         },
         None,
     );
@@ -1613,6 +1621,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -2522,6 +2531,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -2650,6 +2660,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);

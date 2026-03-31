@@ -3,9 +3,11 @@ name = "code-assistant"
 version = "0.2.7"
 edition = "2021"
 
+
 [dependencies]
 command_executor = { path = "../command_executor" }
 fs_explorer = { path = "../fs_explorer" }
+git = { path = "../git" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
 terminal = { path = "../terminal" }

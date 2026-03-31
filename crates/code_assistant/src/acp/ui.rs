@@ -741,11 +741,15 @@ impl UserInterface for ACPUserUI {
             UiEvent::ToolTerminalAttached { .. } => {
                 // Terminal pool mapping — only relevant for GPUI
             }
+
             UiEvent::DisplayError { message } => {
                 tracing::error!("ACPUserUI: Received DisplayError event: {}", message);
                 if let Ok(mut last_error) = self.last_error.lock() {
                     *last_error = Some(message);
                 }
+            }
+            UiEvent::UpdateWorktreeData { .. } => {
+                // Worktree management not supported in ACP UI
             }
         }
         Ok(())

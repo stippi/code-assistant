@@ -1,6 +1,7 @@
-use crate::config::DefaultProjectManager;
+use crate::config::{save_project, DefaultProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::session::SessionManager;
+use crate::types::Project;
 use crate::ui::gpui::terminal_executor::GpuiTerminalCommandExecutor;
 use crate::ui::UserInterface;
 use crate::utils::content::content_blocks_from;
@@ -75,6 +76,29 @@ pub enum BackendEvent {
     CancelMessageEdit {
         session_id: String,
     },
+
+    // Git worktree management
+    ListBranchesAndWorktrees {
+        session_id: String,
+    },
+    SwitchWorktree {
+        session_id: String,
+        worktree_path: Option<PathBuf>,
+        branch: Option<String>,
+    },
+
+    #[allow(dead_code)]
+    CreateWorktree {
+        session_id: String,
+        branch_name: String,
+        base_branch: Option<String>,
+    },
+
+    /// Add a new project to projects.json and create an initial session
+    AddProject {
+        name: String,
+        path: PathBuf,
+    },
 }
 
 // Response from backend to UI
@@ -134,10 +158,39 @@ pub enum BackendResponse {
         tool_results: Vec<crate::ui::ui_events::ToolResultData>,
         plan: crate::types::PlanState,
     },
+
     MessageEditCancelled {
         session_id: String,
         messages: Vec<crate::ui::ui_events::MessageData>,
         tool_results: Vec<crate::ui::ui_events::ToolResultData>,
+    },
+
+    // Git worktree responses
+    BranchesAndWorktreesListed {
+        session_id: String,
+        #[allow(dead_code)]
+        branches: Vec<git::Branch>,
+        worktrees: Vec<git::Worktree>,
+        #[allow(dead_code)]
+        current_branch: Option<String>,
+        is_git_repo: bool,
+    },
+    WorktreeSwitched {
+        session_id: String,
+        worktree_path: Option<PathBuf>,
+        branch: Option<String>,
+    },
+
+    WorktreeCreated {
+        session_id: String,
+        worktree_path: PathBuf,
+        branch: String,
+    },
+
+    /// A new project was added and an initial session was created for it
+    ProjectAdded {
+        project_name: String,
+        session_id: String,
     },
 }
 
@@ -239,6 +292,37 @@ pub async fn handle_backend_events(
 
             BackendEvent::CancelMessageEdit { session_id } => {
                 Some(handle_cancel_message_edit(&multi_session_manager, &session_id).await)
+            }
+
+            BackendEvent::ListBranchesAndWorktrees { session_id } => {
+                Some(handle_list_branches_and_worktrees(&multi_session_manager, &session_id).await)
+            }
+
+            BackendEvent::SwitchWorktree {
+                session_id,
+                worktree_path,
+                branch,
+            } => Some(
+                handle_switch_worktree(&multi_session_manager, &session_id, worktree_path, branch)
+                    .await,
+            ),
+
+            BackendEvent::CreateWorktree {
+                session_id,
+                branch_name,
+                base_branch,
+            } => Some(
+                handle_create_worktree(
+                    &multi_session_manager,
+                    &session_id,
+                    &branch_name,
+                    base_branch.as_deref(),
+                )
+                .await,
+            ),
+
+            BackendEvent::AddProject { name, path } => {
+                Some(handle_add_project(&multi_session_manager, &name, &path).await)
             }
         };
 
@@ -935,5 +1019,297 @@ async fn handle_cancel_message_edit(
         session_id: session_id.to_string(),
         messages: messages_data,
         tool_results,
+    }
+}
+
+// ============================================================================
+// Git Worktree Handlers
+// ============================================================================
+
+/// Resolve the project root path for a session (init_path, not worktree_path).
+#[allow(clippy::result_large_err)]
+fn get_session_project_root(
+    manager: &SessionManager,
+    session_id: &str,
+) -> Result<PathBuf, BackendResponse> {
+    let session = manager
+        .get_session(session_id)
+        .ok_or_else(|| BackendResponse::Error {
+            message: format!("Session {session_id} not found"),
+        })?;
+
+    session
+        .session
+        .config
+        .init_path
+        .clone()
+        .ok_or_else(|| BackendResponse::Error {
+            message: "Session has no project path configured".to_string(),
+        })
+}
+
+async fn handle_list_branches_and_worktrees(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+) -> BackendResponse {
+    debug!("Listing branches and worktrees for session {}", session_id);
+
+    let project_root = {
+        let manager = multi_session_manager.lock().await;
+        match get_session_project_root(&manager, session_id) {
+            Ok(path) => path,
+            Err(resp) => return resp,
+        }
+    };
+
+    // Check if project is a git repo
+    if !git::GitRepository::is_repo(&project_root) {
+        return BackendResponse::BranchesAndWorktreesListed {
+            session_id: session_id.to_string(),
+            branches: Vec::new(),
+            worktrees: Vec::new(),
+            current_branch: None,
+            is_git_repo: false,
+        };
+    }
+
+    let repo = match git::GitRepository::open(&project_root) {
+        Ok(repo) => repo,
+        Err(e) => {
+            error!("Failed to open git repository: {}", e);
+            return BackendResponse::Error {
+                message: format!("Failed to open git repository: {e}"),
+            };
+        }
+    };
+
+    let branches = match repo.list_branches() {
+        Ok(b) => b,
+        Err(e) => {
+            error!("Failed to list branches: {}", e);
+            return BackendResponse::Error {
+                message: format!("Failed to list branches: {e}"),
+            };
+        }
+    };
+
+    let current_branch = repo.current_branch();
+
+    let worktrees = match git::worktree::list_worktrees(&repo.git, repo.workdir()).await {
+        Ok(w) => w,
+        Err(e) => {
+            error!("Failed to list worktrees: {}", e);
+            // Non-fatal: return branches without worktree info
+            Vec::new()
+        }
+    };
+
+    BackendResponse::BranchesAndWorktreesListed {
+        session_id: session_id.to_string(),
+        branches,
+        worktrees,
+        current_branch,
+        is_git_repo: true,
+    }
+}
+
+async fn handle_switch_worktree(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    worktree_path: Option<PathBuf>,
+    branch: Option<String>,
+) -> BackendResponse {
+    debug!(
+        "Switching worktree for session {}: path={:?}, branch={:?}",
+        session_id, worktree_path, branch
+    );
+
+    let result = {
+        let mut manager = multi_session_manager.lock().await;
+        manager.set_session_worktree(session_id, worktree_path.clone(), branch.clone())
+    };
+
+    match result {
+        Ok(()) => {
+            info!(
+                "Successfully switched worktree for session {}: {:?}",
+                session_id, worktree_path
+            );
+            BackendResponse::WorktreeSwitched {
+                session_id: session_id.to_string(),
+                worktree_path,
+                branch,
+            }
+        }
+        Err(e) => {
+            error!(
+                "Failed to switch worktree for session {}: {}",
+                session_id, e
+            );
+            BackendResponse::Error {
+                message: format!("Failed to switch worktree: {e}"),
+            }
+        }
+    }
+}
+
+async fn handle_create_worktree(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    branch_name: &str,
+    base_branch: Option<&str>,
+) -> BackendResponse {
+    debug!(
+        "Creating worktree for session {}: branch={}, base={:?}",
+        session_id, branch_name, base_branch
+    );
+
+    let project_root = {
+        let manager = multi_session_manager.lock().await;
+        match get_session_project_root(&manager, session_id) {
+            Ok(path) => path,
+            Err(resp) => return resp,
+        }
+    };
+
+    let repo = match git::GitRepository::open(&project_root) {
+        Ok(repo) => repo,
+        Err(e) => {
+            return BackendResponse::Error {
+                message: format!("Failed to open git repository: {e}"),
+            };
+        }
+    };
+
+    // Check if a worktree for this branch already exists
+    match git::worktree::find_worktree_for_branch(&repo.git, repo.workdir(), branch_name).await {
+        Ok(Some(existing)) => {
+            info!(
+                "Reusing existing worktree for branch '{}' at {:?}",
+                branch_name, existing.path
+            );
+            // Reuse existing worktree — just switch the session to it
+            let result = {
+                let mut manager = multi_session_manager.lock().await;
+                manager.set_session_worktree(
+                    session_id,
+                    Some(existing.path.clone()),
+                    Some(branch_name.to_string()),
+                )
+            };
+            return match result {
+                Ok(()) => BackendResponse::WorktreeCreated {
+                    session_id: session_id.to_string(),
+                    worktree_path: existing.path,
+                    branch: branch_name.to_string(),
+                },
+                Err(e) => BackendResponse::Error {
+                    message: format!("Failed to set worktree on session: {e}"),
+                },
+            };
+        }
+        Ok(None) => {} // No existing worktree, create one
+        Err(e) => {
+            debug!("Could not check existing worktrees: {}", e);
+            // Continue with creation attempt
+        }
+    }
+
+    let worktree_path = git::worktree::suggest_worktree_path(repo.workdir(), branch_name);
+
+    match git::worktree::create_worktree(
+        &repo.git,
+        repo.workdir(),
+        &worktree_path,
+        branch_name,
+        base_branch,
+    )
+    .await
+    {
+        Ok(canonical_path) => {
+            info!(
+                "Created worktree at {:?} for branch '{}'",
+                canonical_path, branch_name
+            );
+
+            // Update the session to use this worktree
+            let result = {
+                let mut manager = multi_session_manager.lock().await;
+                manager.set_session_worktree(
+                    session_id,
+                    Some(canonical_path.clone()),
+                    Some(branch_name.to_string()),
+                )
+            };
+
+            match result {
+                Ok(()) => BackendResponse::WorktreeCreated {
+                    session_id: session_id.to_string(),
+                    worktree_path: canonical_path,
+                    branch: branch_name.to_string(),
+                },
+                Err(e) => BackendResponse::Error {
+                    message: format!("Worktree created but failed to update session: {e}"),
+                },
+            }
+        }
+        Err(e) => {
+            error!("Failed to create worktree: {}", e);
+            BackendResponse::Error {
+                message: format!("Failed to create worktree: {e}"),
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Project Management Handlers
+// ============================================================================
+
+async fn handle_add_project(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    name: &str,
+    path: &PathBuf,
+) -> BackendResponse {
+    info!("Adding project '{}' at {:?}", name, path);
+
+    // Save to projects.json
+    let project = Project {
+        path: path.clone(),
+        format_on_save: None,
+    };
+    if let Err(e) = save_project(name, &project) {
+        error!("Failed to save project to config: {}", e);
+        return BackendResponse::Error {
+            message: format!("Failed to save project: {e}"),
+        };
+    }
+
+    // Create an initial session for the new project
+    let create_result = {
+        let mut manager = multi_session_manager.lock().await;
+        let mut config = manager.session_config_template().clone();
+        config.initial_project = name.to_string();
+        manager.create_session_with_config(None, Some(config), None)
+    };
+
+    match create_result {
+        Ok(session_id) => {
+            info!(
+                "Created initial session {} for project '{}'",
+                session_id, name
+            );
+            BackendResponse::ProjectAdded {
+                project_name: name.to_string(),
+                session_id,
+            }
+        }
+        Err(e) => {
+            // Project was saved but session creation failed
+            error!("Project saved but failed to create session: {}", e);
+            BackendResponse::Error {
+                message: format!("Project saved but failed to create session: {e}"),
+            }
+        }
     }
 }

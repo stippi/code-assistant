@@ -46,12 +46,14 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     info!("Starting ACP agent mode, logging to {}", log_path);
 
     // Prepare configuration
+
     let session_config_template = SessionConfig {
         init_path: Some(config.path.canonicalize()?),
         initial_project: String::new(),
         tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
         sandbox_policy: config.sandbox_policy.clone(),
+        ..SessionConfig::default()
     };
 
     // Model name has already been validated during CLI parsing

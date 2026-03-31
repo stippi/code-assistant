@@ -168,3 +168,14 @@ pub fn load_projects() -> Result<HashMap<String, Project>> {
     let content = std::fs::read_to_string(config_path)?;
     Ok(serde_json::from_str(&content)?)
 }
+
+/// Save a single project to the projects.json configuration file.
+/// Creates the file if it doesn't exist yet.
+pub fn save_project(name: &str, project: &Project) -> Result<()> {
+    let config_path = get_config_path()?;
+    let mut projects = load_projects()?;
+    projects.insert(name.to_string(), project.clone());
+    let content = serde_json::to_string_pretty(&projects)?;
+    std::fs::write(config_path, content)?;
+    Ok(())
+}
