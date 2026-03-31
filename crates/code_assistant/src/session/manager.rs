@@ -1,6 +1,7 @@
 use anyhow::Result;
 use llm::Message;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -684,6 +685,40 @@ impl SessionManager {
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.config.sandbox_policy = policy;
+        }
+
+        Ok(())
+    }
+
+    /// Set the worktree path and branch for a session.
+    ///
+    /// When a worktree is set, the agent operates in the worktree directory
+    /// instead of the original project path. The sandbox context is updated
+    /// to allow access to the new path.
+    pub fn set_session_worktree(
+        &mut self,
+        session_id: &str,
+        worktree_path: Option<PathBuf>,
+        branch: Option<String>,
+    ) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        session.config.worktree_path = worktree_path.clone();
+        session.config.branch = branch.clone();
+        self.persistence.save_chat_session(&session)?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.config.worktree_path = worktree_path.clone();
+            instance.session.config.branch = branch;
+
+            // Register the worktree path as a sandbox root so file
+            // operations and commands are allowed there.
+            if let Some(path) = &worktree_path {
+                let _ = instance.sandbox_context.register_root(path);
+            }
         }
 
         Ok(())

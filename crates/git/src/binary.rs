@@ -8,7 +8,7 @@ use tokio::process::Command;
 /// Handles locating the binary and building commands with the correct
 /// working directory and safety flags.
 #[derive(Debug, Clone)]
-pub(crate) struct GitBinary {
+pub struct GitBinary {
     binary_path: PathBuf,
 }
 

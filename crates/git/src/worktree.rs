@@ -1,144 +1,149 @@
-use crate::repository::GitRepository;
+use crate::binary::GitBinary;
 use crate::types::Worktree;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-impl GitRepository {
-    /// List all worktrees for this repository.
-    ///
-    /// Parses `git worktree list --porcelain` output. Always includes
-    /// the main worktree as the first entry.
-    pub async fn list_worktrees(&self) -> Result<Vec<Worktree>> {
-        let output = self
-            .git
-            .run(
-                self.workdir(),
-                &["--no-optional-locks", "worktree", "list", "--porcelain"],
-            )
-            .await?;
+/// List all worktrees for a repository.
+///
+/// Parses `git worktree list --porcelain` output. Always includes
+/// the main worktree as the first entry.
+pub async fn list_worktrees(git: &GitBinary, workdir: &Path) -> Result<Vec<Worktree>> {
+    let output = git
+        .run(
+            workdir,
+            &["--no-optional-locks", "worktree", "list", "--porcelain"],
+        )
+        .await?;
 
-        Ok(parse_worktrees(&output))
+    Ok(parse_worktrees(&output))
+}
+
+/// Create a new worktree with a new branch.
+///
+/// Creates a new worktree at `path` with a new branch `branch_name`
+/// based on `base` (a branch name, tag, or commit SHA). If `base`
+/// is `None`, HEAD is used.
+///
+/// Returns the absolute path to the created worktree.
+pub async fn create_worktree(
+    git: &GitBinary,
+    workdir: &Path,
+    path: &Path,
+    branch_name: &str,
+    base: Option<&str>,
+) -> Result<PathBuf> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create parent dir {}", parent.display()))?;
     }
 
-    /// Create a new worktree.
-    ///
-    /// Creates a new worktree at `path` with a new branch `branch_name`
-    /// based on `base` (a branch name, tag, or commit SHA). If `base`
-    /// is `None`, HEAD is used.
-    ///
-    /// Returns the absolute path to the created worktree.
-    pub async fn create_worktree(
-        &self,
-        path: &Path,
-        branch_name: &str,
-        base: Option<&str>,
-    ) -> Result<PathBuf> {
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent dir {}", parent.display()))?;
-        }
+    let base_ref = base.unwrap_or("HEAD");
+    let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
 
-        let base_ref = base.unwrap_or("HEAD");
-        let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
+    git.run(
+        workdir,
+        &[
+            "--no-optional-locks",
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            "--",
+            path_str,
+            base_ref,
+        ],
+    )
+    .await?;
 
-        self.git
-            .run(
-                self.workdir(),
-                &[
-                    "--no-optional-locks",
-                    "worktree",
-                    "add",
-                    "-b",
-                    branch_name,
-                    "--",
-                    path_str,
-                    base_ref,
-                ],
-            )
-            .await?;
+    // Return the canonical path
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    Ok(canonical)
+}
 
-        // Return the canonical path
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        Ok(canonical)
+/// Create a worktree for an existing branch (no `-b` flag).
+///
+/// Checks out `branch_name` into the directory at `path`.
+pub async fn create_worktree_for_branch(
+    git: &GitBinary,
+    workdir: &Path,
+    path: &Path,
+    branch_name: &str,
+) -> Result<PathBuf> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create parent dir {}", parent.display()))?;
     }
 
-    /// Create a worktree for an existing branch (no `-b` flag).
-    ///
-    /// Checks out `branch_name` into the directory at `path`.
-    pub async fn create_worktree_for_branch(
-        &self,
-        path: &Path,
-        branch_name: &str,
-    ) -> Result<PathBuf> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent dir {}", parent.display()))?;
-        }
+    let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
 
-        let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
+    git.run(
+        workdir,
+        &[
+            "--no-optional-locks",
+            "worktree",
+            "add",
+            "--",
+            path_str,
+            branch_name,
+        ],
+    )
+    .await?;
 
-        self.git
-            .run(
-                self.workdir(),
-                &[
-                    "--no-optional-locks",
-                    "worktree",
-                    "add",
-                    "--",
-                    path_str,
-                    branch_name,
-                ],
-            )
-            .await?;
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    Ok(canonical)
+}
 
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        Ok(canonical)
+/// Remove a worktree. Set `force` to remove even with uncommitted changes.
+pub async fn remove_worktree(
+    git: &GitBinary,
+    workdir: &Path,
+    path: &Path,
+    force: bool,
+) -> Result<()> {
+    let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
+
+    let mut args = vec!["--no-optional-locks", "worktree", "remove"];
+    if force {
+        args.push("--force");
     }
+    args.push("--");
+    args.push(path_str);
 
-    /// Remove a worktree. Set `force` to remove even with uncommitted changes.
-    pub async fn remove_worktree(&self, path: &Path, force: bool) -> Result<()> {
-        let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
+    git.run(workdir, &args).await?;
+    Ok(())
+}
 
-        let mut args = vec!["--no-optional-locks", "worktree", "remove"];
-        if force {
-            args.push("--force");
-        }
-        args.push("--");
-        args.push(path_str);
+/// Find the worktree that has the given branch checked out, if any.
+pub async fn find_worktree_for_branch(
+    git: &GitBinary,
+    workdir: &Path,
+    branch_name: &str,
+) -> Result<Option<Worktree>> {
+    let worktrees = list_worktrees(git, workdir).await?;
+    let full_ref = format!("refs/heads/{branch_name}");
+    Ok(worktrees
+        .into_iter()
+        .find(|wt| wt.branch.as_deref() == Some(&full_ref)))
+}
 
-        self.git.run(self.workdir(), &args).await?;
-        Ok(())
-    }
+/// Suggest a worktree path for a given branch name.
+///
+/// Convention: `<parent_of_repo>/.worktrees/<repo_name>/<sanitized_branch>`
+pub fn suggest_worktree_path(workdir: &Path, branch_name: &str) -> PathBuf {
+    let repo_name = workdir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo");
 
-    /// Find the worktree that has the given branch checked out, if any.
-    pub async fn find_worktree_for_branch(&self, branch_name: &str) -> Result<Option<Worktree>> {
-        let worktrees = self.list_worktrees().await?;
-        let full_ref = format!("refs/heads/{branch_name}");
-        Ok(worktrees
-            .into_iter()
-            .find(|wt| wt.branch.as_deref() == Some(&full_ref)))
-    }
+    let sanitized_branch = branch_name.replace('/', "-");
 
-    /// Suggest a worktree path for a given branch name.
-    ///
-    /// Convention: `<parent_of_repo>/.worktrees/<repo_name>/<sanitized_branch>`
-    pub fn suggest_worktree_path(&self, branch_name: &str) -> PathBuf {
-        let repo_name = self
-            .workdir()
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("repo");
+    let parent = workdir.parent().unwrap_or(workdir);
 
-        let sanitized_branch = branch_name.replace('/', "-");
-
-        let parent = self.workdir().parent().unwrap_or(self.workdir());
-
-        parent
-            .join(".worktrees")
-            .join(repo_name)
-            .join(sanitized_branch)
-    }
+    parent
+        .join(".worktrees")
+        .join(repo_name)
+        .join(sanitized_branch)
 }
 
 /// Parse `git worktree list --porcelain` output into structured data.
@@ -204,6 +209,7 @@ fn parse_worktrees(output: &str) -> Vec<Worktree> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GitRepository;
 
     #[test]
     fn parse_single_main_worktree() {
@@ -289,14 +295,14 @@ bare
     }
 
     #[test]
-    fn suggest_worktree_path_simple() {
+    fn test_suggest_worktree_path() {
         let dir = tempfile::TempDir::new().unwrap();
         let repo_dir = dir.path().join("my-project");
         std::fs::create_dir_all(&repo_dir).unwrap();
         git2::Repository::init(&repo_dir).unwrap();
 
         let repo = GitRepository::open(&repo_dir).unwrap();
-        let suggested = repo.suggest_worktree_path("feature/login");
+        let suggested = suggest_worktree_path(repo.workdir(), "feature/login");
 
         // Use canonicalize to handle macOS /var -> /private/var symlink
         let expected = dir
@@ -341,28 +347,29 @@ bare
 
         // Create a worktree
         let wt_path = dir.path().join("worktree-feature");
-        repo.create_worktree(&wt_path, "feature-branch", None)
+        create_worktree(&repo.git, repo.workdir(), &wt_path, "feature-branch", None)
             .await
             .unwrap();
 
         assert!(wt_path.exists());
 
         // List worktrees
-        let worktrees = repo.list_worktrees().await.unwrap();
+        let worktrees = list_worktrees(&repo.git, repo.workdir()).await.unwrap();
         assert_eq!(worktrees.len(), 2);
         assert!(worktrees[0].is_main);
         assert!(!worktrees[1].is_main);
         assert_eq!(worktrees[1].branch_name(), Some("feature-branch"));
 
         // Find worktree for branch
-        let found = repo
-            .find_worktree_for_branch("feature-branch")
+        let found = find_worktree_for_branch(&repo.git, repo.workdir(), "feature-branch")
             .await
             .unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().branch_name(), Some("feature-branch"));
 
-        let not_found = repo.find_worktree_for_branch("nonexistent").await.unwrap();
+        let not_found = find_worktree_for_branch(&repo.git, repo.workdir(), "nonexistent")
+            .await
+            .unwrap();
         assert!(not_found.is_none());
     }
 
@@ -393,20 +400,22 @@ bare
         let repo = GitRepository::open(&repo_dir).unwrap();
 
         let wt_path = dir.path().join("to-remove");
-        repo.create_worktree(&wt_path, "temp-branch", None)
+        create_worktree(&repo.git, repo.workdir(), &wt_path, "temp-branch", None)
             .await
             .unwrap();
         assert!(wt_path.exists());
 
-        repo.remove_worktree(&wt_path, false).await.unwrap();
+        remove_worktree(&repo.git, repo.workdir(), &wt_path, false)
+            .await
+            .unwrap();
         assert!(!wt_path.exists());
 
-        let worktrees = repo.list_worktrees().await.unwrap();
+        let worktrees = list_worktrees(&repo.git, repo.workdir()).await.unwrap();
         assert_eq!(worktrees.len(), 1); // only main remains
     }
 
     #[tokio::test]
-    async fn create_worktree_for_existing_branch() {
+    async fn test_create_worktree_for_existing_branch() {
         let dir = tempfile::TempDir::new().unwrap();
         let repo_dir = dir.path().join("main-repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
@@ -434,12 +443,12 @@ bare
         let repo = GitRepository::open(&repo_dir).unwrap();
 
         let wt_path = dir.path().join("existing-wt");
-        repo.create_worktree_for_branch(&wt_path, "existing-branch")
+        create_worktree_for_branch(&repo.git, repo.workdir(), &wt_path, "existing-branch")
             .await
             .unwrap();
         assert!(wt_path.exists());
 
-        let worktrees = repo.list_worktrees().await.unwrap();
+        let worktrees = list_worktrees(&repo.git, repo.workdir()).await.unwrap();
         assert_eq!(worktrees.len(), 2);
         assert_eq!(worktrees[1].branch_name(), Some("existing-branch"));
     }

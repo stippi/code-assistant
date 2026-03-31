@@ -1413,6 +1413,7 @@ dependencies = [
  "dotenv",
  "fs_explorer",
  "futures",
+ "git",
  "glob",
  "gpui",
  "gpui-component",

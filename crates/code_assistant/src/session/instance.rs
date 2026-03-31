@@ -61,9 +61,10 @@ pub struct SessionInstance {
 
 impl SessionInstance {
     /// Create a new session instance
+
     pub fn new(session: ChatSession) -> Self {
         let sandbox_context = Arc::new(SandboxContext::default());
-        if let Some(path) = session.config.init_path.as_ref() {
+        if let Some(path) = session.config.effective_project_path() {
             let _ = sandbox_context.register_root(path);
         }
 
@@ -200,7 +201,7 @@ impl SessionInstance {
         if let Some(session) = persistence.load_chat_session(&self.session.id)? {
             debug!("Reloading session {} from persistence", self.session.id);
             self.session = session;
-            if let Some(path) = self.session.config.init_path.as_ref() {
+            if let Some(path) = self.session.config.effective_project_path() {
                 let _ = self.sandbox_context.register_root(path);
             }
         }

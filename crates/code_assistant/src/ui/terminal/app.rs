@@ -321,6 +321,7 @@ impl TerminalTuiApp {
         let session_persistence = FileSessionPersistence::new();
 
         // Setup agent configuration
+
         let session_config_template = SessionConfig {
             init_path: Some(root_path.clone()),
             initial_project: root_path
@@ -331,6 +332,7 @@ impl TerminalTuiApp {
             tool_syntax: config.tool_syntax,
             use_diff_blocks: config.use_diff_format,
             sandbox_policy: config.sandbox_policy.clone(),
+            ..SessionConfig::default()
         };
 
         // Create session manager
@@ -529,6 +531,12 @@ impl TerminalTuiApp {
                         | BackendResponse::BranchSwitched { .. }
                         | BackendResponse::MessageEditCancelled { .. } => {
                             // Session branching not supported in terminal UI
+                        }
+
+                        BackendResponse::BranchesAndWorktreesListed { .. }
+                        | BackendResponse::WorktreeSwitched { .. }
+                        | BackendResponse::WorktreeCreated { .. } => {
+                            // Worktree management not supported in terminal UI
                         }
                     }
                 }

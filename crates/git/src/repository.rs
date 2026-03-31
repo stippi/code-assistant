@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 /// Uses `git2` (libgit2) for fast in-process reads and the system `git`
 /// binary for write operations, worktree management, and anything that
 /// may need hooks or credential helpers.
+
 pub struct GitRepository {
     /// In-process libgit2 handle for fast reads.
     pub(crate) repo: git2::Repository,
     /// System git binary for CLI operations.
-    pub(crate) git: GitBinary,
+    pub git: GitBinary,
     /// Cached working directory path.
     workdir: PathBuf,
 }

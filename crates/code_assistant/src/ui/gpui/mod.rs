@@ -37,7 +37,7 @@ pub use root::RootView;
 use sandbox::SandboxPolicy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 actions!(
     code_assistant,
@@ -1859,6 +1859,7 @@ impl Gpui {
                     session_id,
                     messages.len()
                 );
+
                 // Forward to UI as event - reuse SetMessages to restore the view
                 self.process_ui_event_async(
                     UiEvent::SetMessages {
@@ -1868,6 +1869,37 @@ impl Gpui {
                     },
                     cx,
                 );
+            }
+
+            // Git worktree responses — forwarded to the WorktreeSelector component
+            BackendResponse::BranchesAndWorktreesListed { session_id, .. } => {
+                debug!(
+                    "Received BranchesAndWorktreesListed for session {}",
+                    session_id
+                );
+                // TODO: Forward to WorktreeSelector component once it exists
+            }
+            BackendResponse::WorktreeSwitched {
+                session_id,
+                ref worktree_path,
+                ref branch,
+            } => {
+                info!(
+                    "Worktree switched for session {}: path={:?}, branch={:?}",
+                    session_id, worktree_path, branch
+                );
+                // TODO: Update WorktreeSelector display once it exists
+            }
+            BackendResponse::WorktreeCreated {
+                session_id,
+                ref worktree_path,
+                ref branch,
+            } => {
+                info!(
+                    "Worktree created for session {}: {:?} (branch: {})",
+                    session_id, worktree_path, branch
+                );
+                // TODO: Update WorktreeSelector display once it exists
             }
         }
     }

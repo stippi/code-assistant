@@ -730,10 +730,10 @@ impl Agent {
     }
 
     fn init_projects(&mut self) -> Result<()> {
-        // If a path was provided in args, add it as a temporary project
-        if let Some(path) = &self.session_config.init_path {
+        // Use effective_project_path: worktree path takes priority over init_path
+        if let Some(path) = self.session_config.effective_project_path().cloned() {
             // Add as temporary project and get its name
-            let project_name = self.project_manager.add_temporary_project(path.clone())?;
+            let project_name = self.project_manager.add_temporary_project(path)?;
 
             // Store the name of the initial project
             self.session_config.initial_project = project_name.clone();
@@ -1189,9 +1189,9 @@ impl Agent {
     /// Attempt to read AGENTS.md or CLAUDE.md from the initial project root.
     /// Prefers AGENTS.md when both exist. Returns (file_name, content) on success.
     fn read_repository_guidance(&self) -> Option<(String, String)> {
-        // Determine search root from init_path (the actual directory path),
+        // Determine search root from effective_project_path (worktree or init_path),
         // not initial_project (which is just the project name)
-        let root_path = if let Some(path) = &self.session_config.init_path {
+        let root_path = if let Some(path) = self.session_config.effective_project_path() {
             path.clone()
         } else {
             std::env::current_dir().ok()?

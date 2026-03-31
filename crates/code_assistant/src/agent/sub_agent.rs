@@ -128,7 +128,7 @@ impl DefaultSubAgentRunner {
         // Create a fresh project manager, copying init_path if set.
         let mut project_manager: Box<dyn crate::config::ProjectManager> =
             Box::new(DefaultProjectManager::new());
-        if let Some(path) = self.session_config.init_path.clone() {
+        if let Some(path) = self.session_config.effective_project_path().cloned() {
             let _ = project_manager.add_temporary_project(path);
         }
 

@@ -30,6 +30,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
         sandbox_policy: config.sandbox_policy.clone(),
+        ..SessionConfig::default()
     };
 
     let default_model = config.model.clone();
