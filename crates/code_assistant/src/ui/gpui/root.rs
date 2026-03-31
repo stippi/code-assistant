@@ -236,6 +236,7 @@ impl RootView {
                     }
                 }
             }
+
             InputAreaEvent::SandboxChanged { policy } => {
                 if let Some(session_id) = &self.current_session_id {
                     let gpui = cx
@@ -248,6 +249,55 @@ impl RootView {
                         });
                     } else {
                         error!("Failed to lock backend event sender");
+                    }
+                }
+            }
+            InputAreaEvent::WorktreeSwitchedToLocal => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::SwitchWorktree {
+                            session_id: session_id.clone(),
+                            worktree_path: None,
+                            branch: None,
+                        });
+                    }
+                }
+            }
+            InputAreaEvent::WorktreeSwitched {
+                worktree_path,
+                branch,
+            } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::SwitchWorktree {
+                            session_id: session_id.clone(),
+                            worktree_path: Some(worktree_path.clone()),
+                            branch: Some(branch.clone()),
+                        });
+                    }
+                }
+            }
+            InputAreaEvent::WorktreeCreateRequested => {
+                // TODO: Show a branch picker dialog for creating a new worktree.
+                // For now, this is a placeholder — the full UI flow requires
+                // a modal dialog where the user picks a branch name and base.
+                debug!("New worktree creation requested — dialog not yet implemented");
+            }
+            InputAreaEvent::WorktreeRefreshRequested => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::ListBranchesAndWorktrees {
+                            session_id: session_id.clone(),
+                        });
                     }
                 }
             }

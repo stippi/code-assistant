@@ -15,10 +15,12 @@ mod root;
 pub mod sandbox_selector;
 pub mod sub_agent_card_renderer;
 pub mod terminal_card_renderer;
+
 pub mod terminal_executor;
 pub mod terminal_pool;
 pub mod theme;
 pub mod tool_block_renderers;
+pub mod worktree_selector;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::PlanState;
