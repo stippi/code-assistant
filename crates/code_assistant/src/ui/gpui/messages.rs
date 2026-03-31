@@ -312,11 +312,12 @@ impl MessagesView {
                 if displacement.abs() < MIN_DISTANCE_TO_STOP && velocity.abs() < MIN_SPEED_TO_STOP {
                     // We've converged. Snap to exact bottom and enter idle phase.
                     if displacement.abs() > 0.01 {
+                        let max_rounded = max.round();
                         list_state.set_offset_from_scrollbar(Point {
                             x: px(0.),
-                            y: px(max),
+                            y: px(max_rounded),
                         });
-                        last_offset.set(-max);
+                        last_offset.set(-max_rounded);
                         let _ = weak_entity.update(cx, |_this, cx| {
                             cx.notify();
                         });
@@ -359,7 +360,7 @@ impl MessagesView {
                 // Convert the new offset back to the absolute (positive)
                 // offset that `set_offset_from_scrollbar` expects.
                 let new_y = current_offset + delta;
-                let abs_offset = (-new_y).max(0.0);
+                let abs_offset = (-new_y).max(0.0).round();
                 list_state.set_offset_from_scrollbar(Point {
                     x: px(0.),
                     y: px(abs_offset),
