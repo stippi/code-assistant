@@ -1,8 +1,12 @@
 use super::file_icons;
-use crate::types::{PlanItemPriority, PlanItemStatus, PlanState};
+use crate::types::{PlanItemStatus, PlanState};
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
-use gpui_component::{text::TextView, ActiveTheme};
+use gpui::{
+    div, percentage, px, Animation, AnimationExt, ClickEvent, Context, EventEmitter, Render,
+    SharedString, Transformation, Window,
+};
+use gpui_component::{ActiveTheme, StyledExt};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub enum PlanBannerEvent {
@@ -38,7 +42,7 @@ impl PlanBanner {
 impl EventEmitter<PlanBannerEvent> for PlanBanner {}
 
 impl Render for PlanBanner {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(plan) = self.plan.as_ref() else {
             return div().into_any_element();
         };
@@ -47,10 +51,20 @@ impl Render for PlanBanner {
             return div().into_any_element();
         }
 
-        let (summary_text, highlight_summary) = collapsed_plan_summary(plan);
-        let item_count = plan.entries.len();
-        let item_label = if item_count == 1 { "item" } else { "items" };
+        let total = plan.entries.len();
+        let completed = plan
+            .entries
+            .iter()
+            .filter(|e| e.status == PlanItemStatus::Completed)
+            .count();
+        let all_done = completed == total;
 
+        let in_progress_item = plan
+            .entries
+            .iter()
+            .find(|e| e.status == PlanItemStatus::InProgress);
+
+        // Chevron icon: ▼ when expanded (content visible below), ▲ when collapsed
         let (chevron_icon, chevron_fallback) = if self.collapsed {
             (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
         } else {
@@ -62,43 +76,149 @@ impl Render for PlanBanner {
 
         let toggle = cx.listener(Self::on_toggle);
 
-        let header = div()
+        // -- Status text for the right side of the header --
+        let status_text = if all_done {
+            "All Done".to_string()
+        } else if completed > 0 {
+            format!("{completed}/{total}")
+        } else {
+            format!("{total} {}", if total == 1 { "item" } else { "items" })
+        };
+
+        // -- Header row --
+        let mut header = div()
             .flex()
             .items_center()
-            .justify_between()
             .gap_2()
             .child(
+                // Left side: chevron + "Plan" + optional in-progress text when collapsed
                 div()
                     .flex()
+                    .flex_1()
+                    .min_w_0()
                     .items_center()
-                    .gap_2()
-                    .text_size(px(11.))
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Plan")
+                    .gap(px(6.))
                     .child(
                         div()
-                            .text_color(cx.theme().muted_foreground.opacity(0.75))
-                            .child(format!("• {item_count} {item_label}")),
+                            .size(px(16.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(file_icons::render_icon(
+                                &chevron_icon,
+                                12.0,
+                                cx.theme().muted_foreground,
+                                chevron_fallback,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_medium()
+                            .text_color(cx.theme().foreground)
+                            .child("Plan"),
                     ),
             )
             .child(
+                // Right side: status text
                 div()
-                    .size(px(20.))
-                    .rounded_full()
+                    .flex_none()
+                    .text_size(px(11.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(status_text)),
+            );
+
+        // When collapsed, show the active item inline in the header
+        if self.collapsed {
+            if let Some(active) = in_progress_item {
+                let truncated = truncate_text(&normalize_single_line(&active.content), 60);
+                header = div()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(cx.theme().muted))
-                    .child(file_icons::render_icon(
-                        &chevron_icon,
-                        14.0,
-                        cx.theme().muted_foreground,
-                        chevron_fallback,
-                    ))
-                    .id("plan-toggle-btn")
-                    .on_click(toggle),
-            );
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .size(px(16.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(file_icons::render_icon(
+                                        &chevron_icon,
+                                        12.0,
+                                        cx.theme().muted_foreground,
+                                        chevron_fallback,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_medium()
+                                    .text_color(cx.theme().foreground)
+                                    .child("Plan"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("•"),
+                            )
+                            .child(
+                                // Spinning icon for the active item
+                                gpui::svg()
+                                    .flex_none()
+                                    .size(px(12.))
+                                    .path("icons/arrow_circle.svg")
+                                    .text_color(cx.theme().info)
+                                    .with_animation(
+                                        "plan-active-spin-header",
+                                        Animation::new(Duration::from_secs(2)).repeat(),
+                                        |svg, delta| {
+                                            svg.with_transformation(Transformation::rotate(
+                                                percentage(delta),
+                                            ))
+                                        },
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(px(11.))
+                                    .text_color(cx.theme().info)
+                                    .child(SharedString::from(truncated)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(11.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(format!("{completed}/{total}"))),
+                    );
+            } else if all_done {
+                // All done — no need to show anything extra, header already says "All Done"
+            }
+        }
+
+        // Wrap header in clickable container
+        let header_row = div()
+            .id("plan-toggle-btn")
+            .cursor_pointer()
+            .rounded_md()
+            .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
+            .px_1()
+            .py(px(2.))
+            .child(header)
+            .on_click(toggle);
 
         let mut container = div()
             .id("session-plan")
@@ -108,103 +228,107 @@ impl Render for PlanBanner {
             .bg(cx.theme().background)
             .border_t_1()
             .border_color(cx.theme().border)
-            .px_4()
+            .px_3()
             .py(px(6.))
-            .gap_2()
-            .text_size(px(11.))
-            .line_height(px(15.))
-            .child(header);
+            .gap(px(2.))
+            .child(header_row);
 
-        if self.collapsed {
-            // Only show summary line if there's something meaningful (e.g., in-progress item)
-            // The header already shows the item count, so don't repeat it
-            if highlight_summary {
-                container = container.child(div().text_color(cx.theme().info).child(summary_text));
-            }
-        } else {
-            let markdown = build_plan_markdown(plan);
-            if !markdown.is_empty() {
-                container = container.child(
-                    div().text_color(cx.theme().foreground).child(
-                        TextView::markdown("session-plan-markdown", markdown, window, cx)
-                            .selectable(true),
-                    ),
-                );
-            }
+        // Expanded: show plan items directly (no markdown)
+        if !self.collapsed {
+            let items_container =
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .children(plan.entries.iter().enumerate().map(|(idx, entry)| {
+                        let is_in_progress = entry.status == PlanItemStatus::InProgress;
+                        let is_completed = entry.status == PlanItemStatus::Completed;
+
+                        let (icon_color, text_color) = if is_completed {
+                            (cx.theme().success, cx.theme().muted_foreground)
+                        } else if is_in_progress {
+                            (cx.theme().info, cx.theme().foreground)
+                        } else {
+                            (
+                                cx.theme().muted_foreground.opacity(0.5),
+                                cx.theme().foreground,
+                            )
+                        };
+
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(px(6.))
+                            .py(px(3.))
+                            .px_1()
+                            .rounded_md()
+                            .when(is_in_progress, |el| el.bg(cx.theme().info.opacity(0.06)))
+                            // Icon: check_circle for done, spinning arrow for in-progress, empty circle for pending
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(16.))
+                                    .mt(px(1.)) // fine-tune vertical alignment with text
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .when(is_completed, |el| {
+                                        el.child(
+                                            gpui::svg()
+                                                .size(px(14.))
+                                                .path("icons/check_circle.svg")
+                                                .text_color(icon_color),
+                                        )
+                                    })
+                                    .when(is_in_progress, |el| {
+                                        el.child(
+                                            gpui::svg()
+                                                .size(px(14.))
+                                                .path("icons/arrow_circle.svg")
+                                                .text_color(icon_color)
+                                                .with_animation(
+                                                    SharedString::from(format!("plan-spin-{idx}")),
+                                                    Animation::new(Duration::from_secs(2)).repeat(),
+                                                    |svg, delta| {
+                                                        svg.with_transformation(
+                                                            Transformation::rotate(percentage(
+                                                                delta,
+                                                            )),
+                                                        )
+                                                    },
+                                                ),
+                                        )
+                                    })
+                                    .when(!is_completed && !is_in_progress, |el| {
+                                        el.child(
+                                            // Empty circle for pending
+                                            div()
+                                                .size(px(12.))
+                                                .rounded_full()
+                                                .border_1()
+                                                .border_color(icon_color),
+                                        )
+                                    }),
+                            )
+                            // Text
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(12.))
+                                    .line_height(px(18.))
+                                    .text_color(text_color)
+                                    .child(SharedString::from(normalize_single_line(
+                                        &entry.content,
+                                    ))),
+                            )
+                    }));
+
+            container = container.child(items_container);
         }
 
         container.into_any_element()
     }
-}
-
-fn build_plan_markdown(plan_state: &PlanState) -> String {
-    plan_state
-        .entries
-        .iter()
-        .map(|entry| {
-            let checkbox = match entry.status {
-                PlanItemStatus::Pending | PlanItemStatus::InProgress => "[ ]",
-                PlanItemStatus::Completed => "[x]",
-            };
-
-            let mut line = format!("- {} {}", checkbox, escape_markdown(&entry.content));
-
-            if entry.status == PlanItemStatus::InProgress {
-                line.push_str(" _(in progress)_");
-            }
-
-            match entry.priority {
-                PlanItemPriority::High => line.push_str(" **(high priority)**"),
-                PlanItemPriority::Low => line.push_str(" _(low priority)_"),
-                PlanItemPriority::Medium => {}
-            }
-
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn collapsed_plan_summary(plan_state: &PlanState) -> (String, bool) {
-    if let Some(in_progress) = plan_state
-        .entries
-        .iter()
-        .find(|entry| entry.status == PlanItemStatus::InProgress)
-    {
-        let normalized = normalize_single_line(&in_progress.content);
-        let truncated = truncate_text(&normalized, 80);
-        (format!("In progress • {truncated}"), true)
-    } else {
-        let count = plan_state.entries.len();
-        let label = if count == 1 {
-            "plan item"
-        } else {
-            "plan items"
-        };
-        (format!("{count} {label}"), false)
-    }
-}
-
-fn escape_markdown(content: &str) -> String {
-    let collapsed = normalize_single_line(content);
-    collapsed
-        .replace('&', "&amp;")
-        .replace('\\', "\\\\")
-        .replace('`', "\\`")
-        .replace('*', "\\*")
-        .replace('_', "\\_")
-        .replace('{', "\\{")
-        .replace('}', "\\}")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-        .replace('(', "\\(")
-        .replace(')', "\\)")
-        .replace('<', "\\<")
-        .replace('#', "\\#")
-        .replace('+', "\\+")
-        .replace('!', "\\!")
-        .replace('|', "\\|")
-        .replace('>', "\\>")
 }
 
 fn normalize_single_line(content: &str) -> String {

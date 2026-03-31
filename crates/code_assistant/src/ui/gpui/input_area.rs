@@ -249,13 +249,21 @@ impl InputArea {
         self.agent_is_running = agent_is_running;
         self.cancel_enabled = cancel_enabled;
     }
-
-    /// Handle paste events (for images)
+    /// Handle paste events (for images).
+    ///
+    /// Registered via `capture_action` so it fires during the capture phase
+    /// (top-down), *before* the inner `Input` component sees the `Paste`
+    /// action.  GPUI stops action propagation by default during the bubble
+    /// phase, so a regular `on_action` would never reach us — the `Input`
+    /// handles it first and the action stops there.  Using capture avoids
+    /// this problem and the event still propagates to the `Input` for normal
+    /// text pasting.
     fn on_paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(clipboard_item) = cx.read_from_clipboard() {
+            let prev_count = self.attachments.len();
+
             for entry in clipboard_item.into_entries() {
                 if let ClipboardEntry::Image(image) = entry {
-                    // Create a DraftAttachment from the image
                     let attachment = DraftAttachment::Image {
                         content: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
                         mime_type: image.format.mime_type().to_string(),
@@ -264,15 +272,13 @@ impl InputArea {
                     };
 
                     self.attachments.push(attachment);
-
-                    // Rebuild attachment views
-                    self.rebuild_attachment_views(cx);
-
-                    // Emit content changed event
-                    self.emit_content_changed(cx);
-
-                    cx.notify();
                 }
+            }
+
+            if self.attachments.len() > prev_count {
+                self.rebuild_attachment_views(cx);
+                self.emit_content_changed(cx);
+                cx.notify();
             }
         }
     }
@@ -677,11 +683,10 @@ impl Focusable for InputArea {
 }
 
 impl EventEmitter<InputAreaEvent> for InputArea {}
-
 impl Render for InputArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .on_action(cx.listener(Self::on_paste))
+            .capture_action(cx.listener(Self::on_paste))
             .on_action({
                 let text_input_handle = self.text_input.clone();
                 move |_: &crate::ui::gpui::InsertLineBreak, window, cx| {

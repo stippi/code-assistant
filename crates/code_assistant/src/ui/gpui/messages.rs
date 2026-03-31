@@ -18,7 +18,7 @@ const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 
 /// Maximum width of the message content area. On wide viewports, messages
 /// stay centered rather than stretching edge-to-edge for comfortable reading.
-const MAX_MESSAGE_WIDTH: f32 = 900.0;
+const MAX_MESSAGE_WIDTH: f32 = 720.0;
 
 // ---------------------------------------------------------------------------
 // Smooth-scroll configuration (spring-damper model, same tuning as the old
@@ -492,7 +492,6 @@ impl MessagesView {
 
         if is_user_message {
             message_container = message_container
-                .m_3()
                 .bg(cx.theme().muted)
                 .border_1()
                 .border_color(cx.theme().border)
@@ -599,7 +598,18 @@ impl MessagesView {
             message_container
         };
 
-        message_container.into_any_element()
+        // Wrap user messages in a padding container so the card (with its
+        // border + shadow) sits inset from the max-width boundary without
+        // overflowing via margin.
+        if is_user_message {
+            div()
+                .w_full()
+                .p_3()
+                .child(message_container)
+                .into_any_element()
+        } else {
+            message_container.into_any_element()
+        }
     }
 }
 
@@ -646,18 +656,27 @@ impl Render for MessagesView {
         let message_list = list(
             self.list_state.clone(),
             cx.processor(move |this: &mut Self, index: usize, window, cx| {
-                if index < total_items {
+                // Wrap every rendered item in a centering container so the
+                // list element itself spans the full parent width (= its
+                // hitbox receives scroll-wheel events everywhere, not only
+                // over the narrow content column).
+                let inner = if index < total_items {
                     this.render_message(index, window, cx)
                 } else if index == pending_index && has_pending {
                     this.render_pending_message(window, cx)
                 } else {
                     // Activity indicator (last item)
                     this.render_activity_indicator(cx)
-                }
+                };
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(div().max_w(px(MAX_MESSAGE_WIDTH)).w_full().child(inner))
+                    .into_any_element()
             }),
         )
         .flex_grow()
-        .max_w(px(MAX_MESSAGE_WIDTH))
         .w_full();
 
         // Sync item count with ListState if it diverged (e.g. pending message

@@ -737,7 +737,8 @@ impl Render for ChatSidebar {
             .child(
                 div()
                     .flex_none()
-                    .p_3()
+                    .px(px(20.))
+                    .py_3()
                     .border_b_1()
                     .border_color(cx.theme().sidebar_border)
                     .flex()

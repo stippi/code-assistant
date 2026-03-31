@@ -109,6 +109,9 @@ pub struct ChatSession {
     /// Current session plan (for the active path)
     #[serde(default)]
     pub plan: PlanState,
+    /// Whether the plan UI is collapsed for this session
+    #[serde(default)]
+    pub plan_collapsed: bool,
     /// Persistent session configuration
     #[serde(default)]
     pub config: SessionConfig,
@@ -191,7 +194,9 @@ impl ChatSession {
             next_node_id: 1,
             messages: Vec::new(),
             tool_executions: Vec::new(),
+
             plan: PlanState::default(),
+            plan_collapsed: false,
             config,
             next_request_id: 1,
             model_config,
@@ -523,8 +528,12 @@ pub struct ChatMetadata {
     pub tokens_limit: Option<u32>,
     /// Tool syntax used for this session
     pub tool_syntax: ToolSyntax,
+
     /// Initial project name
     pub initial_project: String,
+    /// Whether the plan UI is collapsed for this session
+    #[serde(default)]
+    pub plan_collapsed: bool,
 }
 
 #[derive(Clone)]
@@ -592,6 +601,7 @@ impl FileSessionPersistence {
             tokens_limit,
             tool_syntax: session.tool_syntax(),
             initial_project: session.initial_project().to_string(),
+            plan_collapsed: session.plan_collapsed,
         };
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
@@ -800,6 +810,7 @@ impl FileSessionPersistence {
                         tokens_limit,
                         tool_syntax: session.tool_syntax(),
                         initial_project: session.initial_project().to_string(),
+                        plan_collapsed: session.plan_collapsed,
                     };
 
                     metadata_list.push(metadata);
@@ -1360,6 +1371,7 @@ mod tests {
             ],
             tool_executions: Vec::new(),
             plan: PlanState::default(),
+            plan_collapsed: false,
             config: SessionConfig::default(),
             next_request_id: 1,
             model_config: None,

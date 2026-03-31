@@ -99,6 +99,12 @@ pub enum BackendEvent {
         name: String,
         path: PathBuf,
     },
+
+    /// Persist the plan-banner collapsed/expanded state for a session
+    SetPlanCollapsed {
+        session_id: String,
+        collapsed: bool,
+    },
 }
 
 // Response from backend to UI
@@ -323,6 +329,14 @@ pub async fn handle_backend_events(
 
             BackendEvent::AddProject { name, path } => {
                 Some(handle_add_project(&multi_session_manager, &name, &path).await)
+            }
+
+            BackendEvent::SetPlanCollapsed {
+                session_id,
+                collapsed,
+            } => {
+                handle_set_plan_collapsed(&multi_session_manager, &session_id, collapsed).await;
+                None // fire-and-forget, no response needed
             }
         };
 
@@ -1311,5 +1325,26 @@ async fn handle_add_project(
                 message: format!("Project saved but failed to create session: {e}"),
             }
         }
+    }
+}
+
+// ============================================================================
+// Plan UI State Handlers
+// ============================================================================
+
+async fn handle_set_plan_collapsed(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    collapsed: bool,
+) {
+    let result = {
+        let mut manager = multi_session_manager.lock().await;
+        manager.set_plan_collapsed(session_id, collapsed)
+    };
+    if let Err(e) = result {
+        error!(
+            "Failed to persist plan_collapsed for session {}: {}",
+            session_id, e
+        );
     }
 }

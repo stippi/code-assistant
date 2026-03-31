@@ -124,6 +124,16 @@ impl RootView {
                 if let Some(session_id) = &self.current_session_id {
                     self.plan_collapsed_sessions
                         .insert(session_id.clone(), self.plan_collapsed);
+
+                    // Persist to disk so the state survives app restarts
+                    if let Some(gpui) = cx.try_global::<Gpui>() {
+                        if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                            let _ = sender.try_send(BackendEvent::SetPlanCollapsed {
+                                session_id: session_id.clone(),
+                                collapsed: self.plan_collapsed,
+                            });
+                        }
+                    }
                 }
                 cx.notify();
             }
@@ -870,6 +880,13 @@ impl Render for RootView {
             let previous_session_id = self.current_session_id.clone();
             self.chat_sessions = chat_sessions.clone();
             self.current_session_id = current_session_id.clone();
+
+            // Populate plan_collapsed_sessions from metadata (for sessions not yet toggled in this run)
+            for meta in &chat_sessions {
+                self.plan_collapsed_sessions
+                    .entry(meta.id.clone())
+                    .or_insert(meta.plan_collapsed);
+            }
 
             self.chat_sidebar.update(cx, |sidebar, cx| {
                 sidebar.update_sessions(chat_sessions.clone(), cx);

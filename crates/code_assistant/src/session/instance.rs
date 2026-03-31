@@ -264,6 +264,7 @@ impl SessionInstance {
         });
 
         // Add session metadata to ensure UI has the session info including initial_project
+
         let metadata = ChatMetadata {
             id: self.session.id.clone(),
             name: self.session.name.clone(),
@@ -275,6 +276,7 @@ impl SessionInstance {
             tokens_limit: None, // Will be updated by persistence layer if available
             tool_syntax: self.session.config.tool_syntax,
             initial_project: self.session.config.initial_project.clone(),
+            plan_collapsed: self.session.plan_collapsed,
         };
 
         events.push(UiEvent::UpdateSessionMetadata { metadata });

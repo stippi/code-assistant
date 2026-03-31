@@ -690,6 +690,19 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Persist the plan-banner collapsed/expanded state for a session.
+    pub fn set_plan_collapsed(&mut self, session_id: &str, collapsed: bool) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        session.plan_collapsed = collapsed;
+        self.persistence.save_chat_session(&session)?;
+
+        Ok(())
+    }
+
     /// Set the worktree path and branch for a session.
     ///
     /// When a worktree is set, the agent operates in the worktree directory

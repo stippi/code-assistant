@@ -315,6 +315,7 @@ impl Agent {
                 } else {
                     self.session_config.initial_project.clone()
                 },
+                plan_collapsed: false, // Agent doesn't track UI state
             }
         })
     }
