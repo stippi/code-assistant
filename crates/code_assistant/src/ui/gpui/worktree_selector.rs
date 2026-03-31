@@ -19,7 +19,9 @@ pub enum WorktreeSelectorEvent {
     /// User requested creating a new worktree.
     /// The UI should then show a branch picker or dialog.
     CreateNewWorktreeRequested,
+
     /// User clicked the selector, triggering a refresh of branches/worktrees.
+    #[allow(dead_code)]
     RefreshRequested,
 }
 
@@ -170,6 +172,7 @@ impl WorktreeSelector {
     }
 
     /// Set the current selection to a specific worktree.
+    #[allow(dead_code)]
     pub fn set_worktree(
         &mut self,
         path: PathBuf,

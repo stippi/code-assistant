@@ -314,6 +314,8 @@ pub enum ChatSidebarEvent {
         name: Option<String>,
         initial_project: Option<String>,
     },
+    /// User clicked the "+" button in the sidebar header to add a new project
+    AddProjectRequested,
 }
 
 /// Main chat sidebar component — groups sessions by project.
@@ -470,17 +472,14 @@ impl ChatSidebar {
         cx.notify();
     }
 
-    fn on_new_chat_click(
+    fn on_add_project_click(
         &mut self,
         _: &ClickEvent,
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        debug!("New chat button clicked");
-        cx.emit(ChatSidebarEvent::NewSessionRequested {
-            name: None,
-            initial_project: None,
-        });
+        debug!("Add project button clicked");
+        cx.emit(ChatSidebarEvent::AddProjectRequested);
     }
 
     #[allow(dead_code)]
@@ -680,7 +679,7 @@ impl Render for ChatSidebar {
                 .py_2()
                 .child(
                     div()
-                        .id("new-chat-btn-collapsed")
+                        .id("add-project-btn-collapsed")
                         .size(px(28.))
                         .rounded_sm()
                         .flex()
@@ -694,7 +693,7 @@ impl Render for ChatSidebar {
                                 .with_size(Size::Small)
                                 .text_color(cx.theme().muted_foreground),
                         )
-                        .on_click(cx.listener(Self::on_new_chat_click)),
+                        .on_click(cx.listener(Self::on_add_project_click)),
                 );
         }
 
@@ -749,11 +748,11 @@ impl Render for ChatSidebar {
                             .text_sm()
                             .font_medium()
                             .text_color(cx.theme().foreground)
-                            .child("Chats"),
+                            .child("Projects"),
                     )
                     .child(
                         div()
-                            .id("new-chat-btn")
+                            .id("add-project-btn")
                             .size(px(24.))
                             .rounded_sm()
                             .flex()
@@ -767,7 +766,7 @@ impl Render for ChatSidebar {
                                 cx.theme().muted_foreground,
                                 "+",
                             ))
-                            .on_click(cx.listener(Self::on_new_chat_click)),
+                            .on_click(cx.listener(Self::on_add_project_click)),
                     ),
             )
             // Scrollable list
@@ -790,7 +789,7 @@ impl Render for ChatSidebar {
                                     .text_center()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("No chats yet"),
+                                    .child("No projects yet"),
                             )
                         }),
                 ),

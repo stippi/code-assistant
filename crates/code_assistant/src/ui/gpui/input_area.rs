@@ -55,7 +55,6 @@ pub enum InputAreaEvent {
 }
 
 /// Self-contained input area component that handles text input and attachments
-
 pub struct InputArea {
     text_input: Entity<InputState>,
     model_selector: Entity<ModelSelector>,

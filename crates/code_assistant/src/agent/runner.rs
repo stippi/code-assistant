@@ -735,8 +735,12 @@ impl Agent {
             // Add as temporary project and get its name
             let project_name = self.project_manager.add_temporary_project(path)?;
 
-            // Store the name of the initial project
-            self.session_config.initial_project = project_name.clone();
+            // Only set initial_project if not already set (first init).
+            // When switching worktrees the project registration changes but
+            // the sidebar grouping (initial_project) must stay stable.
+            if self.session_config.initial_project.is_empty() {
+                self.session_config.initial_project = project_name.clone();
+            }
 
             // Create initial file tree for this project
             let mut explorer = self

@@ -2,15 +2,16 @@ use super::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
 
 use super::input_area::{InputArea, InputAreaEvent};
 use super::messages::MessagesView;
+use super::new_project_dialog::{NewProjectDialog, NewProjectDialogEvent};
 use super::plan_banner;
 use super::theme;
 use super::BackendEvent;
-use super::{CloseWindow, Gpui, UiEventSender};
+use super::{CloseWindow, Gpui, UiEventSender, WorktreeData};
 use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
     div, prelude::*, px, rgba, svg, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    SharedString, Subscription,
+    PathPromptOptions, SharedString, Subscription,
 };
 
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -31,10 +32,17 @@ pub struct RootView {
     chat_sessions: Vec<ChatMetadata>,
     plan_collapsed_sessions: HashMap<String, bool>,
     plan_collapsed: bool,
+    /// Last worktree data synced to the selector (for change detection).
+    last_worktree_data: Option<WorktreeData>,
+    /// Modal dialog for creating a new project (shown as overlay when Some)
+    new_project_dialog: Option<Entity<NewProjectDialog>>,
+    /// Pending folder path from the file picker, waiting to create the dialog in render
+    pending_project_path: Option<std::path::PathBuf>,
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _plan_banner_subscription: Subscription,
     _chat_sidebar_subscription: Subscription,
+    _new_project_dialog_subscription: Option<Subscription>,
 }
 
 impl RootView {
@@ -72,11 +80,16 @@ impl RootView {
             chat_collapsed: false, // Chat sidebar is visible by default
             current_session_id: None,
             chat_sessions: Vec::new(),
+
             plan_collapsed_sessions: HashMap::new(),
             plan_collapsed: false,
+            last_worktree_data: None,
+            new_project_dialog: None,
+            pending_project_path: None,
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
+            _new_project_dialog_subscription: None,
         };
 
         // Request initial chat session list
@@ -283,11 +296,27 @@ impl RootView {
                     }
                 }
             }
+
             InputAreaEvent::WorktreeCreateRequested => {
-                // TODO: Show a branch picker dialog for creating a new worktree.
-                // For now, this is a placeholder — the full UI flow requires
-                // a modal dialog where the user picks a branch name and base.
-                debug!("New worktree creation requested — dialog not yet implemented");
+                if let Some(session_id) = &self.current_session_id {
+                    // Generate a branch name from the session id (last 8 chars)
+                    let short_id = if session_id.len() > 8 {
+                        &session_id[session_id.len() - 8..]
+                    } else {
+                        session_id.as_str()
+                    };
+                    let branch_name = format!("worktree-{short_id}");
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::CreateWorktree {
+                            session_id: session_id.clone(),
+                            branch_name,
+                            base_branch: None,
+                        });
+                    }
+                }
             }
             InputAreaEvent::WorktreeRefreshRequested => {
                 if let Some(session_id) = &self.current_session_id {
@@ -309,9 +338,14 @@ impl RootView {
         &mut self,
         _chat_sidebar: &Entity<ChatSidebar>,
         event: &ChatSidebarEvent,
-        _window: &mut gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        if let ChatSidebarEvent::AddProjectRequested = event {
+            self.open_add_project_flow(window, cx);
+            return;
+        }
+
         let gpui = cx
             .try_global::<Gpui>()
             .expect("Failed to obtain Gpui global");
@@ -335,6 +369,9 @@ impl RootView {
                         name: name.clone(),
                         initial_project: initial_project.clone(),
                     });
+                }
+                ChatSidebarEvent::AddProjectRequested => {
+                    // Handled above
                 }
             }
         } else {
@@ -455,6 +492,93 @@ impl RootView {
             }
         }
         cx.notify();
+    }
+
+    /// Open the add-project flow: native folder picker, then name dialog.
+    fn open_add_project_flow(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        debug!("Opening add-project folder picker");
+
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select project folder".into()),
+        });
+
+        cx.spawn(async move |this, cx| {
+            match receiver.await {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        debug!("Folder selected: {:?}", path);
+                        // Store the path; the dialog will be created in the next render cycle
+                        // (where we have window access).
+                        let _ = this.update(cx, |this, cx| {
+                            this.pending_project_path = Some(path);
+                            cx.notify();
+                        });
+                    }
+                }
+                Ok(Ok(None)) => {
+                    debug!("Folder picker cancelled");
+                }
+                Ok(Err(e)) => {
+                    error!("Folder picker error: {}", e);
+                }
+                Err(e) => {
+                    error!("Folder picker channel error: {}", e);
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Show the new project name dialog after a folder has been selected.
+    /// Called from render() where we have window access.
+    fn show_new_project_dialog(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialog = cx.new(|cx| NewProjectDialog::new(path, window, cx));
+        let subscription = cx.subscribe_in(&dialog, window, Self::on_new_project_dialog_event);
+        self.new_project_dialog = Some(dialog);
+        self._new_project_dialog_subscription = Some(subscription);
+    }
+
+    /// Handle events from the NewProjectDialog.
+    fn on_new_project_dialog_event(
+        &mut self,
+        _dialog: &Entity<NewProjectDialog>,
+        event: &NewProjectDialogEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            NewProjectDialogEvent::Confirmed { name, path } => {
+                debug!("New project confirmed: name='{}', path={:?}", name, path);
+                // Send AddProject to backend
+                let gpui = cx
+                    .try_global::<Gpui>()
+                    .expect("Failed to obtain Gpui global");
+                if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::AddProject {
+                        name: name.clone(),
+                        path: path.clone(),
+                    });
+                }
+                // Close dialog
+                self.new_project_dialog = None;
+                self._new_project_dialog_subscription = None;
+                cx.notify();
+            }
+            NewProjectDialogEvent::Cancelled => {
+                debug!("New project dialog cancelled");
+                self.new_project_dialog = None;
+                self._new_project_dialog_subscription = None;
+                cx.notify();
+            }
+        }
     }
 
     /// Render the floating status popover if needed (currently: errors only).
@@ -642,8 +766,6 @@ impl RootView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let gpui = cx.try_global::<Gpui>();
-
         if let Some(session_id) = new_session_id.as_ref() {
             self.plan_collapsed = *self
                 .plan_collapsed_sessions
@@ -653,30 +775,61 @@ impl RootView {
             self.plan_collapsed = false;
         }
 
-        // Determine what value to set in the input field and load attachments
-        let (input_value, attachments) = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui)
-        {
-            if let Some((draft_text, draft_attachments)) = gpui.load_draft_for_session(&new_id) {
-                debug!(
-                    "Loading draft for new session {}: {} characters, {} attachments",
-                    new_id,
-                    draft_text.len(),
-                    draft_attachments.len()
-                );
-                (draft_text, draft_attachments)
+        // Read everything we need from Gpui in a scoped borrow, then drop the ref
+        let (input_value, attachments, backend_sender) = {
+            let gpui = cx.try_global::<Gpui>();
+
+            let (input_value, attachments) = if let (Some(new_id), Some(gpui)) =
+                (new_session_id.as_ref(), &gpui)
+            {
+                if let Some((draft_text, draft_attachments)) = gpui.load_draft_for_session(new_id) {
+                    debug!(
+                        "Loading draft for new session {}: {} characters, {} attachments",
+                        new_id,
+                        draft_text.len(),
+                        draft_attachments.len()
+                    );
+                    (draft_text, draft_attachments)
+                } else {
+                    debug!("No draft found for new session: {}", new_id);
+                    ("".to_string(), Vec::new())
+                }
             } else {
-                debug!("No draft found for new session: {}", new_id);
+                debug!("No new session, clearing text input and attachments");
                 ("".to_string(), Vec::new())
-            }
-        } else {
-            // No new session, clear the text input and attachments
-            debug!("No new session, clearing text input and attachments");
-            ("".to_string(), Vec::new())
+            };
+
+            // Extract the backend sender and clear worktree data while we hold the ref
+            let backend_sender = if let Some(gpui) = &gpui {
+                *gpui.current_worktree_data.lock().unwrap() = None;
+                gpui.backend_event_sender.lock().unwrap().as_ref().cloned()
+            } else {
+                None
+            };
+
+            (input_value, attachments, backend_sender)
+            // `gpui` borrow of `cx` dropped here
         };
 
         // Update the input area with the new content
         self.input_area.update(cx, |input_area, cx| {
             input_area.set_content(input_value, attachments, window, cx);
+        });
+
+        // Request fresh worktree listing for the new session
+        if let (Some(session_id), Some(sender)) = (new_session_id.as_ref(), &backend_sender) {
+            let _ = sender.try_send(BackendEvent::ListBranchesAndWorktrees {
+                session_id: session_id.clone(),
+            });
+        }
+
+        // Reset the worktree selector to "Local" while waiting for fresh data
+        self.last_worktree_data = None;
+        self.input_area.update(cx, |input_area, cx| {
+            let selector = input_area.worktree_selector().clone();
+            selector.update(cx, |sel, cx| {
+                sel.set_local(window, cx);
+            });
         });
     }
 }
@@ -697,6 +850,7 @@ impl Render for RootView {
             current_model,
             plan_state,
             current_sandbox_policy,
+            current_worktree_data,
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
             (
                 gpui.get_chat_sessions(),
@@ -705,9 +859,10 @@ impl Render for RootView {
                 gpui.get_current_model(),
                 gpui.get_plan_state(),
                 gpui.get_current_sandbox_policy(),
+                gpui.get_current_worktree_data(),
             )
         } else {
-            (Vec::new(), None, None, None, None, None)
+            (Vec::new(), None, None, None, None, None, None)
         };
 
         // Update chat sidebar if needed
@@ -766,6 +921,25 @@ impl Render for RootView {
             }
         }
 
+        // Sync worktree data to the WorktreeSelector (only when changed)
+        if current_worktree_data != self.last_worktree_data {
+            self.last_worktree_data = current_worktree_data.clone();
+            if let Some(wt_data) = current_worktree_data {
+                self.input_area.update(cx, |input_area, cx| {
+                    let selector = input_area.worktree_selector().clone();
+                    selector.update(cx, |sel, cx| {
+                        sel.set_worktrees(
+                            &wt_data.worktrees,
+                            wt_data.current_worktree_path.as_ref(),
+                            wt_data.is_git_repo,
+                            window,
+                            cx,
+                        );
+                    });
+                });
+            }
+        }
+
         // Update InputArea with current agent state
         let agent_is_running = if let Some(state) = &current_activity_state {
             !matches!(state, crate::session::instance::SessionActivityState::Idle)
@@ -798,6 +972,13 @@ impl Render for RootView {
             banner.set_plan(plan_for_update, self.plan_collapsed, cx);
         });
 
+        // If a folder was selected from the picker, create the dialog now (we have window access)
+        if let Some(path) = self.pending_project_path.take() {
+            self.show_new_project_dialog(path, window, cx);
+        }
+
+        let new_project_dialog = self.new_project_dialog.clone();
+
         // Main container with titlebar and content
         div()
             .on_action(|_: &CloseWindow, window, _| {
@@ -806,6 +987,7 @@ impl Render for RootView {
             .on_action(cx.listener(Self::on_cancel_agent))
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle(cx))
+            .relative()
             .flex()
             .flex_col() // Main container as column layout
             .size_full() // Constrain to window size
@@ -925,5 +1107,7 @@ impl Render for RootView {
                             ),
                     ),
             )
+            // Modal dialog overlay for new project creation
+            .when_some(new_project_dialog, |el, dialog| el.child(dialog))
     }
 }

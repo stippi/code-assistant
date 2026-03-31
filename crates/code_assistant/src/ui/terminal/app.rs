@@ -538,6 +538,10 @@ impl TerminalTuiApp {
                         | BackendResponse::WorktreeCreated { .. } => {
                             // Worktree management not supported in terminal UI
                         }
+
+                        BackendResponse::ProjectAdded { .. } => {
+                            // Project management not supported in terminal UI
+                        }
                     }
                 }
             });

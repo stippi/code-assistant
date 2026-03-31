@@ -1,6 +1,7 @@
-use crate::config::DefaultProjectManager;
+use crate::config::{save_project, DefaultProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::session::SessionManager;
+use crate::types::Project;
 use crate::ui::gpui::terminal_executor::GpuiTerminalCommandExecutor;
 use crate::ui::UserInterface;
 use crate::utils::content::content_blocks_from;
@@ -85,10 +86,18 @@ pub enum BackendEvent {
         worktree_path: Option<PathBuf>,
         branch: Option<String>,
     },
+
+    #[allow(dead_code)]
     CreateWorktree {
         session_id: String,
         branch_name: String,
         base_branch: Option<String>,
+    },
+
+    /// Add a new project to projects.json and create an initial session
+    AddProject {
+        name: String,
+        path: PathBuf,
     },
 }
 
@@ -159,8 +168,10 @@ pub enum BackendResponse {
     // Git worktree responses
     BranchesAndWorktreesListed {
         session_id: String,
+        #[allow(dead_code)]
         branches: Vec<git::Branch>,
         worktrees: Vec<git::Worktree>,
+        #[allow(dead_code)]
         current_branch: Option<String>,
         is_git_repo: bool,
     },
@@ -169,10 +180,17 @@ pub enum BackendResponse {
         worktree_path: Option<PathBuf>,
         branch: Option<String>,
     },
+
     WorktreeCreated {
         session_id: String,
         worktree_path: PathBuf,
         branch: String,
+    },
+
+    /// A new project was added and an initial session was created for it
+    ProjectAdded {
+        project_name: String,
+        session_id: String,
     },
 }
 
@@ -302,6 +320,10 @@ pub async fn handle_backend_events(
                 )
                 .await,
             ),
+
+            BackendEvent::AddProject { name, path } => {
+                Some(handle_add_project(&multi_session_manager, &name, &path).await)
+            }
         };
 
         // Send response back to UI only if there is one
@@ -1005,6 +1027,7 @@ async fn handle_cancel_message_edit(
 // ============================================================================
 
 /// Resolve the project root path for a session (init_path, not worktree_path).
+#[allow(clippy::result_large_err)]
 fn get_session_project_root(
     manager: &SessionManager,
     session_id: &str,
@@ -1234,6 +1257,58 @@ async fn handle_create_worktree(
             error!("Failed to create worktree: {}", e);
             BackendResponse::Error {
                 message: format!("Failed to create worktree: {e}"),
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Project Management Handlers
+// ============================================================================
+
+async fn handle_add_project(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    name: &str,
+    path: &PathBuf,
+) -> BackendResponse {
+    info!("Adding project '{}' at {:?}", name, path);
+
+    // Save to projects.json
+    let project = Project {
+        path: path.clone(),
+        format_on_save: None,
+    };
+    if let Err(e) = save_project(name, &project) {
+        error!("Failed to save project to config: {}", e);
+        return BackendResponse::Error {
+            message: format!("Failed to save project: {e}"),
+        };
+    }
+
+    // Create an initial session for the new project
+    let create_result = {
+        let mut manager = multi_session_manager.lock().await;
+        let mut config = manager.session_config_template().clone();
+        config.initial_project = name.to_string();
+        manager.create_session_with_config(None, Some(config), None)
+    };
+
+    match create_result {
+        Ok(session_id) => {
+            info!(
+                "Created initial session {} for project '{}'",
+                session_id, name
+            );
+            BackendResponse::ProjectAdded {
+                project_name: name.to_string(),
+                session_id,
+            }
+        }
+        Err(e) => {
+            // Project was saved but session creation failed
+            error!("Project saved but failed to create session: {}", e);
+            BackendResponse::Error {
+                message: format!("Project saved but failed to create session: {e}"),
             }
         }
     }

@@ -61,7 +61,6 @@ pub struct SessionInstance {
 
 impl SessionInstance {
     /// Create a new session instance
-
     pub fn new(session: ChatSession) -> Self {
         let sandbox_context = Arc::new(SandboxContext::default());
         if let Some(path) = session.config.effective_project_path() {

@@ -10,6 +10,7 @@ pub mod image;
 pub mod input_area;
 mod messages;
 pub mod model_selector;
+pub mod new_project_dialog;
 mod plan_banner;
 mod root;
 pub mod sandbox_selector;
@@ -55,6 +56,15 @@ impl Global for UiEventSender {}
 // Re-export backend types for compatibility
 pub use crate::ui::backend::{BackendEvent, BackendResponse};
 
+/// Snapshot of worktree/branch data for the active session, kept in `Gpui`
+/// so that `RootView::render()` can push it into the `WorktreeSelector`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorktreeData {
+    pub worktrees: Vec<git::Worktree>,
+    pub current_worktree_path: Option<std::path::PathBuf>,
+    pub is_git_repo: bool,
+}
+
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
 pub struct Gpui {
@@ -92,8 +102,12 @@ pub struct Gpui {
 
     // Current model selection
     current_model: Arc<Mutex<Option<String>>>,
+
     // Current sandbox selection
     current_sandbox_policy: Arc<Mutex<Option<SandboxPolicy>>>,
+
+    // Current worktree state (branches + worktrees listing from backend)
+    current_worktree_data: Arc<Mutex<Option<WorktreeData>>>,
 
     // Pending message edit state (for branching)
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
@@ -320,6 +334,9 @@ impl Gpui {
 
             // Pending message edit state
             pending_edit: Arc::new(Mutex::new(None)),
+
+            // Current worktree state
+            current_worktree_data: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1126,6 +1143,22 @@ impl Gpui {
                 *self.current_sandbox_policy.lock().unwrap() = Some(policy.clone());
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::UpdateWorktreeData {
+                worktrees,
+                current_worktree_path,
+                is_git_repo,
+            } => {
+                debug!(
+                    "UI: UpdateWorktreeData event — {} worktrees, current_path={:?}, is_git_repo={}",
+                    worktrees.len(), current_worktree_path, is_git_repo
+                );
+                *self.current_worktree_data.lock().unwrap() = Some(WorktreeData {
+                    worktrees,
+                    current_worktree_path,
+                    is_git_repo,
+                });
+                cx.refresh().expect("Failed to refresh windows");
+            }
 
             // Resource events - logged for now, can be extended for features like "follow mode"
             UiEvent::ResourceLoaded { project, path } => {
@@ -1574,6 +1607,10 @@ impl Gpui {
         self.current_sandbox_policy.lock().unwrap().clone()
     }
 
+    pub fn get_current_worktree_data(&self) -> Option<WorktreeData> {
+        self.current_worktree_data.lock().unwrap().clone()
+    }
+
     /// Get and clear pending edit (used by RootView to pick up edit state)
     pub fn take_pending_edit(&self) -> Option<PendingEdit> {
         self.pending_edit.lock().unwrap().take()
@@ -1874,34 +1911,108 @@ impl Gpui {
             }
 
             // Git worktree responses — forwarded to the WorktreeSelector component
-            BackendResponse::BranchesAndWorktreesListed { session_id, .. } => {
-                debug!(
-                    "Received BranchesAndWorktreesListed for session {}",
-                    session_id
-                );
-                // TODO: Forward to WorktreeSelector component once it exists
+            BackendResponse::BranchesAndWorktreesListed {
+                session_id,
+                worktrees,
+                current_branch: _,
+                is_git_repo,
+                ..
+            } => {
+                let current_session_id = self.current_session_id.lock().unwrap().clone();
+                if current_session_id.as_deref() == Some(session_id.as_str()) {
+                    debug!(
+                        "Received BranchesAndWorktreesListed for active session {}: {} worktrees, is_git_repo={}",
+                        session_id, worktrees.len(), is_git_repo
+                    );
+                    // Preserve the current selection (set by WorktreeSwitched / WorktreeCreated)
+                    let existing_path = self
+                        .current_worktree_data
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .and_then(|d| d.current_worktree_path.clone());
+                    self.push_event(UiEvent::UpdateWorktreeData {
+                        worktrees,
+                        current_worktree_path: existing_path,
+                        is_git_repo,
+                    });
+                } else {
+                    debug!(
+                        "Ignoring BranchesAndWorktreesListed for session {} (current: {:?})",
+                        session_id, current_session_id
+                    );
+                }
             }
             BackendResponse::WorktreeSwitched {
                 session_id,
-                ref worktree_path,
-                ref branch,
+                worktree_path,
+                branch,
             } => {
-                info!(
-                    "Worktree switched for session {}: path={:?}, branch={:?}",
-                    session_id, worktree_path, branch
-                );
-                // TODO: Update WorktreeSelector display once it exists
+                let current_session_id = self.current_session_id.lock().unwrap().clone();
+                if current_session_id.as_deref() == Some(session_id.as_str()) {
+                    info!(
+                        "Worktree switched for active session {}: path={:?}, branch={:?}",
+                        session_id, worktree_path, branch
+                    );
+                    // Update the stored worktree data with the new selection, preserving the list
+                    let current_data = self.current_worktree_data.lock().unwrap().clone();
+                    let (worktrees, is_git_repo) = current_data
+                        .map(|d| (d.worktrees, d.is_git_repo))
+                        .unwrap_or_default();
+                    self.push_event(UiEvent::UpdateWorktreeData {
+                        worktrees,
+                        current_worktree_path: worktree_path,
+                        is_git_repo,
+                    });
+                    // Also refresh the full list since worktrees may have changed
+                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ =
+                            sender.try_send(BackendEvent::ListBranchesAndWorktrees { session_id });
+                    }
+                }
             }
             BackendResponse::WorktreeCreated {
                 session_id,
-                ref worktree_path,
-                ref branch,
+                worktree_path,
+                branch,
+            } => {
+                let current_session_id = self.current_session_id.lock().unwrap().clone();
+                if current_session_id.as_deref() == Some(session_id.as_str()) {
+                    info!(
+                        "Worktree created for active session {}: {:?} (branch: {})",
+                        session_id, worktree_path, branch
+                    );
+                    // Update selection to the newly created worktree, preserving the existing list
+                    let current_data = self.current_worktree_data.lock().unwrap().clone();
+                    let (worktrees, is_git_repo) = current_data
+                        .map(|d| (d.worktrees, d.is_git_repo))
+                        .unwrap_or_default();
+                    self.push_event(UiEvent::UpdateWorktreeData {
+                        worktrees,
+                        current_worktree_path: Some(worktree_path),
+                        is_git_repo,
+                    });
+                    // Refresh the full list to include the new worktree
+                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ =
+                            sender.try_send(BackendEvent::ListBranchesAndWorktrees { session_id });
+                    }
+                }
+            }
+            BackendResponse::ProjectAdded {
+                project_name,
+                session_id,
             } => {
                 info!(
-                    "Worktree created for session {}: {:?} (branch: {})",
-                    session_id, worktree_path, branch
+                    "Project '{}' added, initial session: {}",
+                    project_name, session_id
                 );
-                // TODO: Update WorktreeSelector display once it exists
+                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+                // Refresh the session list and load the new session
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::ListSessions);
+                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                }
             }
         }
     }
