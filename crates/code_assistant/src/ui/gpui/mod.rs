@@ -18,6 +18,7 @@ pub mod sandbox_selector;
 pub mod sub_agent_card_renderer;
 pub mod terminal_card_renderer;
 
+pub mod settings;
 pub mod terminal_executor;
 pub mod terminal_pool;
 pub mod theme;
@@ -53,6 +54,12 @@ actions!(
 pub struct UiEventSender(pub async_channel::Sender<UiEvent>);
 
 impl Global for UiEventSender {}
+
+/// Global wrapper for persisted UI settings so entities can read/write them.
+#[derive(Clone)]
+pub struct UiSettingsGlobal(pub settings::UiSettings);
+
+impl Global for UiSettingsGlobal {}
 
 // Re-export backend types for compatibility
 pub use crate::ui::backend::{BackendEvent, BackendResponse};
@@ -375,13 +382,29 @@ impl Gpui {
             })
             .detach();
 
+            // Load persisted UI settings
+            let ui_settings = settings::UiSettings::load();
+            let saved_theme_mode = match ui_settings.theme_mode {
+                settings::ThemeModeSetting::Light => Some(gpui_component::theme::ThemeMode::Light),
+                settings::ThemeModeSetting::Dark => Some(gpui_component::theme::ThemeMode::Dark),
+            };
+
             // Initialize file icons
             file_icons::init(cx);
 
             // Initialize gpui-component modules
             gpui_component::init(cx);
-            // Apply our custom theme colors
-            theme::init_themes(cx);
+            // Apply our custom theme colors (restoring saved mode)
+            theme::init_themes(cx, saved_theme_mode);
+
+            // Restore saved font scale
+            {
+                let scaled = gpui::px(16.0 * ui_settings.ui_scale);
+                cx.global_mut::<gpui_component::theme::Theme>().font_size = scaled;
+            }
+
+            // Store settings as a GPUI global so entities can access/update them
+            cx.set_global(UiSettingsGlobal(ui_settings.clone()));
 
             init(cx);
 
@@ -462,9 +485,15 @@ impl Gpui {
             })
             .detach();
 
-            // Create window with larger size to accommodate chat sidebar and messages
-            let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(1100.0), gpui::px(700.0)), cx);
+            // Create window – restore saved bounds or fall back to centered default.
+            let bounds = ui_settings
+                .window_bounds
+                .as_ref()
+                .filter(|b| b.is_valid())
+                .map(|b| b.to_gpui_bounds())
+                .unwrap_or_else(|| {
+                    gpui::Bounds::centered(None, gpui::size(gpui::px(1100.0), gpui::px(700.0)), cx)
+                });
             // Open window with titlebar
             let window = cx
                 .open_window(

@@ -323,9 +323,9 @@ pub struct ChatSidebar {
     groups: Vec<ProjectGroup>,
     /// Preserved UI state per project: (is_expanded, show_all)
     group_ui_state: HashMap<String, (bool, bool)>,
+
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
-    is_collapsed: bool,
     activity_states: HashMap<String, SessionActivityState>,
     _item_subscriptions: Vec<Subscription>,
 }
@@ -335,9 +335,9 @@ impl ChatSidebar {
         Self {
             groups: Vec::new(),
             group_ui_state: HashMap::new(),
+
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
-            is_collapsed: false,
             activity_states: HashMap::new(),
             _item_subscriptions: Vec::new(),
         }
@@ -443,11 +443,6 @@ impl ChatSidebar {
                 });
             }
         }
-    }
-
-    pub fn toggle_collapsed(&mut self, cx: &mut Context<Self>) {
-        self.is_collapsed = !self.is_collapsed;
-        cx.notify();
     }
 
     pub fn update_single_session_activity_state(
@@ -665,40 +660,6 @@ impl Focusable for ChatSidebar {
 
 impl Render for ChatSidebar {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.is_collapsed {
-            return div()
-                .id("collapsed-chat-sidebar")
-                .flex_none()
-                .w(px(40.))
-                .h_full()
-                .bg(cx.theme().sidebar)
-                .border_r_1()
-                .border_color(cx.theme().sidebar_border)
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_2()
-                .py_2()
-                .child(
-                    div()
-                        .id("add-project-btn-collapsed")
-                        .size(px(28.))
-                        .rounded_sm()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(cx.theme().muted))
-                        .child(
-                            Icon::default()
-                                .path(SharedString::from("icons/plus.svg"))
-                                .with_size(Size::Small)
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                        .on_click(cx.listener(Self::on_add_project_click)),
-                );
-        }
-
         // Build the list of project groups with their items
         let mut children: Vec<gpui::AnyElement> = Vec::new();
 

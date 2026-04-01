@@ -4,19 +4,40 @@ use super::input_area::{InputArea, InputAreaEvent};
 use super::messages::MessagesView;
 use super::new_project_dialog::{NewProjectDialog, NewProjectDialogEvent};
 use super::plan_banner;
+use super::settings;
 use super::theme;
 use super::BackendEvent;
-use super::{CloseWindow, Gpui, UiEventSender, WorktreeData};
+use super::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
 use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
     div, prelude::*, px, rems, rgba, svg, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    PathPromptOptions, SharedString, Subscription,
+    PathPromptOptions, Pixels, SharedString, Subscription, Task, Timer,
 };
 
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, trace, warn};
+
+// ---------------------------------------------------------------------------
+// Sidebar animation helpers
+// ---------------------------------------------------------------------------
+
+const SIDEBAR_ANIMATION_DURATION_MS: f32 = 250.0;
+const SIDEBAR_ANIMATION_FRAME_MS: u64 = 8; // ~120 FPS
+
+#[derive(Clone, Debug, PartialEq)]
+enum SidebarAnimationState {
+    Idle,
+    Animating {
+        width_scale: f32,
+        target: f32, // 0.0 = collapsing, 1.0 = expanding
+        start_time: Instant,
+    },
+}
 
 // Root View - handles overall layout and coordination
 pub struct RootView {
@@ -39,6 +60,11 @@ pub struct RootView {
     /// Pending folder path from the file picker, waiting to create the dialog in render
     pending_project_path: Option<std::path::PathBuf>,
 
+    // Sidebar animation
+    sidebar_animation_state: SidebarAnimationState,
+    sidebar_content_width: Rc<Cell<Pixels>>,
+    sidebar_animation_task: Option<Task<()>>,
+
     /// UI zoom scale factor (1.0 = 100%, multiplied with the base font size)
     ui_scale: f32,
     /// Cached context token limit for the current model (model_name, limit).
@@ -49,6 +75,7 @@ pub struct RootView {
     _plan_banner_subscription: Subscription,
     _chat_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
+    _window_bounds_subscription: Subscription,
 }
 
 impl RootView {
@@ -76,6 +103,16 @@ impl RootView {
         let plan_banner_subscription =
             cx.subscribe_in(&plan_banner, window, Self::on_plan_banner_event);
 
+        // Restore saved ui_scale from persisted settings
+        let initial_scale = cx
+            .try_global::<UiSettingsGlobal>()
+            .map(|s| s.0.ui_scale)
+            .unwrap_or(1.0);
+
+        // Watch for window move / resize so we can persist bounds.
+        let window_bounds_subscription =
+            cx.observe_window_bounds(window, Self::on_window_bounds_changed);
+
         let mut root_view = Self {
             input_area,
             chat_sidebar,
@@ -93,12 +130,17 @@ impl RootView {
             new_project_dialog: None,
             pending_project_path: None,
 
-            ui_scale: 1.0,
+            sidebar_animation_state: SidebarAnimationState::Idle,
+            sidebar_content_width: Rc::new(Cell::new(px(0.0))),
+            sidebar_animation_task: None,
+
+            ui_scale: initial_scale,
             context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
             _new_project_dialog_subscription: None,
+            _window_bounds_subscription: window_bounds_subscription,
         };
 
         // Request initial chat session list
@@ -113,11 +155,123 @@ impl RootView {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        let should_expand = self.chat_collapsed;
         self.chat_collapsed = !self.chat_collapsed;
-        self.chat_sidebar.update(cx, |sidebar, cx| {
-            sidebar.toggle_collapsed(cx);
-        });
+        self.start_sidebar_animation(should_expand, cx);
         cx.notify();
+    }
+
+    // ── Sidebar animation ─────────────────────────────────────────────────
+
+    fn start_sidebar_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
+        let target = if should_expand { 1.0 } else { 0.0 };
+        let now = Instant::now();
+
+        match &self.sidebar_animation_state {
+            SidebarAnimationState::Animating {
+                width_scale,
+                target: current_target,
+                ..
+            } if *current_target != target => {
+                // Reverse mid-animation: keep current scale, adjust start for smooth transition
+                let current_progress = if target == 1.0 {
+                    *width_scale
+                } else {
+                    1.0 - *width_scale
+                };
+                let adjusted_start = now
+                    - Duration::from_millis(
+                        (current_progress * SIDEBAR_ANIMATION_DURATION_MS) as u64,
+                    );
+                self.sidebar_animation_state = SidebarAnimationState::Animating {
+                    width_scale: *width_scale,
+                    target,
+                    start_time: adjusted_start,
+                };
+            }
+            _ => {
+                let initial = if should_expand { 0.0 } else { 1.0 };
+                self.sidebar_animation_state = SidebarAnimationState::Animating {
+                    width_scale: initial,
+                    target,
+                    start_time: now,
+                };
+            }
+        }
+
+        if self.sidebar_animation_task.is_none() {
+            self.start_sidebar_animation_task(cx);
+        }
+    }
+
+    fn start_sidebar_animation_task(&mut self, cx: &mut Context<Self>) {
+        let task = cx.spawn(async move |weak_entity, async_cx| {
+            let mut timer = Timer::after(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS));
+            loop {
+                timer.await;
+                timer = Timer::after(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS));
+
+                let should_continue = weak_entity.update(async_cx, |view, cx| {
+                    view.update_sidebar_animation();
+                    match &view.sidebar_animation_state {
+                        SidebarAnimationState::Idle => false,
+                        _ => {
+                            cx.notify();
+                            true
+                        }
+                    }
+                });
+
+                if let Ok(should_continue) = should_continue {
+                    if !should_continue {
+                        let _ = weak_entity.update(async_cx, |view, _cx| {
+                            view.sidebar_animation_task = None;
+                        });
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        });
+        self.sidebar_animation_task = Some(task);
+    }
+
+    fn update_sidebar_animation(&mut self) {
+        match &mut self.sidebar_animation_state {
+            SidebarAnimationState::Animating {
+                width_scale,
+                target,
+                start_time,
+            } => {
+                let elapsed = start_time.elapsed().as_millis() as f32;
+                let progress = (elapsed / SIDEBAR_ANIMATION_DURATION_MS).min(1.0);
+                // ease-out cubic
+                let eased = 1.0 - (1.0 - progress).powi(3);
+
+                *width_scale = if *target == 1.0 { eased } else { 1.0 - eased };
+
+                if progress >= 1.0 {
+                    *width_scale = *target;
+                    self.sidebar_animation_state = SidebarAnimationState::Idle;
+                }
+            }
+            SidebarAnimationState::Idle => {}
+        }
+    }
+
+    /// Current sidebar animation scale: 0.0 = fully collapsed, 1.0 = fully expanded
+    fn sidebar_animation_scale(&self) -> f32 {
+        match &self.sidebar_animation_state {
+            SidebarAnimationState::Animating { width_scale, .. } => *width_scale,
+            SidebarAnimationState::Idle => {
+                if self.chat_collapsed {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+        }
     }
 
     fn on_plan_banner_event(
@@ -167,7 +321,16 @@ impl RootView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        theme::toggle_theme(Some(window), cx);
+        let new_mode = theme::toggle_theme(Some(window), cx);
+
+        // Persist the new theme choice
+        Self::update_settings(cx, |s| {
+            s.theme_mode = match new_mode {
+                gpui_component::theme::ThemeMode::Light => settings::ThemeModeSetting::Light,
+                gpui_component::theme::ThemeMode::Dark => settings::ThemeModeSetting::Dark,
+            };
+        });
+
         cx.notify();
     }
 
@@ -185,6 +348,7 @@ impl RootView {
         if let Some(&next) = Self::ZOOM_LEVELS.iter().find(|&&l| l > current_pct) {
             self.ui_scale = next as f32 / 100.0;
             self.apply_ui_scale(cx);
+            self.save_ui_scale(cx);
         }
     }
 
@@ -193,6 +357,7 @@ impl RootView {
         if let Some(&prev) = Self::ZOOM_LEVELS.iter().rev().find(|&&l| l < current_pct) {
             self.ui_scale = prev as f32 / 100.0;
             self.apply_ui_scale(cx);
+            self.save_ui_scale(cx);
         }
     }
 
@@ -200,6 +365,36 @@ impl RootView {
         let scaled = px(Self::BASE_FONT_SIZE * self.ui_scale);
         cx.global_mut::<gpui_component::theme::Theme>().font_size = scaled;
         cx.notify();
+    }
+
+    fn save_ui_scale(&self, cx: &mut Context<Self>) {
+        let scale = self.ui_scale;
+        Self::update_settings(cx, |s| {
+            s.ui_scale = scale;
+        });
+    }
+
+    // ── Settings persistence helpers ─────────────────────────────────────
+
+    /// Update the global [`UiSettings`], persist to disk on a background thread.
+    fn update_settings(cx: &mut Context<Self>, f: impl FnOnce(&mut settings::UiSettings)) {
+        if cx.has_global::<UiSettingsGlobal>() {
+            let global = cx.global_mut::<UiSettingsGlobal>();
+            f(&mut global.0);
+            let settings = global.0.clone();
+            cx.background_spawn(async move {
+                settings.save();
+            })
+            .detach();
+        }
+    }
+
+    /// Called when the window is moved or resized.
+    fn on_window_bounds_changed(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let bounds = window.bounds();
+        Self::update_settings(cx, |s| {
+            s.window_bounds = Some(settings::WindowBoundsSettings::from_gpui_bounds(bounds));
+        });
     }
 
     #[allow(dead_code)]
@@ -1078,6 +1273,7 @@ impl Render for RootView {
         }
 
         let new_project_dialog = self.new_project_dialog.clone();
+        let sidebar_scale = self.sidebar_animation_scale();
 
         // Main container with titlebar and content
         div()
@@ -1219,8 +1415,40 @@ impl Render for RootView {
                     .min_h_0()
                     .flex()
                     .flex_row() // 2-column layout: chat | messages+input
-                    // Left sidebar: Chat sessions
-                    .child(self.chat_sidebar.clone())
+                    // Left sidebar: Chat sessions (animated width)
+                    .when(sidebar_scale > 0.0, {
+                        let sidebar_content_width = self.sidebar_content_width.clone();
+                        let width_for_render = sidebar_content_width.clone();
+                        let sidebar = self.chat_sidebar.clone();
+                        move |el| {
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .overflow_hidden()
+                                    .when(sidebar_scale < 1.0, move |d| {
+                                        let w = width_for_render.get();
+                                        if w > px(0.0) {
+                                            d.w(w * sidebar_scale)
+                                        } else {
+                                            d.w(px(0.0))
+                                        }
+                                    })
+                                    .on_children_prepainted({
+                                        move |bounds_vec: Vec<gpui::Bounds<Pixels>>,
+                                              _window,
+                                              _app| {
+                                            if let Some(first) = bounds_vec.first() {
+                                                let new_w = first.size.width;
+                                                if sidebar_content_width.get() != new_w {
+                                                    sidebar_content_width.set(new_w);
+                                                }
+                                            }
+                                        }
+                                    })
+                                    .child(sidebar),
+                            )
+                        }
+                    })
                     .child(
                         // Messages and input (content area) with floating popover
                         div()

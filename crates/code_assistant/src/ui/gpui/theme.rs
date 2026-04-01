@@ -79,46 +79,56 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
     colors
 }
 
-/// Initialize the themes in the app
-pub fn init_themes(cx: &mut App) {
+/// Initialize the themes in the app, optionally restoring a saved mode.
+pub fn init_themes(cx: &mut App, mode: Option<ThemeMode>) {
     // Register the theme
     gpui_component::theme::init(cx);
 
+    // If a saved mode was provided, apply it; otherwise use whatever default was set.
+    if let Some(mode) = mode {
+        Theme::change(mode, None, cx);
+    }
+
     // Get the current theme mode to determine which custom colors to apply
-    let theme = cx.global::<Theme>();
-    let current_mode = theme.mode;
+    let current_mode = cx.global::<Theme>().mode;
 
     // Apply the appropriate custom theme colors based on current mode
     match current_mode {
         ThemeMode::Dark => {
-            // Set our custom dark theme colors
             cx.global_mut::<Theme>().colors = custom_dark_theme();
         }
         ThemeMode::Light => {
-            // Set our custom light theme colors
             cx.global_mut::<Theme>().colors = custom_light_theme();
         }
     }
 }
 
-/// Toggle between light and dark theme
-pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) {
-    let theme = cx.global::<Theme>();
-    let current_mode = theme.mode;
+/// Toggle between light and dark theme.
+///
+/// Returns the new [`ThemeMode`] so callers can persist it.
+pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) -> ThemeMode {
+    let current_mode = cx.global::<Theme>().mode;
+    // Capture the current font_size *before* Theme::change resets it.
+    let current_font_size = cx.global::<Theme>().font_size;
 
     // Toggle to the opposite theme
-    match current_mode {
+    let new_mode = match current_mode {
         ThemeMode::Dark => {
             Theme::change(ThemeMode::Light, window, cx);
-            // Also update with our custom light theme colors
             cx.global_mut::<Theme>().colors = custom_light_theme();
+            ThemeMode::Light
         }
         ThemeMode::Light => {
             Theme::change(ThemeMode::Dark, window, cx);
-            // Also update with our custom dark theme colors
             cx.global_mut::<Theme>().colors = custom_dark_theme();
+            ThemeMode::Dark
         }
-    }
+    };
+
+    // Restore font_size that was clobbered by Theme::change → apply_config.
+    cx.global_mut::<Theme>().font_size = current_font_size;
+
+    new_mode
 }
 
 /// Color utility functions for specific components
