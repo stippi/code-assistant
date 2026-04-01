@@ -1,9 +1,8 @@
-use super::file_icons;
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use gpui::{
-    div, percentage, prelude::*, px, Animation, AnimationExt, AppContext, ClickEvent, Context,
-    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, SharedString,
+    div, percentage, prelude::*, px, rems, Animation, AnimationExt, AppContext, ClickEvent,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
 };
 use gpui_component::scroll::ScrollableElement;
@@ -564,7 +563,7 @@ impl ChatSidebar {
             .child(
                 gpui::svg()
                     .flex_none()
-                    .size(px(14.))
+                    .size(rems(0.875))
                     .path(folder_icon)
                     .text_color(cx.theme().muted_foreground),
             )
@@ -589,7 +588,7 @@ impl ChatSidebar {
                         group_idx
                     )))
                     .flex_none()
-                    .size(px(20.))
+                    .size(rems(1.25))
                     .rounded_sm()
                     .flex()
                     .items_center()
@@ -600,13 +599,16 @@ impl ChatSidebar {
                         Tooltip::new(format!("New chat in {}", project_for_new.clone()))
                             .build(window, cx)
                     })
-                    .child(gpui::svg().size(px(12.)).path("icons/plus.svg").text_color(
-                        if is_hovered {
-                            cx.theme().primary
-                        } else {
-                            cx.theme().transparent
-                        },
-                    ))
+                    .child(
+                        gpui::svg()
+                            .size(rems(0.75))
+                            .path("icons/plus.svg")
+                            .text_color(if is_hovered {
+                                cx.theme().primary
+                            } else {
+                                cx.theme().transparent
+                            }),
+                    )
                     .on_click({
                         let project = group.name.clone();
                         cx.listener(move |_this, _, _, cx| {
@@ -722,11 +724,13 @@ impl Render for ChatSidebar {
             }
         }
 
+        let scale = cx.theme().font_size / px(16.);
+
         // Full sidebar view
         div()
             .id("chat-sidebar")
             .flex_none()
-            .w(px(260.))
+            .w(px(scale * 260.))
             .h_full()
             .bg(cx.theme().sidebar)
             .border_r_1()
@@ -754,19 +758,19 @@ impl Render for ChatSidebar {
                     .child(
                         div()
                             .id("add-project-btn")
-                            .size(px(24.))
+                            .size(rems(1.5))
                             .rounded_sm()
                             .flex()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
                             .hover(|s| s.bg(cx.theme().muted))
-                            .child(file_icons::render_icon(
-                                &file_icons::get().get_type_icon(file_icons::PLUS),
-                                14.0,
-                                cx.theme().muted_foreground,
-                                "+",
-                            ))
+                            .child(
+                                Icon::default()
+                                    .path(SharedString::from("icons/plus.svg"))
+                                    .with_size(Size::Small)
+                                    .text_color(cx.theme().muted_foreground),
+                            )
                             .on_click(cx.listener(Self::on_add_project_click)),
                     ),
             )

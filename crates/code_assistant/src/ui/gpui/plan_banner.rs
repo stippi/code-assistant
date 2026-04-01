@@ -262,7 +262,7 @@ impl Render for PlanBanner {
                             .flex_1()
                             .min_w_0()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(rems(0.375))
                             .child(render_chevron(&chevron_icon, chevron_fallback, cx))
                             .child(render_plan_label(cx))
                             .child(
@@ -274,7 +274,7 @@ impl Render for PlanBanner {
                             .child(
                                 gpui::svg()
                                     .flex_none()
-                                    .size(px(12.))
+                                    .size(rems(0.75))
                                     .path("icons/arrow_circle.svg")
                                     .text_color(cx.theme().info)
                                     .with_animation(
@@ -319,7 +319,7 @@ impl Render for PlanBanner {
             .rounded_md()
             .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
             .px_1()
-            .py(px(2.))
+            .py(rems(0.125))
             .child(header)
             .on_click(toggle);
 
@@ -332,8 +332,8 @@ impl Render for PlanBanner {
             .border_t_1()
             .border_color(cx.theme().border)
             .px_3()
-            .py(px(6.))
-            .gap(px(2.))
+            .py(rems(0.375))
+            .gap(rems(0.125))
             .child(header_row);
 
         // Show items if expanded OR during animation (scale > 0)
@@ -383,7 +383,7 @@ fn render_chevron(
     cx: &mut Context<PlanBanner>,
 ) -> gpui::Div {
     div()
-        .size(px(16.))
+        .size(rems(1.0))
         .flex()
         .items_center()
         .justify_center()
@@ -419,7 +419,7 @@ fn render_default_header(
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .gap(px(6.))
+                .gap(rems(0.375))
                 .child(render_chevron(chevron_icon, chevron_fallback, cx))
                 .child(render_plan_label(cx)),
         )
@@ -436,7 +436,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
     div()
         .flex()
         .flex_col()
-        .gap(px(1.))
+        .gap(rems(0.0625))
         .children(plan.entries.iter().enumerate().map(|(idx, entry)| {
             let is_in_progress = entry.status == PlanItemStatus::InProgress;
             let is_completed = entry.status == PlanItemStatus::Completed;
@@ -455,23 +455,23 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
             div()
                 .flex()
                 .items_start()
-                .gap(px(6.))
-                .py(px(3.))
+                .gap(rems(0.375))
+                .py(rems(0.1875))
                 .px_1()
                 .rounded_md()
                 .when(is_in_progress, |el| el.bg(cx.theme().info.opacity(0.06)))
                 .child(
                     div()
                         .flex_none()
-                        .size(px(16.))
-                        .mt(px(1.))
+                        .size(rems(1.0))
+                        .mt(rems(0.0625))
                         .flex()
                         .items_center()
                         .justify_center()
                         .when(is_completed, |el| {
                             el.child(
                                 gpui::svg()
-                                    .size(px(14.))
+                                    .size(rems(0.875))
                                     .path("icons/check_circle.svg")
                                     .text_color(icon_color),
                             )
@@ -479,7 +479,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
                         .when(is_in_progress, |el| {
                             el.child(
                                 gpui::svg()
-                                    .size(px(14.))
+                                    .size(rems(0.875))
                                     .path("icons/arrow_circle.svg")
                                     .text_color(icon_color)
                                     .with_animation(
@@ -496,7 +496,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
                         .when(!is_completed && !is_in_progress, |el| {
                             el.child(
                                 div()
-                                    .size(px(12.))
+                                    .size(rems(0.75))
                                     .rounded_full()
                                     .border_1()
                                     .border_color(icon_color),

@@ -631,15 +631,16 @@ impl InputArea {
                                                 ))
                                                 .build(window, cx)
                                             })
-                                            .child(
+                                            .child({
+                                                let scale = cx.theme().font_size / px(16.0);
                                                 super::context_indicator::ContextIndicator::new(
                                                     ratio,
                                                 )
-                                                .size(px(16.))
-                                                .stroke_width(px(2.5))
+                                                .size(px(16.0 * scale))
+                                                .stroke_width(px(2.5 * scale))
                                                 .bg_color(cx.theme().muted_foreground.opacity(0.25))
-                                                .progress_color(progress_color),
-                                            )
+                                                .progress_color(progress_color)
+                                            })
                                     }),
                             ),
                     )

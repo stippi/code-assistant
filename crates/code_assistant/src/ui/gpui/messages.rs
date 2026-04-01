@@ -488,7 +488,7 @@ impl MessagesView {
         // Create message container with appropriate styling.
         // p_3 provides interior padding. max_w is applied via the centering
         // wrapper returned at the end of this function.
-        let mut message_container = div().w_full().p_3().flex().flex_col().gap(px(10.));
+        let mut message_container = div().w_full().p_3().flex().flex_col().gap(rems(0.625));
 
         if is_user_message {
             message_container = message_container
@@ -668,11 +668,17 @@ impl Render for MessagesView {
                     // Activity indicator (last item)
                     this.render_activity_indicator(cx)
                 };
+                let scale = cx.theme().font_size / px(16.0);
                 div()
                     .w_full()
                     .flex()
                     .justify_center()
-                    .child(div().max_w(px(MAX_MESSAGE_WIDTH)).w_full().child(inner))
+                    .child(
+                        div()
+                            .max_w(px(MAX_MESSAGE_WIDTH * scale))
+                            .w_full()
+                            .child(inner),
+                    )
                     .into_any_element()
             }),
         )
