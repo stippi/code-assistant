@@ -16,7 +16,7 @@ use crate::ui::gpui::tool_block_renderers::{
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, ClickEvent, Context, Element, FontWeight, InteractiveElement, IntoElement,
+    div, px, rems, ClickEvent, Context, Element, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use similar::{ChangeTag, TextDiff};
@@ -127,7 +127,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
         };
         header_left = header_left.child(
             div()
-                .text_size(px(12.0))
+                .text_size(rems(0.75))
                 .text_color(header_text_color)
                 .overflow_hidden()
                 .child(header_label),
@@ -211,7 +211,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
                         div()
                             .px_3()
                             .py_1p5()
-                            .text_size(px(12.5))
+                            .text_size(rems(0.78125))
                             .text_color(theme.danger)
                             .child(output.to_string())
                             .into_any_element()
@@ -228,7 +228,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
                     .rounded_b(px(4.))
                     .flex()
                     .flex_col()
-                    .text_size(px(12.5))
+                    .text_size(rems(0.78125))
                     .font_family("Menlo")
                     .font_weight(FontWeight(400.0))
                     .overflow_hidden();

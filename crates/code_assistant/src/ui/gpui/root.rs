@@ -10,7 +10,7 @@ use super::{CloseWindow, Gpui, UiEventSender, WorktreeData};
 use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
-    div, prelude::*, px, rgba, svg, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    div, prelude::*, px, rems, rgba, svg, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
     PathPromptOptions, SharedString, Subscription,
 };
 
@@ -165,23 +165,29 @@ impl RootView {
         cx.notify();
     }
 
-    /// Minimum allowed UI scale factor.
-    const MIN_UI_SCALE: f32 = 0.6;
-    /// Maximum allowed UI scale factor.
-    const MAX_UI_SCALE: f32 = 2.0;
-    /// Step size for each zoom in/out click.
-    const UI_SCALE_STEP: f32 = 0.1;
     /// Base font size in pixels (matches gpui-component default).
     const BASE_FONT_SIZE: f32 = 16.0;
 
+    /// Predefined zoom levels (as percentages). Finer steps around 100%,
+    /// coarser towards the extremes.
+    const ZOOM_LEVELS: &[u32] = &[
+        60, 70, 80, 85, 90, 95, 98, 100, 102, 105, 110, 120, 130, 150, 175, 200,
+    ];
+
     fn on_zoom_in(&mut self, _: &ClickEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
-        self.ui_scale = (self.ui_scale + Self::UI_SCALE_STEP).min(Self::MAX_UI_SCALE);
-        self.apply_ui_scale(cx);
+        let current_pct = (self.ui_scale * 100.0).round() as u32;
+        if let Some(&next) = Self::ZOOM_LEVELS.iter().find(|&&l| l > current_pct) {
+            self.ui_scale = next as f32 / 100.0;
+            self.apply_ui_scale(cx);
+        }
     }
 
     fn on_zoom_out(&mut self, _: &ClickEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
-        self.ui_scale = (self.ui_scale - Self::UI_SCALE_STEP).max(Self::MIN_UI_SCALE);
-        self.apply_ui_scale(cx);
+        let current_pct = (self.ui_scale * 100.0).round() as u32;
+        if let Some(&prev) = Self::ZOOM_LEVELS.iter().rev().find(|&&l| l < current_pct) {
+            self.ui_scale = prev as f32 / 100.0;
+            self.apply_ui_scale(cx);
+        }
     }
 
     fn apply_ui_scale(&self, cx: &mut Context<Self>) {
@@ -681,14 +687,14 @@ impl RootView {
                         .child(
                             div()
                                 .text_color(text_color)
-                                .text_size(px(11.))
+                                .text_size(rems(0.6875))
                                 .font_weight(gpui::FontWeight(500.0))
                                 .flex_grow()
                                 .flex_shrink()
                                 .min_w_0() // Allow shrinking below content size for text wrapping
                                 .overflow_hidden() // Prevent text from overflowing
                                 .whitespace_normal() // Enable text wrapping
-                                .line_height(px(14.)) // Set line height for better readability
+                                .line_height(rems(0.875)) // Set line height for better readability
                                 .child(error_message),
                         )
                         .child(
@@ -776,14 +782,14 @@ impl RootView {
                         .child(
                             div()
                                 .text_color(text_color)
-                                .text_size(px(11.))
+                                .text_size(rems(0.6875))
                                 .font_weight(gpui::FontWeight(500.0))
                                 .flex_grow()
                                 .flex_shrink()
                                 .min_w_0()
                                 .overflow_hidden()
                                 .whitespace_normal()
-                                .line_height(px(14.))
+                                .line_height(rems(0.875))
                                 .child(status_message),
                         ),
                 )

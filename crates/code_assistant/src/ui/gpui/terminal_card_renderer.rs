@@ -17,7 +17,7 @@ use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::AppContext as _; // brings .new() into scope on Context
 use gpui::{
-    div, percentage, px, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
+    div, percentage, px, rems, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui::{svg, Animation, AnimationExt, Transformation};
@@ -263,7 +263,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .overflow_hidden()
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(rems(0.75))
                         .text_color(header_text_color)
                         .overflow_hidden()
                         .child(truncate_str(&display_command, 200)),
@@ -274,7 +274,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             if !project_param.is_empty() && project_param != *current_project {
                 label_row = label_row.child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.6875))
                         .text_color(header_text_color.opacity(0.5))
                         .flex_shrink_0()
                         .child(format!("({})", project_param)),
@@ -319,7 +319,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                     .when_some(elapsed_str, |el, text| {
                         el.child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(rems(0.6875))
                                 .text_color(header_text_color.opacity(0.7))
                                 .child(text),
                         )
@@ -331,7 +331,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .when_some(elapsed_secs.map(format_elapsed), |el, text| {
                     el.child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(rems(0.6875))
                             .text_color(header_text_color.opacity(0.7))
                             .child(format!("({text})")),
                     )
@@ -347,7 +347,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             if let Some(secs) = elapsed_secs {
                 header_right = header_right.child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.6875))
                         .text_color(header_text_color.opacity(0.7))
                         .child(format!("({})", format_elapsed(secs))),
                 );
@@ -553,14 +553,14 @@ impl TerminalCardRenderer {
                             ))
                             .child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(rems(0.75))
                                     .text_color(header_text_color)
                                     .child(header_label),
                             ),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(rems(0.6875))
                             .text_color(theme.muted_foreground)
                             .child("Starting…"),
                     ),
@@ -575,13 +575,13 @@ impl TerminalCardRenderer {
                         .gap_1p5()
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(rems(0.75))
                                 .text_color(theme.muted_foreground.opacity(0.6))
                                 .child("$"),
                         )
                         .child(
                             div()
-                                .text_size(px(12.5))
+                                .text_size(rems(0.78125))
                                 .text_color(theme.foreground)
                                 .child(truncate_str(command, 80)),
                         ),
@@ -619,7 +619,7 @@ fn render_static_output(
         .px_3()
         .py_1()
         .bg(theme_colors.background)
-        .text_size(px(13.))
+        .text_size(rems(0.8125))
         .font_family("Menlo")
         .text_color(theme_colors.foreground)
         .overflow_hidden();
@@ -636,7 +636,7 @@ fn render_static_output(
     if truncated {
         container = container.child(
             div()
-                .text_size(px(11.))
+                .text_size(rems(0.6875))
                 .text_color(theme.muted_foreground.opacity(0.6))
                 .pt_1()
                 .child(format!(

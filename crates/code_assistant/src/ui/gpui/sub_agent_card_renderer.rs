@@ -18,7 +18,7 @@ use crate::ui::gpui::tool_block_renderers::{
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, percentage, px, svg, Animation, AnimationExt, ClickEvent, Context, Element,
+    div, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, Element,
     InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
     Styled, Transformation, Window,
 };
@@ -127,7 +127,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
             ))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(rems(0.75))
                     .text_color(header_text_color)
                     .child("Sub-agent"),
             );
@@ -164,7 +164,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(11.0))
+                                        .text_size(rems(0.6875))
                                         .text_color(color)
                                         .child(text.to_string()),
                                 ),
@@ -175,7 +175,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 // No parsed output yet — show generic waiting
                 header_right = header_right.child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.6875))
                         .text_color(theme.muted_foreground)
                         .child("Starting…"),
                 );
@@ -191,7 +191,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                     .px_2()
                     .py(px(1.))
                     .rounded(px(4.))
-                    .text_size(px(11.))
+                    .text_size(rems(0.6875))
                     .text_color(theme.muted_foreground)
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.danger.opacity(0.15)).text_color(theme.danger))
@@ -279,7 +279,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 .flex()
                 .flex_col()
                 .gap_0p5()
-                .text_size(px(13.));
+                .text_size(rems(0.8125));
 
             // Instructions (compact, muted)
             if let Some(instructions) = instructions {
@@ -292,7 +292,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                             .border_color(theme.border)
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(rems(0.75))
                                     .text_color(theme.muted_foreground.opacity(0.7))
                                     .child(instructions.to_string()),
                             ),
@@ -332,7 +332,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 // No output yet — show waiting indicator in body
                 body = body.child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(rems(0.75))
                         .text_color(theme.muted_foreground)
                         .child("Waiting for sub-agent…"),
                 );
@@ -385,7 +385,7 @@ fn render_tool_line(
         ))
         .child(
             div()
-                .text_size(px(13.))
+                .text_size(rems(0.8125))
                 .text_color(text_color)
                 .child(display_text),
         )
@@ -416,7 +416,7 @@ fn render_activity_line(
         SubAgentActivity::Cancelled => Some(
             div()
                 .py(px(2.))
-                .text_size(px(13.))
+                .text_size(rems(0.8125))
                 .text_color(theme.warning)
                 .child("Cancelled")
                 .into_any(),
@@ -434,7 +434,7 @@ fn render_status_line(
         return Some(
             div()
                 .py(px(2.))
-                .text_size(px(13.))
+                .text_size(rems(0.8125))
                 .text_color(theme.warning)
                 .child("Sub-agent cancelled")
                 .into_any(),
@@ -445,7 +445,7 @@ fn render_status_line(
         return Some(
             div()
                 .py(px(2.))
-                .text_size(px(13.))
+                .text_size(rems(0.8125))
                 .text_color(theme.danger)
                 .child(format!("Error: {error}"))
                 .into_any(),

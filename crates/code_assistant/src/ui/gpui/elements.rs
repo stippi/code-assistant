@@ -4,7 +4,7 @@ use crate::ui::gpui::image;
 
 use crate::ui::ToolStatus;
 use gpui::{
-    div, img, percentage, px, svg, Animation, AnimationExt, ClickEvent, Context, Entity,
+    div, img, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, Entity,
     ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task, Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
@@ -1072,7 +1072,7 @@ impl BlockView {
                     ))
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(rems(0.75))
                             .text_color(header_text_color)
                             .child(label),
                     ),
@@ -1222,7 +1222,7 @@ impl BlockView {
                     // Description text
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(rems(0.8125))
                             .text_color(desc_color)
                             .overflow_hidden()
                             .text_overflow(gpui::TextOverflow::Truncate(SharedString::from("…")))
@@ -1414,7 +1414,7 @@ impl Render for BlockView {
                                     .px_3()
                                     .pt_1()
                                     .pb_2()
-                                    .text_size(px(14.))
+                                    .text_size(rems(0.875))
                                     .italic()
                                     .text_color(text_color)
                                     .child(TextView::markdown(
@@ -1501,7 +1501,7 @@ impl Render for BlockView {
                     .px_2()
                     .py_1()
                     .text_color(cx.theme().muted_foreground)
-                    .text_size(px(13.))
+                    .text_size(rems(0.8125))
                     .child(format!("[{}]", block.name))
                     .into_any_element()
             }

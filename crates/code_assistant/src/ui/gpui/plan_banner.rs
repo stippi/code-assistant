@@ -2,7 +2,7 @@ use super::file_icons;
 use crate::types::{PlanItemStatus, PlanState};
 use gpui::prelude::*;
 use gpui::{
-    div, percentage, px, Animation, AnimationExt, Bounds, ClickEvent, Context, EventEmitter,
+    div, percentage, px, rems, Animation, AnimationExt, Bounds, ClickEvent, Context, EventEmitter,
     Pixels, Render, SharedString, Task, Timer, Transformation, Window,
 };
 use gpui_component::{ActiveTheme, StyledExt};
@@ -267,7 +267,7 @@ impl Render for PlanBanner {
                             .child(render_plan_label(cx))
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(rems(0.6875))
                                     .text_color(cx.theme().muted_foreground)
                                     .child("•"),
                             )
@@ -293,7 +293,7 @@ impl Render for PlanBanner {
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_ellipsis()
-                                    .text_size(px(11.))
+                                    .text_size(rems(0.6875))
                                     .text_color(cx.theme().info)
                                     .child(SharedString::from(truncated)),
                             ),
@@ -301,7 +301,7 @@ impl Render for PlanBanner {
                     .child(
                         div()
                             .flex_none()
-                            .text_size(px(11.))
+                            .text_size(rems(0.6875))
                             .text_color(cx.theme().muted_foreground)
                             .child(SharedString::from(format!("{completed}/{total}"))),
                     )
@@ -397,7 +397,7 @@ fn render_chevron(
 
 fn render_plan_label(cx: &mut Context<PlanBanner>) -> gpui::Div {
     div()
-        .text_size(px(12.))
+        .text_size(rems(0.75))
         .font_medium()
         .text_color(cx.theme().foreground)
         .child("Plan")
@@ -426,7 +426,7 @@ fn render_default_header(
         .child(
             div()
                 .flex_none()
-                .text_size(px(11.))
+                .text_size(rems(0.6875))
                 .text_color(cx.theme().muted_foreground)
                 .child(SharedString::from(status_text.to_string())),
         )
@@ -507,8 +507,8 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(12.))
-                        .line_height(px(18.))
+                        .text_size(rems(0.75))
+                        .line_height(rems(1.125))
                         .text_color(text_color)
                         .child(SharedString::from(normalize_single_line(&entry.content))),
                 )

@@ -315,7 +315,7 @@ impl ToolBlockRenderer for InlineToolRenderer {
             theme.muted_foreground
         };
 
-        use gpui::{div, px, ParentElement, Styled};
+        use gpui::{div, px, rems, ParentElement, Styled};
         Some(
             div()
                 .pl(px(8.))
@@ -323,7 +323,7 @@ impl ToolBlockRenderer for InlineToolRenderer {
                 .border_l_2()
                 .border_color(theme.border)
                 .py(px(4.))
-                .text_size(px(13.))
+                .text_size(rems(0.8125))
                 .text_color(output_color)
                 .overflow_hidden()
                 .child(output.to_string())

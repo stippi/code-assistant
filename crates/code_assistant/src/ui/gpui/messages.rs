@@ -2,8 +2,8 @@ use super::branch_switcher::BranchSwitcherElement;
 use super::elements::MessageContainer;
 use crate::session::instance::SessionActivityState;
 use gpui::{
-    div, list, prelude::*, px, rgb, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    ListAlignment, ListState, Point, SharedString, Task, Timer, Window,
+    div, list, prelude::*, px, rems, rgb, App, Context, CursorStyle, Entity, FocusHandle,
+    Focusable, ListAlignment, ListState, Point, SharedString, Task, Timer, Window,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon};
@@ -713,7 +713,7 @@ impl Render for MessagesView {
             .items_center()
             .size_full()
             .bg(cx.theme().popover)
-            .text_size(px(16.))
+            .text_size(rems(1.0))
             .child(message_list)
             .vertical_scrollbar(&self.list_state)
     }
@@ -817,14 +817,19 @@ impl MessagesView {
                     .gap_2()
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(rems(0.875))
                             .text_color(color)
                             .child(braille_char.to_string()),
                     )
-                    .child(div().text_size(px(13.0)).text_color(color).child(format!(
-                        "Rate limited — retrying in {}s…",
-                        seconds_remaining
-                    )))
+                    .child(
+                        div()
+                            .text_size(rems(0.8125))
+                            .text_color(color)
+                            .child(format!(
+                                "Rate limited — retrying in {}s…",
+                                seconds_remaining
+                            )),
+                    )
                     .into_any_element()
             }
             SessionActivityState::WaitingForResponse => {
@@ -836,7 +841,7 @@ impl MessagesView {
                     .py_2()
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(rems(0.875))
                             .text_color(color)
                             .child(braille_char.to_string()),
                     )
