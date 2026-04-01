@@ -38,6 +38,8 @@ pub struct RootView {
     new_project_dialog: Option<Entity<NewProjectDialog>>,
     /// Pending folder path from the file picker, waiting to create the dialog in render
     pending_project_path: Option<std::path::PathBuf>,
+    /// UI zoom scale factor (1.0 = 100%, multiplied with the base font size)
+    ui_scale: f32,
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _plan_banner_subscription: Subscription,
@@ -86,6 +88,7 @@ impl RootView {
             last_worktree_data: None,
             new_project_dialog: None,
             pending_project_path: None,
+            ui_scale: 1.0,
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
@@ -159,6 +162,31 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         theme::toggle_theme(Some(window), cx);
+        cx.notify();
+    }
+
+    /// Minimum allowed UI scale factor.
+    const MIN_UI_SCALE: f32 = 0.6;
+    /// Maximum allowed UI scale factor.
+    const MAX_UI_SCALE: f32 = 2.0;
+    /// Step size for each zoom in/out click.
+    const UI_SCALE_STEP: f32 = 0.1;
+    /// Base font size in pixels (matches gpui-component default).
+    const BASE_FONT_SIZE: f32 = 16.0;
+
+    fn on_zoom_in(&mut self, _: &ClickEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.ui_scale = (self.ui_scale + Self::UI_SCALE_STEP).min(Self::MAX_UI_SCALE);
+        self.apply_ui_scale(cx);
+    }
+
+    fn on_zoom_out(&mut self, _: &ClickEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.ui_scale = (self.ui_scale - Self::UI_SCALE_STEP).max(Self::MIN_UI_SCALE);
+        self.apply_ui_scale(cx);
+    }
+
+    fn apply_ui_scale(&self, cx: &mut Context<Self>) {
+        let scaled = px(Self::BASE_FONT_SIZE * self.ui_scale);
+        cx.global_mut::<gpui_component::theme::Theme>().font_size = scaled;
         cx.notify();
     }
 
@@ -1075,6 +1103,57 @@ impl Render for RootView {
                                             .text_color(cx.theme().muted_foreground),
                                     )
                                     .on_click(cx.listener(Self::on_toggle_theme)),
+                            )
+                            // Zoom out button
+                            .child(
+                                div()
+                                    .id("zoom-out-btn")
+                                    .size(px(28.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from("icons/zoom_out.svg"))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .on_click(cx.listener(Self::on_zoom_out)),
+                            )
+                            // Zoom level indicator
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(format!(
+                                        "{}%",
+                                        (self.ui_scale * 100.0).round() as u32
+                                    ))),
+                            )
+                            // Zoom in button
+                            .child(
+                                div()
+                                    .id("zoom-in-btn")
+                                    .size(px(28.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from("icons/zoom_in.svg"))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .on_click(cx.listener(Self::on_zoom_in)),
                             ),
                     ),
             )
