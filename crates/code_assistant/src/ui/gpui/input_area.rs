@@ -611,40 +611,35 @@ impl InputArea {
                                             .flex()
                                             .child(self.sandbox_selector.clone()),
                                     )
-                                    .when_some(self.context_usage_ratio, |el, ratio| {
+                                    .child({
+                                        let ratio = self.context_usage_ratio.unwrap_or(0.0);
                                         let progress_color = if ratio >= 0.8 {
                                             cx.theme().warning
                                         } else {
                                             cx.theme().muted_foreground
                                         };
-                                        el.child(
-                                            div()
-                                                .id("context-indicator")
-                                                .flex_none()
-                                                .flex()
-                                                .items_center()
-                                                .ml_1()
-                                                .tooltip(move |window, cx| {
-                                                    gpui_component::tooltip::Tooltip::new(
-                                                        format!(
-                                                            "Context: {:.0}%",
-                                                            ratio * 100.0
-                                                        ),
-                                                    )
-                                                    .build(window, cx)
-                                                })
-                                                .child(
-                                                    super::context_indicator::ContextIndicator::new(
-                                                        ratio,
-                                                    )
-                                                    .size(px(16.))
-                                                    .stroke_width(px(2.5))
-                                                    .bg_color(
-                                                        cx.theme().muted_foreground.opacity(0.25),
-                                                    )
-                                                    .progress_color(progress_color),
-                                                ),
-                                        )
+                                        div()
+                                            .id("context-indicator")
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .ml_1()
+                                            .tooltip(move |window, cx| {
+                                                gpui_component::tooltip::Tooltip::new(format!(
+                                                    "Context: {:.0}%",
+                                                    ratio * 100.0
+                                                ))
+                                                .build(window, cx)
+                                            })
+                                            .child(
+                                                super::context_indicator::ContextIndicator::new(
+                                                    ratio,
+                                                )
+                                                .size(px(16.))
+                                                .stroke_width(px(2.5))
+                                                .bg_color(cx.theme().muted_foreground.opacity(0.25))
+                                                .progress_color(progress_color),
+                                            )
                                     }),
                             ),
                     )

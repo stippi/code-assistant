@@ -1,10 +1,17 @@
-use gpui::{canvas, point, prelude::*, px, Hsla, PathBuilder, Pixels};
+use gpui::{
+    canvas, point, prelude::*, px, FillOptions, FillRule, Hsla, PathBuilder, PathStyle, Pixels,
+};
 use std::f32::consts::PI;
 
 /// A small circular progress indicator that shows context window usage.
 ///
 /// Renders as a ring: a muted background circle with a colored arc overlay
 /// representing the filled portion.
+///
+/// Both the background ring and the progress arc are drawn as filled annular
+/// shapes (outer circle minus inner circle) rather than stroked paths.
+/// This avoids anti-aliasing artefacts caused by stroke line-cap styles and
+/// overlapping semi-transparent strokes.
 #[derive(IntoElement)]
 pub struct ContextIndicator {
     /// Progress value in 0.0..=1.0
@@ -51,6 +58,86 @@ impl ContextIndicator {
     }
 }
 
+/// Number of line segments used to approximate a full circle.
+const CIRCLE_SEGMENTS: usize = 64;
+
+/// Build a filled full-circle annulus (ring) path.
+///
+/// The ring is defined by an outer and inner radius, centred at (`cx`, `cy`).
+/// Uses a polygon approximation with `CIRCLE_SEGMENTS` segments for each
+/// circle, connected so the fill rule produces a ring.
+fn build_ring(center_x: Pixels, center_y: Pixels, outer_r: Pixels, inner_r: Pixels) -> PathBuilder {
+    let fill_opts = FillOptions::default().with_fill_rule(FillRule::EvenOdd);
+    let mut pb = PathBuilder::fill().with_style(PathStyle::Fill(fill_opts));
+
+    // Outer circle – clockwise
+    add_circle(&mut pb, center_x, center_y, outer_r, true);
+    // Inner circle – counter-clockwise
+    add_circle(&mut pb, center_x, center_y, inner_r, false);
+
+    pb
+}
+
+/// Append a closed circular polygon to the path builder.
+fn add_circle(pb: &mut PathBuilder, cx: Pixels, cy: Pixels, r: Pixels, cw: bool) {
+    let n = CIRCLE_SEGMENTS;
+    for i in 0..=n {
+        let t = if cw {
+            2.0 * PI * (i as f32) / (n as f32)
+        } else {
+            -2.0 * PI * (i as f32) / (n as f32)
+        };
+        let px = cx + r * t.cos();
+        let py = cy + r * t.sin();
+        if i == 0 {
+            pb.move_to(point(px, py));
+        } else {
+            pb.line_to(point(px, py));
+        }
+    }
+    pb.close();
+}
+
+/// Build a filled arc sector (annular wedge) from `start_angle` to
+/// `end_angle` (in radians, 0 = 3 o'clock, positive = clockwise in screen
+/// coords).
+fn build_arc_sector(
+    center_x: Pixels,
+    center_y: Pixels,
+    outer_r: Pixels,
+    inner_r: Pixels,
+    start_angle: f32,
+    end_angle: f32,
+) -> PathBuilder {
+    let mut pb = PathBuilder::fill();
+
+    let n = CIRCLE_SEGMENTS;
+    let span = end_angle - start_angle;
+
+    // Outer arc: start → end
+    for i in 0..=n {
+        let t = start_angle + span * (i as f32) / (n as f32);
+        let px = center_x + outer_r * t.cos();
+        let py = center_y + outer_r * t.sin();
+        if i == 0 {
+            pb.move_to(point(px, py));
+        } else {
+            pb.line_to(point(px, py));
+        }
+    }
+
+    // Inner arc: end → start (reverse direction to close the shape)
+    for i in 0..=n {
+        let t = end_angle - span * (i as f32) / (n as f32);
+        let px = center_x + inner_r * t.cos();
+        let py = center_y + inner_r * t.sin();
+        pb.line_to(point(px, py));
+    }
+
+    pb.close();
+    pb
+}
+
 impl RenderOnce for ContextIndicator {
     fn render(self, _window: &mut gpui::Window, _cx: &mut gpui::App) -> impl IntoElement {
         let ratio = self.ratio;
@@ -62,72 +149,28 @@ impl RenderOnce for ContextIndicator {
         canvas(
             |_, _, _| {},
             move |bounds, _, window, _cx| {
-                let center_x = bounds.origin.x + bounds.size.width / 2.0;
-                let center_y = bounds.origin.y + bounds.size.height / 2.0;
-                let radius = (size / 2.0) - stroke_width;
+                let cx = bounds.origin.x + bounds.size.width / 2.0;
+                let cy = bounds.origin.y + bounds.size.height / 2.0;
 
-                // --- Background ring (full circle via two semicircles) ---
-                let mut bg = PathBuilder::stroke(stroke_width);
-                bg.move_to(point(center_x + radius, center_y));
-                bg.arc_to(
-                    point(radius, radius),
-                    px(0.),
-                    false,
-                    true,
-                    point(center_x - radius, center_y),
-                );
-                bg.arc_to(
-                    point(radius, radius),
-                    px(0.),
-                    false,
-                    true,
-                    point(center_x + radius, center_y),
-                );
-                if let Ok(path) = bg.build() {
+                // Outer and inner radii – ensure the full ring stays within
+                // the element bounds with a 0.5 px margin for anti-aliasing.
+                let half = size / 2.0;
+                let outer_r = half - px(0.5);
+                let inner_r = outer_r - stroke_width;
+
+                // --- Background ring (full circle) ---
+                if let Ok(path) = build_ring(cx, cy, outer_r, inner_r).build() {
                     window.paint_path(path, bg_color);
                 }
 
                 // --- Progress arc ---
-                if ratio > 0.0 {
-                    let mut pb = PathBuilder::stroke(stroke_width);
-                    if ratio >= 0.999 {
-                        // Full circle
-                        pb.move_to(point(center_x + radius, center_y));
-                        pb.arc_to(
-                            point(radius, radius),
-                            px(0.),
-                            false,
-                            true,
-                            point(center_x - radius, center_y),
-                        );
-                        pb.arc_to(
-                            point(radius, radius),
-                            px(0.),
-                            false,
-                            true,
-                            point(center_x + radius, center_y),
-                        );
-                    } else {
-                        // Partial arc starting from 12 o'clock (top center)
-                        let start_x = center_x;
-                        let start_y = center_y - radius;
-                        pb.move_to(point(start_x, start_y));
+                if ratio > 0.001 {
+                    // Start at 12 o'clock (-π/2) and sweep clockwise.
+                    let start = -PI / 2.0;
+                    let end = start + ratio.min(0.999) * 2.0 * PI;
 
-                        let angle = -PI / 2.0 + (ratio * 2.0 * PI);
-
-                        let end_x = center_x + radius * angle.cos();
-                        let end_y = center_y + radius * angle.sin();
-                        let large_arc = ratio > 0.5;
-
-                        pb.arc_to(
-                            point(radius, radius),
-                            px(0.),
-                            large_arc,
-                            true,
-                            point(end_x, end_y),
-                        );
-                    }
-                    if let Ok(path) = pb.build() {
+                    if let Ok(path) = build_arc_sector(cx, cy, outer_r, inner_r, start, end).build()
+                    {
                         window.paint_path(path, progress_color);
                     }
                 }
