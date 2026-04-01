@@ -70,6 +70,9 @@ pub struct InputArea {
     agent_is_running: bool,
     cancel_enabled: bool,
 
+    // Context usage ratio (0.0–1.0)
+    context_usage_ratio: Option<f32>,
+
     // Branch editing state
     /// When editing a message, this is the parent node ID where the new branch will be created
     branch_parent_id: Option<NodeId>,
@@ -120,6 +123,7 @@ impl InputArea {
 
             agent_is_running: false,
             cancel_enabled: false,
+            context_usage_ratio: None,
 
             branch_parent_id: None,
 
@@ -248,6 +252,11 @@ impl InputArea {
     pub fn set_agent_state(&mut self, agent_is_running: bool, cancel_enabled: bool) {
         self.agent_is_running = agent_is_running;
         self.cancel_enabled = cancel_enabled;
+    }
+
+    /// Update the context usage ratio (0.0–1.0)
+    pub fn set_context_usage_ratio(&mut self, ratio: Option<f32>) {
+        self.context_usage_ratio = ratio;
     }
     /// Handle paste events (for images).
     ///
@@ -554,123 +563,169 @@ impl InputArea {
                         .children(self.attachment_views.iter().cloned()),
                 )
             })
-            // Main input row
+            // Main input row: [text field + selectors] [buttons]
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .justify_between()
-                    .items_center()
+                    .items_start()
                     .p_2()
                     .gap_2()
-                    .child({
+                    // Left column: text field + selector row (share same width)
+                    .child(
                         div()
                             .flex_1()
-                            .bg(cx.theme().popover)
-                            .border(if is_focused { px(2.) } else { px(1.) })
-                            .p(if is_focused { px(0.) } else { px(1.) })
-                            .border_color(if is_focused {
-                                cx.theme().primary
-                            } else {
-                                cx.theme().sidebar_border
-                            })
-                            .rounded_md()
-                            .track_focus(&text_input_handle)
-                            .child(Input::new(&self.text_input).appearance(false))
-                    })
-                    .children({
-                        let mut buttons = Vec::new();
-
-                        // Show both send and cancel buttons
-                        // Send button - enabled when input has content
-                        let send_enabled = has_input_content;
-
-                        let mut send_button = div()
-                            .id("send-btn")
-                            .size(px(40.))
-                            .rounded_sm()
                             .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor(if send_enabled {
-                                CursorStyle::PointingHand
-                            } else {
-                                CursorStyle::OperationNotAllowed
+                            .flex_col()
+                            .gap_1()
+                            .child({
+                                div()
+                                    .bg(cx.theme().popover)
+                                    .border(if is_focused { px(2.) } else { px(1.) })
+                                    .p(if is_focused { px(0.) } else { px(1.) })
+                                    .border_color(if is_focused {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().sidebar_border
+                                    })
+                                    .rounded_md()
+                                    .track_focus(&text_input_handle)
+                                    .child(Input::new(&self.text_input).appearance(false))
                             })
-                            .child(file_icons::render_icon(
-                                &file_icons::get().get_type_icon(file_icons::SEND),
-                                22.0,
-                                if send_enabled {
-                                    cx.theme().primary
-                                } else {
-                                    cx.theme().muted_foreground
-                                },
-                                ">",
-                            ));
-
-                        if send_enabled {
-                            send_button = send_button
-                                .hover(|s| s.bg(cx.theme().muted))
-                                .on_click(cx.listener(Self::on_submit_click));
-                        }
-                        buttons.push(send_button);
-
-                        // Cancel button - always visible, but enabled/disabled based on agent state
-
-                        let mut cancel_button = div()
-                            .id("cancel-btn")
-                            .size(px(40.))
-                            .rounded_sm()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor(if self.cancel_enabled {
-                                CursorStyle::PointingHand
-                            } else {
-                                CursorStyle::OperationNotAllowed
-                            })
-                            .child(file_icons::render_icon(
-                                &file_icons::get().get_type_icon(file_icons::STOP),
-                                22.0,
-                                if self.cancel_enabled {
-                                    cx.theme().danger
-                                } else {
-                                    cx.theme().muted_foreground
-                                },
-                                "⬜",
-                            ));
-
-                        if self.cancel_enabled {
-                            cancel_button = cancel_button
-                                .hover(|s| s.bg(cx.theme().muted))
-                                .on_click(cx.listener(Self::on_cancel_click));
-                        }
-
-                        buttons.push(cancel_button);
-
-                        buttons
-                    }),
-            )
-            // Selector row: model | worktree | sandbox
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .px_2()
-                    .pb_2()
-                    .child(div().flex_1().flex().child(self.model_selector.clone()))
+                            // Selector row: model | worktree | sandbox | context ring
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(div().flex_1().flex().child(self.model_selector.clone()))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .child(self.worktree_selector.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .child(self.sandbox_selector.clone()),
+                                    )
+                                    .when_some(self.context_usage_ratio, |el, ratio| {
+                                        let progress_color = if ratio >= 0.8 {
+                                            cx.theme().warning
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        };
+                                        el.child(
+                                            div()
+                                                .id("context-indicator")
+                                                .flex_none()
+                                                .flex()
+                                                .items_center()
+                                                .ml_1()
+                                                .tooltip(move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::new(
+                                                        format!(
+                                                            "Context: {:.0}%",
+                                                            ratio * 100.0
+                                                        ),
+                                                    )
+                                                    .build(window, cx)
+                                                })
+                                                .child(
+                                                    super::context_indicator::ContextIndicator::new(
+                                                        ratio,
+                                                    )
+                                                    .size(px(16.))
+                                                    .stroke_width(px(2.5))
+                                                    .bg_color(
+                                                        cx.theme().muted_foreground.opacity(0.25),
+                                                    )
+                                                    .progress_color(progress_color),
+                                                ),
+                                        )
+                                    }),
+                            ),
+                    )
+                    // Right column: buttons (vertically centered next to text field)
                     .child(
                         div()
                             .flex_none()
                             .flex()
-                            .child(self.worktree_selector.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_row_reverse()
-                            .child(self.sandbox_selector.clone()),
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .children({
+                                let mut buttons = Vec::new();
+
+                                // Send button - enabled when input has content
+                                let send_enabled = has_input_content;
+
+                                let mut send_button = div()
+                                    .id("send-btn")
+                                    .size(px(40.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor(if send_enabled {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::OperationNotAllowed
+                                    })
+                                    .child(file_icons::render_icon(
+                                        &file_icons::get().get_type_icon(file_icons::SEND),
+                                        22.0,
+                                        if send_enabled {
+                                            cx.theme().primary
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        },
+                                        ">",
+                                    ));
+
+                                if send_enabled {
+                                    send_button = send_button
+                                        .hover(|s| s.bg(cx.theme().muted))
+                                        .on_click(cx.listener(Self::on_submit_click));
+                                }
+                                buttons.push(send_button);
+
+                                // Cancel button
+                                let mut cancel_button = div()
+                                    .id("cancel-btn")
+                                    .size(px(40.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor(if self.cancel_enabled {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::OperationNotAllowed
+                                    })
+                                    .child(file_icons::render_icon(
+                                        &file_icons::get().get_type_icon(file_icons::STOP),
+                                        22.0,
+                                        if self.cancel_enabled {
+                                            cx.theme().danger
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        },
+                                        "⬜",
+                                    ));
+
+                                if self.cancel_enabled {
+                                    cancel_button = cancel_button
+                                        .hover(|s| s.bg(cx.theme().muted))
+                                        .on_click(cx.listener(Self::on_cancel_click));
+                                }
+
+                                buttons.push(cancel_button);
+
+                                buttons
+                            }),
                     ),
             )
     }

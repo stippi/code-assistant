@@ -590,6 +590,7 @@ impl FileSessionPersistence {
         let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
 
         // Update or add metadata for this session
+
         let new_metadata = ChatMetadata {
             id: session.id.clone(),
             name: session.name.clone(),
@@ -807,6 +808,7 @@ impl FileSessionPersistence {
                         message_count: session.message_count(),
                         total_usage,
                         last_usage,
+
                         tokens_limit,
                         tool_syntax: session.tool_syntax(),
                         initial_project: session.initial_project().to_string(),

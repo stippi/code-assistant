@@ -38,8 +38,12 @@ pub struct RootView {
     new_project_dialog: Option<Entity<NewProjectDialog>>,
     /// Pending folder path from the file picker, waiting to create the dialog in render
     pending_project_path: Option<std::path::PathBuf>,
+
     /// UI zoom scale factor (1.0 = 100%, multiplied with the base font size)
     ui_scale: f32,
+    /// Cached context token limit for the current model (model_name, limit).
+    /// Reloaded when the model changes.
+    context_limit_cache: Option<(String, u32)>,
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _plan_banner_subscription: Subscription,
@@ -88,7 +92,9 @@ impl RootView {
             last_worktree_data: None,
             new_project_dialog: None,
             pending_project_path: None,
+
             ui_scale: 1.0,
+            context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
@@ -887,6 +893,7 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current chat state from global Gpui
+
         let (
             chat_sessions,
             current_session_id,
@@ -895,6 +902,7 @@ impl Render for RootView {
             plan_state,
             current_sandbox_policy,
             current_worktree_data,
+            current_last_usage,
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
             (
                 gpui.get_chat_sessions(),
@@ -904,9 +912,10 @@ impl Render for RootView {
                 gpui.get_plan_state(),
                 gpui.get_current_sandbox_policy(),
                 gpui.get_current_worktree_data(),
+                gpui.get_current_session_last_usage(),
             )
         } else {
-            (Vec::new(), None, None, None, None, None, None)
+            (Vec::new(), None, None, None, None, None, None, None)
         };
 
         // Update chat sidebar if needed
@@ -964,6 +973,27 @@ impl Render for RootView {
             });
         }
 
+        // Ensure context token limit cache is populated for the current model.
+        // We check the cached model name against current_model so the (cheap) file
+        // I/O only happens once per model change, not every frame.
+        let cache_model = self.context_limit_cache.as_ref().map(|(m, _)| m.as_str());
+        let needs_refresh = match (&current_model, cache_model) {
+            (Some(model), Some(cached)) => model.as_str() != cached,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if needs_refresh {
+            self.context_limit_cache = current_model.as_ref().and_then(|model_name| {
+                llm::provider_config::ConfigurationSystem::load()
+                    .ok()
+                    .and_then(|config| {
+                        config
+                            .get_model(model_name)
+                            .map(|m| (model_name.clone(), m.context_token_limit))
+                    })
+            });
+        }
+
         if let Some(policy) = current_sandbox_policy {
             if self.input_area.read(cx).current_sandbox_policy() != policy {
                 self.input_area.update(cx, |input_area, cx| {
@@ -1012,8 +1042,27 @@ impl Render for RootView {
             false
         };
 
+        // Compute context usage ratio from the current session's last_usage
+        // (stored in Gpui global, immune to chat_sessions overwrites) + cached model limit
+        let context_usage_ratio = self
+            .context_limit_cache
+            .as_ref()
+            .and_then(|(_model, limit)| {
+                if *limit == 0 {
+                    return None;
+                }
+                let usage = current_last_usage.as_ref()?;
+                let used = usage.input_tokens + usage.cache_read_input_tokens;
+                if used > 0 {
+                    Some(used as f32 / *limit as f32)
+                } else {
+                    None
+                }
+            });
+
         self.input_area.update(cx, |input_area, _cx| {
             input_area.set_agent_state(agent_is_running, cancel_enabled);
+            input_area.set_context_usage_ratio(context_usage_ratio);
         });
 
         let plan_for_banner = plan_state.clone().filter(|plan| !plan.entries.is_empty());

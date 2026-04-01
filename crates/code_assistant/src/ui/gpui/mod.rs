@@ -3,6 +3,7 @@ pub mod attachment;
 pub mod auto_scroll;
 pub mod branch_switcher;
 pub mod chat_sidebar;
+mod context_indicator;
 pub mod diff_card_renderer;
 pub mod elements;
 pub mod file_icons;
@@ -108,6 +109,11 @@ pub struct Gpui {
 
     // Current worktree state (branches + worktrees listing from backend)
     current_worktree_data: Arc<Mutex<Option<WorktreeData>>>,
+
+    // Last usage from the active session's most recent assistant message.
+    // Stored separately from chat_sessions so it cannot be overwritten by
+    // stale metadata loaded from disk (via UpdateChatList / ListSessions).
+    current_session_last_usage: Arc<Mutex<Option<llm::Usage>>>,
 
     // Pending message edit state (for branching)
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
@@ -337,6 +343,9 @@ impl Gpui {
 
             // Current worktree state
             current_worktree_data: Arc::new(Mutex::new(None)),
+
+            // Current session last usage
+            current_session_last_usage: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -966,8 +975,14 @@ impl Gpui {
                 }
 
                 // If this is the current session, update the current project for parameter filtering
+
                 if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
                     if *current_session_id == metadata.id {
+                        // Store last_usage for the current session in a stable location
+                        // (not in chat_sessions, which can be overwritten by stale disk data)
+                        *self.current_session_last_usage.lock().unwrap() =
+                            Some(metadata.last_usage.clone());
+
                         // Update MessagesView with current project
                         self.update_messages_view(cx, |messages_view, _cx| {
                             messages_view.set_current_project(metadata.initial_project.clone());
@@ -1609,6 +1624,10 @@ impl Gpui {
 
     pub fn get_current_worktree_data(&self) -> Option<WorktreeData> {
         self.current_worktree_data.lock().unwrap().clone()
+    }
+
+    pub fn get_current_session_last_usage(&self) -> Option<llm::Usage> {
+        self.current_session_last_usage.lock().unwrap().clone()
     }
 
     /// Get and clear pending edit (used by RootView to pick up edit state)

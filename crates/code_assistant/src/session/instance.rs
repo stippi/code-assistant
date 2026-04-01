@@ -152,7 +152,7 @@ impl SessionInstance {
     #[allow(dead_code)]
     pub fn get_current_context_size(&self) -> u32 {
         // Find the most recent assistant message with usage data
-        for message in self.session.messages.iter().rev() {
+        for message in self.session.get_active_messages().iter().rev() {
             if matches!(message.role, llm::MessageRole::Assistant) {
                 if let Some(usage) = &message.usage {
                     return usage.input_tokens + usage.cache_read_input_tokens;
@@ -167,7 +167,7 @@ impl SessionInstance {
     pub fn calculate_total_usage(&self) -> llm::Usage {
         let mut total = llm::Usage::zero();
 
-        for message in &self.session.messages {
+        for message in self.session.get_active_messages() {
             if let Some(usage) = &message.usage {
                 total.input_tokens += usage.input_tokens;
                 total.output_tokens += usage.output_tokens;
@@ -181,7 +181,7 @@ impl SessionInstance {
 
     /// Get usage from the most recent assistant message
     fn get_last_usage(&self) -> llm::Usage {
-        for message in self.session.messages.iter().rev() {
+        for message in self.session.get_active_messages().iter().rev() {
             if matches!(message.role, llm::MessageRole::Assistant) {
                 if let Some(usage) = &message.usage {
                     return usage.clone();
@@ -270,9 +270,11 @@ impl SessionInstance {
             name: self.session.name.clone(),
             created_at: self.session.created_at,
             updated_at: self.session.updated_at,
-            message_count: self.session.messages.len(),
+
+            message_count: self.session.get_active_messages().len(),
             total_usage: self.calculate_total_usage(),
             last_usage: self.get_last_usage(),
+
             tokens_limit: None, // Will be updated by persistence layer if available
             tool_syntax: self.session.config.tool_syntax,
             initial_project: self.session.config.initial_project.clone(),
