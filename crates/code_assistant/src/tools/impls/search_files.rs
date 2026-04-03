@@ -79,6 +79,15 @@ impl SearchFilesOutput {
             start = end.saturating_sub(EXCERPT_TARGET.min(end));
         }
 
+        // Snap to valid char boundaries so we never slice inside a multi-byte
+        // UTF-8 character (e.g. box-drawing chars like '─').
+        while start < line.len() && !line.is_char_boundary(start) {
+            start += 1;
+        }
+        while end < line.len() && !line.is_char_boundary(end) {
+            end += 1;
+        }
+
         let mut excerpt = String::new();
         if start > 0 {
             excerpt.push_str("...");
@@ -712,6 +721,22 @@ mod tests {
         assert!(rendered_many.contains("Too many code snippets would be displayed"));
         assert!(!rendered_many.contains(">>>>> RESULT:"));
         assert!(rendered_many.contains("matches"));
+    }
+
+    #[test]
+    fn test_multibyte_line_does_not_panic() {
+        // Reproduce the crash: box-drawing chars are 3-byte UTF-8 sequences.
+        // Slicing at an arbitrary byte offset inside them must not panic.
+        let line = "    // ── Settings persistence helpers ─────────────────────────────────────";
+
+        // Ensure the line is long enough to trigger excerpting.
+        assert!(line.len() > 150);
+
+        // match_ranges deliberately point inside a multi-byte char region.
+        let rendered =
+            SearchFilesOutput::format_line_with_excerpt(line, 0, &[0], &[vec![(60, 70)]]);
+        // Should not panic and should contain the ellipsis marker.
+        assert!(rendered.contains("...") || rendered == line);
     }
 
     #[test]
