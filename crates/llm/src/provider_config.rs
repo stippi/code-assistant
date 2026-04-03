@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::info;
 
 /// Configuration for a single provider instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +175,52 @@ impl ConfigurationSystem {
     /// List all available provider IDs
     pub fn list_providers(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
+    }
+
+    /// Save providers configuration back to disk.
+    ///
+    /// This reads the raw JSON from the file (preserving `${ENV_VAR}` patterns
+    /// that have not been substituted), merges in the provided changes, and
+    /// writes the result back.
+    pub fn save_providers_config(
+        custom_path: Option<&Path>,
+        mutate: impl FnOnce(&mut serde_json::Value) -> Result<()>,
+    ) -> Result<()> {
+        let path = if let Some(p) = custom_path {
+            p.to_path_buf()
+        } else {
+            Self::default_providers_path()
+        };
+
+        // Read the raw JSON (with ${ENV_VAR} patterns still intact)
+        let content = if path.exists() {
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read providers config: {}", path.display()))?
+        } else {
+            "{}".to_string()
+        };
+
+        let mut raw: serde_json::Value = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse providers config: {}", path.display()))?;
+
+        mutate(&mut raw)?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let json = serde_json::to_string_pretty(&raw)?;
+        std::fs::write(&path, &json)?;
+
+        // Set file permissions to 0600 on Unix (may contain secrets)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        info!("Saved providers config to {}", path.display());
+        Ok(())
     }
 
     /// Substitute environment variables in provider configurations

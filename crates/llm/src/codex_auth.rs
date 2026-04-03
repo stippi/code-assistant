@@ -132,73 +132,215 @@ pub fn extract_account_id(id_token: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Token storage
+// Token storage (in providers.json)
 // ---------------------------------------------------------------------------
 
-/// Storage path for Codex auth tokens.
+/// Default provider ID used for ChatGPT subscription auth in providers.json.
+pub const DEFAULT_PROVIDER_ID: &str = "openai-chatgpt";
+
+/// Save codex auth state into a provider entry in providers.json.
 ///
-/// Default: `~/.config/code-assistant/codex_auth.json`
-/// (falls back to `~/.config/codex_auth.json` if `dirs::config_dir()` is unavailable).
-fn default_auth_path() -> PathBuf {
-    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    config_dir.join("code-assistant").join("codex_auth.json")
-}
+/// The tokens are stored as fields inside the provider's `config` object:
+/// ```json
+/// "openai-chatgpt": {
+///   "label": "ChatGPT Subscription (WebSocket)",
+///   "provider": "openai-responses-ws",
+///   "config": {
+///     "codex_auth": true,
+///     "codex_tokens": {
+///       "id_token": "...",
+///       "access_token": "...",
+///       "refresh_token": "...",
+///       "account_id": "...",
+///       "last_refresh": "2025-01-01T00:00:00Z"
+///     }
+///   }
+/// }
+/// ```
+pub fn save_auth_state_to_provider(
+    state: &CodexAuthState,
+    provider_id: &str,
+    providers_path: Option<&Path>,
+) -> Result<()> {
+    let tokens_value = serde_json::json!({
+        "id_token": state.tokens.id_token,
+        "access_token": state.tokens.access_token,
+        "refresh_token": state.tokens.refresh_token,
+        "account_id": state.tokens.account_id,
+        "last_refresh": state.last_refresh,
+    });
 
-/// Get the default auth path (public, for use by CLI commands and factory).
-pub fn default_codex_auth_path() -> PathBuf {
-    default_auth_path()
-}
+    crate::provider_config::ConfigurationSystem::save_providers_config(providers_path, |raw| {
+        let obj = raw
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("providers.json is not a JSON object"))?;
 
-/// Save auth state to disk.
-pub fn save_auth_state(state: &CodexAuthState, path: Option<&Path>) -> Result<()> {
-    let path = path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(default_auth_path);
+        // Create or update the provider entry
+        let provider_entry = obj.entry(provider_id.to_string()).or_insert_with(|| {
+            serde_json::json!({
+                "label": "ChatGPT Subscription (WebSocket)",
+                "provider": "openai-responses-ws",
+                "config": { "codex_auth": true }
+            })
+        });
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+        let config = provider_entry
+            .get_mut("config")
+            .ok_or_else(|| anyhow::anyhow!("provider entry missing 'config' field"))?;
 
-    let json = serde_json::to_string_pretty(state)?;
-    std::fs::write(&path, &json)?;
+        config["codex_auth"] = serde_json::Value::Bool(true);
+        config["codex_tokens"] = tokens_value;
 
-    // Set file permissions to 0600 on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
+        Ok(())
+    })?;
 
-    info!("Saved Codex auth state to {}", path.display());
+    info!(
+        "Saved Codex auth tokens to providers.json (provider: {})",
+        provider_id
+    );
     Ok(())
 }
 
-/// Load auth state from disk.
-pub fn load_auth_state(path: Option<&Path>) -> Result<Option<CodexAuthState>> {
-    let path = path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(default_auth_path);
+/// Load codex auth state from a provider entry in providers.json.
+///
+/// Reads the `codex_tokens` object from the provider's config.
+pub fn load_auth_state_from_provider(
+    provider_id: &str,
+    providers_path: Option<&Path>,
+) -> Result<Option<CodexAuthState>> {
+    let path = if let Some(p) = providers_path {
+        p.to_path_buf()
+    } else {
+        crate::provider_config::ConfigurationSystem::default_providers_path()
+    };
 
     if !path.exists() {
         return Ok(None);
     }
 
-    let json = std::fs::read_to_string(&path)?;
-    let state: CodexAuthState = serde_json::from_str(&json)?;
-    Ok(Some(state))
+    let content = std::fs::read_to_string(&path)?;
+    let raw: serde_json::Value = serde_json::from_str(&content)?;
+
+    let tokens_value = raw
+        .get(provider_id)
+        .and_then(|p| p.get("config"))
+        .and_then(|c| c.get("codex_tokens"));
+
+    match tokens_value {
+        Some(tv) => {
+            let id_token = tv
+                .get("id_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let access_token = tv
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let refresh_token = tv
+                .get("refresh_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let account_id = tv
+                .get("account_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let last_refresh: DateTime<Utc> = tv
+                .get("last_refresh")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(Utc::now);
+
+            if access_token.is_empty() {
+                return Ok(None);
+            }
+
+            Ok(Some(CodexAuthState {
+                tokens: CodexTokens {
+                    id_token,
+                    access_token,
+                    refresh_token,
+                    account_id,
+                },
+                last_refresh,
+            }))
+        }
+        None => Ok(None),
+    }
 }
 
-/// Delete auth state from disk.
-pub fn delete_auth_state(path: Option<&Path>) -> Result<()> {
-    let path = path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(default_auth_path);
+/// Delete codex auth tokens from a provider entry in providers.json.
+///
+/// Removes only the `codex_tokens` field, leaving the provider entry intact.
+pub fn delete_auth_state_from_provider(
+    provider_id: &str,
+    providers_path: Option<&Path>,
+) -> Result<()> {
+    crate::provider_config::ConfigurationSystem::save_providers_config(providers_path, |raw| {
+        if let Some(provider) = raw.get_mut(provider_id) {
+            if let Some(config) = provider.get_mut("config") {
+                if let Some(obj) = config.as_object_mut() {
+                    obj.remove("codex_tokens");
+                }
+            }
+        }
+        Ok(())
+    })?;
 
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-        info!("Deleted Codex auth state from {}", path.display());
-    }
+    info!(
+        "Removed Codex auth tokens from providers.json (provider: {})",
+        provider_id
+    );
     Ok(())
+}
+
+/// Load auth state from the provider config value (already parsed, as available in factory).
+///
+/// This reads `codex_tokens` directly from a provider's `config` JSON value
+/// that was already loaded by the `ConfigurationSystem`.
+pub fn load_auth_state_from_config(config: &serde_json::Value) -> Option<CodexAuthState> {
+    let tv = config.get("codex_tokens")?;
+
+    let access_token = tv
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if access_token.is_empty() {
+        return None;
+    }
+
+    let id_token = tv
+        .get("id_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let refresh_token = tv
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let account_id = tv
+        .get("account_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let last_refresh: DateTime<Utc> = tv
+        .get("last_refresh")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(Utc::now);
+
+    Some(CodexAuthState {
+        tokens: CodexTokens {
+            id_token,
+            access_token,
+            refresh_token,
+            account_id,
+        },
+        last_refresh,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -219,9 +361,11 @@ pub struct LoginResult {
 /// 3. Returns the authorization URL (caller should open in browser)
 /// 4. Waits for the callback
 /// 5. Exchanges code for tokens
-/// 6. Returns the login result
+/// 6. Persists tokens into providers.json under the given provider ID
+/// 7. Returns the login result
 pub async fn start_login_flow(
-    auth_state_path: Option<&Path>,
+    provider_id: &str,
+    providers_path: Option<&Path>,
 ) -> Result<(String, tokio::sync::oneshot::Receiver<Result<LoginResult>>)> {
     let (verifier, challenge) = generate_pkce_pair();
     let state_param = generate_random_state();
@@ -235,7 +379,8 @@ pub async fn start_login_flow(
     let verifier_clone = verifier.clone();
     let state_param_clone = state_param.clone();
     let redirect_uri_clone = redirect_uri.clone();
-    let auth_path = auth_state_path.map(|p| p.to_path_buf());
+    let provider_id_owned = provider_id.to_string();
+    let providers_path_owned = providers_path.map(|p| p.to_path_buf());
 
     // Spawn the local server to wait for the callback
     tokio::spawn(async move {
@@ -243,7 +388,8 @@ pub async fn start_login_flow(
             verifier_clone,
             state_param_clone,
             redirect_uri_clone,
-            auth_path.as_deref(),
+            &provider_id_owned,
+            providers_path_owned.as_deref(),
         )
         .await;
         let _ = tx.send(result);
@@ -293,7 +439,8 @@ async fn run_callback_server(
     verifier: String,
     expected_state: String,
     redirect_uri: String,
-    auth_state_path: Option<&Path>,
+    provider_id: &str,
+    providers_path: Option<&Path>,
 ) -> Result<LoginResult> {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", REDIRECT_PORT))
         .await
@@ -382,8 +529,8 @@ async fn run_callback_server(
         last_refresh: Utc::now(),
     };
 
-    // Save to disk
-    save_auth_state(&auth_state, auth_state_path)?;
+    // Save to providers.json
+    save_auth_state_to_provider(&auth_state, provider_id, providers_path)?;
 
     Ok(LoginResult { tokens, auth_state })
 }
@@ -529,18 +676,27 @@ pub async fn refresh_tokens(auth_state: &CodexAuthState) -> Result<CodexAuthStat
 
 /// Manages Codex auth tokens and provides them to the OpenAI Responses client.
 ///
-/// Handles automatic token refresh when needed.
+/// Handles automatic token refresh when needed. Refreshed tokens are persisted
+/// back to providers.json.
 pub struct CodexAuthProvider {
     state: Arc<RwLock<CodexAuthState>>,
-    auth_state_path: Option<PathBuf>,
+    /// Provider ID in providers.json (e.g. "openai-chatgpt").
+    provider_id: String,
+    /// Optional custom path to providers.json.
+    providers_path: Option<PathBuf>,
 }
 
 impl CodexAuthProvider {
     /// Create a new Codex auth provider from persisted state.
-    pub fn new(state: CodexAuthState, auth_state_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        state: CodexAuthState,
+        provider_id: String,
+        providers_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
-            auth_state_path,
+            provider_id,
+            providers_path,
         }
     }
 
@@ -560,7 +716,11 @@ impl CodexAuthProvider {
             let current_state = self.state.read().unwrap().clone();
             match refresh_tokens(&current_state).await {
                 Ok(new_state) => {
-                    save_auth_state(&new_state, self.auth_state_path.as_deref())?;
+                    save_auth_state_to_provider(
+                        &new_state,
+                        &self.provider_id,
+                        self.providers_path.as_deref(),
+                    )?;
                     let mut state = self.state.write().unwrap();
                     *state = new_state;
                     info!("Successfully refreshed Codex auth tokens");
@@ -634,11 +794,11 @@ pub struct CodexAuthStatus {
     pub needs_refresh: bool,
 }
 
-/// Get the current Codex auth status from persisted state.
-pub fn get_auth_status(auth_state_path: Option<&Path>) -> CodexAuthStatus {
-    match load_auth_state(auth_state_path) {
+/// Get the current Codex auth status from providers.json.
+pub fn get_auth_status(provider_id: &str, providers_path: Option<&Path>) -> CodexAuthStatus {
+    match load_auth_state_from_provider(provider_id, providers_path) {
         Ok(Some(state)) => {
-            let (email, plan_type) = extract_user_info(&state.tokens.id_token);
+            let (email, plan_type) = extract_user_info_from_id_token(&state.tokens.id_token);
             CodexAuthStatus {
                 authenticated: true,
                 email,
@@ -655,8 +815,8 @@ pub fn get_auth_status(auth_state_path: Option<&Path>) -> CodexAuthStatus {
     }
 }
 
-/// Extract email and plan type from the id_token.
-fn extract_user_info(id_token: &str) -> (Option<String>, Option<String>) {
+/// Extract email and plan type from the id_token JWT payload.
+pub fn extract_user_info_from_id_token(id_token: &str) -> (Option<String>, Option<String>) {
     let parts: Vec<&str> = id_token.split('.').collect();
     if parts.len() != 3 {
         return (None, None);
@@ -694,9 +854,14 @@ fn extract_user_info(id_token: &str) -> (Option<String>, Option<String>) {
 pub fn create_codex_responses_client(
     auth_state: CodexAuthState,
     model: String,
-    auth_state_path: Option<PathBuf>,
+    provider_id: String,
+    providers_path: Option<PathBuf>,
 ) -> crate::openai_responses::OpenAIResponsesClient {
-    let auth_provider = Box::new(CodexAuthProvider::new(auth_state, auth_state_path));
+    let auth_provider = Box::new(CodexAuthProvider::new(
+        auth_state,
+        provider_id,
+        providers_path,
+    ));
     let request_customizer = Box::new(CodexRequestCustomizer);
 
     crate::openai_responses::OpenAIResponsesClient::with_customization(
@@ -715,9 +880,14 @@ pub fn create_codex_responses_client(
 pub fn create_codex_responses_ws_client(
     auth_state: CodexAuthState,
     model: String,
-    auth_state_path: Option<PathBuf>,
+    provider_id: String,
+    providers_path: Option<PathBuf>,
 ) -> crate::openai_responses_ws::OpenAIResponsesWsClient {
-    let auth_provider = Box::new(CodexAuthProvider::new(auth_state, auth_state_path));
+    let auth_provider = Box::new(CodexAuthProvider::new(
+        auth_state,
+        provider_id,
+        providers_path,
+    ));
     let request_customizer = Box::new(crate::openai_responses_ws::CodexWsRequestCustomizer);
 
     crate::openai_responses_ws::OpenAIResponsesWsClient::with_customization(
@@ -764,7 +934,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_user_info() {
+
+    fn test_extract_user_info_from_id_token() {
         let header = URL_SAFE_NO_PAD.encode(b"{}");
         let claims = serde_json::json!({
             "email": "test@example.com",
@@ -777,7 +948,7 @@ mod tests {
         let signature = URL_SAFE_NO_PAD.encode(b"fake_signature");
         let token = format!("{}.{}.{}", header, payload, signature);
 
-        let (email, plan) = extract_user_info(&token);
+        let (email, plan) = extract_user_info_from_id_token(&token);
         assert_eq!(email, Some("test@example.com".to_string()));
         assert_eq!(plan, Some("pro".to_string()));
     }

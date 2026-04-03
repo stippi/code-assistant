@@ -84,7 +84,8 @@
     "label": "ChatGPT Subscription (WebSocket)",
     "provider": "openai-responses-ws",
     "config": {
-      "codex_auth": true
+      "codex_auth": true,
+      "_comment": "Run `code-assistant codex-login` to populate codex_tokens automatically"
     }
   },
   "ollama-local": {

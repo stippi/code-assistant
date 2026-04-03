@@ -611,32 +611,30 @@ async fn create_openai_responses_ws_client(
     let config = &provider_config.config;
 
     // Check if Codex (ChatGPT subscription) auth should be used.
-    // Priority: explicit codex_auth_path > "codex_auth": true (uses default path) > api_key
-    let codex_auth_path = config
-        .get("codex_auth_path")
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from);
-
-    let use_codex_auth = codex_auth_path.is_some()
-        || config
-            .get("codex_auth")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+    let use_codex_auth = config
+        .get("codex_auth")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if use_codex_auth {
-        let path = codex_auth_path.unwrap_or_else(crate::codex_auth::default_codex_auth_path);
+        // Read tokens from the provider's config.codex_tokens (already loaded from providers.json)
+        let auth_state =
+            crate::codex_auth::load_auth_state_from_config(config).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No Codex auth tokens found in provider config. \
+                     Run `code-assistant codex-login` first."
+                )
+            })?;
 
-        let auth_state = crate::codex_auth::load_auth_state(Some(&path))?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No Codex auth tokens found at {}. Run `code-assistant codex-login` first.",
-                path.display()
-            )
-        })?;
+        // Find the provider ID so refreshed tokens can be written back
+        let provider_id = find_provider_id_for_config(provider_config)
+            .unwrap_or_else(|| crate::codex_auth::DEFAULT_PROVIDER_ID.to_string());
 
         let client = crate::codex_auth::create_codex_responses_ws_client(
             auth_state,
             model_config.id.clone(),
-            Some(path),
+            provider_id,
+            None,
         );
         let client = apply_custom_config(client, model_config);
         return Ok(Box::new(client));
@@ -666,6 +664,21 @@ async fn create_openai_responses_ws_client(
 
     let client = apply_custom_config(client, model_config);
     Ok(Box::new(client))
+}
+
+/// Try to find the provider ID for a given provider config.
+///
+/// This is used to pass the provider ID to `CodexAuthProvider` so it can
+/// write refreshed tokens back to the correct entry in providers.json.
+fn find_provider_id_for_config(provider_config: &ProviderConfig) -> Option<String> {
+    // Load the raw providers config to find the matching entry by label
+    let providers = ConfigurationSystem::load_providers_config(None).ok()?;
+    for (id, pc) in &providers {
+        if pc.label == provider_config.label && pc.provider == provider_config.provider {
+            return Some(id.clone());
+        }
+    }
+    None
 }
 
 async fn create_ollama_client(
