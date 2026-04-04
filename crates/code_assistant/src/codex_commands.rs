@@ -3,17 +3,21 @@
 //! These commands manage the OAuth login flow that lets users authenticate
 //! with their existing ChatGPT Plus/Pro/Team subscription instead of
 //! needing a separate OpenAI API key.
+//!
+//! Auth tokens are stored inside `providers.json` under the provider's
+//! `config.codex_tokens` field.
 
 use anyhow::Result;
 use llm::codex_auth;
 
+/// The default provider ID used for ChatGPT subscription auth.
+const PROVIDER_ID: &str = codex_auth::DEFAULT_PROVIDER_ID;
+
 /// Run the Codex OAuth browser login flow.
 pub async fn run_codex_login() -> Result<()> {
-    let auth_path = codex_auth::default_codex_auth_path();
-
     // Check if already authenticated
-    if let Ok(Some(_)) = codex_auth::load_auth_state(Some(&auth_path)) {
-        let status = codex_auth::get_auth_status(Some(&auth_path));
+    if let Ok(Some(_)) = codex_auth::load_auth_state_from_provider(PROVIDER_ID, None) {
+        let status = codex_auth::get_auth_status(PROVIDER_ID, None);
         if status.authenticated {
             println!(
                 "Already logged in as {} (plan: {}).",
@@ -28,7 +32,7 @@ pub async fn run_codex_login() -> Result<()> {
     println!("Starting ChatGPT subscription login...");
     println!();
 
-    let (authorize_url, rx) = codex_auth::start_login_flow(Some(&auth_path)).await?;
+    let (authorize_url, rx) = codex_auth::start_login_flow(PROVIDER_ID, None).await?;
 
     println!("Opening your browser to authenticate.");
     println!("If the browser doesn't open, visit this URL manually:");
@@ -46,7 +50,7 @@ pub async fn run_codex_login() -> Result<()> {
     let result = rx.await??;
 
     let (email, plan) = {
-        let status = codex_auth::get_auth_status(Some(&auth_path));
+        let status = codex_auth::get_auth_status(PROVIDER_ID, None);
         (status.email, status.plan_type)
     };
 
@@ -59,14 +63,16 @@ pub async fn run_codex_login() -> Result<()> {
         println!("  Plan:  {}", plan);
     }
     println!();
-    println!("Tokens stored at: {}", auth_path.display());
+    println!("Tokens stored in providers.json under \"{}\".", PROVIDER_ID);
     println!();
-    println!("To use this with a model, add to your providers.json:");
-    println!(r#"  "openai-chatgpt": {{"#);
+    println!("Make sure your providers.json contains an entry like:");
+    println!(r#"  "{}": {{"#, PROVIDER_ID);
     println!(r#"    "label": "ChatGPT Subscription (WebSocket)","#);
     println!(r#"    "provider": "openai-responses-ws","#);
     println!(r#"    "config": {{ "codex_auth": true }}"#);
     println!(r#"  }}"#);
+    println!();
+    println!("(The login flow creates this automatically if it doesn't exist.)");
 
     let _ = result; // LoginResult consumed
 
@@ -75,22 +81,24 @@ pub async fn run_codex_login() -> Result<()> {
 
 /// Remove stored Codex auth tokens.
 pub fn run_codex_logout() -> Result<()> {
-    let auth_path = codex_auth::default_codex_auth_path();
-
-    if !auth_path.exists() {
+    // Check if tokens exist first
+    let status = codex_auth::get_auth_status(PROVIDER_ID, None);
+    if !status.authenticated {
         println!("Not logged in (no tokens found).");
         return Ok(());
     }
 
-    codex_auth::delete_auth_state(Some(&auth_path))?;
-    println!("Logged out. Tokens removed from {}", auth_path.display());
+    codex_auth::delete_auth_state_from_provider(PROVIDER_ID, None)?;
+    println!(
+        "Logged out. Tokens removed from providers.json (provider: \"{}\").",
+        PROVIDER_ID
+    );
     Ok(())
 }
 
 /// Show current Codex auth status.
 pub fn run_codex_status() -> Result<()> {
-    let auth_path = codex_auth::default_codex_auth_path();
-    let status = codex_auth::get_auth_status(Some(&auth_path));
+    let status = codex_auth::get_auth_status(PROVIDER_ID, None);
 
     if status.authenticated {
         println!("Authenticated: yes");
@@ -104,7 +112,7 @@ pub fn run_codex_status() -> Result<()> {
             "Needs refresh: {}",
             if status.needs_refresh { "yes" } else { "no" }
         );
-        println!("Token file:    {}", auth_path.display());
+        println!("Provider:      \"{}\" in providers.json", PROVIDER_ID);
     } else {
         println!("Not authenticated.");
         println!("Run `code-assistant codex-login` to log in with your ChatGPT subscription.");
