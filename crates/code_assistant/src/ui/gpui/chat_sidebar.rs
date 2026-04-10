@@ -218,45 +218,48 @@ impl Render for ChatListItem {
                     .font_medium()
                     .child(SharedString::from(name)),
             )
-            // Right column: fixed width, contains trash icon + date
+            // Right column: fixed width, shows delete button on hover, date otherwise
             .child(
                 div()
                     .flex_none()
                     .w(date_col_width)
+                    .ml_2()
                     .flex()
                     .items_center()
                     .justify_end()
-                    .gap_1()
-                    // Trash icon (red, shown on hover)
-                    .when(self.is_hovered, |el| {
-                        el.child(
-                            div()
-                                .id(SharedString::from(format!("delete-{}", self.metadata.id)))
-                                .flex_none()
-                                .size(px(18.))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().danger.opacity(0.15)))
-                                .child(
-                                    gpui::svg()
-                                        .size(px(12.))
-                                        .path("icons/trash.svg")
-                                        .text_color(cx.theme().danger),
-                                )
-                                .on_click(cx.listener(Self::on_session_delete)),
-                        )
-                    })
-                    // Date
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground.opacity(0.7))
-                            .child(SharedString::from(date)),
-                    ),
+                    .map(|el| {
+                        if self.is_hovered {
+                            // Trash icon replaces date on hover
+                            el.child(
+                                div()
+                                    .id(SharedString::from(format!("delete-{}", self.metadata.id)))
+                                    .flex_none()
+                                    .size(px(18.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.15)))
+                                    .child(
+                                        gpui::svg()
+                                            .size(px(12.))
+                                            .path("icons/trash.svg")
+                                            .text_color(cx.theme().danger),
+                                    )
+                                    .on_click(cx.listener(Self::on_session_delete)),
+                            )
+                        } else {
+                            // Date shown when not hovered
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground.opacity(0.7))
+                                    .child(SharedString::from(date)),
+                            )
+                        }
+                    }),
             )
     }
 }
