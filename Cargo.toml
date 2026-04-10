@@ -6,3 +6,4 @@ resolver = "2"
 [patch.crates-io]
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
+gpui = { git = "https://github.com/stippi/zed", branch = "backport/gpui-0.2.2-standalone" }
