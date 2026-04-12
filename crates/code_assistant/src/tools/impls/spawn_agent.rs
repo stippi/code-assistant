@@ -88,9 +88,12 @@ impl Tool for SpawnAgentTool {
         let description = concat!(
             "Spawns a sub-agent to execute a task with isolated context/history. ",
             "The sub-agent runs independently and only the final answer is returned. ",
-            "Use this for exploratory or repetitive work that shouldn't pollute the main conversation history.\n\n",
+            "Use this for exploratory or repetitive work that shouldn't pollute the main conversation history. ",
+            "Never use a sub-agent to just read files you already know you have to read and return their content verbatim, as this is both wasteful and expensive for the user. ",
+            "Instead read those files directly yourself. The most effective way of using sub-agents is when you are unsure which files to explore.\n\n",
             "The sub-agent has access to read-only tools by default (file reading, searching, web access). ",
-            "Progress is streamed as the sub-agent works."
+            "You can spawn multiple read-only sub-agents which are then executed in parallel. ",
+            "Normal sub-agents (mode: default) are executed sequentially if you spawn more than one."
         );
 
         ToolSpec {
@@ -112,7 +115,7 @@ impl Tool for SpawnAgentTool {
                         "type": "string",
                         "enum": ["read_only", "default"],
                         "default": "read_only",
-                        "description": "The mode for the sub-agent. 'read_only' restricts to read-only tools. 'default' allows broader tools (reserved for future use)."
+                        "description": "The mode for the sub-agent. 'read_only' restricts to read-only tools. 'default' allows to perform edits."
                     }
                 },
                 "required": ["instructions"]
