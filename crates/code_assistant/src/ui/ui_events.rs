@@ -157,6 +157,12 @@ pub enum UiEvent {
     /// Cancel a running sub-agent by its tool id
     CancelSubAgent { tool_id: String },
 
+    /// Schedule a debounced save of the per-session UI state file.
+    /// Sent after any mutation to the UI state (tool collapse toggle, plan
+    /// toggle, etc.).  The handler cancels any pending save timer and starts
+    /// a new one.
+    PersistUiState,
+
     // === Session Branching Events ===
     /// Request to start editing a message (creates a branch point)
     /// UI should load the message content into the input area

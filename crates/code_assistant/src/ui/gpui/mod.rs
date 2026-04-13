@@ -23,6 +23,7 @@ pub mod terminal_executor;
 pub mod terminal_pool;
 pub mod theme;
 pub mod tool_block_renderers;
+pub mod ui_state;
 pub mod worktree_selector;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
@@ -124,6 +125,9 @@ pub struct Gpui {
 
     // Pending message edit state (for branching)
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
+
+    // Debounce task for persisting per-session UI state files
+    ui_state_save_task: Arc<Mutex<Option<gpui::Task<()>>>>,
 }
 
 /// State for a pending message edit (for branching)
@@ -187,10 +191,12 @@ impl Gpui {
     where
         F: FnOnce(&mut MessageContainer, &mut gpui::Context<MessageContainer>),
     {
-        let queue = self.message_queue.lock().unwrap();
-        if let Some(last) = queue.last() {
-            cx.update_entity(last, f)
-                .expect("Failed to update last message container");
+        let last = self.message_queue.lock().unwrap().last().cloned();
+        if let Some(last) = last {
+            if let Err(err) = cx.update_entity(&last, f) {
+                warn!("Failed to update last message container: {err}");
+                self.prune_dropped_message_containers(cx);
+            }
         }
     }
 
@@ -199,10 +205,32 @@ impl Gpui {
     where
         F: Fn(&mut MessageContainer, &mut gpui::Context<MessageContainer>) + Clone,
     {
-        let queue = self.message_queue.lock().unwrap();
-        for message_container in queue.iter() {
-            cx.update_entity(message_container, f.clone())
-                .expect("Failed to update message container");
+        let containers = self.message_queue.lock().unwrap().clone();
+        let mut had_error = false;
+        for message_container in &containers {
+            if let Err(err) = cx.update_entity(message_container, f.clone()) {
+                warn!("Failed to update message container: {err}");
+                had_error = true;
+            }
+        }
+        if had_error {
+            self.prune_dropped_message_containers(cx);
+        }
+    }
+
+    /// Remove message container handles that no longer point to live entities.
+    fn prune_dropped_message_containers(&self, cx: &mut gpui::AsyncApp) {
+        let mut queue = self.message_queue.lock().unwrap();
+        let before = queue.len();
+        queue.retain(|container| cx.read_entity(container, |_, _| ()).is_ok());
+        let after = queue.len();
+        if before != after {
+            warn!(
+                "Pruned {} dropped message container(s) from queue",
+                before.saturating_sub(after)
+            );
+            drop(queue);
+            self.notify_messages_reset(cx);
         }
     }
 
@@ -211,9 +239,12 @@ impl Gpui {
     where
         F: FnOnce(&mut chat_sidebar::ChatSidebar, &mut gpui::Context<chat_sidebar::ChatSidebar>),
     {
-        if let Some(chat_sidebar_entity) = self.chat_sidebar.lock().unwrap().as_ref() {
-            cx.update_entity(chat_sidebar_entity, f)
-                .expect("Failed to update chat sidebar");
+        let chat_sidebar_entity = self.chat_sidebar.lock().unwrap().clone();
+        if let Some(chat_sidebar_entity) = chat_sidebar_entity.as_ref() {
+            if let Err(err) = cx.update_entity(chat_sidebar_entity, f) {
+                warn!("Failed to update chat sidebar: {err}");
+                *self.chat_sidebar.lock().unwrap() = None;
+            }
         }
     }
 
@@ -222,9 +253,12 @@ impl Gpui {
     where
         F: FnOnce(&mut MessagesView, &mut gpui::Context<MessagesView>),
     {
-        if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
-            cx.update_entity(messages_view_entity, f)
-                .expect("Failed to update messages view");
+        let messages_view_entity = self.messages_view.lock().unwrap().clone();
+        if let Some(messages_view_entity) = messages_view_entity.as_ref() {
+            if let Err(err) = cx.update_entity(messages_view_entity, f) {
+                warn!("Failed to update messages view: {err}");
+                *self.messages_view.lock().unwrap() = None;
+            }
         }
     }
 
@@ -237,8 +271,10 @@ impl Gpui {
     ) where
         F: FnOnce(&mut MessageContainer, &mut gpui::Context<MessageContainer>),
     {
-        cx.update_entity(container, f)
-            .expect("Failed to update message container");
+        if let Err(err) = cx.update_entity(container, f) {
+            warn!("Failed to update message container: {err}");
+            self.prune_dropped_message_containers(cx);
+        }
     }
 
     /// Notify the MessagesView that items were appended to the message_queue.
@@ -292,6 +328,15 @@ impl Gpui {
             tbr_registry.register(Arc::new(diff_card_renderer::DiffCardRenderer));
             tbr_registry.register(Arc::new(sub_agent_card_renderer::SubAgentCardRenderer));
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
+        }
+
+        // Initialize the per-session UI state store (same directory as session files)
+        {
+            let sessions_dir = dirs::data_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("code-assistant")
+                .join("sessions");
+            ui_state::UiStateStore::init_global(sessions_dir);
         }
 
         // Create a channel to send and receive UiEvents
@@ -353,6 +398,9 @@ impl Gpui {
 
             // Current session last usage
             current_session_last_usage: Arc::new(Mutex::new(None)),
+
+            // Debounce task for UI state persistence
+            ui_state_save_task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -563,8 +611,10 @@ impl Gpui {
                 {
                     let mut queue = self.message_queue.lock().unwrap();
                     old_len = queue.len();
+                    let sid = self.current_session_id.lock().unwrap().clone();
                     let result = cx.new(|cx| {
                         let new_message = MessageContainer::with_role(MessageRole::User, cx);
+                        new_message.set_session_id(sid);
 
                         // Set node_id for edit button support
                         new_message.set_node_id(node_id);
@@ -618,8 +668,10 @@ impl Gpui {
                 {
                     let mut queue = self.message_queue.lock().unwrap();
                     old_len = queue.len();
+                    let sid = self.current_session_id.lock().unwrap().clone();
                     let result = cx.new(|cx| {
                         let message = MessageContainer::with_role(MessageRole::User, cx);
+                        message.set_session_id(sid);
                         message.add_compaction_divider(summary.clone(), cx);
                         message
                     });
@@ -799,13 +851,15 @@ impl Gpui {
                                 })
                                 .expect("Failed to create message container");
 
-                            // Set current project, node_id, and branch_info on the new container
+                            // Set current project, node_id, branch_info, and session_id
                             let node_id = message_data.node_id;
                             let branch_info = message_data.branch_info.clone();
+                            let sid = session_id.clone();
                             self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
                                 container.set_node_id(node_id);
                                 container.set_branch_info(branch_info);
+                                container.set_session_id(sid);
                             });
 
                             queue.push(container.clone());
@@ -813,8 +867,10 @@ impl Gpui {
                         } else {
                             // Use existing container - also set current project in case it changed
                             let container = queue.last().unwrap().clone();
+                            let sid = session_id.clone();
                             self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
+                                container.set_session_id(sid);
                             });
                             container
                         }
@@ -857,6 +913,10 @@ impl Gpui {
                         let assistant_container = cx
                             .new(|cx| MessageContainer::with_role(MessageRole::Assistant, cx))
                             .expect("Failed to create assistant container");
+                        let sid = session_id.clone();
+                        self.update_container(&assistant_container, cx, |c, _cx| {
+                            c.set_session_id(sid);
+                        });
                         queue.push(assistant_container);
                     }
                 }
@@ -883,11 +943,13 @@ impl Gpui {
 
                     if needs_new_container {
                         // Create new assistant container
+                        let sid = self.current_session_id.lock().unwrap().clone();
                         let assistant_container = cx
                             .new(|cx| {
                                 let container =
                                     MessageContainer::with_role(MessageRole::Assistant, cx);
                                 container.set_current_request_id(request_id);
+                                container.set_session_id(sid);
                                 container
                             })
                             .expect("Failed to create new container");
@@ -1358,18 +1420,22 @@ impl Gpui {
 
                             let node_id = message_data.node_id;
                             let branch_info = message_data.branch_info.clone();
+                            let sid = session_id.clone();
                             self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
                                 container.set_node_id(node_id);
                                 container.set_branch_info(branch_info);
+                                container.set_session_id(sid);
                             });
 
                             queue.push(container.clone());
                             container
                         } else {
                             let container = queue.last().unwrap().clone();
+                            let sid = session_id.clone();
                             self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
+                                container.set_session_id(sid);
                             });
                             container
                         }
@@ -1410,6 +1476,10 @@ impl Gpui {
                         let assistant_container = cx
                             .new(|cx| MessageContainer::with_role(MessageRole::Assistant, cx))
                             .expect("Failed to create assistant container");
+                        let sid = session_id.clone();
+                        self.update_container(&assistant_container, cx, |c, _cx| {
+                            c.set_session_id(sid);
+                        });
                         queue.push(assistant_container);
                     }
                 }
@@ -1479,6 +1549,27 @@ impl Gpui {
                 }
 
                 cx.refresh().expect("Failed to refresh windows");
+            }
+
+            UiEvent::PersistUiState => {
+                // Cancel any pending save task and start a new one with a debounce
+                // delay.  When the timer fires, dirty entries are taken from the
+                // store and written to disk on a background thread.
+                let task = cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+                    gpui::Timer::after(ui_state::debounce_duration()).await;
+                    let files = if let Ok(mut store) = ui_state::UiStateStore::global().lock() {
+                        store.take_dirty()
+                    } else {
+                        Vec::new()
+                    };
+                    if !files.is_empty() {
+                        cx.background_spawn(async move {
+                            ui_state::write_ui_state_files(files);
+                        })
+                        .await;
+                    }
+                });
+                *self.ui_state_save_task.lock().unwrap() = Some(task);
             }
         }
     }
@@ -1791,8 +1882,11 @@ impl Gpui {
                     let _ = sender.try_send(BackendEvent::LoadSession { session_id });
                 }
             }
-            BackendResponse::SessionDeleted { session_id: _ } => {
+
+            BackendResponse::SessionDeleted { session_id } => {
                 debug!("Received BackendResponse::SessionDeleted");
+                // Clean up collapse-state overrides for the deleted session
+                elements::ToolCollapseState::remove_session(&session_id);
                 // Refresh the session list
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::ListSessions);

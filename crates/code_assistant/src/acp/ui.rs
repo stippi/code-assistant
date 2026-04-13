@@ -751,6 +751,9 @@ impl UserInterface for ACPUserUI {
             UiEvent::UpdateWorktreeData { .. } => {
                 // Worktree management not supported in ACP UI
             }
+            UiEvent::PersistUiState => {
+                // GPUI-specific, not applicable to ACP UI
+            }
         }
         Ok(())
     }

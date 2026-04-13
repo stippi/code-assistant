@@ -35,6 +35,61 @@ pub enum ToolBlockState {
     Expanded,
 }
 
+// ---------------------------------------------------------------------------
+// Tool-block collapse state helpers
+// ---------------------------------------------------------------------------
+
+use super::ui_state::UiStateStore;
+
+/// Convenience helpers for tool-block collapse state.
+///
+/// These delegate to the global [`UiStateStore`], which keeps an in-memory
+/// cache per session and debounces writes to the per-session UI state file.
+pub struct ToolCollapseState;
+
+impl ToolCollapseState {
+    /// Look up a previously stored collapse override for a tool in a session.
+    pub fn get(session_id: &str, tool_id: &str) -> Option<ToolBlockState> {
+        UiStateStore::try_global()?
+            .lock()
+            .ok()
+            .and_then(|mut store| {
+                store
+                    .get_tool_collapsed(session_id, tool_id)
+                    .map(|collapsed| {
+                        if collapsed {
+                            ToolBlockState::Collapsed
+                        } else {
+                            ToolBlockState::Expanded
+                        }
+                    })
+            })
+    }
+
+    /// Record a collapse state override for a tool in a session.
+    /// Returns `true` if the store was marked dirty (i.e. a save should be
+    /// scheduled).
+    pub fn set(session_id: &str, tool_id: &str, state: ToolBlockState) -> bool {
+        let collapsed = matches!(state, ToolBlockState::Collapsed);
+        if let Some(store) = UiStateStore::try_global() {
+            if let Ok(mut store) = store.lock() {
+                store.set_tool_collapsed(session_id, tool_id, collapsed);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Remove all overrides for a session (e.g. when it is deleted).
+    pub fn remove_session(session_id: &str) {
+        if let Some(store) = UiStateStore::try_global() {
+            if let Ok(mut store) = store.lock() {
+                store.remove_session(session_id);
+            }
+        }
+    }
+}
+
 /// Animation configuration for expand/collapse
 #[derive(Clone)]
 pub struct AnimationConfig {
@@ -88,6 +143,10 @@ pub struct MessageContainer {
     node_id: Arc<Mutex<Option<NodeId>>>,
     /// Branch info if this message is part of a branch point
     branch_info: Arc<Mutex<Option<BranchInfo>>>,
+
+    /// Session ID this container belongs to, used by tool blocks to read/write
+    /// the global [`ToolCollapseState`] registry.
+    session_id: Arc<Mutex<Option<String>>>,
 }
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -109,12 +168,24 @@ impl MessageContainer {
             needs_paragraph_break_after_hidden_tool: Arc::new(Mutex::new(false)),
             node_id: Arc::new(Mutex::new(None)),
             branch_info: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
         }
     }
 
     // Set the current request ID for this message container
     pub fn set_current_request_id(&self, request_id: u64) {
         *self.current_request_id.lock().unwrap() = request_id;
+    }
+
+    /// Set the session ID for this container (used for collapse-state tracking).
+    pub fn set_session_id(&self, session_id: Option<String>) {
+        *self.session_id.lock().unwrap() = session_id;
+    }
+
+    /// Get the session ID for this container.
+    #[allow(dead_code)]
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.lock().unwrap().clone()
     }
 
     /// Set the current project for parameter filtering
@@ -213,7 +284,8 @@ impl MessageContainer {
         let block = BlockData::TextBlock(TextBlock {
             content: content.into(),
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view =
+            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
         elements.push(view);
         cx.notify();
     }
@@ -227,7 +299,8 @@ impl MessageContainer {
             summary: summary.into(),
             is_expanded: false,
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view =
+            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
         elements.push(view);
         cx.notify();
     }
@@ -240,7 +313,8 @@ impl MessageContainer {
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view =
+            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
         elements.push(view);
         cx.notify();
     }
@@ -263,7 +337,8 @@ impl MessageContainer {
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ImageBlock(ImageBlock { media_type, image });
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view =
+            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
         elements.push(view);
         cx.notify();
     }
@@ -291,9 +366,18 @@ impl MessageContainer {
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let name = name.into();
+        let id = id.into();
+        let session_id = self.session_id.lock().unwrap().clone();
 
-        // Card-style tools start expanded; inline/other tools start collapsed
-        let initial_state = {
+        // Check the global collapse-state registry for a user override first.
+        // If the user previously toggled this tool block, honour that choice.
+        // Otherwise fall back to the renderer default (Card → Expanded, Inline → Collapsed).
+        let initial_state = if let Some(override_state) = session_id
+            .as_deref()
+            .and_then(|sid| ToolCollapseState::get(sid, &id))
+        {
+            override_state
+        } else {
             let is_card =
                 crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
                     .as_ref()
@@ -310,7 +394,7 @@ impl MessageContainer {
 
         let block = BlockData::ToolUse(ToolUseBlock {
             name,
-            id: id.into(),
+            id,
             parameters: Vec::new(),
             status: ToolStatus::Pending,
             status_message: None,
@@ -318,7 +402,15 @@ impl MessageContainer {
             state: initial_state,
             duration_seconds,
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                request_id,
+                self.current_project.clone(),
+                session_id,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -417,7 +509,8 @@ impl MessageContainer {
         let block = BlockData::TextBlock(TextBlock {
             content: final_content,
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view =
+            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
         elements.push(view);
         cx.notify();
     }
@@ -488,7 +581,7 @@ impl MessageContainer {
         }
         let block = BlockData::ThinkingBlock(thinking);
         let view = cx.new(|cx| {
-            let mut bv = BlockView::new(block, request_id, self.current_project.clone(), cx);
+            let mut bv = BlockView::new(block, request_id, self.current_project.clone(), None, cx);
             if has_duration {
                 bv.set_generating(false);
             }
@@ -568,6 +661,13 @@ impl MessageContainer {
         // If we didn't find a matching tool, create a new one with this parameter
         if !tool_found {
             let request_id = *self.current_request_id.lock().unwrap();
+            let session_id = self.session_id.lock().unwrap().clone();
+
+            // Check the global collapse registry for a user override
+            let initial_state = session_id
+                .as_deref()
+                .and_then(|sid| ToolCollapseState::get(sid, &tool_id))
+                .unwrap_or(ToolBlockState::Collapsed);
 
             let mut tool = ToolUseBlock {
                 name: "unknown".to_string(), // Default name since we only have ID
@@ -576,7 +676,7 @@ impl MessageContainer {
                 status: ToolStatus::Pending,
                 status_message: None,
                 output: None,
-                state: ToolBlockState::Collapsed, // Default to collapsed
+                state: initial_state,
                 duration_seconds: None,
             };
 
@@ -586,8 +686,15 @@ impl MessageContainer {
             });
 
             let block = BlockData::ToolUse(tool);
-            let view =
-                cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+            let view = cx.new(|cx| {
+                BlockView::new(
+                    block,
+                    request_id,
+                    self.current_project.clone(),
+                    session_id,
+                    cx,
+                )
+            });
             elements.push(view);
             cx.notify();
         }
@@ -726,7 +833,8 @@ impl MessageContainer {
         new_thinking_block.start_reasoning_summary_item();
 
         let block = BlockData::ThinkingBlock(new_thinking_block);
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view =
+            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
         elements.push(view);
         cx.notify();
     }
@@ -758,7 +866,8 @@ impl MessageContainer {
         new_thinking_block.append_reasoning_summary_delta(delta);
 
         let block = BlockData::ThinkingBlock(new_thinking_block);
-        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        let view =
+            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
         elements.push(view);
         cx.notify();
     }
@@ -832,6 +941,8 @@ pub struct BlockView {
     /// Current project for parameter filtering (used to detect cross-project tool calls)
     #[allow(dead_code)]
     current_project: Arc<Mutex<String>>,
+    /// Session ID this block belongs to (for collapse-state persistence).
+    session_id: Option<String>,
 }
 
 impl BlockView {
@@ -839,6 +950,7 @@ impl BlockView {
         block: BlockData,
         request_id: u64,
         current_project: Arc<Mutex<String>>,
+        session_id: Option<String>,
         _cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -849,6 +961,7 @@ impl BlockView {
             content_height: Rc::new(Cell::new(px(0.0))),
             animation_task: None,
             current_project,
+            session_id,
         }
     }
 
@@ -891,12 +1004,10 @@ impl BlockView {
         let should_expand = if let Some(tool) = self.block.as_tool_mut() {
             match tool.state {
                 ToolBlockState::Collapsed => {
-                    // Toggle to expanded
                     tool.state = ToolBlockState::Expanded;
                     true
                 }
                 ToolBlockState::Expanded => {
-                    // Toggle to collapsed
                     tool.state = ToolBlockState::Collapsed;
                     false
                 }
@@ -904,6 +1015,19 @@ impl BlockView {
         } else {
             return;
         };
+
+        // Persist the new state in the global UI state store (in-memory +
+        // debounced write to disk) so it survives session reconnects and app
+        // restarts.
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool_mut()) {
+            if ToolCollapseState::set(session_id, &tool.id, tool.state.clone()) {
+                // Schedule a debounced save
+                if let Some(sender) = cx.try_global::<super::UiEventSender>() {
+                    let _ = sender.0.try_send(crate::ui::UiEvent::PersistUiState);
+                }
+            }
+        }
+
         self.start_expand_collapse_animation(should_expand, cx);
     }
 

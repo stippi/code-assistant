@@ -288,14 +288,12 @@ impl RootView {
                     self.plan_collapsed_sessions
                         .insert(session_id.clone(), self.plan_collapsed);
 
-                    // Persist to disk so the state survives app restarts
-                    if let Some(gpui) = cx.try_global::<Gpui>() {
-                        if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                            let _ = sender.try_send(BackendEvent::SetPlanCollapsed {
-                                session_id: session_id.clone(),
-                                collapsed: self.plan_collapsed,
-                            });
-                        }
+                    // Persist via the UI state store (debounced write to disk)
+                    if let Ok(mut store) = super::ui_state::UiStateStore::global().lock() {
+                        store.set_plan_collapsed(session_id, self.plan_collapsed);
+                    }
+                    if let Some(sender) = cx.try_global::<UiEventSender>() {
+                        let _ = sender.0.try_send(UiEvent::PersistUiState);
                     }
                 }
                 cx.notify();
@@ -1012,10 +1010,19 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         if let Some(session_id) = new_session_id.as_ref() {
-            self.plan_collapsed = *self
+            // Prefer the in-memory value (set by a toggle in this run), fall
+            // back to the persisted UI state file, and finally to false.
+            self.plan_collapsed = self
                 .plan_collapsed_sessions
                 .get(session_id)
-                .unwrap_or(&false);
+                .copied()
+                .unwrap_or_else(|| {
+                    super::ui_state::UiStateStore::global()
+                        .lock()
+                        .ok()
+                        .map(|mut store| store.get_plan_collapsed(session_id))
+                        .unwrap_or(false)
+                });
         } else {
             self.plan_collapsed = false;
         }
