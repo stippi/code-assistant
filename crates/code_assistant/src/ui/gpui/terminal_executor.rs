@@ -11,7 +11,40 @@ use command_executor::{
     StreamingCallback,
 };
 
+use super::terminal_card_renderer::evict_cached_terminal_view_for_tool;
 use super::terminal_pool;
+use gpui::{AppContext as _, Entity};
+use terminal::Terminal;
+
+fn cleanup_terminal_resources(terminal_id: &str) {
+    if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
+        for tool_id in pool.remove(terminal_id) {
+            evict_cached_terminal_view_for_tool(&tool_id);
+        }
+    }
+}
+
+struct TerminalCleanup {
+    terminal_id: String,
+}
+
+impl TerminalCleanup {
+    fn new(terminal_id: String) -> Self {
+        Self { terminal_id }
+    }
+}
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        cleanup_terminal_resources(&self.terminal_id);
+    }
+}
+
+fn interrupt_terminal(terminal: &Entity<Terminal>, cx: &mut gpui::AsyncApp) {
+    let _ = cx.update_entity(terminal, |terminal: &mut Terminal, _cx| {
+        terminal.write_to_pty(&b"\x03"[..]);
+    });
+}
 
 /// Default timeout for commands (5 minutes).
 const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -207,6 +240,7 @@ async fn run_command(
         .map_err(|e| anyhow!("Failed to create PTY terminal: {e}"))?;
 
     debug!("GPUI terminal {terminal_id} created for command: {command_line}");
+    let _cleanup = TerminalCleanup::new(terminal_id.clone());
 
     // Notify the caller that the terminal is attached.
     let _ = event_tx.send(TerminalWorkerEvent::TerminalAttached {
@@ -318,6 +352,7 @@ async fn run_command(
             _ = poll_timer.fuse() => {
                 // Check timeout first.
                 if started_at.elapsed() >= timeout {
+                    interrupt_terminal(&terminal, cx);
                     return Err(anyhow!("Command timed out after {timeout:?}"));
                 }
 

@@ -37,6 +37,26 @@ fn view_cache() -> &'static Mutex<HashMap<String, Entity<TerminalView>>> {
     VIEW_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub fn evict_cached_terminal_view_for_tool(tool_id: &str) {
+    let cache_key = cache_key_for_tool(tool_id);
+    if let Ok(mut store) = view_cache().lock() {
+        store.remove(&cache_key);
+    }
+}
+
+fn cache_key_for_tool(tool_id: &str) -> String {
+    format!("exec-{}", tool_id)
+}
+
+fn live_terminal_view(
+    tool_id: &str,
+    terminal: &Entity<Terminal>,
+    theme_colors: TerminalThemeColors,
+    cx: &mut Context<BlockView>,
+) -> Entity<TerminalView> {
+    get_or_create_view(&cache_key_for_tool(tool_id), terminal, theme_colors, cx)
+}
+
 fn get_or_create_view(
     cache_key: &str,
     terminal: &Entity<Terminal>,
@@ -178,8 +198,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         // Prepare the TerminalView for the live path
         let view = live_terminal.as_ref().map(|terminal| {
-            let cache_key = format!("exec-{}", tool.id);
-            let v = get_or_create_view(&cache_key, terminal, theme_colors.clone(), cx);
+            let v = live_terminal_view(&tool.id, terminal, theme_colors.clone(), cx);
             v.update(cx, |tv, cx| {
                 tv.set_theme_colors(theme_colors.clone(), cx);
             });

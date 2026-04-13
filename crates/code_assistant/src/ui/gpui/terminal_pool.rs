@@ -86,11 +86,19 @@ impl TerminalPool {
         None
     }
 
-    /// Remove a terminal from the pool. Also removes any tool index entries pointing to it.
-    #[allow(dead_code)]
-    pub fn remove(&mut self, terminal_id: &str) {
+    /// Remove a terminal from the pool.
+    /// Returns the tool IDs whose mappings pointed at this terminal so callers
+    /// can clean up any renderer-side caches as well.
+    pub fn remove(&mut self, terminal_id: &str) -> Vec<String> {
         self.terminals.remove(terminal_id);
+        let removed_tool_ids: Vec<String> = self
+            .tool_index
+            .iter()
+            .filter(|(_, tid)| *tid == terminal_id)
+            .map(|((_, tool_id), _)| tool_id.clone())
+            .collect();
         self.tool_index.retain(|_, tid| tid != terminal_id);
+        removed_tool_ids
     }
 
     /// Remove all terminals for a given session.
