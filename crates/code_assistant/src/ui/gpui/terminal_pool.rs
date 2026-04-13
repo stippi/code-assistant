@@ -3,6 +3,7 @@ use gpui::{App, Entity};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use terminal::Terminal;
+use tracing::warn;
 
 /// Global terminal pool singleton.
 static TERMINAL_POOL: OnceLock<Mutex<TerminalPool>> = OnceLock::new();
@@ -58,7 +59,17 @@ impl TerminalPool {
         tool_id: String,
         terminal_id: String,
     ) {
-        self.tool_index.insert((session_id, tool_id), terminal_id);
+        if let Some(previous_terminal_id) = self
+            .tool_index
+            .insert((session_id.clone(), tool_id.clone()), terminal_id.clone())
+        {
+            if previous_terminal_id != terminal_id {
+                warn!(
+                    "TerminalPool remapped terminal: session='{}', tool_id='{}', old_terminal='{}', new_terminal='{}'",
+                    session_id, tool_id, previous_terminal_id, terminal_id
+                );
+            }
+        }
     }
 
     /// Look up a terminal by its terminal_id.

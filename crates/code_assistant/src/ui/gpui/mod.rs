@@ -713,6 +713,12 @@ impl Gpui {
                 replace,
             } => {
                 if replace {
+                    warn!(
+                        "GPUI event: replace tool parameter for tool_id='{}', param='{}', value_len={}",
+                        tool_id,
+                        name,
+                        value.len()
+                    );
                     self.update_all_messages(cx, |message, cx| {
                         message.replace_tool_parameter(&tool_id, &name, &value, cx);
                     });
@@ -1176,17 +1182,21 @@ impl Gpui {
                 // keep the chat scrolled to the bottom when following.
                 self.auto_scroll_if_following(cx);
             }
+
             UiEvent::ToolTerminalAttached {
                 tool_id,
                 terminal_id,
             } => {
-                tracing::debug!("UI event: Tool {tool_id} attached terminal {terminal_id}");
                 let session_id = self
                     .current_session_id
                     .lock()
                     .unwrap()
                     .clone()
                     .unwrap_or_default();
+                warn!(
+                    "GPUI event: tool terminal attached: session='{}', tool_id='{}', terminal_id='{}'",
+                    session_id, tool_id, terminal_id
+                );
                 if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
                     pool.register_tool_mapping(session_id, tool_id, terminal_id);
                 }

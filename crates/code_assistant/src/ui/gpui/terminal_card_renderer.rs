@@ -26,6 +26,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use terminal::Terminal;
 use terminal_view::{TerminalThemeColors, TerminalView};
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // View cache — reuse TerminalView entities across re-renders
@@ -155,8 +156,14 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         // but only when the tool hasn't finished yet. A completed tool with empty
         // output (e.g. `cargo fmt` with no findings) must fall through to the
         // static-output path so the card shows the finished state.
+
         let tool_finished = matches!(tool.status, ToolStatus::Success | ToolStatus::Error);
         if live_terminal.is_none() && output.is_empty() && !tool_finished {
+            warn!(
+                "TerminalCardRenderer: no live terminal/output yet for running tool_id='{}', command='{}'",
+                tool.id,
+                command_line_param
+            );
             if !command_line_param.is_empty() {
                 return Some(
                     self.render_skeleton(

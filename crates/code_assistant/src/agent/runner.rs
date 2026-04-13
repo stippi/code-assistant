@@ -2336,6 +2336,13 @@ impl Agent {
                 new_value.to_string()
             };
 
+            warn!(
+                "Agent format-on-save parameter update: tool_id='{}', param='{}', value_len={} ",
+                tool_id,
+                key,
+                value_str.len()
+            );
+
             self.ui
                 .send_event(UiEvent::UpdateToolParameter {
                     tool_id: tool_id.to_string(),

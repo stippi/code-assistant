@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::trace;
+use tracing::{trace, warn};
 
 /// Maximum height for rendered images in pixels
 const MAX_IMAGE_HEIGHT: f32 = 80.0;
@@ -464,6 +464,13 @@ impl MessageContainer {
             });
         }
 
+        if !updated {
+            warn!(
+                "GPUI update_tool_status: tool block not found for tool_id='{}', status={:?}",
+                tool_id, status
+            );
+        }
+
         updated
     }
 
@@ -660,6 +667,10 @@ impl MessageContainer {
 
         // If we didn't find a matching tool, create a new one with this parameter
         if !tool_found {
+            warn!(
+                "GPUI add_or_update_tool_parameter: missing tool block for tool_id='{}', param='{}' — creating fallback block",
+                tool_id, name
+            );
             let request_id = *self.current_request_id.lock().unwrap();
             let session_id = self.session_id.lock().unwrap().clone();
 
@@ -742,6 +753,11 @@ impl MessageContainer {
                 return;
             }
         }
+
+        warn!(
+            "GPUI replace_tool_parameter: tool block not found for tool_id='{}', param='{}'",
+            tool_id, name
+        );
     }
 
     // Mark a tool as ended (could add visual indicator)
@@ -772,12 +788,14 @@ impl MessageContainer {
         let tool_id = tool_id.into();
         let chunk = chunk.into();
         let elements = self.elements.lock().unwrap();
+        let mut found = false;
 
         // Find the tool and append the output chunk
         for element in elements.iter() {
             cx.update_entity(element, |block_view, cx| {
                 if let Some(tool_block) = block_view.block.as_tool_mut() {
                     if tool_block.id == tool_id {
+                        found = true;
                         // Append to existing output or create new output
                         if let Some(existing_output) = &mut tool_block.output {
                             existing_output.push_str(&chunk);
@@ -788,6 +806,14 @@ impl MessageContainer {
                     }
                 }
             }); // Ignore errors from update_entity
+        }
+
+        if !found {
+            warn!(
+                "GPUI append_tool_output: tool block not found for tool_id='{}', chunk_len={}",
+                tool_id,
+                chunk.len()
+            );
         }
     }
 
