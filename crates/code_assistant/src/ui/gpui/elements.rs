@@ -147,6 +147,8 @@ pub struct MessageContainer {
     /// Session ID this container belongs to, used by tool blocks to read/write
     /// the global [`ToolCollapseState`] registry.
     session_id: Arc<Mutex<Option<String>>>,
+    /// Monotonic block identifier source for stable per-block view state.
+    next_block_id: Arc<Mutex<u64>>,
 }
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -169,7 +171,15 @@ impl MessageContainer {
             node_id: Arc::new(Mutex::new(None)),
             branch_info: Arc::new(Mutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
+            next_block_id: Arc::new(Mutex::new(0)),
         }
+    }
+
+    fn allocate_block_id(&self) -> u64 {
+        let mut next = self.next_block_id.lock().unwrap();
+        let id = *next;
+        *next += 1;
+        id
     }
 
     // Set the current request ID for this message container
@@ -280,12 +290,21 @@ impl MessageContainer {
         self.finish_any_thinking_blocks(cx);
 
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::TextBlock(TextBlock {
             content: content.into(),
         });
-        let view =
-            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -294,13 +313,22 @@ impl MessageContainer {
         self.finish_any_thinking_blocks(cx);
 
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::CompactionSummary(CompactionSummaryBlock {
             summary: summary.into(),
             is_expanded: false,
         });
-        let view =
-            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -311,10 +339,19 @@ impl MessageContainer {
         self.finish_any_thinking_blocks(cx);
 
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
-        let view =
-            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -335,10 +372,19 @@ impl MessageContainer {
         let image = image::parse_base64_image(&media_type, &data);
 
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ImageBlock(ImageBlock { media_type, image });
-        let view =
-            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -364,6 +410,7 @@ impl MessageContainer {
         self.finish_any_thinking_blocks(cx);
 
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let mut elements = self.elements.lock().unwrap();
         let name = name.into();
         let id = id.into();
@@ -405,6 +452,7 @@ impl MessageContainer {
         let view = cx.new(|cx| {
             BlockView::new(
                 block,
+                block_id,
                 request_id,
                 self.current_project.clone(),
                 session_id,
@@ -492,10 +540,12 @@ impl MessageContainer {
 
             last.update(cx, |view, cx| {
                 if let Some(text_block) = view.block.as_text_mut() {
-                    if let Some(prefix) = &paragraph_prefix {
-                        text_block.content.push_str(prefix);
-                    }
-                    text_block.content.push_str(&content);
+                    let appended_text = if let Some(prefix) = &paragraph_prefix {
+                        format!("{}{}", prefix, content)
+                    } else {
+                        content.clone()
+                    };
+                    text_block.content.push_str(&appended_text);
                     was_appended = true;
                     cx.notify();
                 }
@@ -508,6 +558,7 @@ impl MessageContainer {
 
         // If we reach here, we need to add a new text block
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let final_content = if let Some(prefix) = paragraph_prefix {
             format!("{}{}", prefix, content)
         } else {
@@ -516,8 +567,16 @@ impl MessageContainer {
         let block = BlockData::TextBlock(TextBlock {
             content: final_content,
         });
-        let view =
-            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -552,10 +611,12 @@ impl MessageContainer {
 
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
-                    if let Some(prefix) = &paragraph_prefix {
-                        thinking_block.content.push_str(prefix);
-                    }
-                    thinking_block.content.push_str(&content);
+                    let appended_text = if let Some(prefix) = &paragraph_prefix {
+                        format!("{}{}", prefix, content)
+                    } else {
+                        content.clone()
+                    };
+                    thinking_block.content.push_str(&appended_text);
                     // Store duration if provided (from session restore)
                     if duration_seconds.is_some() {
                         thinking_block.duration_seconds = duration_seconds;
@@ -574,6 +635,7 @@ impl MessageContainer {
 
         // If we reach here, we need to add a new thinking block
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let final_content = if let Some(prefix) = paragraph_prefix {
             format!("{}{}", prefix, content)
         } else {
@@ -588,7 +650,14 @@ impl MessageContainer {
         }
         let block = BlockData::ThinkingBlock(thinking);
         let view = cx.new(|cx| {
-            let mut bv = BlockView::new(block, request_id, self.current_project.clone(), None, cx);
+            let mut bv = BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            );
             if has_duration {
                 bv.set_generating(false);
             }
@@ -697,9 +766,11 @@ impl MessageContainer {
             });
 
             let block = BlockData::ToolUse(tool);
+            let block_id = self.allocate_block_id();
             let view = cx.new(|cx| {
                 BlockView::new(
                     block,
+                    block_id,
                     request_id,
                     self.current_project.clone(),
                     session_id,
@@ -855,12 +926,21 @@ impl MessageContainer {
 
         // If we reach here, we need to add a new thinking block
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let mut new_thinking_block = ThinkingBlock::new(String::new());
         new_thinking_block.start_reasoning_summary_item();
 
         let block = BlockData::ThinkingBlock(new_thinking_block);
-        let view =
-            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -887,13 +967,22 @@ impl MessageContainer {
 
         // If we reach here, we need to add a new thinking block
         let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
         let mut new_thinking_block = ThinkingBlock::new(String::new());
         new_thinking_block.start_reasoning_summary_item();
         new_thinking_block.append_reasoning_summary_delta(delta);
 
         let block = BlockData::ThinkingBlock(new_thinking_block);
-        let view =
-            cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), None, cx));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
         elements.push(view);
         cx.notify();
     }
@@ -957,6 +1046,7 @@ impl BlockData {
 /// Entity view for a block
 pub struct BlockView {
     block: BlockData,
+    block_id: u64,
     request_id: u64,
     is_generating: bool, // Universal generating state for all block types
     // Animation state
@@ -974,6 +1064,7 @@ pub struct BlockView {
 impl BlockView {
     pub fn new(
         block: BlockData,
+        block_id: u64,
         request_id: u64,
         current_project: Arc<Mutex<String>>,
         session_id: Option<String>,
@@ -981,6 +1072,7 @@ impl BlockView {
     ) -> Self {
         Self {
             block,
+            block_id,
             request_id,
             is_generating: true, // Default to generating when first created
             animation_state: AnimationState::Idle,
@@ -1424,16 +1516,18 @@ impl BlockView {
 impl Render for BlockView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         match &self.block {
-            BlockData::TextBlock(block) => {
-                // Use TextView with Markdown for rendering text
-                div()
-                    .text_color(cx.theme().foreground)
-                    .child(
-                        TextView::markdown("md-block", block.content.clone(), window, cx)
-                            .selectable(true),
+            BlockData::TextBlock(block) => div()
+                .text_color(cx.theme().foreground)
+                .child(
+                    TextView::markdown(
+                        ("md-block", self.block_id),
+                        block.content.clone(),
+                        window,
+                        cx,
                     )
-                    .into_any_element()
-            }
+                    .selectable(true),
+                )
+                .into_any_element(),
             BlockData::ThinkingBlock(block) => {
                 // Get the appropriate icon based on completed state
                 let (icon, icon_text) = if block.is_completed {
@@ -1559,7 +1653,6 @@ impl Render for BlockView {
                             };
 
                             let body_content = if !block.is_collapsed || scale > 0.0 {
-                                let content = block.get_expanded_content(self.is_generating);
                                 div()
                                     .px_3()
                                     .pt_1()
@@ -1568,8 +1661,8 @@ impl Render for BlockView {
                                     .italic()
                                     .text_color(text_color)
                                     .child(TextView::markdown(
-                                        "thinking-content",
-                                        content,
+                                        ("thinking-content", self.block_id),
+                                        block.get_expanded_content(self.is_generating),
                                         window,
                                         cx,
                                     ))
@@ -1707,7 +1800,7 @@ impl Render for BlockView {
                             .text_color(cx.theme().foreground)
                             .child(
                                 TextView::markdown(
-                                    "compaction-summary",
+                                    ("compaction-summary", self.block_id),
                                     block.summary.clone(),
                                     window,
                                     cx,
