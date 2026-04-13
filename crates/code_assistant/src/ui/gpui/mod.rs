@@ -462,6 +462,12 @@ impl Gpui {
             debug!("Starting UI event processing task");
             let task = cx.spawn(async move |cx: &mut AsyncApp| {
                 debug!("UI event processing task is running");
+
+                // Process bursts of events in small batches, then cooperatively
+                // yield back to the GPUI executor so paint/layout work is not
+                // starved by a long stream of tiny updates.
+                const UI_EVENT_BATCH_SIZE: usize = 32;
+
                 loop {
                     trace!("Waiting for UI event...");
                     let result = rx.recv().await;
@@ -469,6 +475,24 @@ impl Gpui {
                         Ok(received_event) => {
                             trace!("UI event processing: Received event: {:?}", received_event);
                             async_gpui_clone.process_ui_event_async(received_event, cx);
+
+                            let mut processed_in_batch = 1;
+                            while processed_in_batch < UI_EVENT_BATCH_SIZE {
+                                match rx.try_recv() {
+                                    Ok(received_event) => {
+                                        trace!(
+                                            "UI event processing: Received batched event: {:?}",
+                                            received_event
+                                        );
+                                        async_gpui_clone.process_ui_event_async(received_event, cx);
+                                        processed_in_batch += 1;
+                                    }
+                                    Err(async_channel::TryRecvError::Empty) => break,
+                                    Err(async_channel::TryRecvError::Closed) => return,
+                                }
+                            }
+
+                            gpui::Timer::after(std::time::Duration::from_millis(1)).await;
                         }
                         Err(err) => {
                             warn!("Receive error: {}", err);
