@@ -1,6 +1,6 @@
 use anyhow::Result;
 use llm::Message;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -29,6 +29,10 @@ pub enum SessionActivityState {
     RateLimited { seconds_remaining: u64 },
 }
 
+/// Buffered tool-status update received while the session was disconnected.
+/// Keyed by `tool_id` so only the most recent status per tool is retained.
+type ToolStatusBuffer = HashMap<String, crate::ui::ui_events::ToolResultData>;
+
 /// Represents a single session instance with its own agent and state
 pub struct SessionInstance {
     /// The session data (messages, metadata, etc.)
@@ -42,6 +46,12 @@ pub struct SessionInstance {
     /// Buffer for DisplayFragments from the current streaming message
     /// This allows UI to connect mid-streaming and see buffered content
     pub fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
+
+    /// Buffer for `UpdateToolStatus` events received while the session is
+    /// disconnected.  Shared with the session's [`ProxyUI`] which writes into
+    /// it; read (and drained) by [`generate_session_connect_events`] on
+    /// reconnect.  Only the latest status per tool-id is kept.
+    pub tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
 
     /// Whether this session is currently connected to the UI
     pub is_ui_connected: Arc<Mutex<bool>>,
@@ -71,6 +81,7 @@ impl SessionInstance {
             session,
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
             is_ui_connected: Arc::new(Mutex::new(false)),
             activity_state: Arc::new(Mutex::new(SessionActivityState::Idle)),
             pending_message: Arc::new(Mutex::new(None)),
@@ -219,21 +230,37 @@ impl SessionInstance {
         Arc::new(ProxyUI::new(
             real_ui,
             self.fragment_buffer.clone(),
+            self.tool_status_buffer.clone(),
             self.is_ui_connected.clone(),
             self.activity_state.clone(),
             self.session.id.clone(),
         ))
     }
 
-    /// Generate UI events for connecting to this session
-    /// Returns SetMessages event with all session messages including incomplete streaming message
+    /// Generate UI events for connecting to this session.
+    /// Returns SetMessages event with all session messages including incomplete streaming message.
     pub fn generate_session_connect_events(&self) -> Result<Vec<UiEvent>, anyhow::Error> {
         let mut events = Vec::new();
 
         // Convert session messages to UI data
         let mut messages_data =
             self.convert_messages_to_ui_data(self.session.config.tool_syntax)?;
-        let tool_results = self.convert_tool_executions_to_ui_data()?;
+        let mut tool_results = self.convert_tool_executions_to_ui_data()?;
+
+        // Drain any UpdateToolStatus events that arrived while we were
+        // disconnected (e.g. from running sub-agents).  Only inject entries
+        // that don't already have a persisted result — the persisted result
+        // is authoritative once it exists.
+        if let Ok(mut buf) = self.tool_status_buffer.lock() {
+            for (_tool_id, result_data) in buf.drain() {
+                if !tool_results
+                    .iter()
+                    .any(|r| r.tool_id == result_data.tool_id)
+                {
+                    tool_results.push(result_data);
+                }
+            }
+        }
 
         // If currently streaming, add incomplete message as additional MessageData
         let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
@@ -513,6 +540,9 @@ impl SessionInstance {
 struct ProxyUI {
     real_ui: Arc<dyn UserInterface>,
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
+    /// Buffers `UpdateToolStatus` events received while disconnected so they
+    /// can be replayed on the next session reconnect.
+    tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
     is_session_connected: Arc<Mutex<bool>>,
     session_activity_state: Arc<Mutex<SessionActivityState>>,
     session_id: String,
@@ -522,6 +552,7 @@ impl ProxyUI {
     pub fn new(
         real_ui: Arc<dyn UserInterface>,
         fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
+        tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
         is_session_connected: Arc<Mutex<bool>>,
         session_activity_state: Arc<Mutex<SessionActivityState>>,
         session_id: String,
@@ -529,6 +560,7 @@ impl ProxyUI {
         Self {
             real_ui,
             fragment_buffer,
+            tool_status_buffer,
             is_session_connected,
             session_activity_state,
             session_id,
@@ -644,7 +676,30 @@ impl UserInterface for ProxyUI {
         if self.is_connected() {
             self.real_ui.send_event(event).await
         } else {
-            Ok(()) // NOP if session not connected
+            // Session is disconnected — buffer UpdateToolStatus events so that
+            // the latest state per tool can be replayed on reconnect.
+            if let UiEvent::UpdateToolStatus {
+                tool_id,
+                status,
+                message,
+                output,
+                duration_seconds,
+            } = event
+            {
+                if let Ok(mut buf) = self.tool_status_buffer.lock() {
+                    buf.insert(
+                        tool_id.clone(),
+                        crate::ui::ui_events::ToolResultData {
+                            tool_id,
+                            status,
+                            message,
+                            output,
+                            duration_seconds,
+                        },
+                    );
+                }
+            }
+            Ok(())
         }
     }
 
@@ -725,6 +780,7 @@ mod tests {
         let proxy_ui = ProxyUI::new(
             mock_ui.clone(),
             fragment_buffer,
+            Arc::new(Mutex::new(HashMap::new())),
             is_session_connected,
             session_activity_state.clone(),
             session_id,
@@ -746,9 +802,11 @@ mod tests {
         // Now test without error - should transition to AgentRunning
         let session_activity_state2 =
             Arc::new(Mutex::new(SessionActivityState::WaitingForResponse));
+
         let proxy_ui2 = ProxyUI::new(
             mock_ui.clone(),
             Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(true)),
             session_activity_state2.clone(),
             "test-session-2".to_string(),
