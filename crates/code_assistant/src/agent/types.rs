@@ -1,7 +1,7 @@
 use crate::tools::core::{AnyOutput, ToolRegistry};
 use crate::tools::ToolRequest;
 use anyhow::Result;
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Record of a tool execution with its result
 pub struct ToolExecution {
@@ -20,17 +20,36 @@ impl std::fmt::Debug for ToolExecution {
 
 impl Clone for ToolExecution {
     fn clone(&self) -> Self {
-        // We can't clone the actual result, but we can serialize and deserialize it
-        let serialized = self
-            .serialize()
-            .expect("Failed to serialize tool execution for cloning");
-        serialized
-            .deserialize()
-            .expect("Failed to deserialize tool execution for cloning")
+        // We can't clone the actual result, but we can serialize and deserialize it.
+        // Fallback to a placeholder on failure to avoid panicking — this clone is
+        // called from save_state() inside the agent loop and a panic here would
+        // silently kill the agent session.
+        match self.try_clone() {
+            Ok(cloned) => cloned,
+            Err(e) => {
+                error!(
+                    "Failed to clone ToolExecution for tool '{}' (id={}): {}. \
+                     Using placeholder to avoid panic.",
+                    self.tool_request.name, self.tool_request.id, e
+                );
+                // Return a placeholder that preserves the tool request but marks
+                // the result as an error so the LLM sees something sensible.
+                Self::create_parse_error(
+                    self.tool_request.id.clone(),
+                    format!("Internal error: failed to round-trip tool result: {}", e),
+                )
+            }
+        }
     }
 }
 
 impl ToolExecution {
+    /// Attempt to clone via serialize/deserialize round-trip.
+    pub fn try_clone(&self) -> Result<Self> {
+        let serialized = self.serialize()?;
+        serialized.deserialize()
+    }
+
     /// Create a ToolExecution for a parse error
     pub fn create_parse_error(tool_id: String, error_message: String) -> Self {
         use crate::tools::{ParseError, ToolRequest};
