@@ -621,6 +621,29 @@ impl Focusable for MessagesView {
 
 impl Render for MessagesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // If no session is connected, show a centered hint instead of the
+        // message list.
+        let has_session = self.current_session_id.lock().unwrap().is_some();
+        if !has_session {
+            return div()
+                .id("messages")
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .bg(cx.theme().popover)
+                .child(
+                    div().flex().flex_col().items_center().gap_2().child(
+                        div()
+                            .text_size(rems(1.125))
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Select a session or start a new one from the sidebar"),
+                    ),
+                )
+                .into_any();
+        }
+
         let total_items = self.message_queue.lock().unwrap().len();
 
         // The pending message is rendered as an extra item after all messages
@@ -722,6 +745,7 @@ impl Render for MessagesView {
             .text_size(rems(1.0))
             .child(message_list)
             .vertical_scrollbar(&self.list_state)
+            .into_any()
     }
 }
 

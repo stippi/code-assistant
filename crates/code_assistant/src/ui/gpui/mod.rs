@@ -1148,6 +1148,24 @@ impl Gpui {
                     if current_session_id == &session_id {
                         *self.current_session_activity_state.lock().unwrap() =
                             Some(activity_state.clone());
+
+                        // Show/clear error banner based on session error state.
+                        // This ensures the banner appears immediately when the
+                        // currently viewed session enters the Errored state, and
+                        // clears when it transitions away (e.g. new agent starts).
+                        if let crate::session::instance::SessionActivityState::Errored { message } =
+                            &activity_state
+                        {
+                            *self.current_error.lock().unwrap() = Some(message.clone());
+                        } else {
+                            // Clear any session error when state moves away from Errored
+                            // (but only if the current error came from this session —
+                            // we check by seeing if there's an error at all; backend
+                            // errors are also stored here but those are transient and
+                            // would have been cleared by now).
+                            *self.current_error.lock().unwrap() = None;
+                        }
+
                         cx.refresh().expect("Failed to refresh windows");
                     }
                 }
@@ -1236,6 +1254,29 @@ impl Gpui {
                 debug!("UI: ClearError event");
                 // Clear the error message from state
                 *self.current_error.lock().unwrap() = None;
+
+                // If the current session is in Errored state, tell the backend
+                // to reset it to Idle so the sidebar icon disappears and the
+                // error doesn't reappear on next session switch.
+                let is_session_errored = self
+                    .current_session_activity_state
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|s| {
+                        matches!(
+                            s,
+                            crate::session::instance::SessionActivityState::Errored { .. }
+                        )
+                    });
+                if is_session_errored {
+                    if let Some(session_id) = self.current_session_id.lock().unwrap().clone() {
+                        if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                            let _ = sender.try_send(BackendEvent::ClearSessionError { session_id });
+                        }
+                    }
+                }
+
                 // Refresh UI to hide the error popover
                 cx.refresh().expect("Failed to refresh windows");
             }
@@ -1921,10 +1962,36 @@ impl Gpui {
                 debug!("Received BackendResponse::SessionDeleted");
                 // Clean up collapse-state overrides for the deleted session
                 elements::ToolCollapseState::remove_session(&session_id);
+
+                // If the deleted session was the currently active one, disconnect
+                // from it so the messages view shows the "no session" hint.
+                let is_current =
+                    self.current_session_id.lock().unwrap().as_deref() == Some(session_id.as_str());
+                if is_current {
+                    debug!("Deleted session was the active session — clearing UI state");
+                    *self.current_session_id.lock().unwrap() = None;
+                    self.message_queue.lock().unwrap().clear();
+                    *self.current_session_activity_state.lock().unwrap() = None;
+                    *self.current_error.lock().unwrap() = None;
+                    *self.plan_state.lock().unwrap() = None;
+                    *self.current_model.lock().unwrap() = None;
+                    *self.current_sandbox_policy.lock().unwrap() = None;
+                    *self.current_worktree_data.lock().unwrap() = None;
+                    *self.current_session_last_usage.lock().unwrap() = None;
+
+                    // Tell MessagesView there is no session
+                    self.update_messages_view(cx, |view, cx| {
+                        view.set_current_session_id(None);
+                        view.messages_reset(0);
+                        cx.notify();
+                    });
+                }
+
                 // Refresh the session list
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::ListSessions);
                 }
+                cx.refresh().expect("Failed to refresh windows");
             }
             BackendResponse::SessionsListed { sessions } => {
                 debug!("Received BackendResponse::SessionsListed");

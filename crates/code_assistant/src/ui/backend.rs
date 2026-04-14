@@ -99,6 +99,11 @@ pub enum BackendEvent {
         name: String,
         path: PathBuf,
     },
+
+    /// Clear the Errored state on a session (user dismissed the error banner)
+    ClearSessionError {
+        session_id: String,
+    },
 }
 
 // Response from backend to UI
@@ -323,6 +328,26 @@ pub async fn handle_backend_events(
 
             BackendEvent::AddProject { name, path } => {
                 Some(handle_add_project(&multi_session_manager, &name, &path).await)
+            }
+
+            BackendEvent::ClearSessionError { session_id } => {
+                let mut manager = multi_session_manager.lock().await;
+                if let Some(session) = manager.get_session_mut(&session_id) {
+                    let current = session.get_activity_state();
+                    if current.is_terminal() {
+                        session.set_activity_state(
+                            crate::session::instance::SessionActivityState::Idle,
+                        );
+                    }
+                }
+                // Broadcast the state change so the sidebar updates
+                let _ = ui
+                    .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+                        session_id,
+                        activity_state: crate::session::instance::SessionActivityState::Idle,
+                    })
+                    .await;
+                None // No backend response needed
             }
         };
 

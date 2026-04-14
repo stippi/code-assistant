@@ -13,7 +13,7 @@ use crate::acp::{ACPUserUI, AcpProjectManager};
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::permissions::{AcpPermissionMediator, PermissionMediator};
 use crate::persistence::SessionModelConfig;
-use crate::session::instance::SessionActivityState;
+
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
@@ -795,7 +795,7 @@ impl acp::Agent for ACPAgentImpl {
                         let state = session.get_activity_state();
                         tracing::trace!("ACP: Session state: {:?}", state);
 
-                        let task_result = if state == SessionActivityState::Idle {
+                        let task_result = if state.is_terminal() {
                             // Check if the task completed with an error
                             if let Some(task_handle) = session.task_handle.take() {
                                 if task_handle.is_finished() {
@@ -812,7 +812,7 @@ impl acp::Agent for ACPAgentImpl {
                             None
                         };
 
-                        (state == SessionActivityState::Idle, task_result)
+                        (state.is_terminal(), task_result)
                     } else {
                         tracing::warn!("ACP: Session not found in manager");
                         (true, None)

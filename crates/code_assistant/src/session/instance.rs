@@ -27,6 +27,17 @@ pub enum SessionActivityState {
     WaitingForResponse,
     /// Agent is rate limited with countdown
     RateLimited { seconds_remaining: u64 },
+    /// Agent terminated with an error
+    Errored { message: String },
+}
+
+impl SessionActivityState {
+    /// Whether this state is terminal (agent is no longer running).
+    /// Terminal states block transitions to non-terminal states until a new
+    /// agent is explicitly started.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Idle | Self::Errored { .. })
+    }
 }
 
 /// Buffered tool-status update received while the session was disconnected.
@@ -289,6 +300,12 @@ impl SessionInstance {
             session_id: self.session.id.clone(),
             activity_state: self.get_activity_state(),
         });
+
+        // If the session is in an errored state, emit a DisplayError so the
+        // error banner is shown when the user switches to this session.
+        if let SessionActivityState::Errored { message } = self.get_activity_state() {
+            events.push(UiEvent::DisplayError { message });
+        }
 
         // Add session metadata to ensure UI has the session info including initial_project
 
@@ -579,14 +596,12 @@ impl ProxyUI {
     fn update_activity_state(&self, new_state: SessionActivityState) {
         // Update our internal state
         if let Ok(mut state) = self.session_activity_state.lock() {
-            // Don't allow transitions from Idle back to other states
-            // Idle is a terminal state until a new agent starts
-            if matches!(*state, SessionActivityState::Idle)
-                && !matches!(new_state, SessionActivityState::Idle)
-            {
+            // Don't allow transitions from terminal states (Idle, Errored) back to other states.
+            // Terminal states persist until a new agent is explicitly started.
+            if state.is_terminal() && !new_state.is_terminal() {
                 debug!(
-                    "Ignoring state transition from Idle to {:?} for session {}",
-                    new_state, self.session_id
+                    "Ignoring state transition from {:?} to {:?} for session {}",
+                    *state, new_state, self.session_id
                 );
                 return;
             }

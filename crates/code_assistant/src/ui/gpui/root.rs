@@ -644,7 +644,7 @@ impl RootView {
             };
 
             let agent_is_running = if let Some(state) = current_activity_state {
-                !matches!(state, crate::session::instance::SessionActivityState::Idle)
+                !state.is_terminal()
             } else {
                 false
             };
@@ -1225,7 +1225,7 @@ impl Render for RootView {
 
         // Update InputArea with current agent state
         let agent_is_running = if let Some(state) = &current_activity_state {
-            !matches!(state, crate::session::instance::SessionActivityState::Idle)
+            !state.is_terminal()
         } else {
             false
         };

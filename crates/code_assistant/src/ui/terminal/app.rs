@@ -144,11 +144,9 @@ async fn event_loop(
                                                 session_id, activity_state
                                             );
 
+
                                             let mut state = app_state.lock().await;
-                                            if matches!(
-                                                activity_state,
-                                                Some(crate::session::instance::SessionActivityState::Idle)
-                                            ) {
+                                            if activity_state.as_ref().is_some_and(|s| s.is_terminal()) {
                                                 state.set_info_message(Some(
                                                     "No agent is currently running.".to_string(),
                                                 ));
@@ -176,9 +174,18 @@ async fn event_loop(
                                             state.activity_state.clone()
                                         };
 
+
                                         let event = match activity_state {
-                                            Some(crate::session::instance::SessionActivityState::Idle)
-                                            | None => {
+                                            Some(ref s) if s.is_terminal() => {
+                                                cancel_flag.store(false, Ordering::SeqCst);
+                                                BackendEvent::SendUserMessage {
+                                                    session_id,
+                                                    message,
+                                                    attachments,
+                                                    branch_parent_id: None, // Terminal UI doesn't support branching yet
+                                                }
+                                            }
+                                            None => {
                                                 cancel_flag.store(false, Ordering::SeqCst);
                                                 BackendEvent::SendUserMessage {
                                                     session_id,

@@ -515,42 +515,25 @@ impl SessionManager {
                 }
             };
 
-            // Always set session state back to Idle when agent task ends
-            debug!(
-                "Agent task ending for session {}, setting state to Idle",
-                session_id_clone
-            );
-            if let Ok(mut state) = activity_state_ref.lock() {
-                *state = crate::session::instance::SessionActivityState::Idle;
-            }
-
-            // Always broadcast the state change to UI
-            let send_result = ui_clone
-                .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
-                    session_id: session_id_clone.clone(),
-                    activity_state: crate::session::instance::SessionActivityState::Idle,
-                })
-                .await;
-
-            if let Err(e) = send_result {
-                debug!(
-                    "Failed to send UpdateSessionActivityState event for session {}: {}",
-                    session_id_clone, e
-                );
-            } else {
-                debug!(
-                    "Successfully sent UpdateSessionActivityState(Idle) event for session {}",
-                    session_id_clone
-                );
-            }
-
             // Log the completion with detailed error information if failed
             match &result {
                 Ok(()) => {
+                    // Always set session state back to Idle when agent task ends successfully
                     debug!(
-                        "Agent completed successfully for session {}",
+                        "Agent completed successfully for session {}, setting state to Idle",
                         session_id_clone
                     );
+                    if let Ok(mut state) = activity_state_ref.lock() {
+                        *state = crate::session::instance::SessionActivityState::Idle;
+                    }
+
+                    // Broadcast Idle to UI
+                    let _ = ui_clone
+                        .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+                            session_id: session_id_clone.clone(),
+                            activity_state: crate::session::instance::SessionActivityState::Idle,
+                        })
+                        .await;
                 }
                 Err(e) => {
                     error!("Agent failed for session {}: {}", session_id_clone, e);
@@ -560,19 +543,33 @@ impl SessionManager {
                         session_id_clone, e
                     );
 
-                    // Send error to UI for user notification
                     let error_message = format!("Agent error: {e}");
-                    if let Err(ui_error) = ui_clone
-                        .send_event(crate::ui::UiEvent::DisplayError {
-                            message: error_message,
-                        })
-                        .await
-                    {
-                        error!(
-                            "Failed to send error to UI for session {}: {}",
-                            session_id_clone, ui_error
-                        );
+
+                    // Set session state to Errored so the sidebar shows the error indicator
+                    // and the error is displayed when the user connects to this session.
+                    let errored_state = crate::session::instance::SessionActivityState::Errored {
+                        message: error_message.clone(),
+                    };
+                    if let Ok(mut state) = activity_state_ref.lock() {
+                        *state = errored_state.clone();
                     }
+
+                    // Broadcast Errored state to UI (sidebar update)
+                    let _ = ui_clone
+                        .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+                            session_id: session_id_clone.clone(),
+                            activity_state: errored_state,
+                        })
+                        .await;
+
+                    // Note: we do NOT send DisplayError here because ui_clone is the
+                    // raw UI, not the session's ProxyUI — it would show the error
+                    // banner even if the user is looking at a different session.
+                    // Instead, the GPUI event handler for UpdateSessionActivityState
+                    // checks whether the errored session is the currently viewed one
+                    // and shows the banner only then.  When the user later switches
+                    // to this session, generate_session_connect_events emits
+                    // DisplayError from the stored Errored state.
                 }
             }
             result

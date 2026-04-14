@@ -131,10 +131,12 @@ impl Render for ChatListItem {
         let date = Self::format_relative_date(self.metadata.updated_at);
 
         let is_active = !matches!(self.activity_state, SessionActivityState::Idle);
+        let is_errored = matches!(self.activity_state, SessionActivityState::Errored { .. });
         let activity_color = match &self.activity_state {
             SessionActivityState::AgentRunning => cx.theme().info,
             SessionActivityState::WaitingForResponse => cx.theme().primary,
             SessionActivityState::RateLimited { .. } => cx.theme().warning,
+            SessionActivityState::Errored { .. } => cx.theme().danger,
             SessionActivityState::Idle => cx.theme().muted,
         };
 
@@ -173,7 +175,7 @@ impl Render for ChatListItem {
                 el.hover(|s| s.bg(cx.theme().muted.opacity(0.4)))
             })
             .on_click(cx.listener(Self::on_session_click))
-            // Left column: fixed width, shows spinning icon when active
+            // Left column: fixed width, shows spinning icon when active or error icon when errored
             .child(
                 div()
                     .flex_none()
@@ -181,7 +183,15 @@ impl Render for ChatListItem {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .when(is_active, |el| {
+                    .when(is_errored, |el| {
+                        el.child(
+                            gpui::svg()
+                                .size(px(12.))
+                                .path("icons/circle_stop.svg")
+                                .text_color(activity_color),
+                        )
+                    })
+                    .when(is_active && !is_errored, |el| {
                         el.child(
                             gpui::svg()
                                 .size(px(12.))

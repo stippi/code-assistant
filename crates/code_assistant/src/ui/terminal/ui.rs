@@ -137,14 +137,11 @@ impl UserInterface for TerminalUI {
                 );
                 let mut state = self.app_state.lock().await;
                 state.update_session_activity_state(session_id.clone(), activity_state.clone());
-                let is_idle = matches!(
-                    &activity_state,
-                    crate::session::instance::SessionActivityState::Idle
-                );
+                let is_terminal = activity_state.is_terminal();
                 if let Some(current_session_id) = &state.current_session_id {
                     if current_session_id == &session_id {
                         state.update_activity_state(Some(activity_state));
-                        if is_idle {
+                        if is_terminal {
                             self.cancel_flag.store(false, Ordering::SeqCst);
                         }
                     }
