@@ -512,13 +512,6 @@ impl MessageContainer {
             });
         }
 
-        if !updated {
-            warn!(
-                "GPUI update_tool_status: tool block not found for tool_id='{}', status={:?}",
-                tool_id, status
-            );
-        }
-
         updated
     }
 
