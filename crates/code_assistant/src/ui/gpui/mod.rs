@@ -1225,24 +1225,6 @@ impl Gpui {
                 self.auto_scroll_if_following(cx);
             }
 
-            UiEvent::ToolTerminalAttached {
-                tool_id,
-                terminal_id,
-            } => {
-                let session_id = self
-                    .current_session_id
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .unwrap_or_default();
-                warn!(
-                    "GPUI event: tool terminal attached: session='{}', tool_id='{}', terminal_id='{}'",
-                    session_id, tool_id, terminal_id
-                );
-                if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
-                    pool.register_tool_mapping(session_id, tool_id, terminal_id);
-                }
-            }
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
                 // Store the error message in state
@@ -1726,24 +1708,10 @@ impl Gpui {
                     });
                 }
 
-                DisplayFragment::ToolTerminal {
-                    tool_id,
-                    terminal_id,
-                } => {
-                    tracing::debug!("GPUI: Tool {tool_id} attached terminal {terminal_id}");
-                    let session_id = self
-                        .current_session_id
-                        .lock()
-                        .unwrap()
-                        .clone()
-                        .unwrap_or_default();
-                    if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
-                        pool.register_tool_mapping(
-                            session_id,
-                            tool_id.clone(),
-                            terminal_id.clone(),
-                        );
-                    }
+                DisplayFragment::ToolTerminal { .. } => {
+                    // The GPUI terminal executor registers the tool→terminal
+                    // mapping directly in the TerminalPool, so no action needed
+                    // during fragment replay.
                 }
 
                 DisplayFragment::ReasoningComplete => {
@@ -2389,15 +2357,9 @@ impl UserInterface for Gpui {
                 });
             }
 
-            DisplayFragment::ToolTerminal {
-                tool_id,
-                terminal_id,
-            } => {
-                tracing::debug!("GPUI proxy: Tool {tool_id} attached terminal {terminal_id}");
-                self.push_event(UiEvent::ToolTerminalAttached {
-                    tool_id: tool_id.clone(),
-                    terminal_id: terminal_id.clone(),
-                });
+            DisplayFragment::ToolTerminal { .. } => {
+                // The GPUI terminal executor registers the tool→terminal
+                // mapping directly in the TerminalPool, so no event needed.
             }
 
             DisplayFragment::CompactionDivider { summary } => {

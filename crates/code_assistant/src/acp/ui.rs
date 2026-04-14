@@ -738,9 +738,6 @@ impl UserInterface for ACPUserUI {
                 // These are UI management events, not relevant for ACP
                 // (RollbackStreaming: ACP cannot retract already-sent notifications)
             }
-            UiEvent::ToolTerminalAttached { .. } => {
-                // Terminal pool mapping — only relevant for GPUI
-            }
 
             UiEvent::DisplayError { message } => {
                 tracing::error!("ACPUserUI: Received DisplayError event: {}", message);

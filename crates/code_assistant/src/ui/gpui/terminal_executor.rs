@@ -96,7 +96,15 @@ fn terminal_worker_sender() -> Option<UnboundedSender<TerminalWorkerRequest>> {
 ///
 /// If the GPUI worker is not available (e.g. running without GUI), it falls
 /// back to `DefaultCommandExecutor`.
-pub struct GpuiTerminalCommandExecutor;
+pub struct GpuiTerminalCommandExecutor {
+    session_id: String,
+}
+
+impl GpuiTerminalCommandExecutor {
+    pub fn new(session_id: String) -> Self {
+        Self { session_id }
+    }
+}
 
 #[async_trait]
 impl CommandExecutor for GpuiTerminalCommandExecutor {
@@ -130,11 +138,15 @@ impl CommandExecutor for GpuiTerminalCommandExecutor {
         // Create a channel for the worker to send events back.
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
+        let tool_id = callback.and_then(|cb| cb.tool_id().map(|s| s.to_string()));
+
         let request = TerminalExecuteRequest {
             command_line: command_line.to_string(),
             cwd: working_dir.cloned(),
             timeout: DEFAULT_TIMEOUT,
             event_tx,
+            session_id: self.session_id.clone(),
+            tool_id,
         };
 
         if sender
@@ -182,6 +194,8 @@ struct TerminalExecuteRequest {
     cwd: Option<PathBuf>,
     timeout: std::time::Duration,
     event_tx: UnboundedSender<TerminalWorkerEvent>,
+    session_id: String,
+    tool_id: Option<String>,
 }
 
 enum TerminalWorkerRequest {
@@ -231,7 +245,8 @@ async fn run_command(
         cwd,
         timeout,
         event_tx,
-        ..
+        session_id,
+        tool_id,
     } = request;
 
     // Create the PTY terminal on the GPUI thread.
@@ -241,6 +256,18 @@ async fn run_command(
 
     debug!("GPUI terminal {terminal_id} created for command: {command_line}");
     let _cleanup = TerminalCleanup::new(terminal_id.clone());
+
+    // Register the tool → terminal mapping immediately so the UI can find
+    // the live terminal as soon as it renders the tool card.  Previously this
+    // mapping was established via a round-trip through the event queue
+    // (executor → callback → ProxyUI → GPUI event → pool.register), which
+    // caused a race: the tool card could render in "Running" state before
+    // the mapping arrived, showing a skeleton forever.
+    if let Some(ref tool_id) = tool_id {
+        if let Ok(mut pool) = terminal_pool::TerminalPool::global().lock() {
+            pool.register_tool_mapping(session_id, tool_id.clone(), terminal_id.clone());
+        }
+    }
 
     // Notify the caller that the terminal is attached.
     let _ = event_tx.send(TerminalWorkerEvent::TerminalAttached {

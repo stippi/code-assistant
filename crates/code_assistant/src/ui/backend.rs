@@ -546,7 +546,7 @@ async fn handle_send_user_message(
     // Start the agent (message already added)
     let result = {
         let project_manager = Box::new(DefaultProjectManager::new());
-        let command_executor = Box::new(GpuiTerminalCommandExecutor);
+        let command_executor = Box::new(GpuiTerminalCommandExecutor::new(session_id.to_string()));
         let user_interface = ui.clone();
 
         // Check if session has stored model config, otherwise use global config

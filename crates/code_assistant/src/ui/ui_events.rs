@@ -78,11 +78,6 @@ pub enum UiEvent {
     AddImage { media_type: String, data: String },
     /// Append streaming tool output
     AppendToolOutput { tool_id: String, chunk: String },
-    /// A terminal was attached to a tool invocation
-    ToolTerminalAttached {
-        tool_id: String,
-        terminal_id: String,
-    },
     /// Update the session plan display
     UpdatePlan { plan: PlanState },
     /// Set all messages at once (for session loading, clears existing)

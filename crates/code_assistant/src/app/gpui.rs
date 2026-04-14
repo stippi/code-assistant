@@ -90,7 +90,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 }
 
                 let project_manager = Box::new(DefaultProjectManager::new());
-                let command_executor = Box::new(GpuiTerminalCommandExecutor);
+                let command_executor =
+                    Box::new(GpuiTerminalCommandExecutor::new(session_id.clone()));
                 let user_interface: Arc<dyn crate::ui::UserInterface> =
                     Arc::new(gui_for_thread.clone());
 

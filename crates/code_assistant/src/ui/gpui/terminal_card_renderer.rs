@@ -26,7 +26,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use terminal::Terminal;
 use terminal_view::{TerminalThemeColors, TerminalView};
-use tracing::warn;
+use tracing::debug;
 
 // ---------------------------------------------------------------------------
 // View cache — reuse TerminalView entities across re-renders
@@ -159,7 +159,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
 
         let tool_finished = matches!(tool.status, ToolStatus::Success | ToolStatus::Error);
         if live_terminal.is_none() && output.is_empty() && !tool_finished {
-            warn!(
+            debug!(
                 "TerminalCardRenderer: no live terminal/output yet for running tool_id='{}', command='{}'",
                 tool.id,
                 command_line_param

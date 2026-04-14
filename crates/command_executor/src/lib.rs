@@ -26,6 +26,11 @@ pub trait StreamingCallback: Send + Sync {
     fn on_terminal_attached(&self, _terminal_id: &str) -> Result<()> {
         Ok(())
     }
+
+    /// Returns the tool invocation ID associated with this callback, if any.
+    fn tool_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[async_trait::async_trait]

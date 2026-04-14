@@ -108,6 +108,10 @@ impl<'a> StreamingCallback for ToolOutputStreamer<'a> {
 
         Ok(())
     }
+
+    fn tool_id(&self) -> Option<&str> {
+        Some(&self.tool_id)
+    }
 }
 
 // Tool implementation
