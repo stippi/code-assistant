@@ -246,7 +246,7 @@ impl Agent {
     /// Get and clear the pending message from shared state
     fn get_and_clear_pending_message(&self) -> Option<String> {
         if let Some(ref pending_ref) = self.pending_message_ref {
-            let mut pending = pending_ref.lock().unwrap();
+            let mut pending = pending_ref.lock().ok()?;
             pending.take()
         } else {
             None
@@ -256,8 +256,7 @@ impl Agent {
     /// Check if there is a pending message (without clearing it)
     fn has_pending_message(&self) -> bool {
         if let Some(ref pending_ref) = self.pending_message_ref {
-            let pending = pending_ref.lock().unwrap();
-            pending.is_some()
+            pending_ref.lock().ok().is_some_and(|p| p.is_some())
         } else {
             false
         }
@@ -1428,7 +1427,9 @@ impl Agent {
                 return Err(anyhow::anyhow!("Streaming cancelled by user"));
             }
 
-            let mut processor_guard = processor.lock().unwrap();
+            let mut processor_guard = processor
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Stream processor mutex poisoned: {e}"))?;
             processor_guard
                 .process(chunk)
                 .map_err(|e| anyhow::anyhow!("Failed to process streaming chunk: {e}"))
@@ -2419,8 +2420,12 @@ impl Agent {
         if let (Some(start_offset), Some(end_offset)) =
             (updated_request.start_offset, updated_request.end_offset)
         {
-            // Validate offsets are within bounds
-            if start_offset <= text.len() && end_offset <= text.len() && start_offset <= end_offset
+            // Validate offsets are within bounds and on character boundaries
+            if start_offset <= text.len()
+                && end_offset <= text.len()
+                && start_offset <= end_offset
+                && text.is_char_boundary(start_offset)
+                && text.is_char_boundary(end_offset)
             {
                 // Generate the new formatted tool call
                 let formatter = get_formatter(tool_syntax);
