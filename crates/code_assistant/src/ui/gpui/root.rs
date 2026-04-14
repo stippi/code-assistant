@@ -589,6 +589,47 @@ impl RootView {
             return;
         }
 
+        // Handle session deletion separately because it needs to update the
+        // MessagesView entity (which requires &mut cx) before the immutable
+        // borrow on the Gpui global for the backend sender.
+        if let ChatSidebarEvent::SessionDeleteRequested { session_id } = event {
+            // If the deleted session is the one currently shown in the messages
+            // view, disconnect the UI from it *before* telling the backend to
+            // delete it.  This avoids a race where the messages view (or another
+            // pending event) tries to access the session after it has been
+            // removed on the backend side.
+            {
+                let gpui = cx
+                    .try_global::<Gpui>()
+                    .expect("Failed to obtain Gpui global");
+                let is_current =
+                    gpui.current_session_id.lock().unwrap().as_deref() == Some(session_id.as_str());
+                if is_current {
+                    debug!("Pre-clearing UI for deleted current session {}", session_id);
+                    gpui.clear_current_session_state();
+                }
+            }
+            // The gpui borrow is now dropped, so we can mutably borrow cx.
+            // Always reset the view to be safe (clear_current_session_state
+            // already set current_session_id to None, so the view check
+            // in the SessionDeleted response handler will be a no-op).
+            self.messages_view.update(cx, |view, cx| {
+                view.set_current_session_id(None);
+                view.messages_reset(0);
+                cx.notify();
+            });
+
+            let gpui = cx
+                .try_global::<Gpui>()
+                .expect("Failed to obtain Gpui global");
+            if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                let _ = sender.try_send(BackendEvent::DeleteSession {
+                    session_id: session_id.clone(),
+                });
+            }
+            return;
+        }
+
         let gpui = cx
             .try_global::<Gpui>()
             .expect("Failed to obtain Gpui global");
@@ -596,11 +637,6 @@ impl RootView {
             match event {
                 ChatSidebarEvent::SessionSelected { session_id } => {
                     let _ = sender.try_send(BackendEvent::LoadSession {
-                        session_id: session_id.clone(),
-                    });
-                }
-                ChatSidebarEvent::SessionDeleteRequested { session_id } => {
-                    let _ = sender.try_send(BackendEvent::DeleteSession {
                         session_id: session_id.clone(),
                     });
                 }
@@ -613,7 +649,8 @@ impl RootView {
                         initial_project: initial_project.clone(),
                     });
                 }
-                ChatSidebarEvent::AddProjectRequested => {
+                ChatSidebarEvent::SessionDeleteRequested { .. }
+                | ChatSidebarEvent::AddProjectRequested => {
                     // Handled above
                 }
             }

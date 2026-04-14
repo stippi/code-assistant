@@ -312,6 +312,26 @@ impl Gpui {
         });
     }
 
+    /// Clear all UI state associated with the current session.
+    ///
+    /// This resets session-scoped fields (current session id, messages, error,
+    /// plan, model, etc.) so that the UI shows the "no session" state.
+    ///
+    /// **Note:** This does NOT update the `MessagesView` entity because that
+    /// requires a context (`AsyncApp` or `Context<T>`) which differs between
+    /// call sites. Callers must separately reset the messages view.
+    fn clear_current_session_state(&self) {
+        *self.current_session_id.lock().unwrap() = None;
+        self.message_queue.lock().unwrap().clear();
+        *self.current_session_activity_state.lock().unwrap() = None;
+        *self.current_error.lock().unwrap() = None;
+        *self.plan_state.lock().unwrap() = None;
+        *self.current_model.lock().unwrap() = None;
+        *self.current_sandbox_policy.lock().unwrap() = None;
+        *self.current_worktree_data.lock().unwrap() = None;
+        *self.current_session_last_usage.lock().unwrap() = None;
+    }
+
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
@@ -1933,19 +1953,13 @@ impl Gpui {
 
                 // If the deleted session was the currently active one, disconnect
                 // from it so the messages view shows the "no session" hint.
+                // (This may already have been done eagerly in the delete-request
+                // handler in root.rs, in which case the check is a no-op.)
                 let is_current =
                     self.current_session_id.lock().unwrap().as_deref() == Some(session_id.as_str());
                 if is_current {
                     debug!("Deleted session was the active session — clearing UI state");
-                    *self.current_session_id.lock().unwrap() = None;
-                    self.message_queue.lock().unwrap().clear();
-                    *self.current_session_activity_state.lock().unwrap() = None;
-                    *self.current_error.lock().unwrap() = None;
-                    *self.plan_state.lock().unwrap() = None;
-                    *self.current_model.lock().unwrap() = None;
-                    *self.current_sandbox_policy.lock().unwrap() = None;
-                    *self.current_worktree_data.lock().unwrap() = None;
-                    *self.current_session_last_usage.lock().unwrap() = None;
+                    self.clear_current_session_state();
 
                     // Tell MessagesView there is no session
                     self.update_messages_view(cx, |view, cx| {
