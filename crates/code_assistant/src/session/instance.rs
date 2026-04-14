@@ -638,7 +638,11 @@ impl UserInterface for ProxyUI {
                 // Only update activity state back to agent running if streaming was not cancelled
                 // and there was no error, and the agent hasn't already completed (i.e., state is not already Idle)
                 if !cancelled && error.is_none() {
-                    let current_state = self.session_activity_state.lock().unwrap().clone();
+                    let current_state = self
+                        .session_activity_state
+                        .lock()
+                        .map(|s| s.clone())
+                        .unwrap_or(SessionActivityState::Idle);
                     if matches!(
                         current_state,
                         SessionActivityState::WaitingForResponse
@@ -716,7 +720,11 @@ impl UserInterface for ProxyUI {
 
         // First fragment indicates streaming has started - transition from WaitingForResponse
         // But only if the agent is still running (not Idle)
-        let current_state = self.session_activity_state.lock().unwrap().clone();
+        let current_state = self
+            .session_activity_state
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(SessionActivityState::Idle);
         if matches!(current_state, SessionActivityState::WaitingForResponse) {
             self.update_activity_state(SessionActivityState::AgentRunning);
         }
