@@ -107,6 +107,7 @@ impl ChatListItem {
     }
 
     fn on_session_delete(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         cx.emit(ChatListItemEvent::DeleteClicked {
             session_id: self.metadata.id.clone(),
         });
