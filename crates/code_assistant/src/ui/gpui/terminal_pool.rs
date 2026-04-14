@@ -147,7 +147,9 @@ pub fn spawn_terminal_in_pool(
     let terminal = cx.new(|cx| builder.subscribe(cx));
 
     let terminal_id = {
-        let mut pool = TerminalPool::global().lock().expect("pool lock poisoned");
+        let mut pool = TerminalPool::global()
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Terminal pool lock poisoned: {e}"))?;
         pool.insert(terminal.clone(), command.to_string())
     };
 
