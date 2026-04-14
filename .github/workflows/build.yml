@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@56751392ac172fc3a68fef1413f507767ed5f563 # v1.0.6
+        uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f # v1.0.6
         with:
           toolchain: stable
           target: ${{ matrix.target }}
