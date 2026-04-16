@@ -114,7 +114,17 @@ impl CommandExecutor for GpuiTerminalCommandExecutor {
         working_dir: Option<&PathBuf>,
         sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
-        self.execute_streaming(command_line, working_dir, None, sandbox_request)
+        // Non-streaming callers (format-on-save from edit / replace_in_file /
+        // write_file) don't need a PTY and don't render a terminal card. Route
+        // them through the plain process executor so a stuck PTY worker can't
+        // park the agent loop inside an internal command.
+        //
+        // When the outer SandboxedCommandExecutor requires restrictions it
+        // doesn't reach this inner executor in the first place — it runs the
+        // seatbelt invocation directly — so using DefaultCommandExecutor here
+        // doesn't bypass sandboxing.
+        DefaultCommandExecutor
+            .execute(command_line, working_dir, sandbox_request)
             .await
     }
 
@@ -249,10 +259,38 @@ async fn run_command(
         tool_id,
     } = request;
 
-    // Create the PTY terminal on the GPUI thread.
-    let (terminal_id, terminal) = cx
-        .update(|cx| terminal_pool::spawn_terminal_in_pool(&command_line, cwd.as_deref(), cx))?
-        .map_err(|e| anyhow!("Failed to create PTY terminal: {e}"))?;
+    // Channels for forwarding terminal events out of the GPUI callback
+    // context. These must be created BEFORE the terminal entity so the
+    // subscription can be installed atomically with the spawn below.
+    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<Option<i32>>();
+    let (wakeup_tx, mut wakeup_rx) = mpsc::unbounded_channel::<()>();
+
+    // Create the PTY terminal AND install the event subscription inside the
+    // same `cx.update` so no event can be dispatched between the two.
+    // Previously the subscription was installed in a second `cx.update`,
+    // which opened a window where a fast-exiting child could emit
+    // `ChildExit` before we were listening — leaving the worker stuck
+    // polling for an event that had already been delivered and dropped.
+    let (terminal_id, terminal, _sub) = cx
+        .update(|cx| -> Result<_, anyhow::Error> {
+            let (id, entity) =
+                terminal_pool::spawn_terminal_in_pool(&command_line, cwd.as_deref(), cx)
+                    .map_err(|e| anyhow!("Failed to create PTY terminal: {e}"))?;
+
+            let exit_tx = exit_tx.clone();
+            let wakeup_tx = wakeup_tx.clone();
+            let subscription = cx.subscribe(&entity, move |_terminal, event, _cx| match event {
+                terminal::Event::ChildExit(code) => {
+                    let _ = exit_tx.send(*code);
+                }
+                terminal::Event::Wakeup => {
+                    let _ = wakeup_tx.send(());
+                }
+                _ => {}
+            });
+
+            Ok((id, entity, subscription))
+        })??;
 
     debug!("GPUI terminal {terminal_id} created for command: {command_line}");
     let _cleanup = TerminalCleanup::new(terminal_id.clone());
@@ -274,33 +312,6 @@ async fn run_command(
         terminal_id: terminal_id.clone(),
     });
 
-    // Subscribe to terminal events on the GPUI thread.
-    // We use a tokio channel to bridge GPUI events to our async context.
-    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<Option<i32>>();
-    let (wakeup_tx, mut wakeup_rx) = mpsc::unbounded_channel::<()>();
-
-    cx.update(|cx| {
-        // Subscribe to terminal events
-        let exit_tx_clone = exit_tx.clone();
-        let wakeup_tx_clone = wakeup_tx.clone();
-        // We keep the subscription alive by leaking it — the terminal will be
-        // dropped when it exits and the pool cleans up, which will also drop
-        // the subscription implicitly. Alternatively we could store it, but
-        // since the terminal lifetime is bounded this is acceptable.
-        let _sub = cx.subscribe(&terminal, move |_terminal, event, _cx| match event {
-            terminal::Event::ChildExit(code) => {
-                let _ = exit_tx_clone.send(*code);
-            }
-            terminal::Event::Wakeup => {
-                let _ = wakeup_tx_clone.send(());
-            }
-            _ => {}
-        });
-        // Intentionally leak the subscription — it will be cleaned up when the
-        // terminal entity is dropped.
-        std::mem::forget(_sub);
-    })?;
-
     // Track the last output length we've sent (in chars, not bytes, since
     // get_content_text() can reflow between reads and byte offsets become
     // invalid across multi-byte UTF-8 characters).
@@ -314,6 +325,18 @@ async fn run_command(
     // futures::select! with GPUI-native timers instead.
 
     loop {
+        // Enforce timeout on every iteration, not just when `poll_timer`
+        // wins the `select_biased!` race below. Under a chatty command
+        // the wakeup branch can fire continuously and starve the poll
+        // timer, which would make the timeout ineffective.
+        if started_at.elapsed() >= timeout {
+            warn!(
+                "GPUI terminal {terminal_id} timed out after {timeout:?} for command: {command_line}"
+            );
+            interrupt_terminal(&terminal, cx);
+            return Err(anyhow!("Command timed out after {timeout:?}"));
+        }
+
         // Create a GPUI-native timer for the periodic poll. This uses GPUI's
         // background executor which has its own timer implementation that works
         // regardless of the async runtime.
@@ -376,13 +399,8 @@ async fn run_command(
             // Periodic poll: check for exit even if no events arrive.
             // This catches the case where ChildExit is emitted but the
             // subscription callback or wakeup events are not delivered.
+            // (The timeout is enforced at the top of the loop.)
             _ = poll_timer.fuse() => {
-                // Check timeout first.
-                if started_at.elapsed() >= timeout {
-                    interrupt_terminal(&terminal, cx);
-                    return Err(anyhow!("Command timed out after {timeout:?}"));
-                }
-
                 let (exited, exit_status, output) = cx.update(|cx| {
                     let t = terminal.read(cx);
                     (t.has_exited(), t.exit_status(), t.get_content_text())
