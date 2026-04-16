@@ -529,8 +529,12 @@ async fn run_callback_server(
         last_refresh: Utc::now(),
     };
 
-    // Save to providers.json
-    save_auth_state_to_provider(&auth_state, provider_id, providers_path)?;
+    // Save to providers.json (best-effort — on sandboxed platforms like iOS
+    // the default config directory may not be writable, but the caller can
+    // still persist the tokens through its own storage backend).
+    if let Err(e) = save_auth_state_to_provider(&auth_state, provider_id, providers_path) {
+        warn!("Could not save auth state to providers.json (non-fatal): {e}");
+    }
 
     Ok(LoginResult { tokens, auth_state })
 }
