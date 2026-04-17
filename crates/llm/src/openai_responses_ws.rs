@@ -327,7 +327,7 @@ enum ReaderFrame {
     /// A JSON text frame (API event).
     Text(String),
     /// The server closed the connection.
-    Close(Option<tokio_tungstenite::tungstenite::protocol::CloseFrame<'static>>),
+    Close(Option<tokio_tungstenite::tungstenite::protocol::CloseFrame>),
     /// The WebSocket stream ended or encountered a read error.
     Error(String),
 }
@@ -374,7 +374,7 @@ fn spawn_reader_task(
                         // Ignore unsolicited pongs
                     }
                     WsMessage::Text(text) => {
-                        if tx.send(ReaderFrame::Text(text)).is_err() {
+                        if tx.send(ReaderFrame::Text(text.to_string())).is_err() {
                             // Receiver dropped — stop reading
                             break;
                         }
@@ -505,15 +505,22 @@ impl OpenAIResponsesWsClient {
             .clone()
             .into_client_request()
             .context("Failed to build WebSocket request")?;
-
         let auth_headers = self.auth_provider.get_auth_headers().await?;
+        info!("  WS auth: {} header(s) provided", auth_headers.len());
         for (key, value) in &auth_headers {
+            let redacted = if value.len() > 12 {
+                format!("{}…{}", &value[..6], &value[value.len() - 4..])
+            } else {
+                "(short)".to_string()
+            };
+            debug!("  WS auth header: {} = {}", key, redacted);
             request.headers_mut().insert(
                 HeaderName::from_bytes(key.as_bytes()).context("Invalid header name")?,
                 HeaderValue::from_str(value).context("Invalid header value")?,
             );
         }
         for (key, value) in self.request_customizer.get_additional_headers() {
+            debug!("  WS custom header: {} = {}", key, value);
             request.headers_mut().insert(
                 HeaderName::from_bytes(key.as_bytes()).context("Invalid header name")?,
                 HeaderValue::from_str(&value).context("Invalid header value")?,
@@ -522,7 +529,10 @@ impl OpenAIResponsesWsClient {
 
         let (ws_stream, response) = connect_async_with_config(request, None, false)
             .await
-            .context("WebSocket connection failed")?;
+            .map_err(|e| {
+                warn!("WebSocket connection to {} failed: {:#}", url_str, e);
+                anyhow::anyhow!("WebSocket connection failed: {}", e)
+            })?;
 
         // Log handshake response details for debugging
         info!(
@@ -946,7 +956,7 @@ impl OpenAIResponsesWsClient {
                 .ok_or_else(|| anyhow::anyhow!("WebSocket connection not established"))?;
             let mut sink_guard = conn.sink.lock().await;
             sink_guard
-                .send(WsMessage::Text(request_text))
+                .send(WsMessage::Text(request_text.into()))
                 .await
                 .context("Failed to send WebSocket message")?;
         }
