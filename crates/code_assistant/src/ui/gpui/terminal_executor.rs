@@ -271,26 +271,24 @@ async fn run_command(
     // which opened a window where a fast-exiting child could emit
     // `ChildExit` before we were listening — leaving the worker stuck
     // polling for an event that had already been delivered and dropped.
-    let (terminal_id, terminal, _sub) = cx
-        .update(|cx| -> Result<_, anyhow::Error> {
-            let (id, entity) =
-                terminal_pool::spawn_terminal_in_pool(&command_line, cwd.as_deref(), cx)
-                    .map_err(|e| anyhow!("Failed to create PTY terminal: {e}"))?;
+    let (terminal_id, terminal, _sub) = cx.update(|cx| -> Result<_, anyhow::Error> {
+        let (id, entity) = terminal_pool::spawn_terminal_in_pool(&command_line, cwd.as_deref(), cx)
+            .map_err(|e| anyhow!("Failed to create PTY terminal: {e}"))?;
 
-            let exit_tx = exit_tx.clone();
-            let wakeup_tx = wakeup_tx.clone();
-            let subscription = cx.subscribe(&entity, move |_terminal, event, _cx| match event {
-                terminal::Event::ChildExit(code) => {
-                    let _ = exit_tx.send(*code);
-                }
-                terminal::Event::Wakeup => {
-                    let _ = wakeup_tx.send(());
-                }
-                _ => {}
-            });
+        let exit_tx = exit_tx.clone();
+        let wakeup_tx = wakeup_tx.clone();
+        let subscription = cx.subscribe(&entity, move |_terminal, event, _cx| match event {
+            terminal::Event::ChildExit(code) => {
+                let _ = exit_tx.send(*code);
+            }
+            terminal::Event::Wakeup => {
+                let _ = wakeup_tx.send(());
+            }
+            _ => {}
+        });
 
-            Ok((id, entity, subscription))
-        })??;
+        Ok((id, entity, subscription))
+    })??;
 
     debug!("GPUI terminal {terminal_id} created for command: {command_line}");
     let _cleanup = TerminalCleanup::new(terminal_id.clone());

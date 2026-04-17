@@ -8,31 +8,40 @@
 //! `config.codex_tokens` field.
 
 use anyhow::Result;
-use llm::codex_auth;
+use llm::codex_auth::{self, CodexTokenStorage, ProvidersJsonTokenStorage};
+use std::sync::Arc;
 
 /// The default provider ID used for ChatGPT subscription auth.
 const PROVIDER_ID: &str = codex_auth::DEFAULT_PROVIDER_ID;
 
+/// Build the default providers.json storage backend.
+fn default_storage() -> Arc<dyn CodexTokenStorage> {
+    Arc::new(ProvidersJsonTokenStorage::new(
+        PROVIDER_ID.to_string(),
+        None,
+    ))
+}
+
 /// Run the Codex OAuth browser login flow.
 pub async fn run_codex_login() -> Result<()> {
+    let storage = default_storage();
+
     // Check if already authenticated
-    if let Ok(Some(_)) = codex_auth::load_auth_state_from_provider(PROVIDER_ID, None) {
-        let status = codex_auth::get_auth_status(PROVIDER_ID, None);
-        if status.authenticated {
-            println!(
-                "Already logged in as {} (plan: {}).",
-                status.email.as_deref().unwrap_or("unknown"),
-                status.plan_type.as_deref().unwrap_or("unknown"),
-            );
-            println!("Run `codex-logout` first to log in with a different account.");
-            return Ok(());
-        }
+    let status = codex_auth::get_auth_status(storage.as_ref());
+    if status.authenticated {
+        println!(
+            "Already logged in as {} (plan: {}).",
+            status.email.as_deref().unwrap_or("unknown"),
+            status.plan_type.as_deref().unwrap_or("unknown"),
+        );
+        println!("Run `codex-logout` first to log in with a different account.");
+        return Ok(());
     }
 
     println!("Starting ChatGPT subscription login...");
     println!();
 
-    let (authorize_url, rx) = codex_auth::start_login_flow(PROVIDER_ID, None).await?;
+    let (authorize_url, rx) = codex_auth::start_login_flow(storage.clone()).await?;
 
     println!("Opening your browser to authenticate.");
     println!("If the browser doesn't open, visit this URL manually:");
@@ -50,7 +59,7 @@ pub async fn run_codex_login() -> Result<()> {
     let result = rx.await??;
 
     let (email, plan) = {
-        let status = codex_auth::get_auth_status(PROVIDER_ID, None);
+        let status = codex_auth::get_auth_status(storage.as_ref());
         (status.email, status.plan_type)
     };
 
@@ -81,14 +90,16 @@ pub async fn run_codex_login() -> Result<()> {
 
 /// Remove stored Codex auth tokens.
 pub fn run_codex_logout() -> Result<()> {
+    let storage = default_storage();
+
     // Check if tokens exist first
-    let status = codex_auth::get_auth_status(PROVIDER_ID, None);
+    let status = codex_auth::get_auth_status(storage.as_ref());
     if !status.authenticated {
         println!("Not logged in (no tokens found).");
         return Ok(());
     }
 
-    codex_auth::delete_auth_state_from_provider(PROVIDER_ID, None)?;
+    storage.delete()?;
     println!(
         "Logged out. Tokens removed from providers.json (provider: \"{}\").",
         PROVIDER_ID
@@ -98,7 +109,8 @@ pub fn run_codex_logout() -> Result<()> {
 
 /// Show current Codex auth status.
 pub fn run_codex_status() -> Result<()> {
-    let status = codex_auth::get_auth_status(PROVIDER_ID, None);
+    let storage = default_storage();
+    let status = codex_auth::get_auth_status(storage.as_ref());
 
     if status.authenticated {
         println!("Authenticated: yes");

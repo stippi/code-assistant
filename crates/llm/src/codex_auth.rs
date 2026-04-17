@@ -132,13 +132,35 @@ pub fn extract_account_id(id_token: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Token storage (in providers.json)
+// Token storage trait (pluggable backend)
+// ---------------------------------------------------------------------------
+
+/// Pluggable storage backend for Codex OAuth tokens.
+///
+/// The llm crate ships a [`ProvidersJsonTokenStorage`] that persists tokens in
+/// `providers.json`.  Consumers (e.g. the Tutor app) can provide their own
+/// implementation (keyring, database, etc.) by implementing this trait and
+/// injecting it into [`CodexAuthProvider`], [`start_login_flow`], etc.
+pub trait CodexTokenStorage: Send + Sync {
+    /// Persist the auth state.
+    fn save(&self, state: &CodexAuthState) -> Result<()>;
+
+    /// Load the auth state.  Returns `None` if no tokens are stored.
+    fn load(&self) -> Result<Option<CodexAuthState>>;
+
+    /// Delete stored tokens.
+    fn delete(&self) -> Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// providers.json-based storage (default for code-assistant)
 // ---------------------------------------------------------------------------
 
 /// Default provider ID used for ChatGPT subscription auth in providers.json.
 pub const DEFAULT_PROVIDER_ID: &str = "openai-chatgpt";
 
-/// Save codex auth state into a provider entry in providers.json.
+/// [`CodexTokenStorage`] implementation that persists tokens inside a provider
+/// entry in `providers.json`.
 ///
 /// The tokens are stored as fields inside the provider's `config` object:
 /// ```json
@@ -157,7 +179,41 @@ pub const DEFAULT_PROVIDER_ID: &str = "openai-chatgpt";
 ///   }
 /// }
 /// ```
-pub fn save_auth_state_to_provider(
+pub struct ProvidersJsonTokenStorage {
+    provider_id: String,
+    providers_path: Option<PathBuf>,
+}
+
+impl ProvidersJsonTokenStorage {
+    /// Create a new providers.json-based token storage.
+    pub fn new(provider_id: String, providers_path: Option<PathBuf>) -> Self {
+        Self {
+            provider_id,
+            providers_path,
+        }
+    }
+}
+
+impl CodexTokenStorage for ProvidersJsonTokenStorage {
+    fn save(&self, state: &CodexAuthState) -> Result<()> {
+        save_auth_state_to_provider(state, &self.provider_id, self.providers_path.as_deref())
+    }
+
+    fn load(&self) -> Result<Option<CodexAuthState>> {
+        load_auth_state_from_provider(&self.provider_id, self.providers_path.as_deref())
+    }
+
+    fn delete(&self) -> Result<()> {
+        delete_auth_state_from_provider(&self.provider_id, self.providers_path.as_deref())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// providers.json read/write helpers (used by ProvidersJsonTokenStorage)
+// ---------------------------------------------------------------------------
+
+/// Save codex auth state into a provider entry in providers.json.
+fn save_auth_state_to_provider(
     state: &CodexAuthState,
     provider_id: &str,
     providers_path: Option<&Path>,
@@ -202,9 +258,7 @@ pub fn save_auth_state_to_provider(
 }
 
 /// Load codex auth state from a provider entry in providers.json.
-///
-/// Reads the `codex_tokens` object from the provider's config.
-pub fn load_auth_state_from_provider(
+fn load_auth_state_from_provider(
     provider_id: &str,
     providers_path: Option<&Path>,
 ) -> Result<Option<CodexAuthState>> {
@@ -272,12 +326,7 @@ pub fn load_auth_state_from_provider(
 }
 
 /// Delete codex auth tokens from a provider entry in providers.json.
-///
-/// Removes only the `codex_tokens` field, leaving the provider entry intact.
-pub fn delete_auth_state_from_provider(
-    provider_id: &str,
-    providers_path: Option<&Path>,
-) -> Result<()> {
+fn delete_auth_state_from_provider(provider_id: &str, providers_path: Option<&Path>) -> Result<()> {
     crate::provider_config::ConfigurationSystem::save_providers_config(providers_path, |raw| {
         if let Some(provider) = raw.get_mut(provider_id) {
             if let Some(config) = provider.get_mut("config") {
@@ -361,11 +410,10 @@ pub struct LoginResult {
 /// 3. Returns the authorization URL (caller should open in browser)
 /// 4. Waits for the callback
 /// 5. Exchanges code for tokens
-/// 6. Persists tokens into providers.json under the given provider ID
+/// 6. Persists tokens via the provided [`CodexTokenStorage`]
 /// 7. Returns the login result
 pub async fn start_login_flow(
-    provider_id: &str,
-    providers_path: Option<&Path>,
+    storage: Arc<dyn CodexTokenStorage>,
 ) -> Result<(String, tokio::sync::oneshot::Receiver<Result<LoginResult>>)> {
     let (verifier, challenge) = generate_pkce_pair();
     let state_param = generate_random_state();
@@ -379,8 +427,6 @@ pub async fn start_login_flow(
     let verifier_clone = verifier.clone();
     let state_param_clone = state_param.clone();
     let redirect_uri_clone = redirect_uri.clone();
-    let provider_id_owned = provider_id.to_string();
-    let providers_path_owned = providers_path.map(|p| p.to_path_buf());
 
     // Spawn the local server to wait for the callback
     tokio::spawn(async move {
@@ -388,8 +434,7 @@ pub async fn start_login_flow(
             verifier_clone,
             state_param_clone,
             redirect_uri_clone,
-            &provider_id_owned,
-            providers_path_owned.as_deref(),
+            storage,
         )
         .await;
         let _ = tx.send(result);
@@ -439,8 +484,7 @@ async fn run_callback_server(
     verifier: String,
     expected_state: String,
     redirect_uri: String,
-    provider_id: &str,
-    providers_path: Option<&Path>,
+    storage: Arc<dyn CodexTokenStorage>,
 ) -> Result<LoginResult> {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", REDIRECT_PORT))
         .await
@@ -529,11 +573,10 @@ async fn run_callback_server(
         last_refresh: Utc::now(),
     };
 
-    // Save to providers.json (best-effort — on sandboxed platforms like iOS
-    // the default config directory may not be writable, but the caller can
-    // still persist the tokens through its own storage backend).
-    if let Err(e) = save_auth_state_to_provider(&auth_state, provider_id, providers_path) {
-        warn!("Could not save auth state to providers.json (non-fatal): {e}");
+    // Persist tokens via the storage backend (best-effort — on sandboxed
+    // platforms the default config directory may not be writable).
+    if let Err(e) = storage.save(&auth_state) {
+        warn!("Could not save auth state (non-fatal): {e}");
     }
 
     Ok(LoginResult { tokens, auth_state })
@@ -681,26 +724,19 @@ pub async fn refresh_tokens(auth_state: &CodexAuthState) -> Result<CodexAuthStat
 /// Manages Codex auth tokens and provides them to the OpenAI Responses client.
 ///
 /// Handles automatic token refresh when needed. Refreshed tokens are persisted
-/// back to providers.json.
+/// via the injected [`CodexTokenStorage`] backend.
 pub struct CodexAuthProvider {
     state: Arc<RwLock<CodexAuthState>>,
-    /// Provider ID in providers.json (e.g. "openai-chatgpt").
-    provider_id: String,
-    /// Optional custom path to providers.json.
-    providers_path: Option<PathBuf>,
+    /// Pluggable storage backend for persisting refreshed tokens.
+    storage: Arc<dyn CodexTokenStorage>,
 }
 
 impl CodexAuthProvider {
-    /// Create a new Codex auth provider from persisted state.
-    pub fn new(
-        state: CodexAuthState,
-        provider_id: String,
-        providers_path: Option<PathBuf>,
-    ) -> Self {
+    /// Create a new Codex auth provider with the given storage backend.
+    pub fn new(state: CodexAuthState, storage: Arc<dyn CodexTokenStorage>) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
-            provider_id,
-            providers_path,
+            storage,
         }
     }
 
@@ -720,11 +756,7 @@ impl CodexAuthProvider {
             let current_state = self.state.read().unwrap().clone();
             match refresh_tokens(&current_state).await {
                 Ok(new_state) => {
-                    save_auth_state_to_provider(
-                        &new_state,
-                        &self.provider_id,
-                        self.providers_path.as_deref(),
-                    )?;
+                    self.storage.save(&new_state)?;
                     let mut state = self.state.write().unwrap();
                     *state = new_state;
                     info!("Successfully refreshed Codex auth tokens");
@@ -798,9 +830,9 @@ pub struct CodexAuthStatus {
     pub needs_refresh: bool,
 }
 
-/// Get the current Codex auth status from providers.json.
-pub fn get_auth_status(provider_id: &str, providers_path: Option<&Path>) -> CodexAuthStatus {
-    match load_auth_state_from_provider(provider_id, providers_path) {
+/// Get the current Codex auth status from the given storage backend.
+pub fn get_auth_status(storage: &dyn CodexTokenStorage) -> CodexAuthStatus {
+    match storage.load() {
         Ok(Some(state)) => {
             let (email, plan_type) = extract_user_info_from_id_token(&state.tokens.id_token);
             CodexAuthStatus {
@@ -816,6 +848,18 @@ pub fn get_auth_status(provider_id: &str, providers_path: Option<&Path>) -> Code
             plan_type: None,
             needs_refresh: false,
         },
+    }
+}
+
+/// Build a [`CodexAuthStatus`] directly from a [`CodexAuthState`] value
+/// (without going through storage).
+pub fn get_auth_status_from_state(state: &CodexAuthState) -> CodexAuthStatus {
+    let (email, plan_type) = extract_user_info_from_id_token(&state.tokens.id_token);
+    CodexAuthStatus {
+        authenticated: true,
+        email,
+        plan_type,
+        needs_refresh: state.needs_refresh(),
     }
 }
 
@@ -858,14 +902,9 @@ pub fn extract_user_info_from_id_token(id_token: &str) -> (Option<String>, Optio
 pub fn create_codex_responses_client(
     auth_state: CodexAuthState,
     model: String,
-    provider_id: String,
-    providers_path: Option<PathBuf>,
+    storage: Arc<dyn CodexTokenStorage>,
 ) -> crate::openai_responses::OpenAIResponsesClient {
-    let auth_provider = Box::new(CodexAuthProvider::new(
-        auth_state,
-        provider_id,
-        providers_path,
-    ));
+    let auth_provider = Box::new(CodexAuthProvider::new(auth_state, storage));
     let request_customizer = Box::new(CodexRequestCustomizer);
 
     crate::openai_responses::OpenAIResponsesClient::with_customization(
@@ -884,14 +923,9 @@ pub fn create_codex_responses_client(
 pub fn create_codex_responses_ws_client(
     auth_state: CodexAuthState,
     model: String,
-    provider_id: String,
-    providers_path: Option<PathBuf>,
+    storage: Arc<dyn CodexTokenStorage>,
 ) -> crate::openai_responses_ws::OpenAIResponsesWsClient {
-    let auth_provider = Box::new(CodexAuthProvider::new(
-        auth_state,
-        provider_id,
-        providers_path,
-    ));
+    let auth_provider = Box::new(CodexAuthProvider::new(auth_state, storage));
     let request_customizer = Box::new(crate::openai_responses_ws::CodexWsRequestCustomizer);
 
     crate::openai_responses_ws::OpenAIResponsesWsClient::with_customization(

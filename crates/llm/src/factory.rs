@@ -630,11 +630,14 @@ async fn create_openai_responses_ws_client(
         let provider_id = find_provider_id_for_config(provider_config)
             .unwrap_or_else(|| crate::codex_auth::DEFAULT_PROVIDER_ID.to_string());
 
+        let storage: std::sync::Arc<dyn crate::codex_auth::CodexTokenStorage> = std::sync::Arc::new(
+            crate::codex_auth::ProvidersJsonTokenStorage::new(provider_id, None),
+        );
+
         let client = crate::codex_auth::create_codex_responses_ws_client(
             auth_state,
             model_config.id.clone(),
-            provider_id,
-            None,
+            storage,
         );
         let client = apply_custom_config(client, model_config);
         return Ok(Box::new(client));
