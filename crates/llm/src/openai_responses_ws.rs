@@ -492,9 +492,18 @@ impl OpenAIResponsesWsClient {
     }
 
     /// Ensure we have a live WebSocket connection, creating one if necessary.
+    ///
+    /// If a connection exists but the background reader task has already
+    /// exited (server closed the socket, TCP timeout, etc.) the stale
+    /// connection is dropped and a fresh one is established.
     async fn ensure_connection(&mut self) -> Result<()> {
-        if self.connection.is_some() {
-            return Ok(());
+        if let Some(conn) = self.connection.as_ref() {
+            if conn._reader_handle.is_finished() {
+                info!("WebSocket reader task has ended — connection is stale, reconnecting");
+                self.drop_connection();
+            } else {
+                return Ok(());
+            }
         }
 
         let url_str = self.ws_url()?;
@@ -1445,11 +1454,13 @@ impl LLMProvider for OpenAIResponsesWsClient {
                 Ok(response) => return Ok(response),
                 Err(e) => {
                     attempts += 1;
-                    let is_connection_error = e.to_string().contains("WebSocket connection")
-                        || e.to_string().contains("connection limit")
-                        || e.to_string().contains("idle timeout")
-                        || e.to_string().contains("closed by server")
-                        || e.to_string().contains("reader task ended");
+                    let err_msg = e.to_string();
+                    let is_connection_error = err_msg.contains("WebSocket connection")
+                        || err_msg.contains("connection limit")
+                        || err_msg.contains("idle timeout")
+                        || err_msg.contains("closed by server")
+                        || err_msg.contains("reader task ended")
+                        || err_msg.contains("Failed to send WebSocket");
 
                     if is_connection_error && attempts < max_retries {
                         warn!(
