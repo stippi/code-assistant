@@ -81,7 +81,12 @@ impl DefaultMessageConverter {
         Self
     }
 
-    /// Get cache marker positions based purely on message count
+    /// Get cache marker positions based on the stable prefix length.
+    ///
+    /// Messages at and after the first volatile message are excluded because they
+    /// may change or disappear between requests, which would invalidate the
+    /// provider-side cached prefix.
+    ///
     /// 0-4 messages: no cache markers
     /// 5-9 messages: marker at index 4
     /// 10-14 messages: markers at indices 4 and 9
@@ -89,11 +94,16 @@ impl DefaultMessageConverter {
     /// 20-24 messages: markers at indices 14 and 19
     /// etc.
     fn get_cache_marker_positions(&self, messages: &[Message]) -> Vec<usize> {
-        if messages.len() < 5 {
+        let stable_len = messages
+            .iter()
+            .position(|message| message.volatile)
+            .unwrap_or(messages.len());
+
+        if stable_len < 5 {
             return vec![];
         }
-        let remainder = messages.len() % 5;
-        let last_marker = messages.len() - remainder;
+        let remainder = stable_len % 5;
+        let last_marker = stable_len - remainder;
         if last_marker > 5 {
             vec![last_marker - 6, last_marker - 1]
         } else {
@@ -1460,6 +1470,46 @@ mod tests {
                 "{msg_count} messages: Should have cache markers at indices 14 and 19"
             );
         }
+    }
+
+    /// Test that volatile messages cap the cacheable history prefix.
+    #[test]
+    fn test_cache_markers_stop_before_first_volatile_message() {
+        let converter = DefaultMessageConverter::new();
+
+        fn count_message_cache_markers(result: &[AnthropicMessage]) -> Vec<usize> {
+            result
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, msg)| {
+                    msg.content
+                        .iter()
+                        .any(|block| block.cache_control.is_some())
+                        .then_some(idx)
+                })
+                .collect()
+        }
+
+        let mut messages: Vec<Message> = (0..18)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        messages[12].volatile = true;
+        let result = converter.convert_messages_with_cache(messages);
+        assert_eq!(
+            count_message_cache_markers(&result),
+            vec![4, 9],
+            "18 messages with first volatile at 12 should use markers for the 12-message stable prefix"
+        );
+
+        let mut messages: Vec<Message> = (0..18)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        messages[4].volatile = true;
+        let result = converter.convert_messages_with_cache(messages);
+        assert!(
+            count_message_cache_markers(&result).is_empty(),
+            "A volatile message before index 5 should suppress message-history cache markers"
+        );
     }
 
     /// Test cache markers with tool interactions

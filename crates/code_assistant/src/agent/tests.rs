@@ -1631,6 +1631,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
 
     let result_messages = agent.inject_naming_reminder_if_needed(messages.clone());
     assert_eq!(result_messages.len(), 1);
+    assert!(result_messages[0].volatile);
 
     // The message should now be structured with two ContentBlocks
     if let MessageContent::Structured(blocks) = &result_messages[0].content {
@@ -1671,6 +1672,8 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let result_messages =
         agent.inject_naming_reminder_if_needed(messages_with_tool_results.clone());
     assert_eq!(result_messages.len(), 3);
+    assert!(result_messages[0].volatile);
+    assert!(!result_messages[2].volatile);
 
     // The reminder should be added to the first user message (with text content), not the tool result message
     // The first message should now be structured with two ContentBlocks
@@ -1717,6 +1720,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
 
     let result_messages = agent.inject_naming_reminder_if_needed(mixed_message.clone());
     assert_eq!(result_messages.len(), 1);
+    assert!(result_messages[0].volatile);
 
     if let MessageContent::Structured(blocks) = &result_messages[0].content {
         assert_eq!(blocks.len(), 3); // Original text + tool result + reminder text
@@ -1746,6 +1750,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     agent.set_session_name("Test Session".to_string());
     let result_messages = agent.inject_naming_reminder_if_needed(messages);
     assert_eq!(result_messages.len(), 1);
+    assert!(!result_messages[0].volatile);
 
     // When session is already named, the message should remain unchanged (Text content)
     if let MessageContent::Text(text) = &result_messages[0].content {

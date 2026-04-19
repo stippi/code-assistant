@@ -73,6 +73,10 @@ impl Default for LLMRequest {
 pub struct Message {
     pub role: MessageRole,
     pub content: MessageContent,
+    /// Whether this message contains request-local content that should not be
+    /// considered part of a stable prompt-cache prefix.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub volatile: bool,
     /// Request ID for assistant messages (used for consistent tool ID generation)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<u64>,
@@ -89,11 +93,16 @@ impl Default for Message {
         Self {
             role: MessageRole::User,
             content: MessageContent::Text(String::new()),
+            volatile: false,
             request_id: None,
             usage: None,
             is_compaction_summary: false,
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -344,6 +353,11 @@ impl Message {
 
     pub fn with_usage(mut self, usage: Usage) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    pub fn with_volatile(mut self, volatile: bool) -> Self {
+        self.volatile = volatile;
         self
     }
 }

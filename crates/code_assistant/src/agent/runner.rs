@@ -1291,6 +1291,7 @@ impl Agent {
                         Message {
                             role: msg.role,
                             content: MessageContent::Text(text_content.trim().to_string()),
+                            volatile: msg.volatile,
                             request_id: msg.request_id,
                             usage: msg.usage.clone(),
                             ..Default::default()
@@ -1332,6 +1333,7 @@ impl Agent {
                     let reminder_text = "<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
 
                     trace!("Injecting session naming reminder to actual user message");
+                    msg.volatile = true;
 
                     match &mut msg.content {
                         MessageContent::Text(original_text) => {
