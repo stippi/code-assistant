@@ -1169,13 +1169,6 @@ impl Render for RootView {
             self.chat_sessions = chat_sessions.clone();
             self.current_session_id = current_session_id.clone();
 
-            // Populate plan_collapsed_sessions from metadata (for sessions not yet toggled in this run)
-            for meta in &chat_sessions {
-                self.plan_collapsed_sessions
-                    .entry(meta.id.clone())
-                    .or_insert(meta.plan_collapsed);
-            }
-
             let persisted_projects = cx
                 .try_global::<Gpui>()
                 .map(|g| g.persisted_projects.lock().unwrap().clone())
