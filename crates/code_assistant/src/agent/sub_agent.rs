@@ -51,6 +51,47 @@ impl AgentStatePersistence for NoOpStatePersistence {
         Ok(())
     }
 }
+/// Aggregated token usage for a sub-agent run.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SubAgentUsage {
+    /// Total input tokens across all LLM requests in the sub-agent run
+    pub input_tokens: u32,
+    /// Total output tokens across all LLM requests in the sub-agent run
+    pub output_tokens: u32,
+    /// Total cache creation input tokens
+    pub cache_creation_input_tokens: u32,
+    /// Total cache read input tokens
+    pub cache_read_input_tokens: u32,
+    /// The model's context token limit (if known)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_limit: Option<u32>,
+    /// Input tokens from the last LLM request (for context ratio computation)
+    #[serde(default)]
+    pub last_request_input_tokens: u32,
+    /// Cache read tokens from the last LLM request (for context ratio computation)
+    #[serde(default)]
+    pub last_request_cache_read_tokens: u32,
+}
+
+impl SubAgentUsage {
+    /// Compute the context usage ratio (0.0..=1.0) for the last LLM request.
+    ///
+    /// This mirrors how the parent agent computes usage: the *last* assistant
+    /// message's `input_tokens + cache_read_input_tokens` divided by the
+    /// model's context limit.
+    pub fn context_ratio(&self) -> Option<f32> {
+        let limit = self.context_limit?;
+        if limit == 0 {
+            return None;
+        }
+        let used = self.last_request_input_tokens + self.last_request_cache_read_tokens;
+        if used > 0 {
+            Some(used as f32 / limit as f32)
+        } else {
+            None
+        }
+    }
+}
 
 /// Result from a sub-agent run, containing both the answer and UI output
 #[derive(Debug, Clone)]
@@ -264,6 +305,10 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             return Err(anyhow::anyhow!("Cancelled by user"));
         }
 
+        // Collect token usage from the sub-agent's message history
+        let usage = compute_sub_agent_usage(agent.message_history(), &self.model_name);
+        sub_ui_adapter.set_usage(usage);
+
         // Set the final response in the adapter and get the complete JSON output
         // This preserves the tools list along with the final response for rendering
         sub_ui_adapter.set_response(last_answer.clone());
@@ -274,6 +319,35 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             ui_output: final_json,
         })
     }
+}
+
+/// Compute aggregated token usage from a sub-agent's message history.
+fn compute_sub_agent_usage(messages: &[Message], model_name: &str) -> SubAgentUsage {
+    let mut total = SubAgentUsage::default();
+
+    for message in messages {
+        if let Some(usage) = &message.usage {
+            total.input_tokens += usage.input_tokens;
+            total.output_tokens += usage.output_tokens;
+            total.cache_creation_input_tokens += usage.cache_creation_input_tokens;
+            total.cache_read_input_tokens += usage.cache_read_input_tokens;
+
+            // Track last assistant message's usage for context ratio
+            if matches!(message.role, llm::MessageRole::Assistant) {
+                total.last_request_input_tokens = usage.input_tokens;
+                total.last_request_cache_read_tokens = usage.cache_read_input_tokens;
+            }
+        }
+    }
+
+    // Resolve the model's context token limit
+    if let Ok(config_system) = llm::provider_config::ConfigurationSystem::load() {
+        if let Some(model) = config_system.get_model(model_name) {
+            total.context_limit = Some(model.context_token_limit);
+        }
+    }
+
+    total
 }
 
 fn extract_last_assistant_text(messages: &[Message]) -> Option<String> {
@@ -383,6 +457,9 @@ pub struct SubAgentOutput {
     /// Final response from the sub-agent (set when completed)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response: Option<String>,
+    /// Aggregated token usage from the sub-agent's LLM requests
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SubAgentUsage>,
 }
 
 impl SubAgentOutput {
@@ -393,6 +470,7 @@ impl SubAgentOutput {
             cancelled: None,
             error: None,
             response: None,
+            usage: None,
         }
     }
 
@@ -572,6 +650,11 @@ impl SubAgentUiAdapter {
         output.activity = Some(SubAgentActivity::Completed);
     }
 
+    fn set_usage(&self, usage: SubAgentUsage) {
+        let mut output = self.output.lock().unwrap();
+        output.usage = Some(usage);
+    }
+
     /// Get the final JSON output including response
     fn get_final_output(&self) -> String {
         let output = self.output.lock().unwrap();
@@ -607,6 +690,7 @@ impl UserInterface for SubAgentUiAdapter {
                 self.set_activity(SubAgentActivity::Streaming);
                 self.send_output_update().await;
             }
+
             UiEvent::StreamingStopped {
                 cancelled, error, ..
             } => {
@@ -667,7 +751,7 @@ impl UserInterface for SubAgentUiAdapter {
                 self.add_tool_parameter(tool_id, name, value);
             }
             _ => {
-                // Ignore other fragments (text, etc.)
+                // Ignore other fragments (thinking, images, etc.)
                 // They belong to the sub-agent's isolated transcript
             }
         }

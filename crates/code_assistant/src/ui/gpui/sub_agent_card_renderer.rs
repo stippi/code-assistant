@@ -10,6 +10,7 @@
 //! `ToolBlockRenderer`.
 
 use crate::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
+use crate::ui::gpui::context_indicator::ContextIndicator;
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::gpui::file_icons;
 use crate::ui::gpui::tool_block_renderers::{
@@ -132,8 +133,42 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                     .child("Sub-agent"),
             );
 
-        // Right: [status/spinner] [cancel] [✕] [chevron]
+        // Right: [context ring] [status/spinner] [cancel] [✕] [chevron]
         let mut header_right = div().flex().flex_row().items_center().gap_2();
+
+        // Context usage ring (when usage data is available)
+        if let Some(ratio) = parsed
+            .as_ref()
+            .and_then(|p| p.usage.as_ref().and_then(|u| u.context_ratio()))
+        {
+            let progress_color = if ratio >= 0.8 {
+                theme.warning
+            } else {
+                theme.muted_foreground
+            };
+            let scale = theme.font_size / px(16.0);
+            header_right = header_right.child(
+                div()
+                    .id(SharedString::from(format!("sa-ctx-{}", tool.id)))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(format!(
+                            "Sub-agent context: {:.0}%",
+                            ratio * 100.0
+                        ))
+                        .build(window, cx)
+                    })
+                    .child(
+                        ContextIndicator::new(ratio)
+                            .size(px(14.0 * scale))
+                            .stroke_width(px(2.0 * scale))
+                            .bg_color(theme.muted_foreground.opacity(0.25))
+                            .progress_color(progress_color),
+                    ),
+            );
+        }
 
         // Activity spinner in header (while running)
         if is_running {
