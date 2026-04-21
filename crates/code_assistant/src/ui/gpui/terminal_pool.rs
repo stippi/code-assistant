@@ -26,6 +26,10 @@ pub struct TerminalPool {
     tool_index: HashMap<(String, String), String>,
     /// Counter for generating unique terminal IDs
     next_id: usize,
+    /// Monotonic count of how many terminals have ever been inserted in
+    /// this process — distinct from `terminals.len()`, which decreases on
+    /// cleanup. Useful for spotting lifecycle imbalance in diag logs.
+    total_spawned: usize,
 }
 
 impl TerminalPool {
@@ -34,7 +38,15 @@ impl TerminalPool {
             terminals: HashMap::new(),
             tool_index: HashMap::new(),
             next_id: 0,
+            total_spawned: 0,
         }
+    }
+
+    /// Return `(active_count, total_spawned)` — the first is how many PTY
+    /// terminals are currently retained by the pool, the second how many
+    /// have ever been inserted since process start.
+    pub fn stats(&self) -> (usize, usize) {
+        (self.terminals.len(), self.total_spawned)
     }
 
     /// Access the global pool (creates it on first call).
@@ -47,6 +59,7 @@ impl TerminalPool {
     pub fn insert(&mut self, terminal: Entity<Terminal>, command: String) -> String {
         let id = format!("gpui-term-{}", self.next_id);
         self.next_id += 1;
+        self.total_spawned += 1;
         self.terminals
             .insert(id.clone(), TerminalEntry { terminal, command });
         id

@@ -174,6 +174,20 @@ impl Tool for ExecuteCommandTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
+        // Diag logging: snapshot session_id up-front so every log line in this
+        // call can correlate with the .diag.log file for the session.
+        let diag_session = context.session_id.clone();
+        let diag_tool_id = context.tool_id.clone();
+        if let Some(sid) = diag_session.as_deref() {
+            crate::session::diag::log(
+                sid,
+                format_args!(
+                    "ExecuteCommandTool::execute: entered tool_id={:?} project={} cmd={:?}",
+                    diag_tool_id, input.project, input.command_line
+                ),
+            );
+        }
+
         // Get explorer for the specified project
         let explorer = context
             .project_manager
@@ -241,8 +255,19 @@ impl Tool for ExecuteCommandTool {
         sandbox_request.writable_roots.push(project_root.clone());
         sandbox_request.bypass_sandbox = bypass_sandbox;
 
+        if let Some(sid) = diag_session.as_deref() {
+            crate::session::diag::log(
+                sid,
+                format_args!(
+                    "ExecuteCommandTool::execute: calling execute_streaming tool_id={:?} bypass_sandbox={}",
+                    diag_tool_id, bypass_sandbox
+                ),
+            );
+        }
+
         // Execute the command using streaming
-        let result = match (context.ui, &context.tool_id) {
+        let streaming_start = std::time::Instant::now();
+        let streaming_result = match (context.ui, &context.tool_id) {
             (Some(ui), Some(tool_id)) => {
                 // Create streaming callback for UI output
                 let callback = ToolOutputStreamer {
@@ -258,7 +283,7 @@ impl Tool for ExecuteCommandTool {
                         Some(&callback),
                         Some(&sandbox_request),
                     )
-                    .await?
+                    .await
             }
             _ => {
                 // No UI available, use regular execution
@@ -270,9 +295,35 @@ impl Tool for ExecuteCommandTool {
                         None,
                         Some(&sandbox_request),
                     )
-                    .await?
+                    .await
             }
         };
+
+        if let Some(sid) = diag_session.as_deref() {
+            let elapsed = streaming_start.elapsed();
+            match &streaming_result {
+                Ok(out) => crate::session::diag::log(
+                    sid,
+                    format_args!(
+                        "ExecuteCommandTool::execute: execute_streaming returned Ok success={} output_bytes={} elapsed_ms={} tool_id={:?}",
+                        out.success,
+                        out.output.len(),
+                        elapsed.as_millis(),
+                        diag_tool_id
+                    ),
+                ),
+                Err(e) => crate::session::diag::log(
+                    sid,
+                    format_args!(
+                        "ExecuteCommandTool::execute: execute_streaming returned Err elapsed_ms={} tool_id={:?} err={e}",
+                        elapsed.as_millis(),
+                        diag_tool_id
+                    ),
+                ),
+            }
+        }
+
+        let result = streaming_result?;
 
         Ok(ExecuteCommandOutput {
             project: input.project.clone(),

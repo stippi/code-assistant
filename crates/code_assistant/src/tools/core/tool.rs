@@ -20,11 +20,35 @@ pub struct ToolContext<'a> {
     pub ui: Option<&'a dyn crate::ui::UserInterface>,
     /// Optional current tool ID for streaming output
     pub tool_id: Option<String>,
+    /// Optional session ID used only for diagnostic logging — lets tools
+    /// correlate log lines with the session persistence file. Never affects
+    /// tool behavior; leave `None` when the diag log is not relevant
+    /// (MCP, tests).
+    pub session_id: Option<String>,
     /// Optional permission handler for potentially sensitive operations
     pub permission_handler: Option<&'a dyn PermissionMediator>,
 
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<&'a dyn crate::agent::SubAgentRunner>,
+}
+
+#[cfg(test)]
+impl<'a> ToolContext<'a> {
+    pub fn new(
+        project_manager: &'a dyn crate::config::ProjectManager,
+        command_executor: &'a dyn CommandExecutor,
+    ) -> Self {
+        ToolContext {
+            project_manager,
+            command_executor,
+            plan: None,
+            ui: None,
+            tool_id: None,
+            session_id: None,
+            permission_handler: None,
+            sub_agent_runner: None,
+        }
+    }
 }
 
 /// Core trait for tools, defining the execution interface

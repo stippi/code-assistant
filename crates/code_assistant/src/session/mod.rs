@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 // New session management architecture
+pub mod diag;
 pub mod instance;
 pub mod manager;
 

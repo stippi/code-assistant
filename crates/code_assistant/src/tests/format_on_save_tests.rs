@@ -191,15 +191,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        plan: None,
-        ui: None,
-        tool_id: None,
-        permission_handler: None,
-        sub_agent_runner: None,
-    };
+    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
 
     // Test editing: search is formatted (matches file), replacement is unformatted
     let mut input = EditInput {
@@ -265,15 +257,7 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        plan: None,
-        ui: None,
-        tool_id: None,
-        permission_handler: None,
-        sub_agent_runner: None,
-    };
+    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
 
     // Test writing a Rust file
     let mut input = WriteFileInput {
@@ -338,15 +322,7 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        plan: None,
-        ui: None,
-        tool_id: None,
-        permission_handler: None,
-        sub_agent_runner: None,
-    };
+    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
 
     // Diff has two SEARCH/REPLACE blocks; replacements are unformatted (missing spaces around '=')
     let mut input = ReplaceInFileInput {
@@ -413,15 +389,7 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        plan: None,
-        ui: None,
-        tool_id: None,
-        permission_handler: None,
-        sub_agent_runner: None,
-    };
+    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
 
     // Test editing a .txt file (should not be formatted)
     let mut input = EditInput {
@@ -490,15 +458,7 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        plan: None,
-        ui: None,
-        tool_id: None,
-        permission_handler: None,
-        sub_agent_runner: None,
-    };
+    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
 
     // Test editing JS file
     let mut js_input = EditInput {
@@ -587,15 +547,7 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        plan: None,
-        ui: None,
-        tool_id: None,
-        permission_handler: None,
-        sub_agent_runner: None,
-    };
+    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
 
     let tool = EditTool;
 
@@ -677,15 +629,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        plan: None,
-        ui: None,
-        tool_id: None,
-        permission_handler: None,
-        sub_agent_runner: None,
-    };
+    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
 
     // Test that the tool handles potential conflicts gracefully
     let mut input = EditInput {
