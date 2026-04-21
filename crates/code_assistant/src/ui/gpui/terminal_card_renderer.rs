@@ -497,10 +497,10 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                     .bg(theme_colors.background)
                     .child(view)
             } else {
-                // Static output — plain monospace text (no display-only terminal).
-                // This avoids resize/reflow instability that caused flickering
-                // when using a terminal emulator for static content.
-                render_static_output(output, &theme_colors, theme)
+                // Static output — monospace text with optional ANSI colors.
+                // Uses styled data when available (captured from the live terminal),
+                // falls back to plain text for restored sessions.
+                render_static_output(output, tool.styled_output.as_ref(), &theme_colors, theme)
             };
 
             let body_inner = div()
@@ -623,11 +623,94 @@ impl TerminalCardRenderer {
 /// Maximum lines to show in static output before truncating.
 const MAX_STATIC_OUTPUT_LINES: usize = 50;
 
-/// Render command output as static monospace text.
+/// Render command output as static monospace text with optional ANSI colors.
 ///
 /// Used when no live PTY terminal exists (session restore, pool cleanup).
-/// Plain text avoids the resize/reflow instability of display-only terminals.
+/// When `styled_lines` is available, renders colored spans matching the
+/// live terminal output. Falls back to plain text otherwise.
 fn render_static_output(
+    output: &str,
+    styled_lines: Option<&Vec<terminal::StyledLine>>,
+    theme_colors: &TerminalThemeColors,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::Div {
+    if let Some(styled) = styled_lines {
+        render_styled_output(styled, theme_colors, theme)
+    } else {
+        render_plain_output(output, theme_colors, theme)
+    }
+}
+
+/// Render styled output with ANSI colors preserved from the terminal emulator.
+fn render_styled_output(
+    styled_lines: &[terminal::StyledLine],
+    theme_colors: &TerminalThemeColors,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::Div {
+    let truncated = styled_lines.len() > MAX_STATIC_OUTPUT_LINES;
+    let visible_lines = if truncated {
+        &styled_lines[..MAX_STATIC_OUTPUT_LINES]
+    } else {
+        styled_lines
+    };
+
+    let mut container = div()
+        .w_full()
+        .px_3()
+        .py_1()
+        .bg(theme_colors.background)
+        .text_size(rems(0.8125))
+        .font_family("Menlo")
+        .text_color(theme_colors.foreground)
+        .overflow_hidden();
+
+    for line in visible_lines {
+        if line.spans.is_empty() {
+            // Empty line — use non-breaking space to maintain line height
+            container = container.child(div().w_full().child("\u{00a0}".to_string()));
+        } else {
+            // Build a row of colored spans
+            let mut row = div().w_full().flex().flex_row();
+            for span in &line.spans {
+                let fg_color = terminal_view::convert_color(&span.fg, theme_colors);
+
+                let mut span_el = div().text_color(fg_color).child(span.text.clone());
+                if span.bold {
+                    span_el = span_el.font_weight(gpui::FontWeight::BOLD);
+                }
+                if span.italic {
+                    span_el = span_el.italic();
+                }
+                if span.underline {
+                    span_el = span_el.underline();
+                }
+                if span.dim {
+                    span_el = span_el.opacity(0.7);
+                }
+                row = row.child(span_el);
+            }
+            container = container.child(row);
+        }
+    }
+
+    if truncated {
+        container = container.child(
+            div()
+                .text_size(rems(0.6875))
+                .text_color(theme.muted_foreground.opacity(0.6))
+                .pt_1()
+                .child(format!(
+                    "… {} more lines",
+                    styled_lines.len() - MAX_STATIC_OUTPUT_LINES
+                )),
+        );
+    }
+
+    container
+}
+
+/// Render plain text output (fallback when styled data is not available).
+fn render_plain_output(
     output: &str,
     theme_colors: &TerminalThemeColors,
     theme: &gpui_component::theme::Theme,

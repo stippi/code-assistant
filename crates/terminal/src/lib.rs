@@ -337,6 +337,133 @@ impl Terminal {
         term.bounds_to_string(start, end)
     }
 
+    /// Get the terminal content as styled lines, preserving ANSI color information.
+    ///
+    /// Each line contains a list of spans, where each span has text and a foreground
+    /// color from the terminal emulator. This allows static rendering to preserve
+    /// the colored output that was visible in the live terminal.
+    pub fn get_styled_content(&self) -> Vec<StyledLine> {
+        use alacritty_terminal::grid::Dimensions;
+
+        let term = self.term.lock_unfair();
+        let mut lines: Vec<StyledLine> = Vec::new();
+        let mut current_line_spans: Vec<StyledSpan> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_fg = alacritty_terminal::vte::ansi::Color::Named(
+            alacritty_terminal::vte::ansi::NamedColor::Foreground,
+        );
+        let mut current_flags = alacritty_terminal::term::cell::Flags::empty();
+        let mut current_raw_line: Option<i32> = None;
+
+        // Iterate over all cells from topmost (scrollback) to bottommost
+        let top = term.topmost_line();
+        let bottom = term.bottommost_line();
+        let last_col = term.last_column();
+
+        for line_idx in top.0..=bottom.0 {
+            let line = AlacLine(line_idx);
+
+            // If we're starting a new line, flush the previous one
+            if current_raw_line.is_some() && current_raw_line != Some(line_idx) {
+                // Flush current span
+                if !current_text.is_empty() {
+                    current_line_spans.push(StyledSpan {
+                        text: std::mem::take(&mut current_text),
+                        fg: current_fg,
+                        bold: current_flags.contains(alacritty_terminal::term::cell::Flags::BOLD),
+                        italic: current_flags
+                            .contains(alacritty_terminal::term::cell::Flags::ITALIC),
+                        underline: current_flags
+                            .contains(alacritty_terminal::term::cell::Flags::UNDERLINE),
+                        dim: current_flags.contains(alacritty_terminal::term::cell::Flags::DIM),
+                    });
+                }
+                // Trim trailing whitespace spans from the line
+                let trimmed = trim_trailing_whitespace(std::mem::take(&mut current_line_spans));
+                lines.push(StyledLine { spans: trimmed });
+            }
+            current_raw_line = Some(line_idx);
+
+            for col_idx in 0..=last_col.0 {
+                let col = Column(col_idx);
+                let point = AlacPoint::new(line, col);
+                let cell = &term.grid()[point];
+
+                // Skip wide char spacers
+                if cell
+                    .flags
+                    .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+
+                let mut fg = cell.fg;
+                let bg = cell.bg;
+
+                // INVERSE flag swaps fg/bg
+                if cell
+                    .flags
+                    .contains(alacritty_terminal::term::cell::Flags::INVERSE)
+                {
+                    fg = bg;
+                }
+
+                let style_flags = cell.flags
+                    & (alacritty_terminal::term::cell::Flags::BOLD
+                        | alacritty_terminal::term::cell::Flags::ITALIC
+                        | alacritty_terminal::term::cell::Flags::UNDERLINE
+                        | alacritty_terminal::term::cell::Flags::DIM);
+
+                // If the color or style flags changed, start a new span
+                if fg != current_fg || style_flags != current_flags {
+                    if !current_text.is_empty() {
+                        current_line_spans.push(StyledSpan {
+                            text: std::mem::take(&mut current_text),
+                            fg: current_fg,
+                            bold: current_flags
+                                .contains(alacritty_terminal::term::cell::Flags::BOLD),
+                            italic: current_flags
+                                .contains(alacritty_terminal::term::cell::Flags::ITALIC),
+                            underline: current_flags
+                                .contains(alacritty_terminal::term::cell::Flags::UNDERLINE),
+                            dim: current_flags.contains(alacritty_terminal::term::cell::Flags::DIM),
+                        });
+                    }
+                    current_fg = fg;
+                    current_flags = style_flags;
+                }
+
+                current_text.push(cell.c);
+            }
+        }
+
+        // Flush remaining span and line
+        if !current_text.is_empty() {
+            current_line_spans.push(StyledSpan {
+                text: std::mem::take(&mut current_text),
+                fg: current_fg,
+                bold: current_flags.contains(alacritty_terminal::term::cell::Flags::BOLD),
+                italic: current_flags.contains(alacritty_terminal::term::cell::Flags::ITALIC),
+                underline: current_flags.contains(alacritty_terminal::term::cell::Flags::UNDERLINE),
+                dim: current_flags.contains(alacritty_terminal::term::cell::Flags::DIM),
+            });
+        }
+        if !current_line_spans.is_empty() || current_raw_line.is_some() {
+            let trimmed = trim_trailing_whitespace(std::mem::take(&mut current_line_spans));
+            lines.push(StyledLine { spans: trimmed });
+        }
+
+        // Trim trailing empty lines
+        while lines
+            .last()
+            .is_some_and(|l| l.spans.is_empty() || l.spans.iter().all(|s| s.text.trim().is_empty()))
+        {
+            lines.pop();
+        }
+
+        lines
+    }
+
     // -- Mutations --
 
     /// Queue a resize event. The actual resize happens during `sync()`.
@@ -708,6 +835,64 @@ fn shell_command_flag() -> &'static str {
     {
         "/C"
     }
+}
+
+// ---------------------------------------------------------------------------
+// StyledLine / StyledSpan — styled terminal output for static rendering
+// ---------------------------------------------------------------------------
+
+/// A line of styled terminal output, composed of one or more spans.
+#[derive(Debug, Clone)]
+pub struct StyledLine {
+    pub spans: Vec<StyledSpan>,
+}
+
+impl StyledLine {
+    /// Get the plain text of this line (no color info).
+    pub fn plain_text(&self) -> String {
+        self.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+}
+
+/// A span of text with a single foreground color and style flags.
+///
+/// Uses the raw alacritty `Color` enum so that the consumer (e.g. terminal_view)
+/// can map it to theme colors at render time.
+#[derive(Debug, Clone)]
+pub struct StyledSpan {
+    pub text: String,
+    pub fg: alacritty_terminal::vte::ansi::Color,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub dim: bool,
+}
+
+impl StyledSpan {
+    /// Whether this span uses the default foreground color.
+    pub fn is_default_fg(&self) -> bool {
+        matches!(
+            self.fg,
+            alacritty_terminal::vte::ansi::Color::Named(
+                alacritty_terminal::vte::ansi::NamedColor::Foreground
+            )
+        )
+    }
+}
+
+/// Trim trailing whitespace-only spans from a line.
+fn trim_trailing_whitespace(mut spans: Vec<StyledSpan>) -> Vec<StyledSpan> {
+    // Trim trailing whitespace from the last span
+    while let Some(last) = spans.last_mut() {
+        let trimmed = last.text.trim_end();
+        if trimmed.is_empty() {
+            spans.pop();
+        } else {
+            last.text = trimmed.to_string();
+            break;
+        }
+    }
+    spans
 }
 
 // ---------------------------------------------------------------------------

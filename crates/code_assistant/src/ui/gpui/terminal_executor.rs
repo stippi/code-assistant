@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::FutureExt;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, warn};
 
@@ -15,7 +16,49 @@ use super::terminal_card_renderer::evict_cached_terminal_view_for_tool;
 use super::terminal_pool;
 use crate::session::diag;
 use gpui::{AppContext as _, Entity};
-use terminal::Terminal;
+use terminal::{StyledLine, Terminal};
+
+// ---------------------------------------------------------------------------
+// Styled output cache — preserves ANSI colors for static terminal cards
+// ---------------------------------------------------------------------------
+
+/// Cache of styled terminal output captured just before terminal cleanup.
+/// Keyed by tool_id, this allows the terminal card renderer to display
+/// colored output even after the live PTY terminal has been destroyed.
+static STYLED_OUTPUT_CACHE: OnceLock<Mutex<HashMap<String, Vec<StyledLine>>>> = OnceLock::new();
+
+fn styled_output_cache() -> &'static Mutex<HashMap<String, Vec<StyledLine>>> {
+    STYLED_OUTPUT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Maximum entries in the styled output cache. If this is exceeded, the oldest
+/// entries are evicted. This prevents unbounded memory growth if
+/// `take_cached_styled_output` is never called for some tool_ids.
+const MAX_STYLED_CACHE_ENTRIES: usize = 32;
+
+/// Store styled output for a tool_id. Called just before terminal cleanup.
+fn cache_styled_output(tool_id: &str, styled_lines: Vec<StyledLine>) {
+    if let Ok(mut cache) = styled_output_cache().lock() {
+        // Evict old entries if the cache is too large
+        while cache.len() >= MAX_STYLED_CACHE_ENTRIES {
+            if let Some(key) = cache.keys().next().cloned() {
+                cache.remove(&key);
+            } else {
+                break;
+            }
+        }
+        cache.insert(tool_id.to_string(), styled_lines);
+    }
+}
+
+/// Retrieve and remove cached styled output for a tool_id.
+/// Called by the terminal card renderer when transitioning to static display.
+pub fn take_cached_styled_output(tool_id: &str) -> Option<Vec<StyledLine>> {
+    styled_output_cache()
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.remove(tool_id))
+}
 
 /// Capture a `(pool_active, pool_total, open_fds)` snapshot for diag logs.
 /// Lock is taken non-blocking (try_lock) so diag never contends with hot
@@ -552,10 +595,17 @@ async fn run_command(
                     ),
                 );
 
-                // Child exited. Read final output.
-                let output = cx.update(|cx| {
-                    terminal.read(cx).get_content_text()
+
+                // Child exited. Read final output and styled content.
+                let (output, styled) = cx.update(|cx| {
+                    let t = terminal.read(cx);
+                    (t.get_content_text(), t.get_styled_content())
                 })?;
+
+                // Cache styled output for the terminal card renderer
+                if let Some(tid) = &tool_id {
+                    cache_styled_output(tid, styled);
+                }
 
                 // Send any remaining output chunk.
                 let total_chars = output.chars().count();
@@ -592,6 +642,7 @@ async fn run_command(
                     seen_chars = total_chars;
                 }
 
+
                 // Polling fallback: if the terminal has exited but we never
                 // received ChildExit via subscription (can happen due to event
                 // ordering in GPUI), detect it here and return.
@@ -604,6 +655,14 @@ async fn run_command(
                             tool_id, started_at.elapsed()
                         ),
                     );
+
+                    // Cache styled output before terminal cleanup
+                    if let Some(tid) = &tool_id {
+                        if let Ok(styled) = cx.update(|cx| terminal.read(cx).get_styled_content()) {
+                            cache_styled_output(tid, styled);
+                        }
+                    }
+
                     let success = exit_status
                         .flatten()
                         .map(|c| c == 0)
@@ -615,6 +674,7 @@ async fn run_command(
             // This catches the case where ChildExit is emitted but the
             // subscription callback or wakeup events are not delivered.
             // (The timeout is enforced at the top of the loop.)
+
             _ = poll_timer.fuse() => {
                 let (exited, exit_status, output) = cx.update(|cx| {
                     let t = terminal.read(cx);
@@ -630,6 +690,14 @@ async fn run_command(
                             tool_id, started_at.elapsed()
                         ),
                     );
+
+                    // Cache styled output before terminal cleanup
+                    if let Some(tid) = &tool_id {
+                        if let Ok(styled) = cx.update(|cx| terminal.read(cx).get_styled_content()) {
+                            cache_styled_output(tid, styled);
+                        }
+                    }
+
                     let total_chars = output.chars().count();
                     if total_chars > seen_chars {
                         let chunk: String = output.chars().skip(seen_chars).collect();

@@ -446,6 +446,7 @@ impl MessageContainer {
             status: ToolStatus::Pending,
             status_message: None,
             output: None,
+            styled_output: None,
             state: initial_state,
             duration_seconds,
         });
@@ -464,12 +465,15 @@ impl MessageContainer {
     }
 
     // Update the status of a tool block
+    #[allow(clippy::too_many_arguments)]
     pub fn update_tool_status(
         &self,
         tool_id: &str,
+
         status: ToolStatus,
         message: Option<String>,
         output: Option<String>,
+        styled_output: Option<Vec<terminal::StyledLine>>,
         duration_seconds: Option<f64>,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -488,6 +492,11 @@ impl MessageContainer {
                         // AppendToolOutput is used for streaming append behavior
                         if let Some(ref new_output) = output {
                             tool.output = Some(new_output.clone());
+                        }
+
+                        // Update styled output if provided (terminal color data)
+                        if styled_output.is_some() {
+                            tool.styled_output = styled_output.clone();
                         }
 
                         // Store duration from ContentBlock timestamps (stable across restores)
@@ -749,6 +758,7 @@ impl MessageContainer {
                 status: ToolStatus::Pending,
                 status_message: None,
                 output: None,
+                styled_output: None,
                 state: initial_state,
                 duration_seconds: None,
             };
@@ -2103,6 +2113,9 @@ pub struct ToolUseBlock {
     pub status: ToolStatus,
     pub status_message: Option<String>,
     pub output: Option<String>,
+    /// Styled terminal output with ANSI color information preserved.
+    /// Used by terminal card renderer for colored static output.
+    pub styled_output: Option<Vec<terminal::StyledLine>>,
     pub state: ToolBlockState, // Only collapsed/expanded, no generating
     /// Execution duration in seconds, computed from persisted ContentBlock timestamps.
     /// Stable across session restores (unlike Instant-based measurement).

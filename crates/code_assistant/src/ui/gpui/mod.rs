@@ -786,19 +786,26 @@ impl Gpui {
                 }
                 self.auto_scroll_if_following(cx);
             }
+
             UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
                 message,
                 output,
+                styled_output,
                 duration_seconds,
             } => {
+                // If the event doesn't carry styled output, check the cache
+                // (populated by terminal_executor just before PTY cleanup).
+                let styled_output = styled_output
+                    .or_else(|| terminal_executor::take_cached_styled_output(&tool_id));
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.update_tool_status(
                         &tool_id,
                         status,
                         message.clone(),
                         output.clone(),
+                        styled_output.clone(),
                         duration_seconds,
                         cx,
                     );
@@ -955,6 +962,7 @@ impl Gpui {
                             tool_result.status,
                             tool_result.message.clone(),
                             tool_result.output.clone(),
+                            tool_result.styled_output.clone(),
                             tool_result.duration_seconds,
                             cx,
                         );
@@ -1548,6 +1556,7 @@ impl Gpui {
                             tool_result.status,
                             tool_result.message.clone(),
                             tool_result.output.clone(),
+                            tool_result.styled_output.clone(),
                             tool_result.duration_seconds,
                             cx,
                         );

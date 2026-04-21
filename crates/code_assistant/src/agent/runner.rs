@@ -455,6 +455,7 @@ impl Agent {
                                     status: crate::ui::ToolStatus::Error,
                                     message: Some("Prompt Too Long".to_string()),
                                     output: Some(error_message.clone()),
+                                    styled_output: None,
                                     duration_seconds: None,
                                 })
                                 .await;
@@ -999,9 +1000,11 @@ impl Agent {
         let _ = ui
             .send_event(UiEvent::UpdateToolStatus {
                 tool_id: tool_id.to_string(),
+
                 status: crate::ui::ToolStatus::Running,
                 message: None,
                 output: None,
+                styled_output: None,
                 duration_seconds: None,
             })
             .await;
@@ -1015,9 +1018,11 @@ impl Agent {
                 let _ = ui
                     .send_event(UiEvent::UpdateToolStatus {
                         tool_id: tool_id.to_string(),
+
                         status: crate::ui::ToolStatus::Error,
                         message: Some(error_msg.clone()),
                         output: Some(error_msg.clone()),
+                        styled_output: None,
                         duration_seconds: None,
                     })
                     .await;
@@ -1062,9 +1067,11 @@ impl Agent {
                 let _ = ui
                     .send_event(UiEvent::UpdateToolStatus {
                         tool_id: tool_id.to_string(),
+
                         status,
                         message: Some(status_msg),
                         output: Some(ui_output),
+                        styled_output: None,
                         duration_seconds: None,
                     })
                     .await;
@@ -1087,9 +1094,11 @@ impl Agent {
                 let _ = ui
                     .send_event(UiEvent::UpdateToolStatus {
                         tool_id: tool_id.to_string(),
+
                         status: crate::ui::ToolStatus::Error,
                         message: Some(error_msg.clone()),
                         output: Some(error_msg.clone()),
+                        styled_output: None,
                         duration_seconds: None,
                     })
                     .await;
@@ -2140,9 +2149,11 @@ impl Agent {
             self.ui
                 .send_event(UiEvent::UpdateToolStatus {
                     tool_id: tool_request.id.clone(),
+
                     status: crate::ui::ToolStatus::Running,
                     message: None,
                     output: None,
+                    styled_output: None,
                     duration_seconds: None,
                 })
                 .await?;
@@ -2239,9 +2250,11 @@ impl Agent {
                     self.ui
                         .send_event(UiEvent::UpdateToolStatus {
                             tool_id: tool_request.id.clone(),
+
                             status,
                             message: Some(short_output),
                             output: Some(ui_output),
+                            styled_output: None,
                             duration_seconds: execution_duration,
                         })
                         .await?;
@@ -2321,9 +2334,11 @@ impl Agent {
                     self.ui
                         .send_event(UiEvent::UpdateToolStatus {
                             tool_id: tool_request.id.clone(),
+
                             status: crate::ui::ToolStatus::Error,
                             message: Some(error_text.clone()),
                             output: Some(error_text.clone()),
+                            styled_output: None,
                             duration_seconds: execution_duration,
                         })
                         .await?;

@@ -513,6 +513,7 @@ impl SessionInstance {
                 status,
                 message: Some(short_output),
                 output: Some(output),
+                styled_output: None, // Not available for restored sessions
                 duration_seconds,
             });
         }
@@ -697,11 +698,13 @@ impl UserInterface for ProxyUI {
         } else {
             // Session is disconnected — buffer UpdateToolStatus events so that
             // the latest state per tool can be replayed on reconnect.
+
             if let UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
                 message,
                 output,
+                styled_output,
                 duration_seconds,
             } = event
             {
@@ -713,6 +716,7 @@ impl UserInterface for ProxyUI {
                             status,
                             message,
                             output,
+                            styled_output,
                             duration_seconds,
                         },
                     );

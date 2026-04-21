@@ -24,6 +24,8 @@ pub struct ToolResultData {
     pub status: ToolStatus,
     pub message: Option<String>,
     pub output: Option<String>,
+    /// Styled terminal output with ANSI color information preserved.
+    pub styled_output: Option<Vec<terminal::StyledLine>>,
     /// Duration of the tool execution in seconds, computed from persisted ContentBlock timestamps.
     pub duration_seconds: Option<f64>,
 }
@@ -66,6 +68,8 @@ pub enum UiEvent {
         status: ToolStatus,
         message: Option<String>,
         output: Option<String>,
+        /// Styled terminal output with ANSI color information preserved.
+        styled_output: Option<Vec<terminal::StyledLine>>,
         /// Execution duration in seconds, set from ContentBlock timestamps on completion.
         duration_seconds: Option<f64>,
     },

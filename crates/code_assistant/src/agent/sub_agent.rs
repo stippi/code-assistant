@@ -535,6 +535,7 @@ impl SubAgentUiAdapter {
                 status: ToolStatus::Running,
                 message: Some("Sub-agent running".to_string()),
                 output: Some(json),
+                styled_output: None,
                 duration_seconds: None,
             })
             .await;
