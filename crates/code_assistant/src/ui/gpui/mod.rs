@@ -128,6 +128,10 @@ pub struct Gpui {
 
     // Debounce task for persisting per-session UI state files
     ui_state_save_task: Arc<Mutex<Option<gpui::Task<()>>>>,
+
+    /// Project names that exist in projects.json (i.e. first-class projects).
+    /// Used by the sidebar to decide whether to show a "persist" icon.
+    persisted_projects: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// State for a pending message edit (for branching)
@@ -421,6 +425,15 @@ impl Gpui {
 
             // Debounce task for UI state persistence
             ui_state_save_task: Arc::new(Mutex::new(None)),
+
+            // Load the set of persisted project names from projects.json
+            persisted_projects: Arc::new(Mutex::new(
+                crate::config::load_projects()
+                    .unwrap_or_default()
+                    .keys()
+                    .cloned()
+                    .collect(),
+            )),
         }
     }
 
@@ -1137,7 +1150,9 @@ impl Gpui {
                 }
 
                 // Update the chat sidebar entity specifically
+                let persisted = self.persisted_projects.lock().unwrap().clone();
                 self.update_chat_sidebar(cx, |sidebar, cx| {
+                    sidebar.set_persisted_projects(persisted);
                     // Get updated sessions list
                     let updated_sessions = self.chat_sessions.lock().unwrap().clone();
                     sidebar.update_sessions(updated_sessions, cx);
@@ -2238,6 +2253,14 @@ impl Gpui {
                     let _ = sender.try_send(BackendEvent::ListSessions);
                     let _ = sender.try_send(BackendEvent::LoadSession { session_id });
                 }
+            }
+            BackendResponse::ProjectPersisted { project_name } => {
+                info!("Project '{}' persisted to projects.json", project_name);
+                // Update the set of persisted projects so the sidebar can
+                // remove the "pin" icon for this project.
+                self.persisted_projects.lock().unwrap().insert(project_name);
+                // Trigger a re-render so the sidebar picks up the change.
+                cx.refresh().expect("Failed to refresh windows");
             }
         }
     }

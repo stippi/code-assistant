@@ -329,6 +329,8 @@ pub enum ChatSidebarEvent {
     },
     /// User clicked the "+" button in the sidebar header to add a new project
     AddProjectRequested,
+    /// User clicked the "pin" icon on a temporary project header to persist it
+    PersistProjectRequested { project_name: String },
 }
 
 /// Main chat sidebar component — groups sessions by project.
@@ -337,6 +339,9 @@ pub struct ChatSidebar {
     groups: Vec<ProjectGroup>,
     /// Preserved UI state per project: (is_expanded, show_all)
     group_ui_state: HashMap<String, (bool, bool)>,
+    /// Project names that are persisted in projects.json.
+    /// Projects not in this set are "temporary" and get a pin icon.
+    persisted_projects: std::collections::HashSet<String>,
 
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
@@ -349,6 +354,7 @@ impl ChatSidebar {
         Self {
             groups: Vec::new(),
             group_ui_state: HashMap::new(),
+            persisted_projects: std::collections::HashSet::new(),
 
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
@@ -480,6 +486,10 @@ impl ChatSidebar {
         cx.notify();
     }
 
+    pub fn set_persisted_projects(&mut self, projects: std::collections::HashSet<String>) {
+        self.persisted_projects = projects;
+    }
+
     fn on_add_project_click(
         &mut self,
         _: &ClickEvent,
@@ -531,6 +541,8 @@ impl ChatSidebar {
         let is_expanded = group.is_expanded;
         let is_hovered = group.is_hovered;
         let project_for_new = project_name.clone();
+        let is_temporary =
+            !self.persisted_projects.contains(&project_name) && project_name != "(no project)";
 
         let folder_icon = if is_expanded {
             "icons/file_icons/folder_open.svg"
@@ -588,6 +600,46 @@ impl ChatSidebar {
                     .text_color(cx.theme().foreground)
                     .child(SharedString::from(project_name)),
             )
+            // Pin button for temporary projects (persist to projects.json)
+            .when(is_temporary, |el| {
+                let project_for_pin = group.name.clone();
+                el.child(
+                    div()
+                        .id(SharedString::from(format!("pin-project-{}", group_idx)))
+                        .flex_none()
+                        .size(rems(1.25))
+                        .rounded_sm()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .when(is_hovered, |el| el.hover(|s| s.bg(cx.theme().muted)))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(
+                                "Temporary project — save to make it a first-class project \
+                                 that can be referenced by tool calls in other sessions",
+                            )
+                            .build(window, cx)
+                        })
+                        .child(
+                            gpui::svg()
+                                .size(rems(0.75))
+                                .path("icons/pin.svg")
+                                .text_color(if is_hovered {
+                                    cx.theme().muted_foreground
+                                } else {
+                                    cx.theme().transparent
+                                }),
+                        )
+                        .on_click(cx.listener(move |_this, _, _, cx| {
+                            cx.stop_propagation();
+                            debug!("Persist project: {}", project_for_pin);
+                            cx.emit(ChatSidebarEvent::PersistProjectRequested {
+                                project_name: project_for_pin.clone(),
+                            });
+                        })),
+                )
+            })
             // New session button (always present but invisible when not hovered,
             // so it doesn't change layout)
             .child(

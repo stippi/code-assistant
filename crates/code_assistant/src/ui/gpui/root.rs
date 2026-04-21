@@ -649,6 +649,12 @@ impl RootView {
                         initial_project: initial_project.clone(),
                     });
                 }
+
+                ChatSidebarEvent::PersistProjectRequested { project_name } => {
+                    let _ = sender.try_send(BackendEvent::PersistProject {
+                        project_name: project_name.clone(),
+                    });
+                }
                 ChatSidebarEvent::SessionDeleteRequested { .. }
                 | ChatSidebarEvent::AddProjectRequested => {
                     // Handled above
@@ -1170,7 +1176,12 @@ impl Render for RootView {
                     .or_insert(meta.plan_collapsed);
             }
 
+            let persisted_projects = cx
+                .try_global::<Gpui>()
+                .map(|g| g.persisted_projects.lock().unwrap().clone())
+                .unwrap_or_default();
             self.chat_sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_persisted_projects(persisted_projects);
                 sidebar.update_sessions(chat_sessions.clone(), cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });

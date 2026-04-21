@@ -546,7 +546,8 @@ impl TerminalTuiApp {
                             // Worktree management not supported in terminal UI
                         }
 
-                        BackendResponse::ProjectAdded { .. } => {
+                        BackendResponse::ProjectAdded { .. }
+                        | BackendResponse::ProjectPersisted { .. } => {
                             // Project management not supported in terminal UI
                         }
                     }

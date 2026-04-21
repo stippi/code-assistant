@@ -100,6 +100,11 @@ pub enum BackendEvent {
         path: PathBuf,
     },
 
+    /// Persist a temporary project to projects.json so it becomes a first-class project
+    PersistProject {
+        project_name: String,
+    },
+
     /// Clear the Errored state on a session (user dismissed the error banner)
     ClearSessionError {
         session_id: String,
@@ -196,6 +201,11 @@ pub enum BackendResponse {
     ProjectAdded {
         project_name: String,
         session_id: String,
+    },
+
+    /// A temporary project was persisted to projects.json
+    ProjectPersisted {
+        project_name: String,
     },
 }
 
@@ -330,6 +340,10 @@ pub async fn handle_backend_events(
                 Some(handle_add_project(&multi_session_manager, &name, &path).await)
             }
 
+            BackendEvent::PersistProject { project_name } => {
+                Some(handle_persist_project(&multi_session_manager, &project_name).await)
+            }
+
             BackendEvent::ClearSessionError { session_id } => {
                 let mut manager = multi_session_manager.lock().await;
                 if let Some(session) = manager.get_session_mut(&session_id) {
@@ -392,9 +406,15 @@ async fn handle_create_session(
     let create_result = {
         let mut manager = multi_session_manager.lock().await;
         if let Some(project) = initial_project {
-            // Create a session config override with the specified project
+            // Create a session config override with the specified project.
+            // Resolve the project path so the new session gets the correct
+            // CWD — either from projects.json or from a sibling session that
+            // already ran in that (temporary) project.
             let mut config = manager.session_config_template().clone();
-            config.initial_project = project;
+            config.initial_project = project.clone();
+            if let Some(path) = manager.resolve_project_path(&project) {
+                config.init_path = Some(path);
+            }
             manager.create_session_with_config(name.clone(), Some(config), None)
         } else {
             manager.create_session(name.clone())
@@ -1315,6 +1335,7 @@ async fn handle_add_project(
         let mut manager = multi_session_manager.lock().await;
         let mut config = manager.session_config_template().clone();
         config.initial_project = name.to_string();
+        config.init_path = Some(path.clone());
         manager.create_session_with_config(None, Some(config), None)
     };
 
@@ -1336,5 +1357,47 @@ async fn handle_add_project(
                 message: format!("Project saved but failed to create session: {e}"),
             }
         }
+    }
+}
+
+/// Persist a temporary project to projects.json.
+///
+/// Resolves the project path from existing sessions and writes it to the
+/// config file so the project becomes a first-class entry visible to all
+/// sessions.
+async fn handle_persist_project(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    project_name: &str,
+) -> BackendResponse {
+    info!("Persisting temporary project '{}'", project_name);
+
+    let path = {
+        let manager = multi_session_manager.lock().await;
+        manager.resolve_project_path(project_name)
+    };
+
+    let Some(path) = path else {
+        return BackendResponse::Error {
+            message: format!(
+                "Cannot persist project '{}': unable to determine its path",
+                project_name
+            ),
+        };
+    };
+
+    let project = Project {
+        path,
+        format_on_save: None,
+    };
+    if let Err(e) = save_project(project_name, &project) {
+        error!("Failed to persist project '{}': {}", project_name, e);
+        return BackendResponse::Error {
+            message: format!("Failed to persist project: {e}"),
+        };
+    }
+
+    info!("Project '{}' persisted to projects.json", project_name);
+    BackendResponse::ProjectPersisted {
+        project_name: project_name.to_string(),
     }
 }

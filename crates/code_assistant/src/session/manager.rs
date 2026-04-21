@@ -721,6 +721,45 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Resolve a project name to its filesystem path.
+    ///
+    /// Checks `projects.json` first.  If the name isn't a persisted project,
+    /// scans all persisted sessions for one whose `initial_project` matches
+    /// and returns its `init_path`.  Returns `None` when the path cannot be
+    /// determined.
+    pub fn resolve_project_path(&self, project_name: &str) -> Option<PathBuf> {
+        // 1. Check persisted projects
+        if let Ok(projects) = crate::config::load_projects() {
+            if let Some(project) = projects.get(project_name) {
+                return Some(project.path.clone());
+            }
+        }
+
+        // 2. Scan active sessions
+        for instance in self.active_sessions.values() {
+            if instance.session.initial_project() == project_name {
+                if let Some(path) = instance.session.config.effective_project_path() {
+                    return Some(path.clone());
+                }
+            }
+        }
+
+        // 3. Scan persisted sessions
+        if let Ok(metadata_list) = self.persistence.list_chat_sessions() {
+            for meta in &metadata_list {
+                if meta.initial_project == project_name {
+                    if let Ok(Some(session)) = self.persistence.load_chat_session(&meta.id) {
+                        if let Some(path) = session.config.effective_project_path() {
+                            return Some(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Get the latest session ID for auto-resuming
     pub fn get_latest_session_id(&self) -> Result<Option<String>> {
         self.persistence.get_latest_session_id()
