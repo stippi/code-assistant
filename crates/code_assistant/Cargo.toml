@@ -87,6 +87,9 @@ image = "0.25"
 # Clipboard access for paste
 arboard = "3"
 
+# Prevent system sleep while agents are running
+keepawake = "0.6"
+
 # Agent Client Protocol
 agent-client-protocol = { version = "0.9", features = ["unstable"] }
 tokio-util = { version = "0.7", features = ["compat"] }

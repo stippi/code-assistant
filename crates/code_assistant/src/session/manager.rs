@@ -13,6 +13,7 @@ use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
 };
 use crate::session::instance::SessionInstance;
+use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
@@ -38,6 +39,10 @@ pub struct SessionManager {
 
     /// Default model name to use when creating sessions
     default_model_name: String,
+
+    /// Prevents system idle sleep while any agent is running.
+    /// Shared with spawned agent tasks so they can signal completion.
+    sleep_inhibitor: Arc<SleepInhibitor>,
 }
 
 impl SessionManager {
@@ -68,6 +73,7 @@ impl SessionManager {
             active_session_id: None,
             session_config_template,
             default_model_name,
+            sleep_inhibitor: Arc::new(SleepInhibitor::new()),
         }
     }
 
@@ -486,6 +492,8 @@ impl SessionManager {
         // Spawn the agent task
         let session_id_clone = session_id.to_string();
         let ui_clone = ui.clone();
+        let sleep_inhibitor = self.sleep_inhibitor.clone();
+        sleep_inhibitor.agent_started();
 
         let task_handle = tokio::spawn(async move {
             debug!("Starting agent for session {}", session_id_clone);
@@ -572,6 +580,11 @@ impl SessionManager {
                     // DisplayError from the stored Errored state.
                 }
             }
+
+            // Signal that this agent is no longer running so the system sleep
+            // inhibition can be released once all agents have finished.
+            sleep_inhibitor.agent_stopped();
+
             result
         });
 
@@ -592,7 +605,15 @@ impl SessionManager {
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
         // Remove from active sessions
         if let Some(mut session_instance) = self.active_sessions.remove(session_id) {
+            let agent_is_running = !session_instance.get_activity_state().is_terminal();
             session_instance.terminate_agent();
+            // When aborting a task, the cleanup code inside the task (including
+            // agent_stopped) won't run, so we signal completion here instead.
+            // We check the activity state rather than task_handle.is_some()
+            // because the handle persists even after the task has completed.
+            if agent_is_running {
+                self.sleep_inhibitor.agent_stopped();
+            }
         }
 
         // Clear active session if it was the deleted one
@@ -614,6 +635,23 @@ impl SessionManager {
             Ok(session_instance.cancel_sub_agent(tool_id))
         } else {
             Err(anyhow::anyhow!("Session not found: {}", session_id))
+        }
+    }
+
+    /// Terminate a running agent for a session (e.g. on user cancel).
+    ///
+    /// This is the proper way to abort an agent task from outside `SessionManager`,
+    /// because it also updates the sleep-inhibition reference count. Calling
+    /// `session.terminate_agent()` directly would leak a count.
+    pub fn terminate_session_agent(&mut self, session_id: &str) {
+        if let Some(session) = self.active_sessions.get_mut(session_id) {
+            // Check the activity state rather than task_handle.is_some() because
+            // the handle persists even after the task has completed naturally.
+            let agent_is_running = !session.get_activity_state().is_terminal();
+            session.terminate_agent();
+            if agent_is_running {
+                self.sleep_inhibitor.agent_stopped();
+            }
         }
     }
 

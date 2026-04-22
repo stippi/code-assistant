@@ -1019,10 +1019,8 @@ impl acp::Agent for ACPAgentImpl {
             // Terminate the agent task
             {
                 let mut manager = session_manager.lock().await;
-                if let Some(session) = manager.get_session_mut(&args.session_id.0) {
-                    session.terminate_agent();
-                    tracing::info!("ACP: Terminated agent for session: {}", args.session_id.0);
-                }
+                manager.terminate_session_agent(&args.session_id.0);
+                tracing::info!("ACP: Terminated agent for session: {}", args.session_id.0);
             }
 
             Ok(())
