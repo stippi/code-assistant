@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, warn};
 
@@ -113,6 +115,35 @@ const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300)
 
 /// Global sender to dispatch requests to the GPUI foreground worker.
 static TERMINAL_WORKER: OnceLock<UnboundedSender<TerminalWorkerRequest>> = OnceLock::new();
+
+/// Millisecond-since-epoch of the last time `run_terminal_worker` made progress
+/// (either entered `rx.recv().await` or returned from it). The tokio-side
+/// liveness timeout reads this so its error message can distinguish
+/// "worker loop is still alive but the channel is wedged" from
+/// "foreground task is frozen / starved".
+static WORKER_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn heartbeat_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn heartbeat_bump() {
+    WORKER_HEARTBEAT_MS.store(heartbeat_now_ms(), Ordering::Relaxed);
+}
+
+/// Format "age since last heartbeat". Returns `"never"` if the worker never
+/// ran, a millisecond age otherwise.
+fn heartbeat_age_desc() -> String {
+    let last = WORKER_HEARTBEAT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        return "never".to_string();
+    }
+    let now = heartbeat_now_ms();
+    format!("{}ms_ago", now.saturating_sub(last))
+}
 
 // ---------------------------------------------------------------------------
 // Worker registration (called from the GPUI foreground thread)
@@ -273,8 +304,11 @@ impl CommandExecutor for GpuiTerminalCommandExecutor {
                 diag::log(
                     sid,
                     format_args!(
-                        "GpuiExec::execute_streaming: tokio-side liveness timeout after {:?} (worker never reported Finished) tool_id={:?}",
-                        overall_deadline, tool_id
+                        "GpuiExec::execute_streaming: tokio-side liveness timeout after {:?} (worker never reported Finished) tool_id={:?} worker_heartbeat={} {}",
+                        overall_deadline,
+                        tool_id,
+                        heartbeat_age_desc(),
+                        resource_snapshot()
                     ),
                 );
                 return Err(anyhow!(
@@ -368,9 +402,14 @@ async fn run_terminal_worker(
     mut rx: UnboundedReceiver<TerminalWorkerRequest>,
     cx: &mut gpui::AsyncApp,
 ) {
-    while let Some(msg) = rx.recv().await {
+    // Stamp heartbeat before the first recv so the tokio side can tell this
+    // task at least started.
+    heartbeat_bump();
+    loop {
+        let msg = rx.recv().await;
+        heartbeat_bump();
         match msg {
-            TerminalWorkerRequest::Execute(request) => {
+            Some(TerminalWorkerRequest::Execute(request)) => {
                 diag::log(
                     &request.session_id,
                     format_args!(
@@ -384,6 +423,11 @@ async fn run_terminal_worker(
                     execute_in_terminal(request, cx).await;
                 })
                 .detach();
+            }
+            None => {
+                // All senders dropped — shouldn't happen because TERMINAL_WORKER
+                // holds one, but exit cleanly if it does.
+                break;
             }
         }
     }
@@ -467,7 +511,19 @@ async fn run_command(
 
         let exit_tx = exit_tx.clone();
         let wakeup_tx = wakeup_tx.clone();
-        let subscription = cx.subscribe(&entity, move |_terminal, event, _cx| match event {
+
+        // Detach the subscription rather than holding it for the lifetime of
+        // `run_command`. The subscription naturally dies when the Entity<Terminal>
+        // is dropped (which happens via `TerminalCleanup` right after we return),
+        // and that path already tears everything down cleanly.
+        //
+        // Explicitly dropping the Subscription introduced an extra ordering
+        // step: subscription-teardown first, *then* entity-drop inside the
+        // pool mutex. On the hang we observed in the diag log, a subsequent
+        // run_command never saw its Execute request picked up — consistent
+        // with a cross-thread interaction between Subscription::drop and the
+        // entity-drop under the pool mutex. Detaching removes that edge.
+        cx.subscribe(&entity, move |_terminal, event, _cx| match event {
             terminal::Event::ChildExit(code) => {
                 let _ = exit_tx.send(*code);
             }
@@ -475,12 +531,13 @@ async fn run_command(
                 let _ = wakeup_tx.send(());
             }
             _ => {}
-        });
+        })
+        .detach();
 
-        Ok((id, entity, subscription))
+        Ok((id, entity))
     });
 
-    let (terminal_id, terminal, _sub) = match spawn_result {
+    let (terminal_id, terminal) = match spawn_result {
         Ok(Ok(tuple)) => tuple,
         Ok(Err(e)) => {
             diag::log(
