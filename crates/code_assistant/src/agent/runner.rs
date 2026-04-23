@@ -13,7 +13,7 @@ use anyhow::Result;
 use command_executor::CommandExecutor;
 use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
-    StreamingChunk,
+    StreamingChunk, ToolResultContent, ToolResultImage,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -457,6 +457,7 @@ impl Agent {
                                     output: Some(error_message.clone()),
                                     styled_output: None,
                                     duration_seconds: None,
+                                    images: vec![],
                                 })
                                 .await;
                         }
@@ -805,7 +806,7 @@ impl Agent {
 
                         Message::new_user_content(vec![ContentBlock::ToolResult {
                             tool_use_id: tool_id,
-                            content: error_text,
+                            content: ToolResultContent::text(error_text),
                             is_error: Some(true),
                             start_time: Some(SystemTime::now()),
                             end_time: None,
@@ -860,42 +861,44 @@ impl Agent {
 
         // Process results in original order
         for (idx, tool_request) in tool_requests.iter().enumerate() {
-            let result_block =
-                if parallel_indices.len() > 1 && parallel_indices.iter().any(|(i, _)| *i == idx) {
-                    // This was a parallel spawn_agent - get result from parallel execution
-                    parallel_result_iter.next().unwrap_or_else(|| {
-                        let start_time = Some(SystemTime::now());
+            let result_block = if parallel_indices.len() > 1
+                && parallel_indices.iter().any(|(i, _)| *i == idx)
+            {
+                // This was a parallel spawn_agent - get result from parallel execution
+
+                parallel_result_iter.next().unwrap_or_else(|| {
+                    let start_time = Some(SystemTime::now());
+                    ContentBlock::ToolResult {
+                        tool_use_id: tool_request.id.clone(),
+                        content: ToolResultContent::text("Internal error: missing parallel result"),
+                        is_error: Some(true),
+                        start_time,
+                        end_time: Some(SystemTime::now()),
+                    }
+                })
+            } else {
+                // Sequential execution
+                let start_time = Some(SystemTime::now());
+                match self.execute_tool(tool_request).await {
+                    Ok(success) => ContentBlock::ToolResult {
+                        tool_use_id: tool_request.id.clone(),
+                        content: ToolResultContent::text(""),
+                        is_error: if success { None } else { Some(true) },
+                        start_time,
+                        end_time: Some(SystemTime::now()),
+                    },
+                    Err(e) => {
+                        let error_text = Self::format_error_for_user(&e);
                         ContentBlock::ToolResult {
                             tool_use_id: tool_request.id.clone(),
-                            content: "Internal error: missing parallel result".to_string(),
+                            content: ToolResultContent::text(error_text),
                             is_error: Some(true),
                             start_time,
                             end_time: Some(SystemTime::now()),
                         }
-                    })
-                } else {
-                    // Sequential execution
-                    let start_time = Some(SystemTime::now());
-                    match self.execute_tool(tool_request).await {
-                        Ok(success) => ContentBlock::ToolResult {
-                            tool_use_id: tool_request.id.clone(),
-                            content: String::new(),
-                            is_error: if success { None } else { Some(true) },
-                            start_time,
-                            end_time: Some(SystemTime::now()),
-                        },
-                        Err(e) => {
-                            let error_text = Self::format_error_for_user(&e);
-                            ContentBlock::ToolResult {
-                                tool_use_id: tool_request.id.clone(),
-                                content: error_text,
-                                is_error: Some(true),
-                                start_time,
-                                end_time: Some(SystemTime::now()),
-                            }
-                        }
                     }
-                };
+                }
+            };
             content_blocks[idx] = Some(result_block);
         }
 
@@ -959,7 +962,7 @@ impl Agent {
                         tool_id.clone(),
                         ContentBlock::ToolResult {
                             tool_use_id: tool_id,
-                            content: String::new(),
+                            content: ToolResultContent::text(""),
                             is_error: if is_success { None } else { Some(true) },
                             start_time,
                             end_time,
@@ -1006,6 +1009,7 @@ impl Agent {
                 output: None,
                 styled_output: None,
                 duration_seconds: None,
+                images: vec![],
             })
             .await;
 
@@ -1024,6 +1028,7 @@ impl Agent {
                         output: Some(error_msg.clone()),
                         styled_output: None,
                         duration_seconds: None,
+                        images: vec![],
                     })
                     .await;
                 return (
@@ -1073,6 +1078,7 @@ impl Agent {
                         output: Some(ui_output),
                         styled_output: None,
                         duration_seconds: None,
+                        images: vec![],
                     })
                     .await;
 
@@ -1100,6 +1106,7 @@ impl Agent {
                         output: Some(error_msg.clone()),
                         styled_output: None,
                         duration_seconds: None,
+                        images: vec![],
                     })
                     .await;
 
@@ -1211,12 +1218,28 @@ impl Agent {
             std::env::current_dir().ok()?
         };
 
-        // Candidate files in priority order
+        // Candidate files in priority order (matched case-insensitively for
+        // cross-platform consistency, e.g. "agents.md" on Linux).
         let candidates = ["AGENTS.md", "CLAUDE.md"];
 
-        for file in candidates.iter() {
-            let path = root_path.join(file);
-            if path.exists() {
+        // Read directory entries once for case-insensitive lookup
+        let dir_entries: Vec<_> = fs::read_dir(&root_path)
+            .ok()
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for candidate in candidates.iter() {
+            // Find the first directory entry that matches case-insensitively
+            let matched = dir_entries
+                .iter()
+                .find(|entry| entry.eq_ignore_ascii_case(candidate));
+
+            if let Some(actual_name) = matched {
+                let path = root_path.join(actual_name);
                 match fs::read_to_string(&path) {
                     Ok(mut content) => {
                         // Guard against excessively large files (truncate politely)
@@ -1227,7 +1250,7 @@ impl Agent {
                                 "\n\n[... truncated to keep context size reasonable ...]",
                             );
                         }
-                        return Some((file.to_string(), content));
+                        return Some((actual_name.to_string(), content));
                     }
                     Err(e) => {
                         warn!("Failed to read guidance file {}: {}", path.display(), e);
@@ -1947,6 +1970,9 @@ impl Agent {
 
         // First, collect all tool executions and build a map from tool_use_id to rendered output
         let mut tool_outputs = std::collections::HashMap::new();
+        // Collect image data from tools that produce visual output
+        let mut tool_images: std::collections::HashMap<String, Vec<crate::tools::core::ImageData>> =
+            std::collections::HashMap::new();
 
         // Process tool executions in reverse chronological order (newest first)
         // so newer tool calls take precedence in resource conflicts
@@ -1954,6 +1980,12 @@ impl Agent {
             let tool_use_id = &execution.tool_request.id;
             let rendered_output = execution.result.as_render().render(&mut resources_tracker);
             tool_outputs.insert(tool_use_id.clone(), rendered_output);
+
+            // Collect any image data from the tool output
+            let images = execution.result.render_images();
+            if !images.is_empty() {
+                tool_images.insert(tool_use_id.clone(), images);
+            }
         }
 
         // Build a set of all tool_use_ids that have corresponding tool_results in the message history
@@ -2007,9 +2039,12 @@ impl Agent {
                                         "Generating synthetic 'cancelled' tool result for tool_use_id: {}",
                                         tool_id
                                     );
+
                                     ContentBlock::ToolResult {
                                         tool_use_id: (*tool_id).clone(),
-                                        content: "Tool execution was cancelled by user.".to_string(),
+                                        content: ToolResultContent::text(
+                                            "Tool execution was cancelled by user.",
+                                        ),
                                         is_error: Some(true),
                                         start_time: None,
                                         end_time: None,
@@ -2044,7 +2079,10 @@ impl Agent {
                         }
                     }
 
-                    // Look for ToolResult blocks and update with rendered output
+                    // Look for ToolResult blocks and update with rendered output.
+                    // When a tool produces images, they are embedded inside the
+                    // ToolResultContent so Anthropic receives them in the
+                    // `tool_result.content` array (per the API spec).
                     let mut new_blocks = Vec::new();
                     let mut need_update = false;
 
@@ -2059,14 +2097,31 @@ impl Agent {
                             } => {
                                 // If we have an execution result for this tool use, use it
                                 if let Some(output) = tool_outputs.get(tool_use_id) {
-                                    // Create a new ToolResult with updated content
+                                    // Build content with optional images
+                                    let content = if let Some(images) = tool_images.get(tool_use_id)
+                                    {
+                                        ToolResultContent::with_images(
+                                            output.clone(),
+                                            images
+                                                .iter()
+                                                .map(|img| ToolResultImage {
+                                                    media_type: img.media_type.clone(),
+                                                    base64_data: img.base64_data.clone(),
+                                                })
+                                                .collect(),
+                                        )
+                                    } else {
+                                        ToolResultContent::text(output.clone())
+                                    };
+
                                     new_blocks.push(ContentBlock::ToolResult {
                                         tool_use_id: tool_use_id.clone(),
-                                        content: output.clone(),
+                                        content,
                                         is_error: *is_error,
                                         start_time: *start_time,
                                         end_time: *end_time,
                                     });
+
                                     need_update = true;
                                 } else {
                                     // Keep the original block
@@ -2155,6 +2210,7 @@ impl Agent {
                     output: None,
                     styled_output: None,
                     duration_seconds: None,
+                    images: vec![],
                 })
                 .await?;
         }
@@ -2245,6 +2301,9 @@ impl Agent {
                 let mut resources_tracker = ResourcesTracker::new();
                 let ui_output = result.as_render().render_for_ui(&mut resources_tracker);
 
+                // Collect image data from tools that produce visual output
+                let images = result.render_images();
+
                 // Update tool status with result (skip for hidden tools)
                 if !is_hidden {
                     self.ui
@@ -2256,6 +2315,7 @@ impl Agent {
                             output: Some(ui_output),
                             styled_output: None,
                             duration_seconds: execution_duration,
+                            images,
                         })
                         .await?;
                 }
@@ -2340,6 +2400,7 @@ impl Agent {
                             output: Some(error_text.clone()),
                             styled_output: None,
                             duration_seconds: execution_duration,
+                            images: vec![],
                         })
                         .await?;
                 }

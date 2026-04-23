@@ -794,11 +794,17 @@ impl Gpui {
                 output,
                 styled_output,
                 duration_seconds,
+                images,
             } => {
                 // If the event doesn't carry styled output, check the cache
                 // (populated by terminal_executor just before PTY cleanup).
                 let styled_output = styled_output
                     .or_else(|| terminal_executor::take_cached_styled_output(&tool_id));
+                // Convert ImageData to (media_type, base64_data) tuples for the UI
+                let ui_images: Vec<(String, String)> = images
+                    .iter()
+                    .map(|img| (img.media_type.clone(), img.base64_data.clone()))
+                    .collect();
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.update_tool_status(
                         &tool_id,
@@ -807,6 +813,7 @@ impl Gpui {
                         output.clone(),
                         styled_output.clone(),
                         duration_seconds,
+                        ui_images.clone(),
                         cx,
                     );
                 });
@@ -956,6 +963,11 @@ impl Gpui {
 
                 // Apply tool results to update tool blocks with their execution results
                 for tool_result in tool_results {
+                    let ui_images: Vec<(String, String)> = tool_result
+                        .images
+                        .iter()
+                        .map(|img| (img.media_type.clone(), img.base64_data.clone()))
+                        .collect();
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,
@@ -964,6 +976,7 @@ impl Gpui {
                             tool_result.output.clone(),
                             tool_result.styled_output.clone(),
                             tool_result.duration_seconds,
+                            ui_images.clone(),
                             cx,
                         );
                     });
@@ -1550,6 +1563,11 @@ impl Gpui {
 
                 // Apply tool results
                 for tool_result in tool_results {
+                    let ui_images: Vec<(String, String)> = tool_result
+                        .images
+                        .iter()
+                        .map(|img| (img.media_type.clone(), img.base64_data.clone()))
+                        .collect();
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,
@@ -1558,6 +1576,7 @@ impl Gpui {
                             tool_result.output.clone(),
                             tool_result.styled_output.clone(),
                             tool_result.duration_seconds,
+                            ui_images.clone(),
                             cx,
                         );
                     });

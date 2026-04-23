@@ -1,5 +1,5 @@
 use super::config::ToolsConfig;
-use super::render::Render;
+use super::render::{ImageData, Render};
 use super::result::ToolResult;
 use super::spec::ToolSpec;
 use super::tool::{Tool, ToolContext};
@@ -20,6 +20,9 @@ pub trait AnyOutput: Send + Sync {
     /// Serialize this output to a JSON value
     #[allow(dead_code)]
     fn to_json(&self) -> Result<serde_json::Value>;
+
+    /// Return image data produced by this tool, if any.
+    fn render_images(&self) -> Vec<ImageData>;
 }
 
 /// Automatically implemented for all types that implement both Render, ToolResult and Serialize
@@ -34,6 +37,10 @@ impl<T: Render + ToolResult + Serialize + Send + Sync + 'static> AnyOutput for T
 
     fn to_json(&self) -> Result<serde_json::Value> {
         serde_json::to_value(self).map_err(|e| anyhow::anyhow!("Failed to serialize output: {e}"))
+    }
+
+    fn render_images(&self) -> Vec<ImageData> {
+        Render::render_images(self)
     }
 }
 

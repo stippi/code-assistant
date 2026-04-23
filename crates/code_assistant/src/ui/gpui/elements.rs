@@ -449,6 +449,7 @@ impl MessageContainer {
             styled_output: None,
             state: initial_state,
             duration_seconds,
+            images: Vec::new(),
         });
         let view = cx.new(|cx| {
             BlockView::new(
@@ -475,6 +476,7 @@ impl MessageContainer {
         output: Option<String>,
         styled_output: Option<Vec<terminal::StyledLine>>,
         duration_seconds: Option<f64>,
+        images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) -> bool {
         let elements = self.elements.lock().unwrap();
@@ -502,6 +504,11 @@ impl MessageContainer {
                         // Store duration from ContentBlock timestamps (stable across restores)
                         if duration_seconds.is_some() {
                             tool.duration_seconds = duration_seconds;
+                        }
+
+                        // Store image data from tools that produce visual output
+                        if !images.is_empty() {
+                            tool.images = images.clone();
                         }
 
                         // Update generating flag on completion — no automatic state changes.
@@ -761,6 +768,7 @@ impl MessageContainer {
                 styled_output: None,
                 state: initial_state,
                 duration_seconds: None,
+                images: Vec::new(),
             };
 
             tool.parameters.push(ParameterBlock {
@@ -1377,7 +1385,8 @@ impl BlockView {
 
         // Determine expansion state — purely based on ToolBlockState, no is_generating override
         let is_expanded = block.state == ToolBlockState::Expanded;
-        let has_output = block.output.as_ref().is_some_and(|o| !o.is_empty());
+        let has_output =
+            block.output.as_ref().is_some_and(|o| !o.is_empty()) || !block.images.is_empty();
         let can_expand = has_output;
 
         // Animation scale for smooth expand/collapse
@@ -2120,6 +2129,9 @@ pub struct ToolUseBlock {
     /// Execution duration in seconds, computed from persisted ContentBlock timestamps.
     /// Stable across session restores (unlike Instant-based measurement).
     pub duration_seconds: Option<f64>,
+    /// Image data from tools that produce visual output (e.g. view_images).
+    /// Stored as (media_type, base64_data) pairs; rendered when the tool block is expanded.
+    pub images: Vec<(String, String)>,
 }
 
 /// Parameter for a tool

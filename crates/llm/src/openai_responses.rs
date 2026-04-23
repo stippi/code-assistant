@@ -608,7 +608,7 @@ impl OpenAIResponsesClient {
 
                     result.push(ResponseInputItem::FunctionCallOutput {
                         call_id: tool_use_id,
-                        output: content,
+                        output: content.text_content().to_string(),
                     });
                 }
                 ContentBlock::RedactedThinking {

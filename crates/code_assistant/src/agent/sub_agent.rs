@@ -266,6 +266,12 @@ impl SubAgentRunner for DefaultSubAgentRunner {
 
             agent.run_single_iteration().await?;
 
+            // Update usage after each iteration so the UI ring indicator
+            // reflects current token consumption while the sub-agent is still running.
+            let usage = compute_sub_agent_usage(agent.message_history(), &self.model_name);
+            sub_ui_adapter.set_usage(usage);
+            sub_ui_adapter.send_output_update().await;
+
             // Check for cancellation after iteration completes
             // (cancellation may have occurred during streaming/tool execution)
             if cancelled.load(Ordering::SeqCst) {
@@ -537,6 +543,7 @@ impl SubAgentUiAdapter {
                 output: Some(json),
                 styled_output: None,
                 duration_seconds: None,
+                images: vec![],
             })
             .await;
     }

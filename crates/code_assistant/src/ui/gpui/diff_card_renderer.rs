@@ -756,6 +756,7 @@ mod tests {
             styled_output: None,
             state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
             duration_seconds: None,
+            images: Vec::new(),
         };
         assert_eq!(extract_path_or_paths(&tool), "src/main.rs");
     }
@@ -776,6 +777,7 @@ mod tests {
             styled_output: None,
             state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
             duration_seconds: None,
+            images: Vec::new(),
         };
         assert_eq!(extract_path_or_paths(&tool), "a.rs, b.rs");
     }

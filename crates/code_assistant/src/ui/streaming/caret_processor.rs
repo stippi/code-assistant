@@ -141,9 +141,10 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::Text { text, .. } => {
                                 combined_text.push_str(text);
                             }
+
                             llm::ContentBlock::ToolResult { content, .. } => {
                                 // Include tool result content for user messages
-                                combined_text.push_str(content);
+                                combined_text.push_str(content.text_content());
                             }
                             _ => {} // Skip other block types for user messages
                         }

@@ -188,10 +188,10 @@ impl OllamaClient {
                         current_images.clear();
                     }
 
-                    // ToolResult as separate "tool" message
+                    // ToolResult as separate "tool" message (text only)
                     messages.push(OllamaMessage {
                         role: "tool".to_string(),
-                        content: content.clone(),
+                        content: content.text_content().to_string(),
                         thinking: "".to_string(),
                         images: None,
                         tool_calls: None,

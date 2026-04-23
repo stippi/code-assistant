@@ -105,6 +105,185 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// An image embedded inside a tool result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResultImage {
+    /// MIME type, e.g. `"image/png"`, `"image/jpeg"`.
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub base64_data: String,
+}
+
+/// Content of a `ContentBlock::ToolResult`.
+///
+/// Most tools produce plain text. Tools like `view_images` additionally attach
+/// base64-encoded images that should be sent inside the Anthropic
+/// `tool_result.content` array alongside the text.
+///
+/// Serialization:
+/// - Text-only  → JSON string  `"some text"`
+/// - With images → JSON array  `[{"type":"text","text":"..."}, {"type":"image","source":{...}}]`
+///
+/// Deserialization accepts both forms for backward-compatibility with persisted
+/// sessions that stored `content` as a plain string.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResultContent {
+    text: String,
+    images: Vec<ToolResultImage>,
+}
+
+impl ToolResultContent {
+    /// Create text-only tool result content.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
+
+    /// Create tool result content with images alongside text.
+    pub fn with_images(text: impl Into<String>, images: Vec<ToolResultImage>) -> Self {
+        Self {
+            text: text.into(),
+            images,
+        }
+    }
+
+    /// Return the textual portion of the result.
+    pub fn text_content(&self) -> &str {
+        &self.text
+    }
+
+    /// Return the images attached to this result (empty for most tools).
+    pub fn images(&self) -> &[ToolResultImage] {
+        &self.images
+    }
+
+    /// Whether images are attached.
+    pub fn has_images(&self) -> bool {
+        !self.images.is_empty()
+    }
+
+    /// Whether the text portion is empty.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Check if the text portion contains a substring.
+    pub fn contains(&self, needle: &str) -> bool {
+        self.text.contains(needle)
+    }
+}
+
+impl<S: Into<String>> From<S> for ToolResultContent {
+    fn from(s: S) -> Self {
+        Self::text(s)
+    }
+}
+
+impl std::fmt::Display for ToolResultContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+// Custom serde: serialize as string when text-only, as array when images present.
+impl Serialize for ToolResultContent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.images.is_empty() {
+            // Text-only: serialize as plain JSON string for backward compat
+            serializer.serialize_str(&self.text)
+        } else {
+            // Mixed: serialize as array of content blocks
+            use serde::ser::SerializeSeq;
+            let len = 1 + self.images.len();
+            let mut seq = serializer.serialize_seq(Some(len))?;
+            seq.serialize_element(&serde_json::json!({
+                "type": "text",
+                "text": self.text,
+            }))?;
+            for img in &self.images {
+                seq.serialize_element(&serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.media_type,
+                        "data": img.base64_data,
+                    }
+                }))?;
+            }
+            seq.end()
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolResultContent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de;
+
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = ToolResultContent;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string or an array of content blocks")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(ToolResultContent::text(v))
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(ToolResultContent::text(v))
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut text = String::new();
+                let mut images = Vec::new();
+
+                while let Some(block) = seq.next_element::<serde_json::Value>()? {
+                    match block.get("type").and_then(|t| t.as_str()) {
+                        Some("text") => {
+                            if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                                if !text.is_empty() {
+                                    text.push('\n');
+                                }
+                                text.push_str(t);
+                            }
+                        }
+                        Some("image") => {
+                            if let Some(source) = block.get("source") {
+                                let media_type = source
+                                    .get("media_type")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("image/png")
+                                    .to_string();
+                                let base64_data = source
+                                    .get("data")
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                images.push(ToolResultImage {
+                                    media_type,
+                                    base64_data,
+                                });
+                            }
+                        }
+                        _ => {
+                            // Unknown block type — skip
+                        }
+                    }
+                }
+
+                Ok(ToolResultContent { text, images })
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
@@ -180,7 +359,7 @@ pub enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolResultContent,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -439,7 +618,7 @@ impl ContentBlock {
     pub fn new_tool_result(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
         ContentBlock::ToolResult {
             tool_use_id: tool_use_id.into(),
-            content: content.into(),
+            content: ToolResultContent::text(content),
             is_error: None,
             start_time: None,
             end_time: None,
@@ -452,8 +631,23 @@ impl ContentBlock {
     ) -> Self {
         ContentBlock::ToolResult {
             tool_use_id: tool_use_id.into(),
-            content: content.into(),
+            content: ToolResultContent::text(content),
             is_error: Some(true),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
+    /// Create a tool result that includes images alongside text.
+    pub fn new_tool_result_with_images(
+        tool_use_id: impl Into<String>,
+        text: impl Into<String>,
+        images: Vec<ToolResultImage>,
+    ) -> Self {
+        ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: ToolResultContent::with_images(text, images),
+            is_error: None,
             start_time: None,
             end_time: None,
         }

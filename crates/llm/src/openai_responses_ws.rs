@@ -697,6 +697,7 @@ impl OpenAIResponsesWsClient {
                         arguments: input.to_string(),
                     });
                 }
+
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
@@ -711,7 +712,7 @@ impl OpenAIResponsesWsClient {
                     }
                     items.push(WsInputItem::FunctionCallOutput {
                         call_id: tool_use_id.clone(),
-                        output: content.clone(),
+                        output: content.text_content().to_string(),
                     });
                 }
             }
@@ -790,6 +791,7 @@ impl OpenAIResponsesWsClient {
                         arguments: input.to_string(),
                     });
                 }
+
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
@@ -804,7 +806,7 @@ impl OpenAIResponsesWsClient {
                     }
                     items.push(WsInputItem::FunctionCallOutput {
                         call_id: tool_use_id.clone(),
-                        output: content.clone(),
+                        output: content.text_content().to_string(),
                     });
                 }
                 ContentBlock::Image { .. } => {

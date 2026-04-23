@@ -734,7 +734,7 @@ async fn test_parse_error_handling() -> Result<()> {
             assert!(is_error.unwrap_or(false));
 
             // Check for error content about missing parameters
-            let error_content = content.to_lowercase();
+            let error_content = content.text_content().to_lowercase();
             assert!(
                 error_content.contains("parameter"),
                 "Error should mention parameters: {content}"
@@ -2323,7 +2323,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
     // Add the tool result (normal execution completed)
     agent.append_message(Message::new_user_content(vec![ContentBlock::ToolResult {
         tool_use_id: "tool-1-1".to_string(),
-        content: "File contents here".to_string(),
+        content: llm::ToolResultContent::text("File contents here"),
         is_error: None,
         start_time: None,
         end_time: None,

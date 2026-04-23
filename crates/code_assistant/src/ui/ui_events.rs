@@ -1,5 +1,6 @@
 use crate::persistence::{BranchInfo, ChatMetadata, DraftAttachment, NodeId};
 use crate::session::instance::SessionActivityState;
+use crate::tools::core::ImageData;
 use crate::types::PlanState;
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
@@ -28,6 +29,8 @@ pub struct ToolResultData {
     pub styled_output: Option<Vec<terminal::StyledLine>>,
     /// Duration of the tool execution in seconds, computed from persisted ContentBlock timestamps.
     pub duration_seconds: Option<f64>,
+    /// Image data from tools that produce visual output (e.g. view_images).
+    pub images: Vec<ImageData>,
 }
 
 /// Events for UI updates from the agent thread
@@ -72,6 +75,9 @@ pub enum UiEvent {
         styled_output: Option<Vec<terminal::StyledLine>>,
         /// Execution duration in seconds, set from ContentBlock timestamps on completion.
         duration_seconds: Option<f64>,
+        /// Image data from tools that produce visual output (e.g. view_images).
+        #[allow(dead_code)]
+        images: Vec<ImageData>,
     },
 
     /// End a tool invocation

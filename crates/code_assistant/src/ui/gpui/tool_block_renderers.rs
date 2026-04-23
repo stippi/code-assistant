@@ -241,6 +241,10 @@ impl InlineToolRenderer {
                 tool_name: "perplexity_ask",
                 template: "Ask Perplexity",
             },
+            DescribeTemplate {
+                tool_name: "view_images",
+                template: "View {paths}",
+            },
         ];
 
         let tools: Vec<String> = templates.iter().map(|t| t.tool_name.to_string()).collect();
@@ -305,7 +309,9 @@ impl ToolBlockRenderer for InlineToolRenderer {
         // Inline tools: render the output text with a left-border style when
         // expanded.  If there's no output yet, return None.
         let output = tool.output.as_deref().unwrap_or("");
-        if output.is_empty() {
+        let has_images = !tool.images.is_empty();
+
+        if output.is_empty() && !has_images {
             return None;
         }
 
@@ -315,20 +321,69 @@ impl ToolBlockRenderer for InlineToolRenderer {
             theme.muted_foreground
         };
 
-        use gpui::{div, px, rems, ParentElement, Styled};
-        Some(
-            div()
-                .pl(px(8.))
-                .ml(px(8.))
-                .border_l_2()
-                .border_color(theme.border)
-                .py(px(4.))
-                .text_size(rems(0.8125))
-                .text_color(output_color)
-                .overflow_hidden()
-                .child(output.to_string())
-                .into_any(),
-        )
+        use gpui::{
+            div, img, px, rems, ImageSource, ObjectFit, ParentElement, Styled, StyledImage,
+        };
+
+        let mut container = div()
+            .pl(px(8.))
+            .ml(px(8.))
+            .border_l_2()
+            .border_color(theme.border)
+            .py(px(4.))
+            .text_size(rems(0.8125))
+            .text_color(output_color)
+            .overflow_hidden();
+
+        // Text output
+        if !output.is_empty() {
+            container = container.child(output.to_string());
+        }
+
+        // Render images when expanded (for view_images tool)
+        if has_images {
+            let mut gallery = div().flex().flex_wrap().gap_2().mt_2();
+
+            for (media_type, base64_data) in &tool.images {
+                if let Some(image) =
+                    crate::ui::gpui::image::parse_base64_image(media_type, base64_data)
+                {
+                    gallery = gallery.child(
+                        div()
+                            .flex_none()
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded_md()
+                            .overflow_hidden()
+                            .bg(theme.popover)
+                            .shadow_sm()
+                            .child(
+                                img(ImageSource::Image(image))
+                                    .max_h(px(200.))
+                                    .max_w(px(400.))
+                                    .object_fit(ObjectFit::Contain),
+                            ),
+                    );
+                } else {
+                    gallery = gallery.child(
+                        div()
+                            .flex_none()
+                            .p_2()
+                            .bg(theme.warning.opacity(0.1))
+                            .border_1()
+                            .border_color(theme.warning.opacity(0.3))
+                            .rounded_md()
+                            .text_color(theme.warning_foreground.opacity(0.8))
+                            .text_xs()
+                            .child(format!("Failed to decode: {}", media_type)),
+                    );
+                }
+            }
+
+            container = container.child(gallery);
+        }
+
+        Some(container.into_any())
     }
 }
 
@@ -354,6 +409,7 @@ mod tests {
             styled_output: None,
             state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
             duration_seconds: None,
+            images: Vec::new(),
         }
     }
 

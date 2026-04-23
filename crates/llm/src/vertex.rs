@@ -391,6 +391,7 @@ impl VertexClient {
                         }),
                         function_response: None,
                     }),
+
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
@@ -409,8 +410,8 @@ impl VertexClient {
                                 .nth(1)
                                 .unwrap_or(tool_use_id)
                                 .to_string(),
-                            // Wrap content in a proper JSON object
-                            response: json!({ "result": content }),
+                            // Wrap content in a proper JSON object (text only)
+                            response: json!({ "result": content.text_content() }),
                         }),
                     }),
                     _ => None,

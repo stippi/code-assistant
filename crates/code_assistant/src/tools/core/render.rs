@@ -1,5 +1,19 @@
 use std::collections::HashSet;
 
+/// Image data returned by tools that produce visual output.
+///
+/// When a tool returns images via [`Render::render_images`], the agent runner
+/// embeds them inside the `ToolResultContent` of the corresponding
+/// `ContentBlock::ToolResult`.  For Anthropic, this produces a `content` array
+/// containing both text and image blocks per the API spec.
+#[derive(Debug, Clone)]
+pub struct ImageData {
+    /// MIME type, e.g. `"image/png"`, `"image/jpeg"`.
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub base64_data: String,
+}
+
 /// Responsible for formatting tool outputs for display
 pub trait Render: Send + Sync + 'static {
     /// Generate a short status message for display in action history
@@ -15,6 +29,17 @@ pub trait Render: Send + Sync + 'static {
     /// returns JSON for custom rendering while render() returns plain text for LLM).
     fn render_for_ui(&self, resources_tracker: &mut ResourcesTracker) -> String {
         self.render(resources_tracker)
+    }
+
+    /// Return image data produced by this tool, if any.
+    ///
+    /// Tools that produce visual output (e.g. `view_images`) override this to
+    /// return base64-encoded image data.  The agent runner embeds these inside
+    /// the `ToolResultContent` so they are sent as part of the tool result.
+    ///
+    /// The default implementation returns an empty vec (no images).
+    fn render_images(&self) -> Vec<ImageData> {
+        Vec::new()
     }
 }
 

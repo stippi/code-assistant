@@ -559,11 +559,12 @@ impl OpenAIClient {
                         current_images.clear();
                     }
 
-                    // ToolResult as separate "tool" message
-                    let safe_content = if content.is_empty() {
+                    // ToolResult as separate "tool" message (text only; OpenAI doesn't support images in tool results)
+                    let text = content.text_content();
+                    let safe_content = if text.is_empty() {
                         "No output".to_string()
                     } else {
-                        content.clone()
+                        text.to_string()
                     };
 
                     messages.push(OpenAIChatMessage {

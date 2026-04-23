@@ -508,6 +508,9 @@ impl SessionInstance {
                 .get(&execution.tool_request.id)
                 .copied();
 
+            // Collect image data from tools that produce visual output
+            let images = execution.result.render_images();
+
             tool_results.push(crate::ui::ui_events::ToolResultData {
                 tool_id: execution.tool_request.id,
                 status,
@@ -515,6 +518,7 @@ impl SessionInstance {
                 output: Some(output),
                 styled_output: None, // Not available for restored sessions
                 duration_seconds,
+                images,
             });
         }
 
@@ -706,6 +710,7 @@ impl UserInterface for ProxyUI {
                 output,
                 styled_output,
                 duration_seconds,
+                images,
             } = event
             {
                 if let Ok(mut buf) = self.tool_status_buffer.lock() {
@@ -718,6 +723,7 @@ impl UserInterface for ProxyUI {
                             output,
                             styled_output,
                             duration_seconds,
+                            images,
                         },
                     );
                 }

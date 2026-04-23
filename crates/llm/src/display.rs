@@ -51,7 +51,11 @@ impl fmt::Display for ContentBlock {
                     ""
                 };
                 writeln!(f, "ToolResult: tool_use_id={tool_use_id}{error_suffix}")?;
-                writeln!(f, "  Content: {}", content.replace('\n', "\n  "))
+                writeln!(
+                    f,
+                    "  Content: {}",
+                    content.text_content().replace('\n', "\n  ")
+                )
             }
             ContentBlock::Thinking {
                 thinking,
