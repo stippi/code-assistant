@@ -67,17 +67,10 @@ fn should_use_rtk_for_model(model_name: Option<&str>) -> bool {
         return false;
     };
 
-    model_config
-        .config
-        .get("use_rtk")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+    model_config.use_rtk
 }
 
-async fn rewrite_command_line_with_rtk(
-    original_command_line: &str,
-    use_rtk: bool,
-) -> String {
+async fn rewrite_command_line_with_rtk(original_command_line: &str, use_rtk: bool) -> String {
     if !use_rtk {
         info!("RTK command-line rewrite disabled, using original command");
         return original_command_line.to_string();
@@ -283,7 +276,8 @@ impl Tool for ExecuteCommandTool {
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
         let use_rtk = should_use_rtk_for_model(context.model_name.as_deref());
-        let rewritten_command_line = rewrite_command_line_with_rtk(&input.command_line, use_rtk).await;
+        let rewritten_command_line =
+            rewrite_command_line_with_rtk(&input.command_line, use_rtk).await;
 
         // Diag logging: snapshot session_id up-front so every log line in this
         // call can correlate with the .diag.log file for the session.
