@@ -1050,6 +1050,7 @@ impl Agent {
             ui: Some(ui),
             tool_id: Some(tool_id.to_string()),
             session_id: None,
+            model_name: None,
             permission_handler: None, // Will be handled by sub-agent runner
             sub_agent_runner,
         };
@@ -2240,6 +2241,10 @@ impl Agent {
             ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),
             session_id: self.session_id.clone(),
+            model_name: self
+                .session_model_config
+                .as_ref()
+                .map(|config| config.model_name.clone()),
 
             permission_handler: self.permission_handler.as_deref(),
             sub_agent_runner: self.sub_agent_runner.as_deref(),

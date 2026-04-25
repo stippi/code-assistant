@@ -25,6 +25,9 @@ pub struct ToolContext<'a> {
     /// tool behavior; leave `None` when the diag log is not relevant
     /// (MCP, tests).
     pub session_id: Option<String>,
+    /// Optional active model display name (from models.json) for model-specific
+    /// tool behavior flags.
+    pub model_name: Option<String>,
     /// Optional permission handler for potentially sensitive operations
     pub permission_handler: Option<&'a dyn PermissionMediator>,
 
@@ -45,6 +48,7 @@ impl<'a> ToolContext<'a> {
             ui: None,
             tool_id: None,
             session_id: None,
+            model_name: None,
             permission_handler: None,
             sub_agent_runner: None,
         }
