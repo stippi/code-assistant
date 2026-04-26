@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
-    actions, div, px, size, App, Application, Bounds, Context, Entity, IntoElement, KeyBinding,
-    ParentElement, Render, SharedString, Styled, Window, WindowBounds, WindowOptions,
+    actions, div, px, rems, size, App, Application, Bounds, Context, Entity, IntoElement,
+    KeyBinding, ParentElement, Render, SharedString, Styled, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::Root;
 use terminal::{Terminal, TerminalBuilder, TerminalOptions};
@@ -139,7 +139,7 @@ impl TerminalCard {
         let terminal = self.terminal.clone();
         let colors = self.theme_colors.clone();
         let view = cx.new(|cx| {
-            let mut tv = TerminalView::new(terminal, "Menlo", px(13.0), colors, cx);
+            let mut tv = TerminalView::new(terminal, "Menlo", rems(0.8125), colors, cx);
             tv.set_embedded_mode(Some(500), cx);
             tv
         });

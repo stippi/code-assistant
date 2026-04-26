@@ -1,12 +1,13 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use futures::FutureExt;
+use futures::channel::mpsc as fmpsc;
+use futures::{FutureExt, StreamExt};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::{debug, warn};
 
 use command_executor::{
@@ -114,7 +115,15 @@ fn interrupt_terminal(terminal: &Entity<Terminal>, cx: &mut gpui::AsyncApp) {
 const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Global sender to dispatch requests to the GPUI foreground worker.
-static TERMINAL_WORKER: OnceLock<UnboundedSender<TerminalWorkerRequest>> = OnceLock::new();
+///
+/// Using `futures::channel::mpsc` (not `tokio::sync::mpsc`) for this specific
+/// channel because we observed a hang where the worker's foreground task
+/// stopped being polled while sibling foreground tasks continued. The three
+/// heartbeats (`worker`, `fg`, `bg`) showed the main queue draining other
+/// work fine — the worker's `recv().await` waker simply wasn't producing a
+/// rescheduled runnable. Swapping to futures mpsc replaces tokio's AtomicWaker
+/// path with the one zed itself uses everywhere for foreground-task channels.
+static TERMINAL_WORKER: OnceLock<fmpsc::UnboundedSender<TerminalWorkerRequest>> = OnceLock::new();
 
 /// Millisecond-since-epoch of the last time `run_terminal_worker` made progress
 /// (either entered `rx.recv().await` or returned from it). The tokio-side
@@ -122,6 +131,23 @@ static TERMINAL_WORKER: OnceLock<UnboundedSender<TerminalWorkerRequest>> = OnceL
 /// "worker loop is still alive but the channel is wedged" from
 /// "foreground task is frozen / starved".
 static WORKER_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Millisecond-since-epoch of the last background-executor heartbeat tick.
+/// Driven by a 1Hz timer running on `cx.background_executor()`. Diverging
+/// from `WORKER_HEARTBEAT_MS` isolates "foreground task not being polled"
+/// (background advances, foreground doesn't) from "whole GPUI runtime
+/// stalled" (both freeze together).
+static BACKGROUND_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Millisecond-since-epoch of the last foreground-executor heartbeat tick.
+/// Driven by a 1Hz timer running on the *foreground* executor (a separate
+/// `cx.spawn` task from the worker). Tells us whether the main queue is
+/// draining OTHER foreground tasks while our worker is wedged:
+///   - fg_heartbeat fresh + worker_heartbeat stale → worker task specifically
+///     wedged (waker lost, task cancelled, async-task bug, etc).
+///   - fg_heartbeat stale + worker_heartbeat stale → whole main queue not
+///     draining (modal loop, blocked main thread, etc).
+static FOREGROUND_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 
 fn heartbeat_now_ms() -> u64 {
     SystemTime::now()
@@ -134,15 +160,34 @@ fn heartbeat_bump() {
     WORKER_HEARTBEAT_MS.store(heartbeat_now_ms(), Ordering::Relaxed);
 }
 
-/// Format "age since last heartbeat". Returns `"never"` if the worker never
-/// ran, a millisecond age otherwise.
-fn heartbeat_age_desc() -> String {
-    let last = WORKER_HEARTBEAT_MS.load(Ordering::Relaxed);
-    if last == 0 {
+fn background_heartbeat_bump() {
+    BACKGROUND_HEARTBEAT_MS.store(heartbeat_now_ms(), Ordering::Relaxed);
+}
+
+fn foreground_heartbeat_bump() {
+    FOREGROUND_HEARTBEAT_MS.store(heartbeat_now_ms(), Ordering::Relaxed);
+}
+
+fn format_age(last_ms: u64) -> String {
+    if last_ms == 0 {
         return "never".to_string();
     }
     let now = heartbeat_now_ms();
-    format!("{}ms_ago", now.saturating_sub(last))
+    format!("{}ms_ago", now.saturating_sub(last_ms))
+}
+
+/// Format "age since last heartbeat". Returns `"never"` if the worker never
+/// ran, a millisecond age otherwise.
+fn heartbeat_age_desc() -> String {
+    format_age(WORKER_HEARTBEAT_MS.load(Ordering::Relaxed))
+}
+
+fn background_heartbeat_age_desc() -> String {
+    format_age(BACKGROUND_HEARTBEAT_MS.load(Ordering::Relaxed))
+}
+
+fn foreground_heartbeat_age_desc() -> String {
+    format_age(FOREGROUND_HEARTBEAT_MS.load(Ordering::Relaxed))
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +203,7 @@ pub fn register_gpui_terminal_worker(cx: &mut gpui::AsyncApp) {
         return;
     }
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = fmpsc::unbounded();
     match TERMINAL_WORKER.set(tx) {
         Ok(()) => {
             // Spawn the worker as a background task that we detach.
@@ -167,6 +212,35 @@ pub fn register_gpui_terminal_worker(cx: &mut gpui::AsyncApp) {
                 run_terminal_worker(rx, cx).await;
             })
             .detach();
+
+            // Also spawn a 1Hz heartbeat on the *background* executor. The
+            // difference between this tick and the foreground worker heartbeat
+            // tells us whether a stall is foreground-only (GCD main queue
+            // starved/paused) or whole-runtime.
+            let bg_for_bg = cx.background_executor().clone();
+            cx.background_spawn(async move {
+                background_heartbeat_bump();
+                loop {
+                    bg_for_bg.timer(std::time::Duration::from_secs(1)).await;
+                    background_heartbeat_bump();
+                }
+            })
+            .detach();
+
+            // And a 1Hz heartbeat on the *foreground* executor, as a sibling
+            // task to the worker. Distinguishes "worker task wedged while the
+            // main queue is still draining other foreground tasks" from
+            // "main queue not draining at all".
+            let bg_for_fg = cx.background_executor().clone();
+            cx.spawn(async move |_cx| {
+                foreground_heartbeat_bump();
+                loop {
+                    bg_for_fg.timer(std::time::Duration::from_secs(1)).await;
+                    foreground_heartbeat_bump();
+                }
+            })
+            .detach();
+
             debug!("GPUI terminal worker registered");
         }
         Err(_) => {
@@ -175,7 +249,7 @@ pub fn register_gpui_terminal_worker(cx: &mut gpui::AsyncApp) {
     }
 }
 
-fn terminal_worker_sender() -> Option<UnboundedSender<TerminalWorkerRequest>> {
+fn terminal_worker_sender() -> Option<fmpsc::UnboundedSender<TerminalWorkerRequest>> {
     TERMINAL_WORKER.get().cloned()
 }
 
@@ -267,7 +341,7 @@ impl CommandExecutor for GpuiTerminalCommandExecutor {
         };
 
         if sender
-            .send(TerminalWorkerRequest::Execute(request))
+            .unbounded_send(TerminalWorkerRequest::Execute(request))
             .is_err()
         {
             warn!("Failed to dispatch GPUI terminal request, falling back to local execution");
@@ -304,10 +378,12 @@ impl CommandExecutor for GpuiTerminalCommandExecutor {
                 diag::log(
                     sid,
                     format_args!(
-                        "GpuiExec::execute_streaming: tokio-side liveness timeout after {:?} (worker never reported Finished) tool_id={:?} worker_heartbeat={} {}",
+                        "GpuiExec::execute_streaming: tokio-side liveness timeout after {:?} (worker never reported Finished) tool_id={:?} worker_heartbeat={} fg_heartbeat={} bg_heartbeat={} {}",
                         overall_deadline,
                         tool_id,
                         heartbeat_age_desc(),
+                        foreground_heartbeat_age_desc(),
+                        background_heartbeat_age_desc(),
                         resource_snapshot()
                     ),
                 );
@@ -399,14 +475,20 @@ enum TerminalWorkerEvent {
 // ---------------------------------------------------------------------------
 
 async fn run_terminal_worker(
-    mut rx: UnboundedReceiver<TerminalWorkerRequest>,
+    mut rx: fmpsc::UnboundedReceiver<TerminalWorkerRequest>,
     cx: &mut gpui::AsyncApp,
 ) {
     // Stamp heartbeat before the first recv so the tokio side can tell this
     // task at least started.
     heartbeat_bump();
     loop {
-        let msg = rx.recv().await;
+        // Bump immediately before awaiting so the tokio side can tell
+        // "worker is alive, parked in recv" from "worker task stopped being
+        // polled after the last recv returned". If this timestamp is
+        // close to `now` during a hang, the task *was* polled recently and
+        // then parked — so the waker/schedule path is the culprit.
+        heartbeat_bump();
+        let msg = rx.next().await;
         heartbeat_bump();
         match msg {
             Some(TerminalWorkerRequest::Execute(request)) => {

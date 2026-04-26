@@ -72,7 +72,7 @@ fn get_or_create_view(
 
     let terminal_clone = terminal.clone();
     let view = cx.new(|cx| {
-        let mut tv = TerminalView::new(terminal_clone, "Menlo", px(13.), theme_colors, cx);
+        let mut tv = TerminalView::new(terminal_clone, "Menlo", rems(0.8125), theme_colors, cx);
         tv.set_embedded_mode(Some(50), cx);
         tv
     });
@@ -660,6 +660,7 @@ fn render_styled_output(
         .py_1()
         .bg(theme_colors.background)
         .text_size(rems(0.8125))
+        .line_height(rems(0.8125 * 1.4))
         .font_family("Menlo")
         .text_color(theme_colors.foreground)
         .overflow_hidden();
@@ -729,6 +730,7 @@ fn render_plain_output(
         .py_1()
         .bg(theme_colors.background)
         .text_size(rems(0.8125))
+        .line_height(rems(0.8125 * 1.4))
         .font_family("Menlo")
         .text_color(theme_colors.foreground)
         .overflow_hidden();

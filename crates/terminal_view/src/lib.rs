@@ -14,7 +14,8 @@ use gpui::{div, Font, FontStyle, FontWeight, TextRun};
 use gpui::{
     fill, outline, point, px, relative, size, App, BorderStyle, Bounds, ContentMask, Context,
     Element, Entity, EventEmitter, GlobalElementId, Hsla, InspectorElementId, IntoElement,
-    LayoutId, ParentElement, Pixels, Point, Render, SharedString, Size, Style, Styled, Window,
+    LayoutId, ParentElement, Pixels, Point, Rems, Render, SharedString, Size, Style, Styled,
+    Window,
 };
 use terminal::{AlacCell, AlacCellFlags, GridPoint, IndexedCell, Terminal, TerminalBounds};
 
@@ -828,7 +829,7 @@ pub struct TerminalView {
     terminal: Entity<Terminal>,
     mode: TerminalMode,
     font_family: SharedString,
-    font_size: Pixels,
+    font_size: Rems,
     theme_colors: TerminalThemeColors,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -850,7 +851,7 @@ impl TerminalView {
     pub fn new(
         terminal: Entity<Terminal>,
         font_family: impl Into<SharedString>,
-        font_size: Pixels,
+        font_size: Rems,
         theme_colors: TerminalThemeColors,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -940,12 +941,13 @@ impl TerminalView {
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content_mode = self.content_mode(cx);
+        let font_size_px = self.font_size.to_pixels(window.rem_size());
         div().size_full().child(TerminalElement::new(
             self.terminal.clone(),
             self.font_family.clone(),
-            self.font_size,
+            font_size_px,
             self.theme_colors.clone(),
             content_mode,
         ))
