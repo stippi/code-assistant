@@ -333,7 +333,6 @@ impl Render for PlanBanner {
             .border_color(cx.theme().border)
             .px_3()
             .py(rems(0.375))
-            .gap(rems(0.125))
             .child(header_row);
 
         // Show items if expanded OR during animation (scale > 0)
@@ -436,6 +435,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
     div()
         .flex()
         .flex_col()
+        .pt(rems(0.125))
         .gap(rems(0.0625))
         .children(plan.entries.iter().enumerate().map(|(idx, entry)| {
             let is_in_progress = entry.status == PlanItemStatus::InProgress;
