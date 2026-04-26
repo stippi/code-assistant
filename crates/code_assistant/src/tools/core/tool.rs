@@ -20,11 +20,6 @@ pub struct ToolContext<'a> {
     pub ui: Option<&'a dyn crate::ui::UserInterface>,
     /// Optional current tool ID for streaming output
     pub tool_id: Option<String>,
-    /// Optional session ID used only for diagnostic logging — lets tools
-    /// correlate log lines with the session persistence file. Never affects
-    /// tool behavior; leave `None` when the diag log is not relevant
-    /// (MCP, tests).
-    pub session_id: Option<String>,
     /// Optional permission handler for potentially sensitive operations
     pub permission_handler: Option<&'a dyn PermissionMediator>,
 
@@ -44,7 +39,6 @@ impl<'a> ToolContext<'a> {
             plan: None,
             ui: None,
             tool_id: None,
-            session_id: None,
             permission_handler: None,
             sub_agent_runner: None,
         }

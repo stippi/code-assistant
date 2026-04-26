@@ -268,7 +268,6 @@ impl MessageHandler {
                 plan: None,
                 ui: None,
                 tool_id: None,
-                session_id: None,
                 permission_handler: None,
                 sub_agent_runner: None,
             };
