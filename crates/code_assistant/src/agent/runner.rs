@@ -2254,40 +2254,12 @@ impl Agent {
         let mut input = tool_request.input.clone();
         let execution_start = std::time::Instant::now();
 
-        // Diag logging: trace execute_command entry so a hang leaves a trail on
-        // disk even if tracing output isn't captured. Other tools are skipped
-        // to keep the log focused on the path that has the known hang issue.
-        let diag_sid: Option<&str> = if tool_request.name == "execute_command" {
-            self.session_id.as_deref()
-        } else {
-            None
-        };
-        if let Some(sid) = diag_sid {
-            crate::session::diag::log(
-                sid,
-                format_args!(
-                    "runner.execute_tool: entering tool.invoke name={} tool_id={}",
-                    tool_request.name, tool_request.id
-                ),
-            );
-        }
-
         let result = match tool.invoke(&mut context, &mut input).await {
             Ok(result) => {
                 let execution_duration = Some(execution_start.elapsed().as_secs_f64());
 
                 // Tool executed successfully (but may have failed functionally)
                 let success = result.is_success();
-
-                if let Some(sid) = diag_sid {
-                    crate::session::diag::log(
-                        sid,
-                        format_args!(
-                            "runner.execute_tool: tool.invoke returned Ok success={} duration_s={:?} tool_id={}",
-                            success, execution_duration, tool_request.id
-                        ),
-                    );
-                }
 
                 // Check if input parameters were modified during execution
                 let input_modified = input != tool_request.input;
@@ -2380,16 +2352,6 @@ impl Agent {
 
             Err(e) => {
                 let execution_duration = Some(execution_start.elapsed().as_secs_f64());
-
-                if let Some(sid) = diag_sid {
-                    crate::session::diag::log(
-                        sid,
-                        format_args!(
-                            "runner.execute_tool: tool.invoke returned Err duration_s={:?} tool_id={} err={e}",
-                            execution_duration, tool_request.id
-                        ),
-                    );
-                }
 
                 // Tool execution failed (parameter error, etc.)
                 let error_text = Self::format_error_for_user(&e);
