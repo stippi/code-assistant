@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 // Input type for the execute_command tool
 #[derive(Deserialize, Serialize)]
@@ -68,70 +68,6 @@ fn should_use_rtk_for_model(model_name: Option<&str>) -> bool {
     };
 
     model_config.use_rtk
-}
-
-async fn rewrite_command_line_with_rtk(original_command_line: &str, use_rtk: bool) -> String {
-    if !use_rtk {
-        info!("RTK command-line rewrite disabled, using original command");
-        return original_command_line.to_string();
-    }
-
-    info!("RTK command-line rewrite enabled, attempting rewrite");
-    let rtk_process_output = tokio::process::Command::new("rtk")
-        .arg("rewrite")
-        .arg(original_command_line)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
-
-    let rtk_process_output = match rtk_process_output {
-        Ok(output) => output,
-        Err(err) => {
-            warn!("RTK command-line rewrite is enabled but failed to execute `rtk`: {err}");
-            return original_command_line.to_string();
-        }
-    };
-
-    match parse_rtk_response_optimized_command(&rtk_process_output.stdout) {
-        Some(rewritten_command_line) => {
-            if !rtk_process_output.status.success() {
-                let stderr = String::from_utf8_lossy(&rtk_process_output.stderr);
-                info!(
-                    "RTK returned non-zero status ({:?}) but produced a rewritten command line; using it. stderr: {}",
-                    rtk_process_output.status.code(),
-                    stderr.trim()
-                );
-            }
-
-            if rewritten_command_line == original_command_line {
-                info!("RTK command-line rewrite returned unchanged command");
-                return rewritten_command_line;
-            }
-
-            info!("RTK produced a rewritten command line");
-            debug!(
-                "RTK command-line rewrite details: original={:?} rewritten={:?}",
-                original_command_line, rewritten_command_line
-            );
-            rewritten_command_line
-        }
-        None => {
-            if rtk_process_output.status.success() {
-                warn!(
-                    "RTK command-line rewrite returned empty output with success status, using original command"
-                );
-            } else {
-                let stderr = String::from_utf8_lossy(&rtk_process_output.stderr);
-                debug!(
-                    "RTK command-line rewrite returned no output (status: {:?}); using original command. stderr: {}",
-                    rtk_process_output.status.code(),
-                    stderr.trim()
-                );
-            }
-            original_command_line.to_string()
-        }
-    }
 }
 
 // Render implementation for output formatting
@@ -275,23 +211,62 @@ impl Tool for ExecuteCommandTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        let use_rtk = should_use_rtk_for_model(context.model_name.as_deref());
-        let rewritten_command_line =
-            rewrite_command_line_with_rtk(&input.command_line, use_rtk).await;
 
-        // Diag logging: snapshot session_id up-front so every log line in this
-        // call can correlate with the .diag.log file for the session.
-        let diag_session = context.session_id.clone();
-        let diag_tool_id = context.tool_id.clone();
-        if let Some(sid) = diag_session.as_deref() {
-            crate::session::diag::log(
-                sid,
-                format_args!(
-                    "ExecuteCommandTool::execute: entered tool_id={:?} project={} cmd={:?} rewritten={:?}",
-                    diag_tool_id, input.project, input.command_line, rewritten_command_line
-                ),
-            );
-        }
+        let use_rtk = should_use_rtk_for_model(context.model_name.as_deref());
+        let original_command_line = input.command_line.clone();
+        let effective_command_line = if !use_rtk {
+            original_command_line.clone()
+        } else {
+            match tokio::process::Command::new("rtk")
+                .arg("rewrite")
+                .arg(&original_command_line)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+            {
+                Ok(rtk_process_output) => {
+                    if let Some(output) =
+                        parse_rtk_response_optimized_command(&rtk_process_output.stdout)
+                    {
+                        if !rtk_process_output.status.success() {
+                            let stderr = String::from_utf8_lossy(&rtk_process_output.stderr);
+                            debug!(
+                                "RTK returned non-zero status ({:?}) but produced a rewritten command line; using it. stderr: {}",
+                                rtk_process_output.status.code(),
+                                stderr.trim()
+                            );
+                        }
+
+                        if output != original_command_line {
+                            debug!(
+                                "RTK command-line rewrite details: original={:?} rewritten={:?}",
+                                original_command_line, output
+                            );
+                        }
+                        output
+                    } else {
+                        if rtk_process_output.status.success() {
+                            warn!(
+                                "RTK command-line rewrite returned empty output with success status, using original command"
+                            );
+                        } else {
+                            let stderr = String::from_utf8_lossy(&rtk_process_output.stderr);
+                            debug!(
+                                "RTK command-line rewrite returned no output (status: {:?}); using original command. stderr: {}",
+                                rtk_process_output.status.code(),
+                                stderr.trim()
+                            );
+                        }
+                        original_command_line.clone()
+                    }
+                }
+                Err(err) => {
+                    warn!("RTK command-line rewrite is enabled but failed to execute `rtk`: {err}");
+                    original_command_line.clone()
+                }
+            }
+        };
 
         // Get explorer for the specified project
         let explorer = context
@@ -334,14 +309,14 @@ impl Tool for ExecuteCommandTool {
             })?;
 
             let decision = handler
-                .request_permission(PermissionRequest {
-                    tool_id: context.tool_id.as_deref(),
-                    tool_name: "execute_command",
-                    reason: PermissionRequestReason::ExecuteCommand {
-                        command_line: &rewritten_command_line,
-                        working_dir: Some(effective_working_dir.as_path()),
-                    },
-                })
+                    .request_permission(PermissionRequest {
+                        tool_id: context.tool_id.as_deref(),
+                        tool_name: "execute_command",
+                        reason: PermissionRequestReason::ExecuteCommand {
+                            command_line: &effective_command_line,
+                            working_dir: Some(effective_working_dir.as_path()),
+                        },
+                    })
                 .await?;
 
             match decision {
@@ -372,7 +347,7 @@ impl Tool for ExecuteCommandTool {
                 context
                     .command_executor
                     .execute_streaming(
-                        &rewritten_command_line,
+                        &effective_command_line,
                         Some(&effective_working_dir),
                         Some(&callback),
                         Some(&sandbox_request),
@@ -384,7 +359,7 @@ impl Tool for ExecuteCommandTool {
                 context
                     .command_executor
                     .execute_streaming(
-                        &rewritten_command_line,
+                        &effective_command_line,
                         Some(&effective_working_dir),
                         None,
                         Some(&sandbox_request),
@@ -395,7 +370,7 @@ impl Tool for ExecuteCommandTool {
 
         Ok(ExecuteCommandOutput {
             project: input.project.clone(),
-            command_line: rewritten_command_line,
+            command_line: effective_command_line,
             working_dir: working_dir_path,
             output: result.output,
             success: result.success,
