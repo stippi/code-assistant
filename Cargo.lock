@@ -1424,6 +1424,7 @@ dependencies = [
  "keepawake",
  "llm",
  "md5",
+ "notify",
  "open",
  "percent-encoding",
  "rand 0.8.5",

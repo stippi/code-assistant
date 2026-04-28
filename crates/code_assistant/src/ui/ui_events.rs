@@ -219,6 +219,11 @@ pub enum UiEvent {
         branch_info: BranchInfo,
     },
 
+    // === Cross-instance awareness ===
+    /// Another process modified the session file on disk for the currently
+    /// viewed session.  The UI should reload messages from persistence.
+    RefreshCurrentSession { session_id: String },
+
     // === Resource Events (for tool operations) ===
     /// A file was loaded/read by a tool
     ResourceLoaded { project: String, path: PathBuf },

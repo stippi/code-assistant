@@ -686,6 +686,18 @@ impl RootView {
                 None
             };
 
+            let is_externally_locked = matches!(
+                current_activity_state,
+                Some(crate::session::instance::SessionActivityState::RunningExternally)
+            );
+            if is_externally_locked {
+                tracing::warn!(
+                    "RootView: Cannot send message — session {} is running in another instance",
+                    session_id
+                );
+                return;
+            }
+
             let agent_is_running = if let Some(state) = current_activity_state {
                 !state.is_terminal()
             } else {

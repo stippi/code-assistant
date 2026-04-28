@@ -30,6 +30,10 @@ pub enum SessionActivityState {
     RateLimited { seconds_remaining: u64 },
     /// Agent terminated with an error
     Errored { message: String },
+    /// Agent is running in another code-assistant process.
+    /// The session is view-only in this instance: the user can browse
+    /// messages but cannot send or queue new ones.
+    RunningExternally,
 }
 
 impl SessionActivityState {
@@ -38,6 +42,12 @@ impl SessionActivityState {
     /// agent is explicitly started.
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Idle | Self::Errored { .. })
+    }
+
+    /// Whether the session is locked by another code-assistant instance.
+    #[allow(dead_code)]
+    pub fn is_running_externally(&self) -> bool {
+        matches!(self, Self::RunningExternally)
     }
 }
 

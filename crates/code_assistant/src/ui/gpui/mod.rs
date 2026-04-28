@@ -1379,6 +1379,19 @@ impl Gpui {
                 cx.refresh().expect("Failed to refresh windows");
             }
 
+            UiEvent::RefreshCurrentSession { session_id } => {
+                // Another process modified the session file on disk.
+                // Re-trigger the load-session flow which reloads from
+                // persistence and rebuilds the message list.
+                debug!("UI: RefreshCurrentSession for {session_id}");
+                let current = self.current_session_id.lock().unwrap().clone();
+                if current.as_deref() == Some(session_id.as_str()) {
+                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                    }
+                }
+            }
+
             // Resource events - logged for now, can be extended for features like "follow mode"
             UiEvent::ResourceLoaded { project, path } => {
                 trace!(
@@ -1826,6 +1839,20 @@ impl Gpui {
 
     pub fn get_current_session_id(&self) -> Option<String> {
         self.current_session_id.lock().unwrap().clone()
+    }
+
+    /// Returns a clone of the shared current-session-id mutex.
+    ///
+    /// Used by the filesystem watcher to know which session is being viewed.
+    pub fn current_session_id_ref(&self) -> Arc<Mutex<Option<String>>> {
+        self.current_session_id.clone()
+    }
+
+    /// Returns a clone of the UI event sender channel.
+    ///
+    /// Used by the filesystem watcher to inject events into the UI loop.
+    pub fn event_sender(&self) -> async_channel::Sender<UiEvent> {
+        self.event_sender.lock().unwrap().clone()
     }
 
     pub fn get_current_error(&self) -> Option<String> {

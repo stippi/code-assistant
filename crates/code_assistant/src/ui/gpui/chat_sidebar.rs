@@ -134,7 +134,9 @@ impl Render for ChatListItem {
         let is_active = !matches!(self.activity_state, SessionActivityState::Idle);
         let is_errored = matches!(self.activity_state, SessionActivityState::Errored { .. });
         let activity_color = match &self.activity_state {
-            SessionActivityState::AgentRunning => cx.theme().info,
+            SessionActivityState::AgentRunning | SessionActivityState::RunningExternally => {
+                cx.theme().info
+            }
             SessionActivityState::WaitingForResponse => cx.theme().primary,
             SessionActivityState::RateLimited { .. } => cx.theme().warning,
             SessionActivityState::Errored { .. } => cx.theme().danger,

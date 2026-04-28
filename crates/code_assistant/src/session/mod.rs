@@ -11,6 +11,7 @@ use std::path::PathBuf;
 pub mod instance;
 pub mod manager;
 pub mod sleep_inhibitor;
+pub mod watcher;
 
 // Main session manager
 pub use manager::SessionManager;

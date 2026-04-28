@@ -231,6 +231,19 @@ impl SessionManager {
             policy: sandbox_policy_for_event,
         });
 
+        // Check if another process holds the agent lock for this session.
+        // If so, mark it as RunningExternally so the UI disables input.
+        if self.is_agent_locked_externally(&session_id) {
+            debug!(
+                "Session {} has an agent running in another process",
+                session_id
+            );
+            ui_events.push(UiEvent::UpdateSessionActivityState {
+                session_id: session_id.clone(),
+                activity_state: crate::session::instance::SessionActivityState::RunningExternally,
+            });
+        }
+
         // Set as active
         self.active_session_id = Some(session_id.clone());
 
@@ -340,7 +353,6 @@ impl SessionManager {
 
     /// Start an agent for a session (message must already be added via add_user_message)
     #[allow(clippy::too_many_arguments)]
-
     pub async fn start_agent_for_session(
         &mut self,
         session_id: &str,

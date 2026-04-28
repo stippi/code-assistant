@@ -176,19 +176,32 @@ pub fn try_acquire_agent_lock(
             debug!("Agent lock already held for session {session_id}");
             Ok(None)
         }
+
         Err(e) => {
             // On some platforms the error kind for "already locked" may differ
-            // from WouldBlock.  Check the raw OS error.
-            #[cfg(unix)]
-            {
-                if let Some(raw) = e.raw_os_error() {
-                    // EAGAIN/EWOULDBLOCK: 11 on Linux, 35 on macOS
-                    if raw == 11 || raw == 35 {
-                        debug!(
-                            "Agent lock already held for session {session_id} (raw errno {raw})"
-                        );
-                        return Ok(None);
+            // from WouldBlock.  Check the raw OS error as a fallback.
+            if let Some(raw) = e.raw_os_error() {
+                let is_lock_busy = {
+                    #[cfg(unix)]
+                    {
+                        // EAGAIN/EWOULDBLOCK: 11 on Linux, 35 on macOS
+                        raw == 11 || raw == 35
                     }
+                    #[cfg(windows)]
+                    {
+                        // ERROR_LOCK_VIOLATION (33) or ERROR_IO_PENDING (997)
+                        raw == 33 || raw == 997
+                    }
+                    #[cfg(not(any(unix, windows)))]
+                    {
+                        let _ = raw;
+                        false
+                    }
+                };
+
+                if is_lock_busy {
+                    debug!("Agent lock already held for session {session_id} (raw os error {raw})");
+                    return Ok(None);
                 }
             }
             Err(anyhow::anyhow!(

@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
 use crate::types::{PlanState, ToolSyntax};
-use crate::utils::file_utils::{atomic_write, atomic_write_json, lock_exclusive};
+use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 
 // ============================================================================
 // Session Branching Types
