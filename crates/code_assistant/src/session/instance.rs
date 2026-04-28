@@ -11,6 +11,7 @@ use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
+use crate::utils::file_utils::AgentLockGuard;
 use async_trait::async_trait;
 use sandbox::SandboxContext;
 use tracing::{debug, error};
@@ -78,6 +79,13 @@ pub struct SessionInstance {
 
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
+
+    /// Exclusive cross-process lock held while an agent is running.
+    ///
+    /// Acquired before spawning the agent task, released on task completion
+    /// or abort.  Prevents two code-assistant processes from running an
+    /// agent for the same session simultaneously.
+    pub agent_lock: Option<AgentLockGuard>,
 }
 
 impl SessionInstance {
@@ -98,6 +106,7 @@ impl SessionInstance {
             pending_message: Arc::new(Mutex::new(None)),
             sandbox_context,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
+            agent_lock: None,
         }
     }
 
@@ -137,12 +146,14 @@ impl SessionInstance {
         }
     }
 
-    /// Terminate the running agent
+    /// Terminate the running agent and release the cross-process agent lock.
     pub fn terminate_agent(&mut self) {
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
             self.clear_fragment_buffer();
         }
+        // Release the cross-process agent lock
+        self.agent_lock = None;
     }
 
     /// Add a message with optional branching support.

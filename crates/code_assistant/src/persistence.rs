@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
 use crate::types::{PlanState, ToolSyntax};
+use crate::utils::file_utils::{atomic_write, atomic_write_json, lock_exclusive};
 
 // ============================================================================
 // Session Branching Types
@@ -568,16 +569,31 @@ impl FileSessionPersistence {
         Ok(chats_dir.join("metadata.json"))
     }
 
+    fn metadata_lock_path(&self) -> Result<PathBuf> {
+        let chats_dir = self.ensure_chats_dir()?;
+        Ok(chats_dir.join("metadata.lock"))
+    }
+
+    /// Returns the sessions directory path.
+    ///
+    /// Used by callers that need to interact with per-session lock files.
+    pub fn sessions_dir(&self) -> Result<PathBuf> {
+        self.ensure_chats_dir()
+    }
+
     pub fn save_chat_session(&mut self, session: &ChatSession) -> Result<()> {
         let mut session = session.clone();
         session.ensure_config()?;
 
         let session_path = self.chat_file_path(&session.id)?;
         debug!("Saving chat session to {}", session_path.display());
-        let json = serde_json::to_string_pretty(&session)?;
-        std::fs::write(session_path, json)?;
+        atomic_write_json(&session_path, &session)?;
 
-        // Update metadata
+        // Update metadata under an advisory lock so concurrent processes
+        // don't lose each other's changes.
+        let metadata_lock_path = self.metadata_lock_path()?;
+        let _lock = lock_exclusive(&metadata_lock_path)?;
+
         let metadata_path = self.metadata_file_path()?;
         let mut metadata_list: Vec<ChatMetadata> = if metadata_path.exists() {
             let content = std::fs::read_to_string(&metadata_path)?;
@@ -590,7 +606,6 @@ impl FileSessionPersistence {
         let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
 
         // Update or add metadata for this session
-
         let new_metadata = ChatMetadata {
             id: session.id.clone(),
             name: session.name.clone(),
@@ -611,8 +626,7 @@ impl FileSessionPersistence {
             metadata_list.push(new_metadata);
         }
 
-        let metadata_json = serde_json::to_string_pretty(&metadata_list)?;
-        std::fs::write(metadata_path, metadata_json)?;
+        atomic_write_json(&metadata_path, &metadata_list)?;
 
         Ok(())
     }
@@ -684,7 +698,10 @@ impl FileSessionPersistence {
             std::fs::remove_file(session_path)?;
         }
 
-        // Update metadata to remove this session
+        // Update metadata under lock
+        let metadata_lock_path = self.metadata_lock_path()?;
+        let _lock = lock_exclusive(&metadata_lock_path)?;
+
         let metadata_path = self.metadata_file_path()?;
         if metadata_path.exists() {
             let content = std::fs::read_to_string(&metadata_path)?;
@@ -693,8 +710,7 @@ impl FileSessionPersistence {
 
             metadata_list.retain(|m| m.id != session_id);
 
-            let metadata_json = serde_json::to_string_pretty(&metadata_list)?;
-            std::fs::write(metadata_path, metadata_json)?;
+            atomic_write_json(&metadata_path, &metadata_list)?;
         }
 
         Ok(())
@@ -835,11 +851,15 @@ impl FileSessionPersistence {
         Ok(metadata_list)
     }
 
-    /// Helper method to save metadata list to file
+    /// Helper method to save metadata list to file.
+    ///
+    /// Acquires the metadata lock and writes atomically.
     fn save_metadata_list(&self, metadata_list: &[ChatMetadata]) -> Result<()> {
+        let metadata_lock_path = self.metadata_lock_path()?;
+        let _lock = lock_exclusive(&metadata_lock_path)?;
+
         let metadata_path = self.metadata_file_path()?;
-        let metadata_json = serde_json::to_string_pretty(metadata_list)?;
-        std::fs::write(metadata_path, metadata_json)?;
+        atomic_write_json(&metadata_path, metadata_list)?;
         Ok(())
     }
 
@@ -1026,9 +1046,8 @@ impl DraftStorage {
         draft.set_message(text_content.to_string());
         draft.attachments = attachments.to_vec();
 
-        // Serialize and save
-        let draft_json = serde_json::to_string_pretty(&draft)?;
-        std::fs::write(&file_path, draft_json)?;
+        // Serialize and save atomically
+        atomic_write_json(&file_path, &draft)?;
 
         Ok(())
     }

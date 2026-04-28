@@ -169,9 +169,8 @@ impl AgentStatePersistence for FileStatePersistence {
         session.next_request_id = next_request_id.unwrap_or(0);
         session.updated_at = SystemTime::now();
 
-        // Save to file
-        let json = serde_json::to_string_pretty(&session)?;
-        std::fs::write(&self.state_file_path, json)?;
+        // Save atomically
+        crate::utils::file_utils::atomic_write_json(&self.state_file_path, &session)?;
 
         debug!("Agent state saved successfully");
         Ok(())

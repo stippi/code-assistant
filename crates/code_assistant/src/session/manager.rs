@@ -17,6 +17,7 @@ use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
+use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
@@ -339,6 +340,7 @@ impl SessionManager {
 
     /// Start an agent for a session (message must already be added via add_user_message)
     #[allow(clippy::too_many_arguments)]
+
     pub async fn start_agent_for_session(
         &mut self,
         session_id: &str,
@@ -348,6 +350,18 @@ impl SessionManager {
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
+        // Acquire exclusive cross-process agent lock.
+        // This prevents another code-assistant instance from running an agent
+        // for the same session concurrently.
+        let sessions_dir = self.persistence.sessions_dir()?;
+        let agent_lock = file_utils::try_acquire_agent_lock(&sessions_dir, session_id)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot start agent for session {session_id}: \
+                     another code-assistant instance is already running an agent for this session"
+                )
+            })?;
+
         // Prepare session - need to scope the mutable borrow carefully
         let (
             session_config,
@@ -489,13 +503,18 @@ impl SessionManager {
         // Load the session state into the agent
         agent.load_from_session_state(session_state).await?;
 
-        // Spawn the agent task
+        // Spawn the agent task.
+        //
+        // The `_agent_lock` guard is moved into the task so the cross-process
+        // lock is held for exactly as long as the agent is running and released
+        // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
         let ui_clone = ui.clone();
         let sleep_inhibitor = self.sleep_inhibitor.clone();
         sleep_inhibitor.agent_started();
 
         let task_handle = tokio::spawn(async move {
+            let _agent_lock = agent_lock; // moved in — released on drop
             debug!("Starting agent for session {}", session_id_clone);
 
             // Use catch_unwind to ensure cleanup runs even if the agent panics.
@@ -796,6 +815,25 @@ impl SessionManager {
         }
 
         None
+    }
+
+    /// Check whether a session's agent lock is held by another process.
+    ///
+    /// Returns `true` if an external process is running an agent for this
+    /// session. Used by the UI to decide whether to disable the message input.
+    pub fn is_agent_locked_externally(&self, session_id: &str) -> bool {
+        // If *we* have the session in our active_sessions with a running task,
+        // the lock is ours, not external.
+        if let Some(instance) = self.active_sessions.get(session_id) {
+            if !instance.get_activity_state().is_terminal() {
+                return false; // Our own agent holds the lock
+            }
+        }
+
+        let Ok(sessions_dir) = self.persistence.sessions_dir() else {
+            return false;
+        };
+        file_utils::is_agent_locked(&sessions_dir, session_id)
     }
 
     /// Get the latest session ID for auto-resuming
