@@ -280,9 +280,11 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             let tool_hidden =
                                 ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
-                            // Only add fragments if tool is not hidden
-
-                            if !tool_hidden {
+                            if tool_hidden {
+                                // Emit HiddenToolCompleted so UI can handle paragraph breaks
+                                // (same as during live streaming)
+                                fragments.push(DisplayFragment::HiddenToolCompleted);
+                            } else {
                                 // Add tool name fragment with duration from the ToolUse block
                                 fragments.push(DisplayFragment::ToolName {
                                     name: name.clone(),

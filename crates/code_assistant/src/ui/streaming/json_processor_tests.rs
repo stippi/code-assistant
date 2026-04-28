@@ -1246,4 +1246,54 @@ mod tests {
             "HiddenToolCompleted should be emitted for hidden tools"
         );
     }
+
+    #[test]
+    fn test_extract_fragments_hidden_tool_emits_hidden_tool_completed() {
+        // When restoring a session, extract_fragments_from_message should emit
+        // HiddenToolCompleted for hidden tools (like update_plan) so that the UI
+        // can insert paragraph breaks between surrounding text.
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(test_ui.clone());
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+
+        let tool_input = serde_json::json!({
+            "entries": [{"content": "step 1"}]
+        });
+
+        let message = llm::Message::new_assistant_content(vec![
+            llm::ContentBlock::new_text("Let me update the plan:"),
+            llm::ContentBlock::new_tool_use("tool_42_1", "update_plan", tool_input),
+            llm::ContentBlock::new_text("## Summary\nDone."),
+        ]);
+
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+        print_fragments(&fragments);
+
+        // Should NOT contain any tool name/param/end fragments for the hidden tool
+        assert!(
+            !fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::ToolName { .. })),
+            "ToolName should be suppressed for hidden tools"
+        );
+
+        // Should contain HiddenToolCompleted
+        assert!(
+            fragments
+                .iter()
+                .any(|f| matches!(f, DisplayFragment::HiddenToolCompleted)),
+            "HiddenToolCompleted should be emitted for hidden tools during extract"
+        );
+
+        // Should contain both text fragments
+        let text_fragments: Vec<_> = fragments
+            .iter()
+            .filter_map(|f| match f {
+                DisplayFragment::PlainText(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text_fragments.iter().any(|t| t.contains("update the plan")));
+        assert!(text_fragments.iter().any(|t| t.contains("Summary")));
+    }
 }
