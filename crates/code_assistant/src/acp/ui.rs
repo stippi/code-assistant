@@ -735,7 +735,8 @@ impl UserInterface for ACPUserUI {
             | UiEvent::RollbackStreaming { .. }
             | UiEvent::ShowTransientStatus { .. }
             | UiEvent::ClearTransientStatus
-            | UiEvent::RefreshCurrentSession { .. } => {
+            | UiEvent::RefreshCurrentSession { .. }
+            | UiEvent::AppendMessages { .. } => {
                 // These are UI management events, not relevant for ACP
                 // (RollbackStreaming: ACP cannot retract already-sent notifications)
             }

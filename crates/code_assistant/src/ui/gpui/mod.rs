@@ -1008,6 +1008,109 @@ impl Gpui {
                 self.notify_messages_reset(cx);
             }
 
+            UiEvent::AppendMessages {
+                messages,
+                tool_results,
+            } => {
+                // Incremental update: append new messages without clearing existing ones.
+                let old_len = self.message_queue.lock().unwrap().len();
+
+                let current_project = {
+                    let sid = self.current_session_id.lock().unwrap().clone();
+                    if let Some(ref session_id) = sid {
+                        let sessions = self.chat_sessions.lock().unwrap();
+                        sessions
+                            .iter()
+                            .find(|s| s.id == *session_id)
+                            .map(|s| s.initial_project.clone())
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                };
+
+                let session_id = self.current_session_id.lock().unwrap().clone();
+
+                for message_data in messages {
+                    let current_container = {
+                        let mut queue = self.message_queue.lock().unwrap();
+
+                        let needs_new_container = if let Some(last_container) = queue.last() {
+                            let last_role = cx
+                                .update_entity(last_container, |container, _cx| {
+                                    if container.is_user_message() {
+                                        MessageRole::User
+                                    } else {
+                                        MessageRole::Assistant
+                                    }
+                                })
+                                .expect("Failed to get container role");
+                            last_role == MessageRole::User || last_role != message_data.role
+                        } else {
+                            true
+                        };
+
+                        if needs_new_container {
+                            let container = cx
+                                .new(|cx| {
+                                    MessageContainer::with_role(message_data.role.clone(), cx)
+                                })
+                                .expect("Failed to create message container");
+
+                            let node_id = message_data.node_id;
+                            let branch_info = message_data.branch_info.clone();
+                            let sid = session_id.clone();
+                            self.update_container(&container, cx, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                                container.set_node_id(node_id);
+                                container.set_branch_info(branch_info);
+                                container.set_session_id(sid);
+                            });
+
+                            queue.push(container.clone());
+                            container
+                        } else {
+                            let container = queue.last().unwrap().clone();
+                            let sid = session_id.clone();
+                            self.update_container(&container, cx, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                                container.set_session_id(sid);
+                            });
+                            container
+                        }
+                    };
+
+                    self.process_fragments_for_container(
+                        &current_container,
+                        message_data.fragments,
+                        cx,
+                    );
+                }
+
+                // Apply tool results
+                for tool_result in tool_results {
+                    let ui_images: Vec<(String, String)> = tool_result
+                        .images
+                        .iter()
+                        .map(|img| (img.media_type.clone(), img.base64_data.clone()))
+                        .collect();
+                    self.update_all_messages(cx, |message_container, cx| {
+                        message_container.update_tool_status(
+                            &tool_result.tool_id,
+                            tool_result.status,
+                            tool_result.message.clone(),
+                            tool_result.output.clone(),
+                            tool_result.styled_output.clone(),
+                            tool_result.duration_seconds,
+                            ui_images.clone(),
+                            cx,
+                        );
+                    });
+                }
+
+                self.notify_messages_appended(old_len, cx);
+            }
+
             UiEvent::StreamingStarted(request_id) => {
                 let old_len;
                 {
@@ -1381,13 +1484,13 @@ impl Gpui {
 
             UiEvent::RefreshCurrentSession { session_id } => {
                 // Another process modified the session file on disk.
-                // Re-trigger the load-session flow which reloads from
-                // persistence and rebuilds the message list.
+                // Use incremental refresh which diffs the active path and only
+                // appends new messages (no-op if we wrote the change ourselves).
                 debug!("UI: RefreshCurrentSession for {session_id}");
                 let current = self.current_session_id.lock().unwrap().clone();
                 if current.as_deref() == Some(session_id.as_str()) {
                     if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                        let _ = sender.try_send(BackendEvent::RefreshSession { session_id });
                     }
                 }
             }

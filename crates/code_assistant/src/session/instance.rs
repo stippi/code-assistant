@@ -492,6 +492,111 @@ impl SessionInstance {
         Ok(messages_data)
     }
 
+    /// Convert a specific subset of nodes (by their IDs) to UI MessageData.
+    /// Used for incremental updates when new nodes are appended to the active path.
+    pub fn convert_messages_from_nodes(
+        &self,
+        node_ids: &[crate::persistence::NodeId],
+        tool_syntax: crate::types::ToolSyntax,
+    ) -> Result<Vec<MessageData>, anyhow::Error> {
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn send_event(
+                &self,
+                _event: crate::ui::UiEvent,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn display_fragment(
+                &self,
+                _fragment: &crate::ui::DisplayFragment,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn should_streaming_continue(&self) -> bool {
+                true
+            }
+            fn notify_rate_limit(&self, _seconds_remaining: u64) {}
+            fn clear_rate_limit(&self) {}
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
+
+        let mut messages_data = Vec::new();
+
+        for &node_id in node_ids {
+            let Some(node) = self.session.message_nodes.get(&node_id) else {
+                continue;
+            };
+            let message = &node.message;
+
+            if message.is_compaction_summary {
+                let summary = match &message.content {
+                    llm::MessageContent::Text(text) => text.trim().to_string(),
+                    llm::MessageContent::Structured(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string(),
+                };
+                messages_data.push(MessageData {
+                    role: MessageRole::User,
+                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    node_id: Some(node_id),
+                    branch_info: self.session.get_branch_info(node_id),
+                });
+                continue;
+            }
+
+            // Skip tool-result user messages
+            if message.role == llm::MessageRole::User {
+                match &message.content {
+                    llm::MessageContent::Text(text) if text.trim().is_empty() => continue,
+                    llm::MessageContent::Structured(blocks) => {
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
+                        if has_tool_results {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    messages_data.push(MessageData {
+                        role,
+                        fragments,
+                        node_id: Some(node_id),
+                        branch_info: self.session.get_branch_info(node_id),
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to extract fragments from message: {}", e);
+                }
+            }
+        }
+
+        Ok(messages_data)
+    }
+
     /// Convert tool executions to UI tool result data
     pub fn convert_tool_executions_to_ui_data(
         &self,

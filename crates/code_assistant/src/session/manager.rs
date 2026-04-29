@@ -259,6 +259,75 @@ impl SessionManager {
         Ok(ui_events)
     }
 
+    /// Incremental refresh of the currently viewed session.
+    ///
+    /// Reloads the session from persistence and compares the on-disk
+    /// `active_path` with the in-memory version.  Returns:
+    /// - `Ok(vec![])` if nothing changed (our own writes)
+    /// - `Ok(vec![AppendMessages { .. }])` if new nodes were appended
+    /// - `Ok(vec![SetMessages { .. }])` if the paths diverged (full reload fallback)
+    pub fn refresh_session_incremental(&mut self, session_id: &str) -> Result<Vec<UiEvent>> {
+        let session_instance = self
+            .active_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        // Capture old active path before reload
+        let old_path = session_instance.session.active_path.clone();
+        let old_tool_count = session_instance.session.tool_executions.len();
+
+        // Reload from disk
+        session_instance.reload_from_persistence(&self.persistence)?;
+
+        let new_path = &session_instance.session.active_path;
+
+        // Case 1: Paths are identical → no-op
+        if *new_path == old_path {
+            return Ok(Vec::new());
+        }
+
+        // Case 2: Old path is a strict prefix of new path → append-only
+        if new_path.len() > old_path.len() && new_path.starts_with(&old_path) {
+            debug!(
+                "Incremental refresh for {session_id}: {} new node(s)",
+                new_path.len() - old_path.len()
+            );
+
+            // Convert only the new nodes to MessageData
+            let tool_syntax = session_instance.session.config.tool_syntax;
+            let new_node_ids = &new_path[old_path.len()..];
+
+            // Build messages for the new nodes only
+            let messages_data =
+                session_instance.convert_messages_from_nodes(new_node_ids, tool_syntax)?;
+
+            // Collect tool results that are new since last time
+            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
+            let new_tool_results = all_tool_results.into_iter().skip(old_tool_count).collect();
+
+            let mut events = Vec::new();
+
+            if !messages_data.is_empty() {
+                events.push(UiEvent::AppendMessages {
+                    messages: messages_data,
+                    tool_results: new_tool_results,
+                });
+            }
+
+            // Always update plan (may have changed independently of messages)
+            events.push(UiEvent::UpdatePlan {
+                plan: session_instance.session.plan.clone(),
+            });
+
+            return Ok(events);
+        }
+
+        // Case 3: Paths diverged → full reload fallback
+        debug!("Incremental refresh for {session_id}: paths diverged, full reload");
+        let ui_events = session_instance.generate_session_connect_events()?;
+        Ok(ui_events)
+    }
+
     /// Add a user message to a session and return the new node_id.
     /// This is used to add the message before displaying it in the UI,
     /// ensuring the node_id is available for the edit button.
