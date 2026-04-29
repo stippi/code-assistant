@@ -272,6 +272,14 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
+        // If the agent is running locally on this session, skip the refresh.
+        // Streaming events already keep the UI up-to-date; reloading from
+        // persistence would produce duplicates.
+        let activity = session_instance.get_activity_state();
+        if !activity.is_terminal() && !activity.is_running_externally() {
+            return Ok(Vec::new());
+        }
+
         // Capture old active path before reload
         let old_path = session_instance.session.active_path.clone();
         let old_tool_count = session_instance.session.tool_executions.len();
