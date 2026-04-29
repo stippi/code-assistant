@@ -289,9 +289,25 @@ impl SessionManager {
 
         let new_path = &session_instance.session.active_path;
 
-        // Case 1: Paths are identical → no-op
-        if *new_path == old_path {
+        let new_tool_count = session_instance.session.tool_executions.len();
+
+        // Case 1: Paths identical and no new tool results → true no-op
+        if *new_path == old_path && new_tool_count == old_tool_count {
             return Ok(Vec::new());
+        }
+
+        // Case 1b: Paths identical but new tool results appeared
+        if *new_path == old_path {
+            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
+            let new_tool_results: Vec<_> =
+                all_tool_results.into_iter().skip(old_tool_count).collect();
+            if new_tool_results.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![UiEvent::AppendMessages {
+                messages: Vec::new(),
+                tool_results: new_tool_results,
+            }]);
         }
 
         // Case 2: Old path is a strict prefix of new path → append-only
@@ -311,11 +327,12 @@ impl SessionManager {
 
             // Collect tool results that are new since last time
             let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
-            let new_tool_results = all_tool_results.into_iter().skip(old_tool_count).collect();
+            let new_tool_results: Vec<_> =
+                all_tool_results.into_iter().skip(old_tool_count).collect();
 
             let mut events = Vec::new();
 
-            if !messages_data.is_empty() {
+            if !messages_data.is_empty() || !new_tool_results.is_empty() {
                 events.push(UiEvent::AppendMessages {
                     messages: messages_data,
                     tool_results: new_tool_results,
