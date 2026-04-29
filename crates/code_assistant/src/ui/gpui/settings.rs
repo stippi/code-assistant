@@ -124,22 +124,12 @@ impl UiSettings {
     /// Persist settings to disk. Errors are logged but not propagated.
     pub fn save(&self) {
         let path = Self::settings_path();
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                warn!("Failed to create config directory: {}", e);
-                return;
-            }
-        }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    warn!("Failed to write UI settings to {}: {}", path.display(), e);
-                } else {
-                    debug!("Saved UI settings to {}", path.display());
-                }
+        match crate::utils::file_utils::atomic_write_json(&path, self) {
+            Ok(()) => {
+                debug!("Saved UI settings to {}", path.display());
             }
             Err(e) => {
-                warn!("Failed to serialize UI settings: {}", e);
+                warn!("Failed to save UI settings to {}: {}", path.display(), e);
             }
         }
     }

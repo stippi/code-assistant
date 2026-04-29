@@ -209,7 +209,7 @@ impl UiStateStore {
 /// Designed to be called from a background thread via `cx.background_spawn`.
 pub fn write_ui_state_files(files: Vec<(PathBuf, String)>) {
     for (path, json) in files {
-        if let Err(e) = std::fs::write(&path, &json) {
+        if let Err(e) = crate::utils::file_utils::atomic_write(&path, json.as_bytes()) {
             warn!("Failed to write UI state file {}: {}", path.display(), e);
         } else {
             debug!("Saved UI state to {}", path.display());

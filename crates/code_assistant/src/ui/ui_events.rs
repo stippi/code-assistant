@@ -219,6 +219,18 @@ pub enum UiEvent {
         branch_info: BranchInfo,
     },
 
+    // === Cross-instance awareness ===
+    /// Another process modified the session file on disk for the currently
+    /// viewed session.  The UI should reload messages from persistence.
+    RefreshCurrentSession { session_id: String },
+
+    /// Append new messages to the current session display (incremental update).
+    /// Used by the file watcher when an external agent appends messages.
+    AppendMessages {
+        messages: Vec<MessageData>,
+        tool_results: Vec<ToolResultData>,
+    },
+
     // === Resource Events (for tool operations) ===
     /// A file was loaded/read by a tool
     ResourceLoaded { project: String, path: PathBuf },

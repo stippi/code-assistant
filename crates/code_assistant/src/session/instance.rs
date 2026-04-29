@@ -11,6 +11,7 @@ use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
+use crate::utils::file_utils::AgentLockGuard;
 use async_trait::async_trait;
 use sandbox::SandboxContext;
 use tracing::{debug, error};
@@ -29,6 +30,10 @@ pub enum SessionActivityState {
     RateLimited { seconds_remaining: u64 },
     /// Agent terminated with an error
     Errored { message: String },
+    /// Agent is running in another code-assistant process.
+    /// The session is view-only in this instance: the user can browse
+    /// messages but cannot send or queue new ones.
+    RunningExternally,
 }
 
 impl SessionActivityState {
@@ -37,6 +42,11 @@ impl SessionActivityState {
     /// agent is explicitly started.
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Idle | Self::Errored { .. })
+    }
+
+    /// Whether the session is locked by another code-assistant instance.
+    pub fn is_running_externally(&self) -> bool {
+        matches!(self, Self::RunningExternally)
     }
 }
 
@@ -78,6 +88,13 @@ pub struct SessionInstance {
 
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
+
+    /// Exclusive cross-process lock held while an agent is running.
+    ///
+    /// Acquired before spawning the agent task, released on task completion
+    /// or abort.  Prevents two code-assistant processes from running an
+    /// agent for the same session simultaneously.
+    pub agent_lock: Option<AgentLockGuard>,
 }
 
 impl SessionInstance {
@@ -98,6 +115,7 @@ impl SessionInstance {
             pending_message: Arc::new(Mutex::new(None)),
             sandbox_context,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
+            agent_lock: None,
         }
     }
 
@@ -137,12 +155,14 @@ impl SessionInstance {
         }
     }
 
-    /// Terminate the running agent
+    /// Terminate the running agent and release the cross-process agent lock.
     pub fn terminate_agent(&mut self) {
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
             self.clear_fragment_buffer();
         }
+        // Release the cross-process agent lock
+        self.agent_lock = None;
     }
 
     /// Add a message with optional branching support.
@@ -461,6 +481,111 @@ impl SessionInstance {
                         fragments,
                         node_id,
                         branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to extract fragments from message: {}", e);
+                }
+            }
+        }
+
+        Ok(messages_data)
+    }
+
+    /// Convert a specific subset of nodes (by their IDs) to UI MessageData.
+    /// Used for incremental updates when new nodes are appended to the active path.
+    pub fn convert_messages_from_nodes(
+        &self,
+        node_ids: &[crate::persistence::NodeId],
+        tool_syntax: crate::types::ToolSyntax,
+    ) -> Result<Vec<MessageData>, anyhow::Error> {
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn send_event(
+                &self,
+                _event: crate::ui::UiEvent,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn display_fragment(
+                &self,
+                _fragment: &crate::ui::DisplayFragment,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn should_streaming_continue(&self) -> bool {
+                true
+            }
+            fn notify_rate_limit(&self, _seconds_remaining: u64) {}
+            fn clear_rate_limit(&self) {}
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
+
+        let mut messages_data = Vec::new();
+
+        for &node_id in node_ids {
+            let Some(node) = self.session.message_nodes.get(&node_id) else {
+                continue;
+            };
+            let message = &node.message;
+
+            if message.is_compaction_summary {
+                let summary = match &message.content {
+                    llm::MessageContent::Text(text) => text.trim().to_string(),
+                    llm::MessageContent::Structured(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string(),
+                };
+                messages_data.push(MessageData {
+                    role: MessageRole::User,
+                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    node_id: Some(node_id),
+                    branch_info: self.session.get_branch_info(node_id),
+                });
+                continue;
+            }
+
+            // Skip tool-result user messages
+            if message.role == llm::MessageRole::User {
+                match &message.content {
+                    llm::MessageContent::Text(text) if text.trim().is_empty() => continue,
+                    llm::MessageContent::Structured(blocks) => {
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
+                        if has_tool_results {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    messages_data.push(MessageData {
+                        role,
+                        fragments,
+                        node_id: Some(node_id),
+                        branch_info: self.session.get_branch_info(node_id),
                     });
                 }
                 Err(e) => {

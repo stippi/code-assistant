@@ -17,6 +17,7 @@ use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
+use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
@@ -230,6 +231,19 @@ impl SessionManager {
             policy: sandbox_policy_for_event,
         });
 
+        // Check if another process holds the agent lock for this session.
+        // If so, mark it as RunningExternally so the UI disables input.
+        if self.is_agent_locked_externally(&session_id) {
+            debug!(
+                "Session {} has an agent running in another process",
+                session_id
+            );
+            ui_events.push(UiEvent::UpdateSessionActivityState {
+                session_id: session_id.clone(),
+                activity_state: crate::session::instance::SessionActivityState::RunningExternally,
+            });
+        }
+
         // Set as active
         self.active_session_id = Some(session_id.clone());
 
@@ -242,6 +256,100 @@ impl SessionManager {
             self.persistence.save_chat_session(&session_snapshot)?;
         }
 
+        Ok(ui_events)
+    }
+
+    /// Incremental refresh of the currently viewed session.
+    ///
+    /// Reloads the session from persistence and compares the on-disk
+    /// `active_path` with the in-memory version.  Returns:
+    /// - `Ok(vec![])` if nothing changed (our own writes)
+    /// - `Ok(vec![AppendMessages { .. }])` if new nodes were appended
+    /// - `Ok(vec![SetMessages { .. }])` if the paths diverged (full reload fallback)
+    pub fn refresh_session_incremental(&mut self, session_id: &str) -> Result<Vec<UiEvent>> {
+        let session_instance = self
+            .active_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        // If the agent is running locally on this session, skip the refresh.
+        // Streaming events already keep the UI up-to-date; reloading from
+        // persistence would produce duplicates.
+        let activity = session_instance.get_activity_state();
+        if !activity.is_terminal() && !activity.is_running_externally() {
+            return Ok(Vec::new());
+        }
+
+        // Capture old active path before reload
+        let old_path = session_instance.session.active_path.clone();
+        let old_tool_count = session_instance.session.tool_executions.len();
+
+        // Reload from disk
+        session_instance.reload_from_persistence(&self.persistence)?;
+
+        let new_path = &session_instance.session.active_path;
+
+        let new_tool_count = session_instance.session.tool_executions.len();
+
+        // Case 1: Paths identical and no new tool results → true no-op
+        if *new_path == old_path && new_tool_count == old_tool_count {
+            return Ok(Vec::new());
+        }
+
+        // Case 1b: Paths identical but new tool results appeared
+        if *new_path == old_path {
+            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
+            let new_tool_results: Vec<_> =
+                all_tool_results.into_iter().skip(old_tool_count).collect();
+            if new_tool_results.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![UiEvent::AppendMessages {
+                messages: Vec::new(),
+                tool_results: new_tool_results,
+            }]);
+        }
+
+        // Case 2: Old path is a strict prefix of new path → append-only
+        if new_path.len() > old_path.len() && new_path.starts_with(&old_path) {
+            debug!(
+                "Incremental refresh for {session_id}: {} new node(s)",
+                new_path.len() - old_path.len()
+            );
+
+            // Convert only the new nodes to MessageData
+            let tool_syntax = session_instance.session.config.tool_syntax;
+            let new_node_ids = &new_path[old_path.len()..];
+
+            // Build messages for the new nodes only
+            let messages_data =
+                session_instance.convert_messages_from_nodes(new_node_ids, tool_syntax)?;
+
+            // Collect tool results that are new since last time
+            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
+            let new_tool_results: Vec<_> =
+                all_tool_results.into_iter().skip(old_tool_count).collect();
+
+            let mut events = Vec::new();
+
+            if !messages_data.is_empty() || !new_tool_results.is_empty() {
+                events.push(UiEvent::AppendMessages {
+                    messages: messages_data,
+                    tool_results: new_tool_results,
+                });
+            }
+
+            // Always update plan (may have changed independently of messages)
+            events.push(UiEvent::UpdatePlan {
+                plan: session_instance.session.plan.clone(),
+            });
+
+            return Ok(events);
+        }
+
+        // Case 3: Paths diverged → full reload fallback
+        debug!("Incremental refresh for {session_id}: paths diverged, full reload");
+        let ui_events = session_instance.generate_session_connect_events()?;
         Ok(ui_events)
     }
 
@@ -348,6 +456,18 @@ impl SessionManager {
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
+        // Acquire exclusive cross-process agent lock.
+        // This prevents another code-assistant instance from running an agent
+        // for the same session concurrently.
+        let sessions_dir = self.persistence.sessions_dir()?;
+        let agent_lock = file_utils::try_acquire_agent_lock(&sessions_dir, session_id)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot start agent for session {session_id}: \
+                     another code-assistant instance is already running an agent for this session"
+                )
+            })?;
+
         // Prepare session - need to scope the mutable borrow carefully
         let (
             session_config,
@@ -489,13 +609,18 @@ impl SessionManager {
         // Load the session state into the agent
         agent.load_from_session_state(session_state).await?;
 
-        // Spawn the agent task
+        // Spawn the agent task.
+        //
+        // The `_agent_lock` guard is moved into the task so the cross-process
+        // lock is held for exactly as long as the agent is running and released
+        // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
         let ui_clone = ui.clone();
         let sleep_inhibitor = self.sleep_inhibitor.clone();
         sleep_inhibitor.agent_started();
 
         let task_handle = tokio::spawn(async move {
+            let _agent_lock = agent_lock; // moved in — released on drop
             debug!("Starting agent for session {}", session_id_clone);
 
             // Use catch_unwind to ensure cleanup runs even if the agent panics.
@@ -796,6 +921,25 @@ impl SessionManager {
         }
 
         None
+    }
+
+    /// Check whether a session's agent lock is held by another process.
+    ///
+    /// Returns `true` if an external process is running an agent for this
+    /// session. Used by the UI to decide whether to disable the message input.
+    pub fn is_agent_locked_externally(&self, session_id: &str) -> bool {
+        // If *we* have the session in our active_sessions with a running task,
+        // the lock is ours, not external.
+        if let Some(instance) = self.active_sessions.get(session_id) {
+            if !instance.get_activity_state().is_terminal() {
+                return false; // Our own agent holds the lock
+            }
+        }
+
+        let Ok(sessions_dir) = self.persistence.sessions_dir() else {
+            return false;
+        };
+        file_utils::is_agent_locked(&sessions_dir, session_id)
     }
 
     /// Get the latest session ID for auto-resuming
