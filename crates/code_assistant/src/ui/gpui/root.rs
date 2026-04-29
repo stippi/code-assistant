@@ -686,11 +686,10 @@ impl RootView {
                 None
             };
 
-            let is_externally_locked = matches!(
-                current_activity_state,
-                Some(crate::session::instance::SessionActivityState::RunningExternally)
-            );
-            if is_externally_locked {
+            if current_activity_state
+                .as_ref()
+                .is_some_and(|s| s.is_running_externally())
+            {
                 tracing::warn!(
                     "RootView: Cannot send message — session {} is running in another instance",
                     session_id

@@ -45,7 +45,6 @@ impl SessionActivityState {
     }
 
     /// Whether the session is locked by another code-assistant instance.
-    #[allow(dead_code)]
     pub fn is_running_externally(&self) -> bool {
         matches!(self, Self::RunningExternally)
     }
