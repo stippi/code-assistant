@@ -133,10 +133,11 @@ impl Render for ChatListItem {
 
         let is_active = !matches!(self.activity_state, SessionActivityState::Idle);
         let is_errored = matches!(self.activity_state, SessionActivityState::Errored { .. });
+        let is_externally_locked =
+            matches!(self.activity_state, SessionActivityState::RunningExternally);
         let activity_color = match &self.activity_state {
-            SessionActivityState::AgentRunning | SessionActivityState::RunningExternally => {
-                cx.theme().info
-            }
+            SessionActivityState::AgentRunning => cx.theme().info,
+            SessionActivityState::RunningExternally => cx.theme().warning,
             SessionActivityState::WaitingForResponse => cx.theme().primary,
             SessionActivityState::RateLimited { .. } => cx.theme().warning,
             SessionActivityState::Errored { .. } => cx.theme().danger,
@@ -194,7 +195,15 @@ impl Render for ChatListItem {
                                 .text_color(activity_color),
                         )
                     })
-                    .when(is_active && !is_errored, |el| {
+                    .when(is_externally_locked, |el| {
+                        el.child(
+                            gpui::svg()
+                                .size(px(12.))
+                                .path("icons/lock.svg")
+                                .text_color(activity_color),
+                        )
+                    })
+                    .when(is_active && !is_errored && !is_externally_locked, |el| {
                         el.child(
                             gpui::svg()
                                 .size(px(12.))

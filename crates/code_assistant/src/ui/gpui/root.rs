@@ -1276,13 +1276,17 @@ impl Render for RootView {
         }
 
         // Update InputArea with current agent state
+        let externally_locked = current_activity_state
+            .as_ref()
+            .is_some_and(|s| s.is_running_externally());
+
         let agent_is_running = if let Some(state) = &current_activity_state {
             !state.is_terminal()
         } else {
             false
         };
 
-        let cancel_enabled = if agent_is_running {
+        let cancel_enabled = if agent_is_running && !externally_locked {
             if let (Some(gpui), Some(session_id)) = (cx.try_global::<Gpui>(), &current_session_id) {
                 !gpui
                     .session_stop_requests
@@ -1315,7 +1319,7 @@ impl Render for RootView {
             });
 
         self.input_area.update(cx, |input_area, _cx| {
-            input_area.set_agent_state(agent_is_running, cancel_enabled);
+            input_area.set_agent_state(agent_is_running, cancel_enabled, externally_locked);
             input_area.set_context_usage_ratio(context_usage_ratio);
         });
 

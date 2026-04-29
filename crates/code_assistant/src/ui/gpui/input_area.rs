@@ -69,6 +69,7 @@ pub struct InputArea {
     // Agent state for button rendering
     agent_is_running: bool,
     cancel_enabled: bool,
+    externally_locked: bool,
 
     // Context usage ratio (0.0–1.0)
     context_usage_ratio: Option<f32>,
@@ -123,6 +124,7 @@ impl InputArea {
 
             agent_is_running: false,
             cancel_enabled: false,
+            externally_locked: false,
             context_usage_ratio: None,
 
             branch_parent_id: None,
@@ -249,9 +251,15 @@ impl InputArea {
     }
 
     /// Update agent state for button rendering
-    pub fn set_agent_state(&mut self, agent_is_running: bool, cancel_enabled: bool) {
+    pub fn set_agent_state(
+        &mut self,
+        agent_is_running: bool,
+        cancel_enabled: bool,
+        externally_locked: bool,
+    ) {
         self.agent_is_running = agent_is_running;
         self.cancel_enabled = cancel_enabled;
+        self.externally_locked = externally_locked;
     }
 
     /// Update the context usage ratio (0.0–1.0)
@@ -549,6 +557,33 @@ impl InputArea {
                         ),
                 )
             })
+            // Externally locked banner
+            .when(self.externally_locked, |parent| {
+                parent.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .bg(cx.theme().warning.opacity(0.1))
+                        .border_b_1()
+                        .border_color(cx.theme().warning.opacity(0.3))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Icon::default()
+                                .path(SharedString::from("icons/lock.svg"))
+                                .text_color(cx.theme().warning)
+                                .size(px(14.)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().warning)
+                                .child("Session is active in another instance"),
+                        ),
+                )
+            })
             // Attachments area - show image previews when available
             .when(!self.attachments.is_empty(), |parent| {
                 parent.child(
@@ -571,6 +606,7 @@ impl InputArea {
                     .items_start()
                     .p_2()
                     .gap_2()
+                    .when(self.externally_locked, |el| el.opacity(0.45))
                     // Left column: text field + selector row (share same width)
                     .child(
                         div()
@@ -655,8 +691,8 @@ impl InputArea {
                             .children({
                                 let mut buttons = Vec::new();
 
-                                // Send button - enabled when input has content
-                                let send_enabled = has_input_content;
+                                // Send button - enabled when input has content and not externally locked
+                                let send_enabled = has_input_content && !self.externally_locked;
 
                                 let mut send_button = div()
                                     .id("send-btn")
