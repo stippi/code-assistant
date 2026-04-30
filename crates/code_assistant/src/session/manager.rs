@@ -272,11 +272,14 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        // If the agent is running locally on this session, skip the refresh.
-        // Streaming events already keep the UI up-to-date; reloading from
-        // persistence would produce duplicates.
+        // If the agent is running locally on this session, don't emit any
+        // events (streaming already keeps the UI up-to-date). But DO reload
+        // from persistence so that `active_path` stays in sync — otherwise
+        // the first refresh after the agent finishes would see the entire
+        // turn as "new" and append duplicates.
         let activity = session_instance.get_activity_state();
         if !activity.is_terminal() && !activity.is_running_externally() {
+            session_instance.reload_from_persistence(&self.persistence)?;
             return Ok(Vec::new());
         }
 
