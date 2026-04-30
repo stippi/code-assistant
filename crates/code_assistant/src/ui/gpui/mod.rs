@@ -311,8 +311,11 @@ impl Gpui {
         self.update_messages_view(cx, |view, cx| {
             if view.follow_tail {
                 view.scroll_to_bottom();
-                cx.notify(); // Trigger render so animation task can be spawned
             }
+            // Always notify so the list re-renders visible items that gained
+            // new blocks (e.g. thinking blocks created inside an existing
+            // MessageContainer).
+            cx.notify();
         });
     }
 
