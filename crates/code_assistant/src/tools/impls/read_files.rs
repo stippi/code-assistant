@@ -34,12 +34,16 @@ pub struct ReadFilesInput {
     pub project: String,
     pub paths: Vec<String>,
     /// If true, prefix each line with its line number (1-indexed)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub prefix_line_numbers: bool,
     /// If true, bypass the file size limit check. Use when you explicitly need to read
     /// a large file in full.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub ignore_size_limit: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// Content of a loaded file with optional line offset information
