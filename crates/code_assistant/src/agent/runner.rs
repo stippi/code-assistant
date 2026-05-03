@@ -17,6 +17,7 @@ use llm::{
 };
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
@@ -1189,13 +1190,20 @@ impl Agent {
             system_message = format!("{system_message}\n{project_info}");
         }
 
-        // Append repository guidance file if present (AGENTS.md preferred, else CLAUDE.md)
-        let guidance = self.read_repository_guidance();
-        if let Some((file_name, content)) = guidance {
+        // Append guidance files if present. Global AGENTS.md is loaded first so
+        // project-specific guidance can refine or override it in the prompt.
+        let guidance_files = self.read_guidance_files();
+        if !guidance_files.is_empty() {
             let mut guidance_section = String::new();
-            guidance_section.push_str("\n\n# Repository Guidance\n\n");
-            guidance_section.push_str(&format!("Loaded from `{file_name}`.\n\n"));
-            guidance_section.push_str(&content);
+            guidance_section.push_str("\n\n# Repository Guidance\n");
+
+            for (file_name, content) in guidance_files {
+                guidance_section.push_str("\n");
+                guidance_section.push_str(&format!("Loaded from `{file_name}`.\n\n"));
+                guidance_section.push_str(&content);
+                guidance_section.push_str("\n");
+            }
+
             system_message.push_str(&guidance_section);
         }
 
@@ -1206,23 +1214,42 @@ impl Agent {
         system_message
     }
 
-    /// Attempt to read AGENTS.md or CLAUDE.md from the initial project root.
-    /// Prefers AGENTS.md when both exist. Returns (file_name, content) on success.
-    fn read_repository_guidance(&self) -> Option<(String, String)> {
+    /// Attempt to read guidance from the global config directory and project root.
+    ///
+    /// Global `~/.config/code-assistant/AGENTS.md` is included when present.
+    /// Project-root guidance preserves the existing behavior: AGENTS.md is preferred
+    /// over CLAUDE.md and matching is case-insensitive.
+    fn read_guidance_files(&self) -> Vec<(String, String)> {
+        let mut guidance_files = Vec::new();
+
+        if let Some(config_dir) = dirs::home_dir().map(|home| home.join(".config/code-assistant")) {
+            if let Some((_, content)) = Self::read_guidance_from_dir(&config_dir, &["AGENTS.md"]) {
+                guidance_files.push(("~/.config/code-assistant/AGENTS.md".to_string(), content));
+            }
+        }
+
         // Determine search root from effective_project_path (worktree or init_path),
         // not initial_project (which is just the project name)
-        let root_path = if let Some(path) = self.session_config.effective_project_path() {
-            path.clone()
-        } else {
-            std::env::current_dir().ok()?
-        };
+        let root_path = self
+            .session_config
+            .effective_project_path()
+            .cloned()
+            .or_else(|| std::env::current_dir().ok());
 
-        // Candidate files in priority order (matched case-insensitively for
-        // cross-platform consistency, e.g. "agents.md" on Linux).
-        let candidates = ["AGENTS.md", "CLAUDE.md"];
+        if let Some(root_path) = root_path {
+            if let Some(guidance) =
+                Self::read_guidance_from_dir(&root_path, &["AGENTS.md", "CLAUDE.md"])
+            {
+                guidance_files.push(guidance);
+            }
+        }
 
+        guidance_files
+    }
+
+    fn read_guidance_from_dir(dir: &Path, candidates: &[&str]) -> Option<(String, String)> {
         // Read directory entries once for case-insensitive lookup
-        let dir_entries: Vec<_> = fs::read_dir(&root_path)
+        let dir_entries: Vec<_> = fs::read_dir(dir)
             .ok()
             .map(|rd| {
                 rd.filter_map(|e| e.ok())
@@ -1238,7 +1265,7 @@ impl Agent {
                 .find(|entry| entry.eq_ignore_ascii_case(candidate));
 
             if let Some(actual_name) = matched {
-                let path = root_path.join(actual_name);
+                let path = dir.join(actual_name);
                 match fs::read_to_string(&path) {
                     Ok(mut content) => {
                         // Guard against excessively large files (truncate politely)
@@ -2546,5 +2573,39 @@ impl Agent {
             updated_request.id
         );
         Ok(updated_text)
+    }
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::Agent;
+    use anyhow::Result;
+    use tempfile::tempdir;
+
+    #[test]
+    fn reads_agents_md_case_insensitively_from_directory() -> Result<()> {
+        let dir = tempdir()?;
+        std::fs::write(dir.path().join("agents.md"), "global guidance")?;
+
+        let guidance = Agent::read_guidance_from_dir(dir.path(), &["AGENTS.md"])
+            .expect("expected guidance file");
+
+        assert!(guidance.0.ends_with("agents.md"));
+        assert_eq!(guidance.1, "global guidance");
+        Ok(())
+    }
+
+    #[test]
+    fn prefers_agents_md_over_claude_md() -> Result<()> {
+        let dir = tempdir()?;
+        std::fs::write(dir.path().join("CLAUDE.md"), "claude guidance")?;
+        std::fs::write(dir.path().join("AGENTS.md"), "agents guidance")?;
+
+        let guidance = Agent::read_guidance_from_dir(dir.path(), &["AGENTS.md", "CLAUDE.md"])
+            .expect("expected guidance file");
+
+        assert!(guidance.0.ends_with("AGENTS.md"));
+        assert_eq!(guidance.1, "agents guidance");
+        Ok(())
     }
 }
