@@ -95,6 +95,19 @@ pub struct SessionInstance {
     /// or abort.  Prevents two code-assistant processes from running an
     /// agent for the same session simultaneously.
     pub agent_lock: Option<AgentLockGuard>,
+
+    /// The active_path that the UI has been told about (either via full load
+    /// or via `AppendMessages`).  Used by the file-watcher refresh logic to
+    /// determine which nodes are truly "new" and avoid duplicate appends.
+    ///
+    /// Updated when:
+    /// - A full session load sends all messages to the UI
+    /// - An incremental append tells the UI about new nodes
+    /// - A reload happens while the local agent is running (streaming covers UI)
+    pub last_ui_synced_path: crate::persistence::ConversationPath,
+
+    /// Number of tool executions the UI has been told about.
+    pub last_ui_synced_tool_count: usize,
 }
 
 impl SessionInstance {
@@ -104,6 +117,9 @@ impl SessionInstance {
         if let Some(path) = session.config.effective_project_path() {
             let _ = sandbox_context.register_root(path);
         }
+
+        let initial_path = session.active_path.clone();
+        let initial_tool_count = session.tool_executions.len();
 
         Self {
             session,
@@ -116,6 +132,8 @@ impl SessionInstance {
             sandbox_context,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             agent_lock: None,
+            last_ui_synced_path: initial_path,
+            last_ui_synced_tool_count: initial_tool_count,
         }
     }
 

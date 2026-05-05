@@ -1016,6 +1016,35 @@ impl Gpui {
                 tool_results,
             } => {
                 // Incremental update: append new messages without clearing existing ones.
+                // Safety net: deduplicate by node_id to avoid double-appending messages
+                // that the UI already has (e.g. due to race between agent Idle transition
+                // and file-watcher debounce).
+                let existing_node_ids: std::collections::HashSet<crate::persistence::NodeId> = {
+                    let queue = self.message_queue.lock().unwrap();
+                    queue
+                        .iter()
+                        .filter_map(|container| {
+                            cx.update_entity(container, |c, _cx| c.node_id())
+                                .ok()
+                                .flatten()
+                        })
+                        .collect()
+                };
+                let messages: Vec<_> = messages
+                    .into_iter()
+                    .filter(|msg| match msg.node_id {
+                        Some(id) if existing_node_ids.contains(&id) => {
+                            trace!("AppendMessages: skipping duplicate node_id {}", id);
+                            false
+                        }
+                        _ => true,
+                    })
+                    .collect();
+                if messages.is_empty() && tool_results.is_empty() {
+                    // Nothing new to append after deduplication
+                    return;
+                }
+
                 let old_len = self.message_queue.lock().unwrap().len();
 
                 let current_project = {

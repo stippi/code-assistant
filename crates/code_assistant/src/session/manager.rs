@@ -215,7 +215,12 @@ impl SessionManager {
         // Generate UI events for connecting to this session
         let mut ui_events = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            session_instance.generate_session_connect_events()?
+            let events = session_instance.generate_session_connect_events()?;
+            // Mark what the UI now knows about (baseline for future incremental diffs)
+            session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+            session_instance.last_ui_synced_tool_count =
+                session_instance.session.tool_executions.len();
+            events
         };
 
         ui_events.push(UiEvent::UpdateCurrentModel {
@@ -262,10 +267,19 @@ impl SessionManager {
     /// Incremental refresh of the currently viewed session.
     ///
     /// Reloads the session from persistence and compares the on-disk
-    /// `active_path` with the in-memory version.  Returns:
-    /// - `Ok(vec![])` if nothing changed (our own writes)
-    /// - `Ok(vec![AppendMessages { .. }])` if new nodes were appended
+    /// `active_path` against `last_ui_synced_path` (what the UI already shows).
+    ///
+    /// Returns:
+    /// - `Ok(vec![])` if nothing changed or the UI already has these messages
+    /// - `Ok(vec![AppendMessages { .. }])` if new nodes were appended externally
     /// - `Ok(vec![SetMessages { .. }])` if the paths diverged (full reload fallback)
+    ///
+    /// The key insight: we compare against `last_ui_synced_path` rather than
+    /// the pre-reload `session.active_path`. This eliminates the race between
+    /// a locally running agent's final `save_state()` and the file-watcher
+    /// debounce — even if the state has already transitioned to Idle by the
+    /// time the debounce fires, `last_ui_synced_path` was advanced during
+    /// prior "while running" reloads, so no spurious diff is detected.
     pub fn refresh_session_incremental(&mut self, session_id: &str) -> Result<Vec<UiEvent>> {
         let session_instance = self
             .active_sessions
@@ -274,55 +288,63 @@ impl SessionManager {
 
         // If the agent is running locally on this session, don't emit any
         // events (streaming already keeps the UI up-to-date). But DO reload
-        // from persistence so that `active_path` stays in sync — otherwise
-        // the first refresh after the agent finishes would see the entire
-        // turn as "new" and append duplicates.
+        // from persistence so that `last_ui_synced_path` stays in sync —
+        // this prevents the first refresh after Idle from seeing everything
+        // as "new".
         let activity = session_instance.get_activity_state();
         if !activity.is_terminal() && !activity.is_running_externally() {
             session_instance.reload_from_persistence(&self.persistence)?;
+            // Advance the UI-synced baseline to match what's on disk,
+            // since the local streaming UI is keeping up in real-time.
+            session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+            session_instance.last_ui_synced_tool_count =
+                session_instance.session.tool_executions.len();
             return Ok(Vec::new());
         }
-
-        // Capture old active path before reload
-        let old_path = session_instance.session.active_path.clone();
-        let old_tool_count = session_instance.session.tool_executions.len();
 
         // Reload from disk
         session_instance.reload_from_persistence(&self.persistence)?;
 
-        let new_path = &session_instance.session.active_path;
-
+        let new_path = session_instance.session.active_path.clone();
         let new_tool_count = session_instance.session.tool_executions.len();
 
+        // Compare against what the UI already has (not the pre-reload disk state).
+        let synced_path = &session_instance.last_ui_synced_path;
+        let synced_tool_count = session_instance.last_ui_synced_tool_count;
+
         // Case 1: Paths identical and no new tool results → true no-op
-        if *new_path == old_path && new_tool_count == old_tool_count {
+        if new_path == *synced_path && new_tool_count == synced_tool_count {
             return Ok(Vec::new());
         }
 
         // Case 1b: Paths identical but new tool results appeared
-        if *new_path == old_path {
+        if new_path == *synced_path {
             let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
-            let new_tool_results: Vec<_> =
-                all_tool_results.into_iter().skip(old_tool_count).collect();
+            let new_tool_results: Vec<_> = all_tool_results
+                .into_iter()
+                .skip(synced_tool_count)
+                .collect();
             if new_tool_results.is_empty() {
                 return Ok(Vec::new());
             }
+            // Advance baseline
+            session_instance.last_ui_synced_tool_count = new_tool_count;
             return Ok(vec![UiEvent::AppendMessages {
                 messages: Vec::new(),
                 tool_results: new_tool_results,
             }]);
         }
 
-        // Case 2: Old path is a strict prefix of new path → append-only
-        if new_path.len() > old_path.len() && new_path.starts_with(&old_path) {
+        // Case 2: Synced path is a strict prefix of new path → append-only
+        if new_path.len() > synced_path.len() && new_path.starts_with(synced_path) {
             debug!(
                 "Incremental refresh for {session_id}: {} new node(s)",
-                new_path.len() - old_path.len()
+                new_path.len() - synced_path.len()
             );
 
             // Convert only the new nodes to MessageData
             let tool_syntax = session_instance.session.config.tool_syntax;
-            let new_node_ids = &new_path[old_path.len()..];
+            let new_node_ids = &new_path[synced_path.len()..];
 
             // Build messages for the new nodes only
             let messages_data =
@@ -330,8 +352,10 @@ impl SessionManager {
 
             // Collect tool results that are new since last time
             let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
-            let new_tool_results: Vec<_> =
-                all_tool_results.into_iter().skip(old_tool_count).collect();
+            let new_tool_results: Vec<_> = all_tool_results
+                .into_iter()
+                .skip(synced_tool_count)
+                .collect();
 
             let mut events = Vec::new();
 
@@ -347,12 +371,19 @@ impl SessionManager {
                 plan: session_instance.session.plan.clone(),
             });
 
+            // Advance baseline
+            session_instance.last_ui_synced_path = new_path;
+            session_instance.last_ui_synced_tool_count = new_tool_count;
+
             return Ok(events);
         }
 
         // Case 3: Paths diverged → full reload fallback
         debug!("Incremental refresh for {session_id}: paths diverged, full reload");
         let ui_events = session_instance.generate_session_connect_events()?;
+        // After full reload, reset baseline to current disk state
+        session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+        session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
         Ok(ui_events)
     }
 
