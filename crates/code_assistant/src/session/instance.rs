@@ -1,5 +1,5 @@
 use anyhow::Result;
-use llm::Message;
+use llm::{ContentBlock, Message};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
@@ -80,8 +80,8 @@ pub struct SessionInstance {
     /// Current activity state of this session
     pub activity_state: Arc<Mutex<SessionActivityState>>,
 
-    /// Pending user message that will be processed by the next agent iteration
-    pub pending_message: Arc<Mutex<Option<String>>>,
+    /// Pending user message (structured content blocks) that will be processed by the next agent iteration
+    pub pending_message: Arc<Mutex<Option<Vec<ContentBlock>>>>,
 
     /// Tracks sandbox-approved roots for this session
     pub sandbox_context: Arc<SandboxContext>,
@@ -349,7 +349,9 @@ impl SessionInstance {
 
         if let Ok(pending) = self.pending_message.lock() {
             events.push(UiEvent::UpdatePendingMessage {
-                message: pending.clone(),
+                message: pending
+                    .as_ref()
+                    .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks)),
             });
         }
 

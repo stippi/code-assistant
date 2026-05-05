@@ -1,5 +1,5 @@
 use anyhow::Result;
-use llm::Message;
+use llm::{ContentBlock, Message};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1041,31 +1041,17 @@ impl SessionManager {
         }
     }
 
-    /// Queue a user message for a running agent session
+    /// Queue a text-only user message for a running agent session
+    #[allow(dead_code)]
     pub fn queue_user_message(&mut self, session_id: &str, message: String) -> Result<()> {
-        // Get the active session instance and update shared pending message
-        let session_instance = self
-            .active_sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        // Update the shared pending message
-        let mut pending = session_instance.pending_message.lock().unwrap();
-        match pending.as_mut() {
-            Some(existing) => {
-                // Append to existing message with newline separator
-                if !existing.is_empty() && !existing.ends_with('\n') {
-                    existing.push('\n');
-                }
-                existing.push_str(&message);
-            }
-            None => {
-                // Set as new pending message
-                *pending = Some(message);
-            }
-        }
-
-        Ok(())
+        self.queue_structured_user_message(
+            session_id,
+            vec![ContentBlock::Text {
+                text: message,
+                start_time: None,
+                end_time: None,
+            }],
+        )
     }
 
     /// Check for completed agent tasks and handle their results
@@ -1128,26 +1114,28 @@ impl SessionManager {
     pub fn queue_structured_user_message(
         &mut self,
         session_id: &str,
-        content_blocks: Vec<llm::ContentBlock>,
+        content_blocks: Vec<ContentBlock>,
     ) -> Result<()> {
-        // For now, convert structured content to text representation for pending messages
-        // In the future, we could extend pending messages to support structured content
-        let text_representation = content_blocks
-            .iter()
-            .filter_map(|block| match block {
-                llm::ContentBlock::Text { text, .. } => Some(text.clone()),
-                llm::ContentBlock::Image { media_type, .. } => {
-                    Some(format!("[Image: {media_type}]"))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let session_instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        self.queue_user_message(session_id, text_representation)
+        let mut pending = session_instance.pending_message.lock().unwrap();
+        match pending.as_mut() {
+            Some(existing) => {
+                // Append new content blocks to existing pending blocks
+                existing.extend(content_blocks);
+            }
+            None => {
+                *pending = Some(content_blocks);
+            }
+        }
+
+        Ok(())
     }
 
-    /// Get and clear pending message for editing
+    /// Get and clear pending message for editing (returns text-only summary for UI)
     pub fn request_pending_message_for_edit(&mut self, session_id: &str) -> Result<Option<String>> {
         // Get the active session instance and take the pending message
         let session_instance = self
@@ -1156,10 +1144,12 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let mut pending = session_instance.pending_message.lock().unwrap();
-        Ok(pending.take())
+        Ok(pending
+            .take()
+            .map(|blocks| crate::utils::content::text_summary_from_blocks(&blocks)))
     }
 
-    /// Get current pending message without clearing it
+    /// Get current pending message text summary without clearing it
     pub fn get_pending_message(&self, session_id: &str) -> Result<Option<String>> {
         let session_instance = self
             .active_sessions
@@ -1167,6 +1157,8 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let pending = session_instance.pending_message.lock().unwrap();
-        Ok(pending.clone())
+        Ok(pending
+            .as_ref()
+            .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks)))
     }
 }

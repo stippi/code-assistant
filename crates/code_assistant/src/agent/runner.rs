@@ -94,8 +94,8 @@ pub struct Agent {
     session_name: String,
     // Whether to inject naming reminders (disabled for tests)
     enable_naming_reminders: bool,
-    // Shared pending message with SessionInstance
-    pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
+    // Shared pending message with SessionInstance (structured content blocks)
+    pending_message_ref: Option<Arc<Mutex<Option<Vec<llm::ContentBlock>>>>>,
     // File trees for projects (used in system prompt)
     file_trees: HashMap<String, String>,
     // Available project names (used in system prompt)
@@ -189,7 +189,10 @@ impl Agent {
     }
 
     /// Set the shared pending message reference from SessionInstance
-    pub fn set_pending_message_ref(&mut self, pending_ref: Arc<Mutex<Option<String>>>) {
+    pub fn set_pending_message_ref(
+        &mut self,
+        pending_ref: Arc<Mutex<Option<Vec<llm::ContentBlock>>>>,
+    ) {
         self.pending_message_ref = Some(pending_ref);
     }
 
@@ -244,7 +247,7 @@ impl Agent {
     }
 
     /// Get and clear the pending message from shared state
-    fn get_and_clear_pending_message(&self) -> Option<String> {
+    fn get_and_clear_pending_message(&self) -> Option<Vec<llm::ContentBlock>> {
         if let Some(ref pending_ref) = self.pending_message_ref {
             let mut pending = pending_ref.lock().ok()?;
             pending.take()
@@ -414,14 +417,15 @@ impl Agent {
 
         loop {
             // Check for pending user message and add it to history at start of each iteration
-            if let Some(pending_message) = self.get_and_clear_pending_message() {
-                debug!("Processing pending user message: {}", pending_message);
-                self.append_message(Message::new_user(pending_message.clone()))?;
+            if let Some(pending_blocks) = self.get_and_clear_pending_message() {
+                let text_summary = crate::utils::content::text_summary_from_blocks(&pending_blocks);
+                debug!("Processing pending user message: {}", text_summary);
+                self.append_message(Message::new_user_content(pending_blocks))?;
 
                 // Notify UI about the user message
                 self.ui
                     .send_event(UiEvent::DisplayUserInput {
-                        content: pending_message,
+                        content: text_summary,
                         attachments: Vec::new(),
                         node_id: None, // Pending messages don't have node_id yet
                     })
