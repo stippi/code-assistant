@@ -363,13 +363,24 @@ impl Agent {
         Ok(())
     }
 
-    /// Adds a message to the history and saves the state.
-    /// This adds the message to both the tree structure and the linearized history.
-    pub fn append_message(&mut self, message: Message) -> Result<()> {
-        // Add to tree structure
-        let parent_id = self.active_path.last().copied();
-        let node_id = self.next_node_id;
+    /// Pre-allocate the next node_id without creating a node.
+    /// The returned ID is guaranteed to be used by the next `append_message` call
+    /// (or `append_message_with_node_id`).
+    pub fn reserve_node_id(&mut self) -> crate::persistence::NodeId {
+        let id = self.next_node_id;
         self.next_node_id += 1;
+        id
+    }
+
+    /// Adds a message to the history using a pre-allocated node_id.
+    /// Use `reserve_node_id()` to obtain the ID before streaming starts,
+    /// then call this after streaming completes.
+    pub fn append_message_with_node_id(
+        &mut self,
+        message: Message,
+        node_id: crate::persistence::NodeId,
+    ) -> Result<()> {
+        let parent_id = self.active_path.last().copied();
 
         let node = crate::persistence::MessageNode {
             id: node_id,
@@ -387,6 +398,14 @@ impl Agent {
 
         self.save_state()?;
         Ok(())
+    }
+
+    /// Adds a message to the history and saves the state.
+    /// This adds the message to both the tree structure and the linearized history.
+    /// Allocates a new node_id automatically.
+    pub fn append_message(&mut self, message: Message) -> Result<()> {
+        let node_id = self.reserve_node_id();
+        self.append_message_with_node_id(message, node_id)
     }
 
     /// Save the current plan state as a snapshot on the last assistant message in the tree.
@@ -439,8 +458,17 @@ impl Agent {
 
             let messages = self.render_tool_results_in_messages();
 
+            // Pre-allocate the node_id for this assistant message.
+            // This is passed to the UI with StreamingStarted so the container
+            // is tagged from the start, and then used in append_message_with_node_id
+            // to guarantee the same ID is persisted.
+            let reserved_node_id = self.reserve_node_id();
+
             // 1. Get LLM response (without adding to history yet)
-            let (llm_response, request_id) = match self.get_next_assistant_message(messages).await {
+            let (llm_response, request_id) = match self
+                .get_next_assistant_message(messages, reserved_node_id)
+                .await
+            {
                 Ok(result) => {
                     // Successful response — reset the retry counter
                     streaming_retry_count = 0;
@@ -523,12 +551,13 @@ impl Agent {
                 Err(e) => return Err(e),
             };
 
-            // 2. Add original LLM response to message history if it has content
+            // 2. Add original LLM response to message history using the pre-allocated node_id
             if !llm_response.content.is_empty() {
-                self.append_message(
+                self.append_message_with_node_id(
                     Message::new_assistant_content(llm_response.content.clone())
                         .with_request_id(request_id)
                         .with_usage(llm_response.usage.clone()),
+                    reserved_node_id,
                 )?;
             }
 
@@ -1393,9 +1422,12 @@ impl Agent {
     }
 
     /// Gets the next assistant message from the LLM provider.
+    /// `node_id` is the pre-allocated persistence node ID for this assistant message,
+    /// sent to the UI with `StreamingStarted` so the container is tagged from the start.
     async fn get_next_assistant_message(
         &mut self,
         messages: Vec<Message>,
+        node_id: crate::persistence::NodeId,
     ) -> Result<(llm::LLMResponse, u64)> {
         // Generate and increment request ID
         let request_id = self.next_request_id;
@@ -1403,9 +1435,15 @@ impl Agent {
 
         // Inform UI that a new LLM request is starting
         self.ui
-            .send_event(UiEvent::StreamingStarted(request_id))
+            .send_event(UiEvent::StreamingStarted {
+                request_id,
+                node_id,
+            })
             .await?;
-        debug!("Starting LLM request with ID: {}", request_id);
+        debug!(
+            "Starting LLM request with ID: {}, node_id: {}",
+            request_id, node_id
+        );
 
         // Inject naming reminder if session is not named yet
         let messages_with_reminder = self.inject_naming_reminder_if_needed(messages);

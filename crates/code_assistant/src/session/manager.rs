@@ -286,16 +286,12 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        // If the agent is running locally on this session, don't emit any
-        // events (streaming already keeps the UI up-to-date). But DO reload
-        // from persistence so that `last_ui_synced_path` stays in sync —
-        // this prevents the first refresh after Idle from seeing everything
-        // as "new".
+        // If the agent is running locally, streaming keeps the UI up-to-date.
+        // Just reload from persistence to advance the baseline so future diffs
+        // (after the agent finishes) don't see already-streamed content as "new".
         let activity = session_instance.get_activity_state();
         if !activity.is_terminal() && !activity.is_running_externally() {
             session_instance.reload_from_persistence(&self.persistence)?;
-            // Advance the UI-synced baseline to match what's on disk,
-            // since the local streaming UI is keeping up in real-time.
             session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
             session_instance.last_ui_synced_tool_count =
                 session_instance.session.tool_executions.len();
@@ -312,7 +308,7 @@ impl SessionManager {
         let synced_path = &session_instance.last_ui_synced_path;
         let synced_tool_count = session_instance.last_ui_synced_tool_count;
 
-        // Case 1: Paths identical and no new tool results → true no-op
+        // Case 1: Paths identical and no new tool results → no-op
         if new_path == *synced_path && new_tool_count == synced_tool_count {
             return Ok(Vec::new());
         }
@@ -327,7 +323,6 @@ impl SessionManager {
             if new_tool_results.is_empty() {
                 return Ok(Vec::new());
             }
-            // Advance baseline
             session_instance.last_ui_synced_tool_count = new_tool_count;
             return Ok(vec![UiEvent::AppendMessages {
                 messages: Vec::new(),
@@ -335,22 +330,19 @@ impl SessionManager {
             }]);
         }
 
-        // Case 2: Synced path is a strict prefix of new path → append-only
+        // Case 2: Synced path is a strict prefix of new path → append only new nodes
         if new_path.len() > synced_path.len() && new_path.starts_with(synced_path) {
             debug!(
                 "Incremental refresh for {session_id}: {} new node(s)",
                 new_path.len() - synced_path.len()
             );
 
-            // Convert only the new nodes to MessageData
             let tool_syntax = session_instance.session.config.tool_syntax;
             let new_node_ids = &new_path[synced_path.len()..];
 
-            // Build messages for the new nodes only
             let messages_data =
                 session_instance.convert_messages_from_nodes(new_node_ids, tool_syntax)?;
 
-            // Collect tool results that are new since last time
             let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
             let new_tool_results: Vec<_> = all_tool_results
                 .into_iter()
@@ -366,22 +358,19 @@ impl SessionManager {
                 });
             }
 
-            // Always update plan (may have changed independently of messages)
             events.push(UiEvent::UpdatePlan {
                 plan: session_instance.session.plan.clone(),
             });
 
-            // Advance baseline
             session_instance.last_ui_synced_path = new_path;
             session_instance.last_ui_synced_tool_count = new_tool_count;
 
             return Ok(events);
         }
 
-        // Case 3: Paths diverged → full reload fallback
+        // Case 3: Paths diverged → full reload
         debug!("Incremental refresh for {session_id}: paths diverged, full reload");
         let ui_events = session_instance.generate_session_connect_events()?;
-        // After full reload, reset baseline to current disk state
         session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
         session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
         Ok(ui_events)
@@ -411,6 +400,11 @@ impl SessionManager {
         // Save the session state with the new message
         self.persistence
             .save_chat_session(&session_instance.session)?;
+
+        // Advance the UI-synced baseline: the user message is displayed immediately
+        // by the UI, so the file watcher should not treat it as "new".
+        session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+        session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
 
         Ok(node_id)
     }

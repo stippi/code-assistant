@@ -785,7 +785,7 @@ impl UserInterface for ProxyUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         // Handle special events that need buffer management and activity state updates
         match &event {
-            UiEvent::StreamingStarted(_) => {
+            UiEvent::StreamingStarted { .. } => {
                 // Clear fragment buffer at start of new LLM request
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();

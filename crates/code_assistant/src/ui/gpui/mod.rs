@@ -1016,9 +1016,10 @@ impl Gpui {
                 tool_results,
             } => {
                 // Incremental update: append new messages without clearing existing ones.
-                // Safety net: deduplicate by node_id to avoid double-appending messages
-                // that the UI already has (e.g. due to race between agent Idle transition
-                // and file-watcher debounce).
+                // Deduplicate by node_id to avoid double-appending messages that the UI
+                // already has (e.g. due to race between agent Idle transition and
+                // file-watcher debounce — the streaming container already has the
+                // pre-allocated node_id).
                 let existing_node_ids: std::collections::HashSet<crate::persistence::NodeId> = {
                     let queue = self.message_queue.lock().unwrap();
                     queue
@@ -1030,18 +1031,18 @@ impl Gpui {
                         })
                         .collect()
                 };
+
                 let messages: Vec<_> = messages
                     .into_iter()
                     .filter(|msg| match msg.node_id {
                         Some(id) if existing_node_ids.contains(&id) => {
-                            trace!("AppendMessages: skipping duplicate node_id {}", id);
+                            debug!("AppendMessages: skipping duplicate node_id {}", id);
                             false
                         }
                         _ => true,
                     })
                     .collect();
                 if messages.is_empty() && tool_results.is_empty() {
-                    // Nothing new to append after deduplication
                     return;
                 }
 
@@ -1143,7 +1144,10 @@ impl Gpui {
                 self.notify_messages_appended(old_len, cx);
             }
 
-            UiEvent::StreamingStarted(request_id) => {
+            UiEvent::StreamingStarted {
+                request_id,
+                node_id,
+            } => {
                 let old_len;
                 {
                     let mut queue = self.message_queue.lock().unwrap();
@@ -1161,23 +1165,25 @@ impl Gpui {
                     };
 
                     if needs_new_container {
-                        // Create new assistant container
+                        // Create new assistant container with pre-allocated node_id
                         let sid = self.current_session_id.lock().unwrap().clone();
                         let assistant_container = cx
                             .new(|cx| {
                                 let container =
                                     MessageContainer::with_role(MessageRole::Assistant, cx);
                                 container.set_current_request_id(request_id);
+                                container.set_node_id(Some(node_id));
                                 container.set_session_id(sid);
                                 container
                             })
                             .expect("Failed to create new container");
                         queue.push(assistant_container);
                     } else if let Some(last_container) = last_container {
-                        // Reuse existing container — no push, just update request_id
+                        // Reuse existing container — no push, just update request_id and node_id
                         drop(queue);
                         self.update_container(&last_container, cx, |container, cx| {
                             container.set_current_request_id(request_id);
+                            container.set_node_id(Some(node_id));
                             cx.notify();
                         });
                         return;
@@ -1321,7 +1327,7 @@ impl Gpui {
                 activity_state,
             } => {
                 debug!(
-                    "UI: UpdateSessionActivityState event for session {} with state {:?}",
+                    "UI: UpdateSessionActivityState for session {} → {:?}",
                     session_id, activity_state
                 );
 
@@ -2461,9 +2467,8 @@ impl UserInterface for Gpui {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         // Handle special events that need state management
         match &event {
-            UiEvent::StreamingStarted(request_id) => {
+            UiEvent::StreamingStarted { request_id, .. } => {
                 // Store the request ID
-
                 *self.current_request_id.lock().unwrap() = *request_id;
                 // Clear any existing error/notification when new operation starts
                 *self.current_error.lock().unwrap() = None;

@@ -96,8 +96,10 @@ pub enum UiEvent {
         session_id: Option<String>,
         tool_results: Vec<ToolResultData>,
     },
-    /// Streaming started for a request
-    StreamingStarted(u64),
+    /// Streaming started for a request.
+    /// The `node_id` is pre-allocated so the UI container is tagged from the start
+    /// with the same ID that will be used when the message is persisted.
+    StreamingStarted { request_id: u64, node_id: NodeId },
     /// Streaming stopped for a request
     StreamingStopped {
         id: u64,
