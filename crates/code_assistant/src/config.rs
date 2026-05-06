@@ -175,7 +175,7 @@ pub fn save_project(name: &str, project: &Project) -> Result<()> {
     let config_path = get_config_path()?;
     let mut projects = load_projects()?;
     projects.insert(name.to_string(), project.clone());
-    let content = serde_json::to_string_pretty(&projects)?;
-    std::fs::write(config_path, content)?;
+
+    crate::utils::file_utils::atomic_write_json(&config_path, &projects)?;
     Ok(())
 }

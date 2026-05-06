@@ -693,7 +693,7 @@ impl UserInterface for SubAgentUiAdapter {
                 self.send_output_update().await;
             }
 
-            UiEvent::StreamingStarted(_) => {
+            UiEvent::StreamingStarted { .. } => {
                 tracing::debug!("SubAgentUiAdapter: StreamingStarted");
                 self.set_activity(SubAgentActivity::Streaming);
                 self.send_output_update().await;

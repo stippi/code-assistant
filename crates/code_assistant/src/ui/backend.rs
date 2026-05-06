@@ -12,7 +12,7 @@ use sandbox::SandboxPolicy;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 // Unified event type for all UI→Backend communication
 #[derive(Debug, Clone)]
@@ -107,6 +107,13 @@ pub enum BackendEvent {
 
     /// Clear the Errored state on a session (user dismissed the error banner)
     ClearSessionError {
+        session_id: String,
+    },
+
+    /// Incremental session refresh triggered by the file watcher.
+    /// Compares the on-disk state with the in-memory state and emits only
+    /// the delta (new messages appended by an external process).
+    RefreshSession {
         session_id: String,
     },
 }
@@ -363,6 +370,10 @@ pub async fn handle_backend_events(
                     .await;
                 None // No backend response needed
             }
+
+            BackendEvent::RefreshSession { session_id } => {
+                handle_refresh_session(&multi_session_manager, &session_id, &ui).await
+            }
         };
 
         // Send response back to UI only if there is one
@@ -465,6 +476,39 @@ async fn handle_load_session(
             Some(BackendResponse::Error {
                 message: e.to_string(),
             })
+        }
+    }
+}
+
+async fn handle_refresh_session(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    ui: &Arc<dyn UserInterface>,
+) -> Option<BackendResponse> {
+    let ui_events_result = {
+        let mut manager = multi_session_manager.lock().await;
+        manager.refresh_session_incremental(session_id)
+    };
+
+    match ui_events_result {
+        Ok(ui_events) => {
+            if !ui_events.is_empty() {
+                trace!(
+                    "Incremental refresh for {session_id}: {} UI events",
+                    ui_events.len()
+                );
+                for event in ui_events {
+                    if let Err(e) = ui.send_event(event).await {
+                        error!("Failed to send UI event: {}", e);
+                    }
+                }
+            }
+            None
+        }
+        Err(e) => {
+            warn!("Incremental refresh failed for {session_id}, falling back: {e}");
+            // Fall back to full reload
+            handle_load_session(multi_session_manager, session_id, ui).await
         }
     }
 }

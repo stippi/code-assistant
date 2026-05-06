@@ -1,5 +1,6 @@
 use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
+use crate::session::watcher::SessionWatcher;
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::gpui::terminal_executor::GpuiTerminalCommandExecutor;
 use crate::ui::{self, UserInterface};
@@ -7,7 +8,7 @@ use anyhow::Result;
 use llm::factory::create_llm_client_from_model;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub fn run(config: AgentRunConfig) -> Result<()> {
     // Create shared state between GUI and backend
@@ -36,6 +37,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     let default_model = config.model.clone();
     let base_session_model_config =
         crate::persistence::SessionModelConfig::new(default_model.clone());
+
+    // Clone persistence before it is moved into SessionManager so the
+    // filesystem watcher can use it to resolve the sessions directory.
+    let persistence_for_watcher = persistence.clone();
 
     // Create the new SessionManager
     let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
@@ -188,6 +193,25 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                     }
                 }
             }
+
+            // Start the filesystem watcher for cross-instance awareness.
+            // The watcher runs in the background and emits UI events when
+            // other code-assistant instances modify session files.
+
+            let _session_watcher = match SessionWatcher::start(
+                &persistence_for_watcher,
+                gui_for_thread.event_sender(),
+                gui_for_thread.current_session_id_ref(),
+            ) {
+                Ok(watcher) => {
+                    info!("Filesystem session watcher started");
+                    Some(watcher)
+                }
+                Err(e) => {
+                    warn!("Failed to start filesystem session watcher: {e}");
+                    None
+                }
+            };
 
             crate::ui::backend::handle_backend_events(
                 backend_event_rx,

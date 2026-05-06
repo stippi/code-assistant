@@ -6,13 +6,13 @@
 //!
 //! This replaces the old `ExecuteCommandOutputRenderer` (ToolOutputRenderer)
 //! with a unified `ToolBlockRenderer` that controls the entire card.
-
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::gpui::file_icons;
 use crate::ui::gpui::terminal_pool::TerminalPool;
 use crate::ui::gpui::tool_block_renderers::{
     animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle,
 };
+use crate::ui::gpui::Gpui;
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::AppContext as _; // brings .new() into scope on Context
@@ -165,11 +165,30 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 command_line_param
             );
             if !command_line_param.is_empty() {
+                // If the session is externally locked, show "Running…" instead of
+                // "Starting…" since we'll never get a local PTY for this tool.
+                let is_external = cx
+                    .try_global::<Gpui>()
+                    .and_then(|gpui| {
+                        gpui.current_session_activity_state
+                            .lock()
+                            .ok()
+                            .and_then(|state| state.clone())
+                    })
+                    .is_some_and(|s| s.is_running_externally());
+
+                let status_text = if is_external {
+                    "Running…"
+                } else {
+                    "Starting…"
+                };
+
                 return Some(
                     self.render_skeleton(
                         &tool.id,
                         &command_line_param,
                         working_dir_param.as_deref(),
+                        status_text,
                         theme,
                     )
                     .into_any_element(),
@@ -529,6 +548,7 @@ impl TerminalCardRenderer {
         _tool_id: &str,
         command: &str,
         working_dir: Option<&str>,
+        status_text: &str,
         theme: &gpui_component::theme::Theme,
     ) -> gpui::Div {
         let is_dark = is_dark_theme(theme);
@@ -588,7 +608,7 @@ impl TerminalCardRenderer {
                         div()
                             .text_size(rems(0.6875))
                             .text_color(theme.muted_foreground)
-                            .child("Starting…"),
+                            .child(status_text.to_string()),
                     ),
             )
             // Command line

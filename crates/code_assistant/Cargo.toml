@@ -21,6 +21,8 @@ percent-encoding = "2.3"
 tokio = { version = "1.48", features = ["full"] }
 futures = "0.3"
 tempfile = "3.23"
+fs2 = "0.4"
+notify = { version = "7", features = ["macos_fsevent"] }
 
 # Terminal UI
 rustyline = "12.0.0"

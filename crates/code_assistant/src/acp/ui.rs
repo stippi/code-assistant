@@ -711,7 +711,7 @@ impl UserInterface for ACPUserUI {
             // Events that don't translate to ACP
             UiEvent::SetMessages { .. }
             | UiEvent::DisplayCompactionSummary { .. }
-            | UiEvent::StreamingStarted(_)
+            | UiEvent::StreamingStarted { .. }
             | UiEvent::StreamingStopped { .. }
             | UiEvent::RefreshChatList
             | UiEvent::UpdateChatList { .. }
@@ -734,7 +734,9 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateBranchInfo { .. }
             | UiEvent::RollbackStreaming { .. }
             | UiEvent::ShowTransientStatus { .. }
-            | UiEvent::ClearTransientStatus => {
+            | UiEvent::ClearTransientStatus
+            | UiEvent::RefreshCurrentSession { .. }
+            | UiEvent::AppendMessages { .. } => {
                 // These are UI management events, not relevant for ACP
                 // (RollbackStreaming: ACP cannot retract already-sent notifications)
             }

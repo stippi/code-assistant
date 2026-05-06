@@ -244,7 +244,7 @@ impl UserInterface for TerminalUI {
                     let _ = renderer_guard.add_instruction_message(&formatted);
                 }
             }
-            UiEvent::StreamingStarted(request_id) => {
+            UiEvent::StreamingStarted { request_id, .. } => {
                 debug!("Streaming started for request {}", request_id);
                 self.cancel_flag.store(false, Ordering::SeqCst);
                 // Start a new message - this will finalize any existing live message

@@ -939,6 +939,11 @@ impl AnthropicClient {
                                 rate_limits: Some(AnthropicRateLimitInfo::default()),
                             }
                             .into()),
+                            "rate_limit_error" => Err(ApiErrorContext {
+                                error: ApiError::RateLimit(error_msg),
+                                rate_limits: Some(AnthropicRateLimitInfo::default()),
+                            }
+                            .into()),
                             _ => Err(anyhow::anyhow!("Stream error: {error_msg}")),
                         };
                     }

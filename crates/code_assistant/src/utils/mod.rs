@@ -1,4 +1,5 @@
 pub mod content;
+pub mod file_utils;
 mod writer;
 
 #[cfg(test)]

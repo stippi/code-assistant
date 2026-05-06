@@ -1,5 +1,5 @@
 use anyhow::Result;
-use llm::Message;
+use llm::{ContentBlock, Message};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
+use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
@@ -214,7 +215,12 @@ impl SessionManager {
         // Generate UI events for connecting to this session
         let mut ui_events = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            session_instance.generate_session_connect_events()?
+            let events = session_instance.generate_session_connect_events()?;
+            // Mark what the UI now knows about (baseline for future incremental diffs)
+            session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+            session_instance.last_ui_synced_tool_count =
+                session_instance.session.tool_executions.len();
+            events
         };
 
         ui_events.push(UiEvent::UpdateCurrentModel {
@@ -230,6 +236,19 @@ impl SessionManager {
             policy: sandbox_policy_for_event,
         });
 
+        // Check if another process holds the agent lock for this session.
+        // If so, mark it as RunningExternally so the UI disables input.
+        if self.is_agent_locked_externally(&session_id) {
+            debug!(
+                "Session {} has an agent running in another process",
+                session_id
+            );
+            ui_events.push(UiEvent::UpdateSessionActivityState {
+                session_id: session_id.clone(),
+                activity_state: crate::session::instance::SessionActivityState::RunningExternally,
+            });
+        }
+
         // Set as active
         self.active_session_id = Some(session_id.clone());
 
@@ -242,6 +261,118 @@ impl SessionManager {
             self.persistence.save_chat_session(&session_snapshot)?;
         }
 
+        Ok(ui_events)
+    }
+
+    /// Incremental refresh of the currently viewed session.
+    ///
+    /// Reloads the session from persistence and compares the on-disk
+    /// `active_path` against `last_ui_synced_path` (what the UI already shows).
+    ///
+    /// Returns:
+    /// - `Ok(vec![])` if nothing changed or the UI already has these messages
+    /// - `Ok(vec![AppendMessages { .. }])` if new nodes were appended externally
+    /// - `Ok(vec![SetMessages { .. }])` if the paths diverged (full reload fallback)
+    ///
+    /// The key insight: we compare against `last_ui_synced_path` rather than
+    /// the pre-reload `session.active_path`. This eliminates the race between
+    /// a locally running agent's final `save_state()` and the file-watcher
+    /// debounce — even if the state has already transitioned to Idle by the
+    /// time the debounce fires, `last_ui_synced_path` was advanced during
+    /// prior "while running" reloads, so no spurious diff is detected.
+    pub fn refresh_session_incremental(&mut self, session_id: &str) -> Result<Vec<UiEvent>> {
+        let session_instance = self
+            .active_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        // If the agent is running locally, streaming keeps the UI up-to-date.
+        // Just reload from persistence to advance the baseline so future diffs
+        // (after the agent finishes) don't see already-streamed content as "new".
+        let activity = session_instance.get_activity_state();
+        if !activity.is_terminal() && !activity.is_running_externally() {
+            session_instance.reload_from_persistence(&self.persistence)?;
+            session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+            session_instance.last_ui_synced_tool_count =
+                session_instance.session.tool_executions.len();
+            return Ok(Vec::new());
+        }
+
+        // Reload from disk
+        session_instance.reload_from_persistence(&self.persistence)?;
+
+        let new_path = session_instance.session.active_path.clone();
+        let new_tool_count = session_instance.session.tool_executions.len();
+
+        // Compare against what the UI already has (not the pre-reload disk state).
+        let synced_path = &session_instance.last_ui_synced_path;
+        let synced_tool_count = session_instance.last_ui_synced_tool_count;
+
+        // Case 1: Paths identical and no new tool results → no-op
+        if new_path == *synced_path && new_tool_count == synced_tool_count {
+            return Ok(Vec::new());
+        }
+
+        // Case 1b: Paths identical but new tool results appeared
+        if new_path == *synced_path {
+            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
+            let new_tool_results: Vec<_> = all_tool_results
+                .into_iter()
+                .skip(synced_tool_count)
+                .collect();
+            if new_tool_results.is_empty() {
+                return Ok(Vec::new());
+            }
+            session_instance.last_ui_synced_tool_count = new_tool_count;
+            return Ok(vec![UiEvent::AppendMessages {
+                messages: Vec::new(),
+                tool_results: new_tool_results,
+            }]);
+        }
+
+        // Case 2: Synced path is a strict prefix of new path → append only new nodes
+        if new_path.len() > synced_path.len() && new_path.starts_with(synced_path) {
+            debug!(
+                "Incremental refresh for {session_id}: {} new node(s)",
+                new_path.len() - synced_path.len()
+            );
+
+            let tool_syntax = session_instance.session.config.tool_syntax;
+            let new_node_ids = &new_path[synced_path.len()..];
+
+            let messages_data =
+                session_instance.convert_messages_from_nodes(new_node_ids, tool_syntax)?;
+
+            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
+            let new_tool_results: Vec<_> = all_tool_results
+                .into_iter()
+                .skip(synced_tool_count)
+                .collect();
+
+            let mut events = Vec::new();
+
+            if !messages_data.is_empty() || !new_tool_results.is_empty() {
+                events.push(UiEvent::AppendMessages {
+                    messages: messages_data,
+                    tool_results: new_tool_results,
+                });
+            }
+
+            events.push(UiEvent::UpdatePlan {
+                plan: session_instance.session.plan.clone(),
+            });
+
+            session_instance.last_ui_synced_path = new_path;
+            session_instance.last_ui_synced_tool_count = new_tool_count;
+
+            return Ok(events);
+        }
+
+        // Case 3: Paths diverged → full reload
+        debug!("Incremental refresh for {session_id}: paths diverged, full reload");
+        let ui_events = session_instance.generate_session_connect_events()?;
+        session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+        session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
         Ok(ui_events)
     }
 
@@ -269,6 +400,11 @@ impl SessionManager {
         // Save the session state with the new message
         self.persistence
             .save_chat_session(&session_instance.session)?;
+
+        // Advance the UI-synced baseline: the user message is displayed immediately
+        // by the UI, so the file watcher should not treat it as "new".
+        session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+        session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
 
         Ok(node_id)
     }
@@ -348,6 +484,18 @@ impl SessionManager {
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
+        // Acquire exclusive cross-process agent lock.
+        // This prevents another code-assistant instance from running an agent
+        // for the same session concurrently.
+        let sessions_dir = self.persistence.sessions_dir()?;
+        let agent_lock = file_utils::try_acquire_agent_lock(&sessions_dir, session_id)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot start agent for session {session_id}: \
+                     another code-assistant instance is already running an agent for this session"
+                )
+            })?;
+
         // Prepare session - need to scope the mutable borrow carefully
         let (
             session_config,
@@ -489,13 +637,18 @@ impl SessionManager {
         // Load the session state into the agent
         agent.load_from_session_state(session_state).await?;
 
-        // Spawn the agent task
+        // Spawn the agent task.
+        //
+        // The `_agent_lock` guard is moved into the task so the cross-process
+        // lock is held for exactly as long as the agent is running and released
+        // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
         let ui_clone = ui.clone();
         let sleep_inhibitor = self.sleep_inhibitor.clone();
         sleep_inhibitor.agent_started();
 
         let task_handle = tokio::spawn(async move {
+            let _agent_lock = agent_lock; // moved in — released on drop
             debug!("Starting agent for session {}", session_id_clone);
 
             // Use catch_unwind to ensure cleanup runs even if the agent panics.
@@ -798,6 +951,25 @@ impl SessionManager {
         None
     }
 
+    /// Check whether a session's agent lock is held by another process.
+    ///
+    /// Returns `true` if an external process is running an agent for this
+    /// session. Used by the UI to decide whether to disable the message input.
+    pub fn is_agent_locked_externally(&self, session_id: &str) -> bool {
+        // If *we* have the session in our active_sessions with a running task,
+        // the lock is ours, not external.
+        if let Some(instance) = self.active_sessions.get(session_id) {
+            if !instance.get_activity_state().is_terminal() {
+                return false; // Our own agent holds the lock
+            }
+        }
+
+        let Ok(sessions_dir) = self.persistence.sessions_dir() else {
+            return false;
+        };
+        file_utils::is_agent_locked(&sessions_dir, session_id)
+    }
+
     /// Get the latest session ID for auto-resuming
     pub fn get_latest_session_id(&self) -> Result<Option<String>> {
         self.persistence.get_latest_session_id()
@@ -894,31 +1066,17 @@ impl SessionManager {
         }
     }
 
-    /// Queue a user message for a running agent session
+    /// Queue a text-only user message for a running agent session
+    #[allow(dead_code)]
     pub fn queue_user_message(&mut self, session_id: &str, message: String) -> Result<()> {
-        // Get the active session instance and update shared pending message
-        let session_instance = self
-            .active_sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        // Update the shared pending message
-        let mut pending = session_instance.pending_message.lock().unwrap();
-        match pending.as_mut() {
-            Some(existing) => {
-                // Append to existing message with newline separator
-                if !existing.is_empty() && !existing.ends_with('\n') {
-                    existing.push('\n');
-                }
-                existing.push_str(&message);
-            }
-            None => {
-                // Set as new pending message
-                *pending = Some(message);
-            }
-        }
-
-        Ok(())
+        self.queue_structured_user_message(
+            session_id,
+            vec![ContentBlock::Text {
+                text: message,
+                start_time: None,
+                end_time: None,
+            }],
+        )
     }
 
     /// Check for completed agent tasks and handle their results
@@ -981,26 +1139,28 @@ impl SessionManager {
     pub fn queue_structured_user_message(
         &mut self,
         session_id: &str,
-        content_blocks: Vec<llm::ContentBlock>,
+        content_blocks: Vec<ContentBlock>,
     ) -> Result<()> {
-        // For now, convert structured content to text representation for pending messages
-        // In the future, we could extend pending messages to support structured content
-        let text_representation = content_blocks
-            .iter()
-            .filter_map(|block| match block {
-                llm::ContentBlock::Text { text, .. } => Some(text.clone()),
-                llm::ContentBlock::Image { media_type, .. } => {
-                    Some(format!("[Image: {media_type}]"))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let session_instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        self.queue_user_message(session_id, text_representation)
+        let mut pending = session_instance.pending_message.lock().unwrap();
+        match pending.as_mut() {
+            Some(existing) => {
+                // Append new content blocks to existing pending blocks
+                existing.extend(content_blocks);
+            }
+            None => {
+                *pending = Some(content_blocks);
+            }
+        }
+
+        Ok(())
     }
 
-    /// Get and clear pending message for editing
+    /// Get and clear pending message for editing (returns text-only summary for UI)
     pub fn request_pending_message_for_edit(&mut self, session_id: &str) -> Result<Option<String>> {
         // Get the active session instance and take the pending message
         let session_instance = self
@@ -1009,10 +1169,12 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let mut pending = session_instance.pending_message.lock().unwrap();
-        Ok(pending.take())
+        Ok(pending
+            .take()
+            .map(|blocks| crate::utils::content::text_summary_from_blocks(&blocks)))
     }
 
-    /// Get current pending message without clearing it
+    /// Get current pending message text summary without clearing it
     pub fn get_pending_message(&self, session_id: &str) -> Result<Option<String>> {
         let session_instance = self
             .active_sessions
@@ -1020,6 +1182,8 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let pending = session_instance.pending_message.lock().unwrap();
-        Ok(pending.clone())
+        Ok(pending
+            .as_ref()
+            .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks)))
     }
 }

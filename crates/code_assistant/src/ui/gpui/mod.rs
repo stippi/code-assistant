@@ -311,8 +311,11 @@ impl Gpui {
         self.update_messages_view(cx, |view, cx| {
             if view.follow_tail {
                 view.scroll_to_bottom();
-                cx.notify(); // Trigger render so animation task can be spawned
             }
+            // Always notify so the list re-renders visible items that gained
+            // new blocks (e.g. thinking blocks created inside an existing
+            // MessageContainer).
+            cx.notify();
         });
     }
 
@@ -1008,7 +1011,143 @@ impl Gpui {
                 self.notify_messages_reset(cx);
             }
 
-            UiEvent::StreamingStarted(request_id) => {
+            UiEvent::AppendMessages {
+                messages,
+                tool_results,
+            } => {
+                // Incremental update: append new messages without clearing existing ones.
+                // Deduplicate by node_id to avoid double-appending messages that the UI
+                // already has (e.g. due to race between agent Idle transition and
+                // file-watcher debounce — the streaming container already has the
+                // pre-allocated node_id).
+                let existing_node_ids: std::collections::HashSet<crate::persistence::NodeId> = {
+                    let queue = self.message_queue.lock().unwrap();
+                    queue
+                        .iter()
+                        .filter_map(|container| {
+                            cx.update_entity(container, |c, _cx| c.node_id())
+                                .ok()
+                                .flatten()
+                        })
+                        .collect()
+                };
+
+                let messages: Vec<_> = messages
+                    .into_iter()
+                    .filter(|msg| match msg.node_id {
+                        Some(id) if existing_node_ids.contains(&id) => {
+                            debug!("AppendMessages: skipping duplicate node_id {}", id);
+                            false
+                        }
+                        _ => true,
+                    })
+                    .collect();
+                if messages.is_empty() && tool_results.is_empty() {
+                    return;
+                }
+
+                let old_len = self.message_queue.lock().unwrap().len();
+
+                let current_project = {
+                    let sid = self.current_session_id.lock().unwrap().clone();
+                    if let Some(ref session_id) = sid {
+                        let sessions = self.chat_sessions.lock().unwrap();
+                        sessions
+                            .iter()
+                            .find(|s| s.id == *session_id)
+                            .map(|s| s.initial_project.clone())
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                };
+
+                let session_id = self.current_session_id.lock().unwrap().clone();
+
+                for message_data in messages {
+                    let current_container = {
+                        let mut queue = self.message_queue.lock().unwrap();
+
+                        let needs_new_container = if let Some(last_container) = queue.last() {
+                            let last_role = cx
+                                .update_entity(last_container, |container, _cx| {
+                                    if container.is_user_message() {
+                                        MessageRole::User
+                                    } else {
+                                        MessageRole::Assistant
+                                    }
+                                })
+                                .expect("Failed to get container role");
+                            last_role == MessageRole::User || last_role != message_data.role
+                        } else {
+                            true
+                        };
+
+                        if needs_new_container {
+                            let container = cx
+                                .new(|cx| {
+                                    MessageContainer::with_role(message_data.role.clone(), cx)
+                                })
+                                .expect("Failed to create message container");
+
+                            let node_id = message_data.node_id;
+                            let branch_info = message_data.branch_info.clone();
+                            let sid = session_id.clone();
+                            self.update_container(&container, cx, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                                container.set_node_id(node_id);
+                                container.set_branch_info(branch_info);
+                                container.set_session_id(sid);
+                            });
+
+                            queue.push(container.clone());
+                            container
+                        } else {
+                            let container = queue.last().unwrap().clone();
+                            let sid = session_id.clone();
+                            self.update_container(&container, cx, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                                container.set_session_id(sid);
+                            });
+                            container
+                        }
+                    };
+
+                    self.process_fragments_for_container(
+                        &current_container,
+                        message_data.fragments,
+                        cx,
+                    );
+                }
+
+                // Apply tool results
+                for tool_result in tool_results {
+                    let ui_images: Vec<(String, String)> = tool_result
+                        .images
+                        .iter()
+                        .map(|img| (img.media_type.clone(), img.base64_data.clone()))
+                        .collect();
+                    self.update_all_messages(cx, |message_container, cx| {
+                        message_container.update_tool_status(
+                            &tool_result.tool_id,
+                            tool_result.status,
+                            tool_result.message.clone(),
+                            tool_result.output.clone(),
+                            tool_result.styled_output.clone(),
+                            tool_result.duration_seconds,
+                            ui_images.clone(),
+                            cx,
+                        );
+                    });
+                }
+
+                self.notify_messages_appended(old_len, cx);
+            }
+
+            UiEvent::StreamingStarted {
+                request_id,
+                node_id,
+            } => {
                 let old_len;
                 {
                     let mut queue = self.message_queue.lock().unwrap();
@@ -1026,23 +1165,25 @@ impl Gpui {
                     };
 
                     if needs_new_container {
-                        // Create new assistant container
+                        // Create new assistant container with pre-allocated node_id
                         let sid = self.current_session_id.lock().unwrap().clone();
                         let assistant_container = cx
                             .new(|cx| {
                                 let container =
                                     MessageContainer::with_role(MessageRole::Assistant, cx);
                                 container.set_current_request_id(request_id);
+                                container.set_node_id(Some(node_id));
                                 container.set_session_id(sid);
                                 container
                             })
                             .expect("Failed to create new container");
                         queue.push(assistant_container);
                     } else if let Some(last_container) = last_container {
-                        // Reuse existing container — no push, just update request_id
+                        // Reuse existing container — no push, just update request_id and node_id
                         drop(queue);
                         self.update_container(&last_container, cx, |container, cx| {
                             container.set_current_request_id(request_id);
+                            container.set_node_id(Some(node_id));
                             cx.notify();
                         });
                         return;
@@ -1186,7 +1327,7 @@ impl Gpui {
                 activity_state,
             } => {
                 debug!(
-                    "UI: UpdateSessionActivityState event for session {} with state {:?}",
+                    "UI: UpdateSessionActivityState for session {} → {:?}",
                     session_id, activity_state
                 );
 
@@ -1377,6 +1518,19 @@ impl Gpui {
                     is_git_repo,
                 });
                 cx.refresh().expect("Failed to refresh windows");
+            }
+
+            UiEvent::RefreshCurrentSession { session_id } => {
+                // Another process modified the session file on disk.
+                // Use incremental refresh which diffs the active path and only
+                // appends new messages (no-op if we wrote the change ourselves).
+                debug!("UI: RefreshCurrentSession for {session_id}");
+                let current = self.current_session_id.lock().unwrap().clone();
+                if current.as_deref() == Some(session_id.as_str()) {
+                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::RefreshSession { session_id });
+                    }
+                }
             }
 
             // Resource events - logged for now, can be extended for features like "follow mode"
@@ -1826,6 +1980,20 @@ impl Gpui {
 
     pub fn get_current_session_id(&self) -> Option<String> {
         self.current_session_id.lock().unwrap().clone()
+    }
+
+    /// Returns a clone of the shared current-session-id mutex.
+    ///
+    /// Used by the filesystem watcher to know which session is being viewed.
+    pub fn current_session_id_ref(&self) -> Arc<Mutex<Option<String>>> {
+        self.current_session_id.clone()
+    }
+
+    /// Returns a clone of the UI event sender channel.
+    ///
+    /// Used by the filesystem watcher to inject events into the UI loop.
+    pub fn event_sender(&self) -> async_channel::Sender<UiEvent> {
+        self.event_sender.lock().unwrap().clone()
     }
 
     pub fn get_current_error(&self) -> Option<String> {
@@ -2299,9 +2467,8 @@ impl UserInterface for Gpui {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         // Handle special events that need state management
         match &event {
-            UiEvent::StreamingStarted(request_id) => {
+            UiEvent::StreamingStarted { request_id, .. } => {
                 // Store the request ID
-
                 *self.current_request_id.lock().unwrap() = *request_id;
                 // Clear any existing error/notification when new operation starts
                 *self.current_error.lock().unwrap() = None;

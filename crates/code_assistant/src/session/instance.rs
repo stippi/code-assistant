@@ -1,5 +1,5 @@
 use anyhow::Result;
-use llm::Message;
+use llm::{ContentBlock, Message};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
@@ -11,6 +11,7 @@ use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
+use crate::utils::file_utils::AgentLockGuard;
 use async_trait::async_trait;
 use sandbox::SandboxContext;
 use tracing::{debug, error};
@@ -29,6 +30,10 @@ pub enum SessionActivityState {
     RateLimited { seconds_remaining: u64 },
     /// Agent terminated with an error
     Errored { message: String },
+    /// Agent is running in another code-assistant process.
+    /// The session is view-only in this instance: the user can browse
+    /// messages but cannot send or queue new ones.
+    RunningExternally,
 }
 
 impl SessionActivityState {
@@ -37,6 +42,11 @@ impl SessionActivityState {
     /// agent is explicitly started.
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Idle | Self::Errored { .. })
+    }
+
+    /// Whether the session is locked by another code-assistant instance.
+    pub fn is_running_externally(&self) -> bool {
+        matches!(self, Self::RunningExternally)
     }
 }
 
@@ -70,14 +80,34 @@ pub struct SessionInstance {
     /// Current activity state of this session
     pub activity_state: Arc<Mutex<SessionActivityState>>,
 
-    /// Pending user message that will be processed by the next agent iteration
-    pub pending_message: Arc<Mutex<Option<String>>>,
+    /// Pending user message (structured content blocks) that will be processed by the next agent iteration
+    pub pending_message: Arc<Mutex<Option<Vec<ContentBlock>>>>,
 
     /// Tracks sandbox-approved roots for this session
     pub sandbox_context: Arc<SandboxContext>,
 
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
+
+    /// Exclusive cross-process lock held while an agent is running.
+    ///
+    /// Acquired before spawning the agent task, released on task completion
+    /// or abort.  Prevents two code-assistant processes from running an
+    /// agent for the same session simultaneously.
+    pub agent_lock: Option<AgentLockGuard>,
+
+    /// The active_path that the UI has been told about (either via full load
+    /// or via `AppendMessages`).  Used by the file-watcher refresh logic to
+    /// determine which nodes are truly "new" and avoid duplicate appends.
+    ///
+    /// Updated when:
+    /// - A full session load sends all messages to the UI
+    /// - An incremental append tells the UI about new nodes
+    /// - A reload happens while the local agent is running (streaming covers UI)
+    pub last_ui_synced_path: crate::persistence::ConversationPath,
+
+    /// Number of tool executions the UI has been told about.
+    pub last_ui_synced_tool_count: usize,
 }
 
 impl SessionInstance {
@@ -87,6 +117,9 @@ impl SessionInstance {
         if let Some(path) = session.config.effective_project_path() {
             let _ = sandbox_context.register_root(path);
         }
+
+        let initial_path = session.active_path.clone();
+        let initial_tool_count = session.tool_executions.len();
 
         Self {
             session,
@@ -98,6 +131,9 @@ impl SessionInstance {
             pending_message: Arc::new(Mutex::new(None)),
             sandbox_context,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
+            agent_lock: None,
+            last_ui_synced_path: initial_path,
+            last_ui_synced_tool_count: initial_tool_count,
         }
     }
 
@@ -137,12 +173,14 @@ impl SessionInstance {
         }
     }
 
-    /// Terminate the running agent
+    /// Terminate the running agent and release the cross-process agent lock.
     pub fn terminate_agent(&mut self) {
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
             self.clear_fragment_buffer();
         }
+        // Release the cross-process agent lock
+        self.agent_lock = None;
     }
 
     /// Add a message with optional branching support.
@@ -329,7 +367,9 @@ impl SessionInstance {
 
         if let Ok(pending) = self.pending_message.lock() {
             events.push(UiEvent::UpdatePendingMessage {
-                message: pending.clone(),
+                message: pending
+                    .as_ref()
+                    .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks)),
             });
         }
 
@@ -461,6 +501,111 @@ impl SessionInstance {
                         fragments,
                         node_id,
                         branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to extract fragments from message: {}", e);
+                }
+            }
+        }
+
+        Ok(messages_data)
+    }
+
+    /// Convert a specific subset of nodes (by their IDs) to UI MessageData.
+    /// Used for incremental updates when new nodes are appended to the active path.
+    pub fn convert_messages_from_nodes(
+        &self,
+        node_ids: &[crate::persistence::NodeId],
+        tool_syntax: crate::types::ToolSyntax,
+    ) -> Result<Vec<MessageData>, anyhow::Error> {
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn send_event(
+                &self,
+                _event: crate::ui::UiEvent,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn display_fragment(
+                &self,
+                _fragment: &crate::ui::DisplayFragment,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn should_streaming_continue(&self) -> bool {
+                true
+            }
+            fn notify_rate_limit(&self, _seconds_remaining: u64) {}
+            fn clear_rate_limit(&self) {}
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
+
+        let mut messages_data = Vec::new();
+
+        for &node_id in node_ids {
+            let Some(node) = self.session.message_nodes.get(&node_id) else {
+                continue;
+            };
+            let message = &node.message;
+
+            if message.is_compaction_summary {
+                let summary = match &message.content {
+                    llm::MessageContent::Text(text) => text.trim().to_string(),
+                    llm::MessageContent::Structured(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string(),
+                };
+                messages_data.push(MessageData {
+                    role: MessageRole::User,
+                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    node_id: Some(node_id),
+                    branch_info: self.session.get_branch_info(node_id),
+                });
+                continue;
+            }
+
+            // Skip tool-result user messages
+            if message.role == llm::MessageRole::User {
+                match &message.content {
+                    llm::MessageContent::Text(text) if text.trim().is_empty() => continue,
+                    llm::MessageContent::Structured(blocks) => {
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
+                        if has_tool_results {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    messages_data.push(MessageData {
+                        role,
+                        fragments,
+                        node_id: Some(node_id),
+                        branch_info: self.session.get_branch_info(node_id),
                     });
                 }
                 Err(e) => {
@@ -640,7 +785,7 @@ impl UserInterface for ProxyUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         // Handle special events that need buffer management and activity state updates
         match &event {
-            UiEvent::StreamingStarted(_) => {
+            UiEvent::StreamingStarted { .. } => {
                 // Clear fragment buffer at start of new LLM request
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
@@ -743,15 +888,38 @@ impl UserInterface for ProxyUI {
             }
         }
 
-        // First fragment indicates streaming has started - transition from WaitingForResponse
-        // But only if the agent is still running (not Idle)
-        let current_state = self
-            .session_activity_state
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or(SessionActivityState::Idle);
-        if matches!(current_state, SessionActivityState::WaitingForResponse) {
-            self.update_activity_state(SessionActivityState::AgentRunning);
+        // Transition from WaitingForResponse to AgentRunning only when the
+        // fragment actually produces something visible in the UI. Some
+        // providers emit empty deltas (e.g. an empty PlainText at the start
+        // of a content block) or purely structural events which would
+        // otherwise hide the activity spinner before any content appears in
+        // the MessagesView.
+        let has_visible_content = match fragment {
+            DisplayFragment::PlainText(s) => !s.is_empty(),
+            DisplayFragment::ThinkingText { text, .. } => !text.is_empty(),
+            DisplayFragment::ReasoningSummaryDelta(s) => !s.is_empty(),
+            DisplayFragment::ToolParameter { value, .. } => !value.is_empty(),
+            DisplayFragment::ToolOutput { chunk, .. } => !chunk.is_empty(),
+            DisplayFragment::Image { .. }
+            | DisplayFragment::ToolName { .. }
+            | DisplayFragment::ReasoningSummaryStart
+            | DisplayFragment::CompactionDivider { .. } => true,
+            DisplayFragment::ToolEnd { .. }
+            | DisplayFragment::ToolTerminal { .. }
+            | DisplayFragment::ReasoningComplete
+            | DisplayFragment::HiddenToolCompleted => false,
+        };
+
+        if has_visible_content {
+            // Only transition if the agent is still running (not Idle)
+            let current_state = self
+                .session_activity_state
+                .lock()
+                .map(|s| s.clone())
+                .unwrap_or(SessionActivityState::Idle);
+            if matches!(current_state, SessionActivityState::WaitingForResponse) {
+                self.update_activity_state(SessionActivityState::AgentRunning);
+            }
         }
 
         // Only forward to real UI if session is connected

@@ -96,8 +96,10 @@ pub enum UiEvent {
         session_id: Option<String>,
         tool_results: Vec<ToolResultData>,
     },
-    /// Streaming started for a request
-    StreamingStarted(u64),
+    /// Streaming started for a request.
+    /// The `node_id` is pre-allocated so the UI container is tagged from the start
+    /// with the same ID that will be used when the message is persisted.
+    StreamingStarted { request_id: u64, node_id: NodeId },
     /// Streaming stopped for a request
     StreamingStopped {
         id: u64,
@@ -217,6 +219,18 @@ pub enum UiEvent {
         node_id: NodeId,
         /// The updated branch info (siblings at this branch point)
         branch_info: BranchInfo,
+    },
+
+    // === Cross-instance awareness ===
+    /// Another process modified the session file on disk for the currently
+    /// viewed session.  The UI should reload messages from persistence.
+    RefreshCurrentSession { session_id: String },
+
+    /// Append new messages to the current session display (incremental update).
+    /// Used by the file watcher when an external agent appends messages.
+    AppendMessages {
+        messages: Vec<MessageData>,
+        tool_results: Vec<ToolResultData>,
     },
 
     // === Resource Events (for tool operations) ===

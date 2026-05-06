@@ -2,6 +2,20 @@ use crate::persistence::DraftAttachment;
 use llm::ContentBlock;
 use std::time::SystemTime;
 
+/// Generate a text summary from content blocks for UI display.
+/// Images are shown as `[image/png]` etc., text blocks are joined with newlines.
+pub fn text_summary_from_blocks(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.clone()),
+            ContentBlock::Image { media_type, .. } => Some(format!("[{media_type}]")),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn content_blocks_from(message: &str, attachments: &[DraftAttachment]) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
 
