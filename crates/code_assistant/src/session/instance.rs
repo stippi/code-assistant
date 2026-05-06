@@ -888,15 +888,38 @@ impl UserInterface for ProxyUI {
             }
         }
 
-        // First fragment indicates streaming has started - transition from WaitingForResponse
-        // But only if the agent is still running (not Idle)
-        let current_state = self
-            .session_activity_state
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or(SessionActivityState::Idle);
-        if matches!(current_state, SessionActivityState::WaitingForResponse) {
-            self.update_activity_state(SessionActivityState::AgentRunning);
+        // Transition from WaitingForResponse to AgentRunning only when the
+        // fragment actually produces something visible in the UI. Some
+        // providers emit empty deltas (e.g. an empty PlainText at the start
+        // of a content block) or purely structural events which would
+        // otherwise hide the activity spinner before any content appears in
+        // the MessagesView.
+        let has_visible_content = match fragment {
+            DisplayFragment::PlainText(s) => !s.is_empty(),
+            DisplayFragment::ThinkingText { text, .. } => !text.is_empty(),
+            DisplayFragment::ReasoningSummaryDelta(s) => !s.is_empty(),
+            DisplayFragment::ToolParameter { value, .. } => !value.is_empty(),
+            DisplayFragment::ToolOutput { chunk, .. } => !chunk.is_empty(),
+            DisplayFragment::Image { .. }
+            | DisplayFragment::ToolName { .. }
+            | DisplayFragment::ReasoningSummaryStart
+            | DisplayFragment::CompactionDivider { .. } => true,
+            DisplayFragment::ToolEnd { .. }
+            | DisplayFragment::ToolTerminal { .. }
+            | DisplayFragment::ReasoningComplete
+            | DisplayFragment::HiddenToolCompleted => false,
+        };
+
+        if has_visible_content {
+            // Only transition if the agent is still running (not Idle)
+            let current_state = self
+                .session_activity_state
+                .lock()
+                .map(|s| s.clone())
+                .unwrap_or(SessionActivityState::Idle);
+            if matches!(current_state, SessionActivityState::WaitingForResponse) {
+                self.update_activity_state(SessionActivityState::AgentRunning);
+            }
         }
 
         // Only forward to real UI if session is connected

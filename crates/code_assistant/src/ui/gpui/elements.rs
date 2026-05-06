@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 /// Maximum height for rendered images in pixels
 const MAX_IMAGE_HEIGHT: f32 = 80.0;
@@ -836,7 +836,7 @@ impl MessageContainer {
             }
         }
 
-        warn!(
+        debug!(
             "GPUI replace_tool_parameter: tool block not found for tool_id='{}', param='{}'",
             tool_id, name
         );

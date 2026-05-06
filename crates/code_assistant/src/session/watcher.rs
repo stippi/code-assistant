@@ -181,11 +181,38 @@ async fn flush_loop(
         }
 
         // 2) Agent lock changes → activity state updates
+        //
+        // The watcher exists to mirror the activity of agents running in
+        // *other* code-assistant instances.  For locks held by our own
+        // process the local SessionManager / ProxyUI track the activity
+        // state with much finer granularity (WaitingForResponse,
+        // RateLimited, Errored, …).  Overwriting those with the coarse
+        // AgentRunning derived from the lock file would e.g. hide the
+        // pre-stream spinner as soon as the lock file appears — which is
+        // before any fragment has arrived.
+        //
+        // Therefore: if the lock file belongs to us (PID matches), skip the
+        // event entirely.  For foreign locks we emit RunningExternally so
+        // the UI shows the "session blocked" state (disabled input, lock
+        // icon in sidebar).  When a lock disappears we also skip if we can
+        // no longer tell who owned it from our side — the local agent, if
+        // it was ours, will have already broadcast Idle via the
+        // SessionManager cleanup path.
         for session_id in &snapshot.changed_agent_locks {
             let is_locked = file_utils::is_agent_locked(&sessions_dir, session_id);
+            let belongs_to_us =
+                file_utils::agent_lock_belongs_to_current_process(&sessions_dir, session_id);
+
+            if belongs_to_us {
+                trace!(
+                    "Watcher flush: skipping agent lock event for own session {session_id} \
+                     (locked={is_locked})"
+                );
+                continue;
+            }
 
             let activity_state = if is_locked {
-                SessionActivityState::AgentRunning
+                SessionActivityState::RunningExternally
             } else {
                 SessionActivityState::Idle
             };

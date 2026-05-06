@@ -213,6 +213,27 @@ pub fn try_acquire_agent_lock(
     }
 }
 
+/// Check whether the agent lock for `session_id` is held by *this* process.
+///
+/// The lock file contains the PID of the process that acquired the lock (see
+/// [`try_acquire_agent_lock`]).  This function reads that PID and compares it
+/// to the current process.  It does **not** check whether the lock is
+/// actually held (use [`is_agent_locked`] for that); it only answers the
+/// question "is the lock file claimed by me?".
+///
+/// Returns `false` if the file does not exist, cannot be read, or contains a
+/// PID that differs from the current process.
+pub fn agent_lock_belongs_to_current_process(sessions_dir: &Path, session_id: &str) -> bool {
+    let lock_path = sessions_dir.join(format!("{session_id}.agent.lock"));
+    let Ok(content) = fs::read_to_string(&lock_path) else {
+        return false;
+    };
+    let Ok(pid) = content.trim().parse::<u32>() else {
+        return false;
+    };
+    pid == std::process::id()
+}
+
 /// Check whether a session's agent lock is currently held by another process.
 ///
 /// Returns `true` if the lock is held (i.e. we cannot acquire it),
