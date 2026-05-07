@@ -91,8 +91,8 @@ impl ToolRegistry {
         use crate::tools::impls::{
             DeleteFilesTool, EditTool, ExecuteCommandTool, GlobFilesTool, ListFilesTool,
             ListProjectsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool,
-            SearchFilesTool, SpawnAgentTool, UpdatePlanTool, ViewImagesTool, WebFetchTool,
-            WebSearchTool, WriteFileTool,
+            SearchFilesTool, SpawnAgentTool, UpdatePlanTool, ViewDocumentsTool, ViewImagesTool,
+            WebFetchTool, WebSearchTool, WriteFileTool,
         };
 
         // Register all tools - the ToolScope system will filter which ones are available
@@ -109,6 +109,7 @@ impl ToolRegistry {
         self.register(Box::new(SearchFilesTool));
         self.register(Box::new(SpawnAgentTool));
         self.register(Box::new(UpdatePlanTool));
+        self.register(Box::new(ViewDocumentsTool));
         self.register(Box::new(ViewImagesTool));
         self.register(Box::new(WebFetchTool));
         self.register(Box::new(WebSearchTool));

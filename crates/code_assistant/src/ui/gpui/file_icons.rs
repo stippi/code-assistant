@@ -50,8 +50,9 @@ pub const TOOL_DELETE_FILES: &str = "trash"; // trash.svg
 pub const TOOL_OPEN_PROJECT: &str = "expanded_folder"; // folder_open.svg
 pub const TOOL_USER_INPUT: &str = "person"; // person.svg
 pub const TOOL_COMPLETE_TASK: &str = "check_circle"; // check_circle.svg
-pub const TOOL_UPDATE_PLAN: &str = "file_generic"; // file_generic.svg
+pub const TOOL_UPDATE_PLAN: &str = "todo_list"; // todo_list.svg
 pub const TOOL_SPAWN_AGENT: &str = "rerun"; // rerun.svg - for spawning sub-agents
+pub const TOOL_VIEW_DOCUMENTS: &str = "file_generic"; // file_generic.svg - for viewing documents
 pub const TOOL_GENERIC: &str = "file_code"; // file_code.svg
 
 const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
@@ -140,6 +141,7 @@ impl FileIcons {
 
             TOOL_UPDATE_PLAN => Some("icons/file_generic.svg"),
             TOOL_SPAWN_AGENT => Some("icons/rerun.svg"),
+            TOOL_VIEW_DOCUMENTS => Some("icons/file_generic.svg"),
             TOOL_GENERIC => Some("icons/file_code.svg"),
             // For file_types.json types we missed
             _ => None,
@@ -178,6 +180,7 @@ impl FileIcons {
 
             TOOL_UPDATE_PLAN => Some(SharedString::from("📝")),
             TOOL_SPAWN_AGENT => Some(SharedString::from("🔄")),
+            TOOL_VIEW_DOCUMENTS => Some(SharedString::from("📑")),
             TOOL_GENERIC => Some(SharedString::from("🔧")),
             _ => Some(SharedString::from("📄")), // Default fallback
         }
@@ -203,6 +206,7 @@ impl FileIcons {
             "complete_task" => TOOL_COMPLETE_TASK,
             "update_plan" => TOOL_UPDATE_PLAN,
             "spawn_agent" => TOOL_SPAWN_AGENT,
+            "view_documents" => TOOL_VIEW_DOCUMENTS,
             _ => TOOL_GENERIC,
         };
 

@@ -245,6 +245,10 @@ impl InlineToolRenderer {
                 tool_name: "view_images",
                 template: "View {paths}",
             },
+            DescribeTemplate {
+                tool_name: "view_documents",
+                template: "View {paths}",
+            },
         ];
 
         let tools: Vec<String> = templates.iter().map(|t| t.tool_name.to_string()).collect();

@@ -1231,10 +1231,10 @@ impl Agent {
             guidance_section.push_str("\n\n# Repository Guidance\n");
 
             for (file_name, content) in guidance_files {
-                guidance_section.push_str("\n");
+                guidance_section.push('\n');
                 guidance_section.push_str(&format!("Loaded from `{file_name}`.\n\n"));
                 guidance_section.push_str(&content);
-                guidance_section.push_str("\n");
+                guidance_section.push('\n');
             }
 
             system_message.push_str(&guidance_section);

@@ -1,5 +1,7 @@
 // Tool implementations
 pub mod delete_files;
+#[cfg(feature = "document-conversion")]
+pub mod document_search;
 pub mod edit;
 pub mod execute_command;
 pub mod glob_files;
@@ -12,6 +14,7 @@ pub mod replace_in_file;
 pub mod search_files;
 pub mod spawn_agent;
 pub mod update_plan;
+pub mod view_documents;
 pub mod view_images;
 pub mod web_fetch;
 pub mod web_search;
@@ -31,6 +34,7 @@ pub use replace_in_file::ReplaceInFileTool;
 pub use search_files::SearchFilesTool;
 pub use spawn_agent::SpawnAgentTool;
 pub use update_plan::UpdatePlanTool;
+pub use view_documents::ViewDocumentsTool;
 pub use view_images::ViewImagesTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
