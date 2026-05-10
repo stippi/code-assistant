@@ -25,6 +25,10 @@ pub struct ModelConfig {
     pub provider: String,
     /// Model ID within the provider
     pub id: String,
+    /// Whether command output should be optimized through RTK for this model.
+    /// Defaults to false when omitted in models.json.
+    #[serde(default)]
+    pub use_rtk: bool,
     /// Model-specific configuration
     pub config: serde_json::Value,
     /// Maximum context window supported by the model (token count)

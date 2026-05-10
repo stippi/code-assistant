@@ -230,6 +230,8 @@ pub fn create_test_tool_context<'a>(
         plan,
         ui,
         tool_id,
+        session_id: None,
+        model_name: None,
         permission_handler: None,
         sub_agent_runner: None,
     }
@@ -1135,6 +1137,8 @@ impl ToolTestFixture {
             plan: self.plan.as_mut(),
             ui: self.ui.as_ref().map(|ui| ui as &dyn UserInterface),
             tool_id: self.tool_id.clone(),
+            session_id: None,
+            model_name: None,
             permission_handler: self.permission_handler.as_deref(),
             sub_agent_runner: None,
         }
