@@ -8,11 +8,13 @@
 
 mod anthropic;
 mod openai;
+mod openai_responses;
 mod types;
 mod vertex;
 
 pub use anthropic::AiCoreAnthropicClient;
 pub use openai::AiCoreOpenAIClient;
+pub use openai_responses::AiCoreOpenAIResponsesClient;
 pub use types::AiCoreApiType;
 pub use vertex::AiCoreVertexClient;
 
@@ -33,6 +35,11 @@ pub fn create_aicore_client(
         AiCoreApiType::OpenAI => {
             Box::new(AiCoreOpenAIClient::new(token_manager, base_url, model_id))
         }
+        AiCoreApiType::OpenAIResponses => Box::new(AiCoreOpenAIResponsesClient::new(
+            token_manager,
+            base_url,
+            model_id,
+        )),
         AiCoreApiType::Vertex => {
             Box::new(AiCoreVertexClient::new(token_manager, base_url, model_id))
         }
@@ -54,6 +61,12 @@ pub fn create_aicore_client_with_recorder<P: AsRef<Path>>(
             recording_path,
         )),
         AiCoreApiType::OpenAI => Box::new(AiCoreOpenAIClient::new_with_recorder(
+            token_manager,
+            base_url,
+            model_id,
+            recording_path,
+        )),
+        AiCoreApiType::OpenAIResponses => Box::new(AiCoreOpenAIResponsesClient::new_with_recorder(
             token_manager,
             base_url,
             model_id,
