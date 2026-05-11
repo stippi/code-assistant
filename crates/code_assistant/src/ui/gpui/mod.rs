@@ -971,6 +971,7 @@ impl Gpui {
                         .iter()
                         .map(|img| (img.media_type.clone(), img.base64_data.clone()))
                         .collect();
+
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,
@@ -1127,6 +1128,7 @@ impl Gpui {
                         .iter()
                         .map(|img| (img.media_type.clone(), img.base64_data.clone()))
                         .collect();
+
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,
@@ -1722,6 +1724,7 @@ impl Gpui {
                         .iter()
                         .map(|img| (img.media_type.clone(), img.base64_data.clone()))
                         .collect();
+
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,
