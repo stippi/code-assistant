@@ -2,7 +2,7 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
-use fs_explorer::{FileReplacement, FileUpdaterError};
+use fs_explorer::{find_match_start_lines, FileReplacement, FileUpdaterError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -24,6 +24,10 @@ pub struct EditOutput {
     pub project: String,
     pub path: PathBuf,
     pub error: Option<FileUpdaterError>,
+    /// 1-based line numbers where each match starts in the file (before replacement).
+    /// For a single edit, this has one element.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub match_start_lines: Vec<usize>,
 }
 
 // Render implementation for output formatting
@@ -60,6 +64,15 @@ impl Render for EditOutput {
             }
         } else {
             format!("Successfully edited file '{}'", self.path.display())
+        }
+    }
+
+    fn render_for_ui(&self, tracker: &mut ResourcesTracker) -> String {
+        if !self.match_start_lines.is_empty() {
+            // Return JSON with line numbers for the diff card renderer
+            json!({ "match_start_lines": self.match_start_lines }).to_string()
+        } else {
+            self.render(tracker)
         }
     }
 }
@@ -162,6 +175,7 @@ impl Tool for EditTool {
                 error: Some(FileUpdaterError::Other(
                     "Absolute paths are not allowed".to_string(),
                 )),
+                match_start_lines: Vec::new(),
             });
         }
 
@@ -174,6 +188,13 @@ impl Tool for EditTool {
             replace: input.new_text.clone(),
             replace_all: input.replace_all,
         }];
+
+        // Compute match start line numbers before applying (need the original content)
+        let match_start_lines = if let Ok(content) = std::fs::read_to_string(&full_path) {
+            find_match_start_lines(&content, &replacements, false)
+        } else {
+            Vec::new()
+        };
 
         // Apply with or without formatting, based on project configuration
         let format_result = if let Some(format_command) = project_config.format_command_for(&path) {
@@ -217,6 +238,7 @@ impl Tool for EditTool {
                     project: input.project.clone(),
                     path,
                     error: None,
+                    match_start_lines,
                 })
             }
             Err(e) => {
@@ -231,6 +253,7 @@ impl Tool for EditTool {
                     project: input.project.clone(),
                     path,
                     error: Some(error),
+                    match_start_lines: Vec::new(),
                 })
             }
         }
@@ -249,6 +272,7 @@ mod tests {
             project: "test-project".to_string(),
             path: PathBuf::from("src/test.rs"),
             error: None,
+            match_start_lines: vec![1],
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -264,6 +288,7 @@ mod tests {
                 0,
                 "missing content".to_string(),
             )),
+            match_start_lines: Vec::new(),
         };
 
         let rendered_error = output_error.render(&mut tracker);
@@ -279,6 +304,7 @@ mod tests {
                 0,
                 "common pattern".to_string(),
             )),
+            match_start_lines: Vec::new(),
         };
 
         let rendered_multiple = output_multiple.render(&mut tracker);

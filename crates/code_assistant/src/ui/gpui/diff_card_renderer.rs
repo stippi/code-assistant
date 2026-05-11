@@ -56,10 +56,11 @@ impl ToolBlockRenderer for DiffCardRenderer {
         is_generating: bool,
         theme: &gpui_component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<BlockView>,
     ) -> Option<gpui::AnyElement> {
         let card_ctx = card_ctx?;
+        let rem_size = window.rem_size();
 
         // We need at least one parameter to show anything.
         if tool.parameters.is_empty() {
@@ -196,9 +197,9 @@ impl ToolBlockRenderer for DiffCardRenderer {
             };
 
             let body_content = match tool.name.as_str() {
-                "edit" => render_edit_body(tool, is_generating, theme),
-                "replace_in_file" => render_replace_body(tool, is_generating, theme),
-                "write_file" => render_write_body(tool, theme),
+                "edit" => render_edit_body(tool, is_generating, theme, rem_size),
+                "replace_in_file" => render_replace_body(tool, is_generating, theme, rem_size),
+                "write_file" => render_write_body(tool, theme, rem_size),
                 "delete_files" => render_delete_body(tool, theme),
                 _ => None,
             };
@@ -221,6 +222,10 @@ impl ToolBlockRenderer for DiffCardRenderer {
             };
 
             if body_content.is_some() || error_element.is_some() {
+                // Round line height to whole pixels to avoid sub-pixel gaps
+                // between adjacent rows with different background colors.
+                let line_height_px = rems(1.25).to_pixels(rem_size).round();
+
                 let mut body_inner = div()
                     .w_full()
                     .py_1()
@@ -229,6 +234,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
                     .flex()
                     .flex_col()
                     .text_size(rems(0.78125))
+                    .line_height(line_height_px)
                     .font_family("Menlo")
                     .font_weight(FontWeight(400.0))
                     .overflow_hidden();
@@ -266,6 +272,7 @@ fn render_edit_body(
     tool: &ToolUseBlock,
     is_generating: bool,
     theme: &gpui_component::theme::Theme,
+    rem_size: gpui::Pixels,
 ) -> Option<gpui::AnyElement> {
     let old_text = get_param(tool, "old_text");
     let new_text = get_param(tool, "new_text");
@@ -285,9 +292,11 @@ fn render_edit_body(
         Some(div().flex().flex_col().children(children).into_any())
     } else {
         // Completed: compute a proper unified diff
+        let start_lines = parse_match_start_lines(tool);
+        let start_line = start_lines.first().copied();
         match (old_text, new_text) {
             (Some(old), Some(new)) if !old.is_empty() || !new.is_empty() => {
-                Some(render_unified_diff(old, new, theme))
+                Some(render_unified_diff(old, new, theme, start_line, rem_size))
             }
             (Some(old), None) if !old.is_empty() => Some(render_streaming_block(old, true, theme)),
             (None, Some(new)) if !new.is_empty() => Some(render_streaming_block(new, false, theme)),
@@ -304,6 +313,7 @@ fn render_replace_body(
     tool: &ToolUseBlock,
     is_generating: bool,
     theme: &gpui_component::theme::Theme,
+    rem_size: gpui::Pixels,
 ) -> Option<gpui::AnyElement> {
     let diff_text = get_param(tool, "diff")?;
     if diff_text.is_empty() {
@@ -315,15 +325,25 @@ fn render_replace_body(
         return None;
     }
 
+    let start_lines = parse_match_start_lines(tool);
+
     let children: Vec<gpui::AnyElement> = sections
         .into_iter()
-        .map(|section| {
+        .enumerate()
+        .map(|(i, section)| {
             if is_generating || section.in_search || section.in_replace {
                 // Streaming or incomplete section: show raw blocks
                 render_streaming_diff_section(&section, theme)
             } else {
                 // Completed section: compute proper unified diff
-                render_unified_diff(&section.search_content, &section.replace_content, theme)
+                let start_line = start_lines.get(i).copied();
+                render_unified_diff(
+                    &section.search_content,
+                    &section.replace_content,
+                    theme,
+                    start_line,
+                    rem_size,
+                )
             }
         })
         .collect();
@@ -338,26 +358,68 @@ fn render_replace_body(
     )
 }
 
-/// Render body for the `write_file` tool — all-green additions.
+/// Render body for the `write_file` tool — all-green additions with line numbers.
 fn render_write_body(
     tool: &ToolUseBlock,
     theme: &gpui_component::theme::Theme,
+    rem_size: gpui::Pixels,
 ) -> Option<gpui::AnyElement> {
     let content = get_param(tool, "content")?;
     if content.is_empty() {
         return None;
     }
 
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    let gutter_width = total_lines.to_string().len();
+
+    // Gutter width in pixels (~0.5rem per digit + 0.75rem padding)
+    let gutter_px = rems(gutter_width as f32 * 0.5 + 0.75)
+        .to_pixels(rem_size)
+        .round();
+
     let (row_bg, text_color) = added_row_colors(theme);
-    let mut row = div()
-        .w_full()
-        .px_3()
-        .text_color(text_color)
-        .child(content.to_string());
-    if let Some(bg) = row_bg {
-        row = row.bg(bg);
-    }
-    Some(row.into_any())
+    let gutter_color = text_color.opacity(0.5);
+
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .children(lines.into_iter().enumerate().map(|(i, line)| {
+                let line_num = i + 1;
+                let gutter_text = format!("{:>width$}", line_num, width = gutter_width);
+
+                let mut row = div().w_full().flex().flex_row().items_start();
+                if let Some(bg) = row_bg {
+                    row = row.bg(bg);
+                }
+
+                // Gutter
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .w(gutter_px)
+                        .pl_1p5()
+                        .pr_1()
+                        .text_color(gutter_color)
+                        .child(gutter_text),
+                );
+
+                // Content
+                row = row.child(
+                    div()
+                        .flex_grow()
+                        .overflow_x_hidden()
+                        .pl_1()
+                        .pr_3()
+                        .text_color(text_color)
+                        .child(line.to_string()),
+                );
+
+                row.into_any()
+            }))
+            .into_any(),
+    )
 }
 
 /// Render body for the `delete_files` tool — all-red deletions showing paths.
@@ -421,6 +483,8 @@ fn render_unified_diff(
     old_text: &str,
     new_text: &str,
     theme: &gpui_component::theme::Theme,
+    start_line: Option<usize>,
+    rem_size: gpui::Pixels,
 ) -> gpui::AnyElement {
     let old_norm = normalize_for_diff(old_text);
     let new_norm = normalize_for_diff(new_text);
@@ -429,33 +493,109 @@ fn render_unified_diff(
         .newline_terminated(true)
         .diff_lines(&old_norm, &new_norm);
 
-    let mut groups: Vec<(ChangeTag, Vec<String>)> = Vec::new();
-    for change in diff.iter_all_changes() {
-        let line = change.value().trim_end().to_string();
-        let tag = change.tag();
-        if let Some(last) = groups.last_mut() {
-            if last.0 == tag {
-                last.1.push(line);
-                continue;
-            }
-        }
-        groups.push((tag, vec![line]));
+    // Collect individual lines with their tags for line-number rendering
+    struct DiffLine {
+        tag: ChangeTag,
+        text: String,
     }
+    let mut diff_lines: Vec<DiffLine> = Vec::new();
+    for change in diff.iter_all_changes() {
+        diff_lines.push(DiffLine {
+            tag: change.tag(),
+            text: change.value().trim_end().to_string(),
+        });
+    }
+
+    // Compute the gutter width (number of digits) if we have line numbers
+    let gutter_width = if let Some(start) = start_line {
+        // Estimate the max line number: start + total lines in diff (generous upper bound)
+        let old_count = diff_lines
+            .iter()
+            .filter(|l| l.tag != ChangeTag::Insert)
+            .count();
+        let new_count = diff_lines
+            .iter()
+            .filter(|l| l.tag != ChangeTag::Delete)
+            .count();
+        let max_line = start + old_count.max(new_count);
+        max_line.to_string().len()
+    } else {
+        0
+    };
+
+    // Track both old and new line numbers
+    let mut old_line_num = start_line.unwrap_or(1);
+    let mut new_line_num = start_line.unwrap_or(1);
+
+    // Gutter width: compute in rems (~0.5rem per digit + 0.75rem padding),
+    // then convert to rounded pixels so it aligns to the pixel grid.
+    let gutter_px = rems(gutter_width as f32 * 0.5 + 0.75)
+        .to_pixels(rem_size)
+        .round();
 
     div()
         .flex()
         .flex_col()
-        .children(groups.into_iter().map(|(tag, lines)| {
-            let content = lines.join("\n");
-            let (row_bg, text_color) = match tag {
+        .children(diff_lines.into_iter().map(|dl| {
+            let (row_bg, text_color) = match dl.tag {
                 ChangeTag::Equal => unchanged_row_colors(theme),
                 ChangeTag::Delete => deleted_row_colors(theme),
                 ChangeTag::Insert => added_row_colors(theme),
             };
-            let mut row = div().w_full().px_3().text_color(text_color).child(content);
+
+            let mut row = div().w_full().flex().flex_row().items_start();
             if let Some(bg) = row_bg {
                 row = row.bg(bg);
             }
+
+            // Gutter with line number
+            if start_line.is_some() {
+                let gutter_text = match dl.tag {
+                    ChangeTag::Equal => {
+                        let num = old_line_num;
+                        old_line_num += 1;
+                        new_line_num += 1;
+                        format!("{:>width$}", num, width = gutter_width)
+                    }
+                    ChangeTag::Delete => {
+                        let num = old_line_num;
+                        old_line_num += 1;
+                        format!("{:>width$}", num, width = gutter_width)
+                    }
+                    ChangeTag::Insert => {
+                        let num = new_line_num;
+                        new_line_num += 1;
+                        format!("{:>width$}", num, width = gutter_width)
+                    }
+                };
+                let gutter_color = match dl.tag {
+                    ChangeTag::Equal => unchanged_row_colors(theme).1.opacity(0.5),
+                    ChangeTag::Delete => deleted_row_colors(theme).1.opacity(0.5),
+                    ChangeTag::Insert => added_row_colors(theme).1.opacity(0.5),
+                };
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .w(gutter_px)
+                        .pl_1p5()
+                        .pr_1()
+                        .text_color(gutter_color)
+                        .child(gutter_text),
+                );
+            }
+
+            // Content — overflow_x_hidden enables min-width:0 in flex so text
+            // wraps instead of pushing the row wider than the card.
+            row = row.child(
+                div()
+                    .flex_grow()
+                    .overflow_x_hidden()
+                    .when(start_line.is_none(), |d| d.px_3())
+                    .when(start_line.is_some(), |d| d.pl_1().pr_3())
+                    .text_color(text_color)
+                    .child(dl.text),
+            );
+
             row.into_any()
         }))
         .into_any()
@@ -612,6 +752,20 @@ fn get_param<'a>(tool: &'a ToolUseBlock, name: &str) -> Option<&'a str> {
         .iter()
         .find(|p| p.name == name)
         .map(|p| p.value.as_str())
+}
+
+/// Extract match start line numbers from the tool's output JSON.
+///
+/// After execution, `edit` and `replace_in_file` tools emit their output as
+/// JSON containing a `match_start_lines` array via `render_for_ui()`.
+/// This function attempts to parse that; returns an empty vec on failure.
+fn parse_match_start_lines(tool: &ToolUseBlock) -> Vec<usize> {
+    tool.output
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("match_start_lines").cloned())
+        .and_then(|v| serde_json::from_value::<Vec<usize>>(v).ok())
+        .unwrap_or_default()
 }
 
 /// Extract path (single) or paths (array) for the header label.

@@ -214,16 +214,8 @@ impl InlineToolRenderer {
     pub fn new() -> Self {
         let templates = vec![
             DescribeTemplate {
-                tool_name: "read_files",
-                template: "Read {paths}",
-            },
-            DescribeTemplate {
                 tool_name: "list_files",
                 template: "List {paths}",
-            },
-            DescribeTemplate {
-                tool_name: "search_files",
-                template: "Search for \"{regex}\"",
             },
             DescribeTemplate {
                 tool_name: "glob_files",
@@ -419,29 +411,33 @@ mod tests {
 
     #[test]
     fn test_describe_read_files() {
-        let renderer = InlineToolRenderer::new();
+        use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
+        let renderer = CodeCardRenderer;
         let tool = make_tool("read_files", &[("paths", "src/main.rs")]);
         assert_eq!(renderer.describe(&tool), "Read src/main.rs");
     }
 
     #[test]
     fn test_describe_search_files() {
-        let renderer = InlineToolRenderer::new();
+        use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
+        let renderer = CodeCardRenderer;
         let tool = make_tool("search_files", &[("regex", "fn main")]);
         assert_eq!(renderer.describe(&tool), "Search for \"fn main\"");
     }
 
     #[test]
     fn test_describe_missing_params_fallback() {
-        let renderer = InlineToolRenderer::new();
+        use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
+        let renderer = CodeCardRenderer;
         let tool = make_tool("read_files", &[]);
         // No params yet → friendly fallback
-        assert_eq!(renderer.describe(&tool), "read files");
+        assert_eq!(renderer.describe(&tool), "Read files");
     }
 
     #[test]
     fn test_describe_long_value_truncated() {
-        let renderer = InlineToolRenderer::new();
+        use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
+        let renderer = CodeCardRenderer;
         let long_path = "a".repeat(100);
         let tool = make_tool("read_files", &[("paths", &long_path)]);
         let desc = renderer.describe(&tool);
@@ -451,8 +447,10 @@ mod tests {
 
     #[test]
     fn test_registry_lookup() {
+        use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
         let mut registry = ToolBlockRendererRegistry::new();
         registry.register(Arc::new(InlineToolRenderer::new()));
+        registry.register(Arc::new(CodeCardRenderer));
         assert!(registry.get("read_files").is_some());
         assert!(registry.get("search_files").is_some());
         assert!(registry.get("execute_command").is_none());
