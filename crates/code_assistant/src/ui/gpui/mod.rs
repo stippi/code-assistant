@@ -3,6 +3,7 @@ pub mod attachment;
 pub mod auto_scroll;
 pub mod branch_switcher;
 pub mod chat_sidebar;
+pub mod code_card_renderer;
 mod context_indicator;
 pub mod diff_card_renderer;
 pub mod elements;
@@ -354,6 +355,7 @@ impl Gpui {
             tbr_registry.register(Arc::new(terminal_card_renderer::TerminalCardRenderer));
             tbr_registry.register(Arc::new(diff_card_renderer::DiffCardRenderer));
             tbr_registry.register(Arc::new(sub_agent_card_renderer::SubAgentCardRenderer));
+            tbr_registry.register(Arc::new(code_card_renderer::CodeCardRenderer));
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 
@@ -971,6 +973,7 @@ impl Gpui {
                         .iter()
                         .map(|img| (img.media_type.clone(), img.base64_data.clone()))
                         .collect();
+
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,
@@ -1127,6 +1130,7 @@ impl Gpui {
                         .iter()
                         .map(|img| (img.media_type.clone(), img.base64_data.clone()))
                         .collect();
+
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,
@@ -1722,6 +1726,7 @@ impl Gpui {
                         .iter()
                         .map(|img| (img.media_type.clone(), img.base64_data.clone()))
                         .collect();
+
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_result.tool_id,

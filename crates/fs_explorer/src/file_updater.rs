@@ -333,6 +333,35 @@ pub fn reconstruct_formatted_replacements(
 
     Some(updated_replacements)
 }
+/// Find the 1-based start line numbers for the given replacements in a file's content.
+/// Returns one line number per replacement (using the first match for replace_all cases).
+/// On error (e.g. search not found), returns an empty vec.
+pub fn find_match_start_lines(
+    content: &str,
+    replacements: &[FileReplacement],
+    preserve_trailing_ws: bool,
+) -> Vec<usize> {
+    let normalized_content = normalize(content, preserve_trailing_ws);
+    match find_replacement_matches(content, replacements, preserve_trailing_ws) {
+        Ok((matches, _)) => {
+            // Group by replacement_index and take only the first match per replacement
+            let mut lines: Vec<usize> = Vec::with_capacity(replacements.len());
+            for idx in 0..replacements.len() {
+                if let Some(m) = matches.iter().find(|m| m.replacement_index == idx) {
+                    // Count newlines in the normalized content up to the match start
+                    let line = normalized_content[..m.start]
+                        .chars()
+                        .filter(|&c| c == '\n')
+                        .count()
+                        + 1;
+                    lines.push(line);
+                }
+            }
+            lines
+        }
+        Err(_) => Vec::new(),
+    }
+}
 
 /// Apply replacements with content normalization to make SEARCH blocks more robust
 /// against whitespace and line ending differences.
