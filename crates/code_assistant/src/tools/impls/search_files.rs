@@ -247,6 +247,35 @@ impl Render for SearchFilesOutput {
 
         formatted
     }
+
+    fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
+        // Emit structured JSON for the UI renderer to display search results
+        // with line numbers and inline match highlighting.
+        let results: Vec<serde_json::Value> = self
+            .results
+            .iter()
+            .take(20) // Same limit as full-mode render
+            .map(|result| {
+                json!({
+                    "file": result.file.to_string_lossy(),
+                    "start_line": result.start_line + 1, // Convert to 1-based
+                    "lines": result.line_content,
+                    "match_lines": result.match_lines,
+                    "match_ranges": result.match_ranges,
+                })
+            })
+            .collect();
+
+        json!({
+            "kind": "search_files",
+            "regex": self.regex,
+            "total_matches": self.total_matches,
+            "truncated": self.truncated,
+            "summary_mode": self.summary_mode,
+            "results": results,
+        })
+        .to_string()
+    }
 }
 
 // ToolResult implementation

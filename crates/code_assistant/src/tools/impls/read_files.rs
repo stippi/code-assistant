@@ -197,6 +197,40 @@ impl Render for ReadFilesOutput {
 
         formatted
     }
+
+    fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
+        // Emit structured JSON for the UI renderer to display with line numbers.
+        // Each file entry contains path, content, and start_line.
+        let files: Vec<serde_json::Value> = self
+            .loaded_files
+            .iter()
+            .map(|(path, fc)| {
+                json!({
+                    "path": path.to_string_lossy(),
+                    "content": fc.content,
+                    "start_line": fc.start_line,
+                })
+            })
+            .collect();
+
+        let errors: Vec<serde_json::Value> = self
+            .failed_files
+            .iter()
+            .map(|(path, err)| {
+                json!({
+                    "path": path.to_string_lossy(),
+                    "error": err,
+                })
+            })
+            .collect();
+
+        json!({
+            "kind": "read_files",
+            "files": files,
+            "errors": errors,
+        })
+        .to_string()
+    }
 }
 
 // ToolResult implementation

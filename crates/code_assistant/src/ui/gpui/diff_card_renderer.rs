@@ -199,7 +199,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
             let body_content = match tool.name.as_str() {
                 "edit" => render_edit_body(tool, is_generating, theme, rem_size),
                 "replace_in_file" => render_replace_body(tool, is_generating, theme, rem_size),
-                "write_file" => render_write_body(tool, theme),
+                "write_file" => render_write_body(tool, theme, rem_size),
                 "delete_files" => render_delete_body(tool, theme),
                 _ => None,
             };
@@ -358,26 +358,68 @@ fn render_replace_body(
     )
 }
 
-/// Render body for the `write_file` tool — all-green additions.
+/// Render body for the `write_file` tool — all-green additions with line numbers.
 fn render_write_body(
     tool: &ToolUseBlock,
     theme: &gpui_component::theme::Theme,
+    rem_size: gpui::Pixels,
 ) -> Option<gpui::AnyElement> {
     let content = get_param(tool, "content")?;
     if content.is_empty() {
         return None;
     }
 
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    let gutter_width = total_lines.to_string().len();
+
+    // Gutter width in pixels (~0.5rem per digit + 0.75rem padding)
+    let gutter_px = rems(gutter_width as f32 * 0.5 + 0.75)
+        .to_pixels(rem_size)
+        .round();
+
     let (row_bg, text_color) = added_row_colors(theme);
-    let mut row = div()
-        .w_full()
-        .px_3()
-        .text_color(text_color)
-        .child(content.to_string());
-    if let Some(bg) = row_bg {
-        row = row.bg(bg);
-    }
-    Some(row.into_any())
+    let gutter_color = text_color.opacity(0.5);
+
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .children(lines.into_iter().enumerate().map(|(i, line)| {
+                let line_num = i + 1;
+                let gutter_text = format!("{:>width$}", line_num, width = gutter_width);
+
+                let mut row = div().w_full().flex().flex_row().items_start();
+                if let Some(bg) = row_bg {
+                    row = row.bg(bg);
+                }
+
+                // Gutter
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .w(gutter_px)
+                        .pl_1p5()
+                        .pr_1()
+                        .text_color(gutter_color)
+                        .child(gutter_text),
+                );
+
+                // Content
+                row = row.child(
+                    div()
+                        .flex_grow()
+                        .overflow_x_hidden()
+                        .pl_1()
+                        .pr_3()
+                        .text_color(text_color)
+                        .child(line.to_string()),
+                );
+
+                row.into_any()
+            }))
+            .into_any(),
+    )
 }
 
 /// Render body for the `delete_files` tool — all-red deletions showing paths.
