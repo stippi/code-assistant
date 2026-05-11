@@ -9,7 +9,7 @@ use gpui::{
     div, prelude::*, px, ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
     FocusHandle, Focusable, Render, SharedString, Subscription, Window,
 };
-use gpui_component::input::{Input, InputEvent, InputState, Paste};
+use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
 use gpui_component::{ActiveTheme, Icon};
 use sandbox::SandboxPolicy;
 
@@ -266,6 +266,47 @@ impl InputArea {
     pub fn set_context_usage_ratio(&mut self, ratio: Option<f32>) {
         self.context_usage_ratio = ratio;
     }
+    /// Handle the Enter action in the capture phase.
+    ///
+    /// For plain Enter (no modifiers), we intercept the action *before* it
+    /// reaches the inner `Input` component.  This prevents `InputState::enter()`
+    /// from inserting a newline character into the text buffer.  We submit the
+    /// message directly and stop propagation.
+    ///
+    /// For secondary Enter (Shift+Enter), we let the action propagate so the
+    /// `Input` component inserts a line break as usual.
+    fn on_enter(&mut self, action: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        if !action.secondary {
+            let current_text = self.text_input.read(cx).value().to_string();
+            // Don't submit empty messages
+            if current_text.trim().is_empty() && self.attachments.is_empty() {
+                // Stop propagation so InputState::enter() doesn't insert a newline
+                cx.stop_propagation();
+                return;
+            }
+
+            // Capture branch_parent_id before clearing
+            let branch_parent_id = self.branch_parent_id;
+
+            // Clear draft before doing anything else
+            cx.emit(InputAreaEvent::ClearDraftRequested);
+
+            // Emit event for RootView to handle
+            cx.emit(InputAreaEvent::MessageSubmitted {
+                content: current_text,
+                attachments: self.attachments.clone(),
+                branch_parent_id,
+            });
+
+            // Clear the input and attachments
+            self.clear(window, cx);
+
+            // Stop propagation so InputState::enter() doesn't insert a newline
+            cx.stop_propagation();
+        }
+        // For secondary (Shift+Enter), let it propagate to Input for newline insertion
+    }
+
     /// Handle paste events (for images).
     ///
     /// Registered via `capture_action` so it fires during the capture phase
@@ -351,7 +392,7 @@ impl InputArea {
         &mut self,
         _input: &Entity<InputState>,
         event: &InputEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -364,31 +405,11 @@ impl InputArea {
             }
             InputEvent::Blur => {}
 
-            InputEvent::PressEnter { secondary } => {
-                // Only send message on plain ENTER (not with modifiers)
-                if !secondary {
-                    // Get current text (this might include the newline that was just added)
-                    let current_text = self.text_input.read(cx).value().to_string();
-                    // Remove trailing newline if present (from ENTER key press)
-                    let cleaned_text = current_text.trim_end_matches('\n').to_string();
-
-                    // Capture branch_parent_id before clearing
-                    let branch_parent_id = self.branch_parent_id;
-
-                    // FIRST: Clear draft before doing anything else
-                    cx.emit(InputAreaEvent::ClearDraftRequested);
-
-                    // Emit event for RootView to handle
-                    cx.emit(InputAreaEvent::MessageSubmitted {
-                        content: cleaned_text,
-                        attachments: self.attachments.clone(),
-                        branch_parent_id,
-                    });
-
-                    // Clear the input and attachments
-                    self.clear(window, cx);
-                }
-                // If secondary is true, do nothing - modifiers will be handled by InsertLineBreak action
+            InputEvent::PressEnter { .. } => {
+                // Plain Enter is handled by the capture_action handler (on_enter)
+                // which intercepts the Enter action before InputState::enter() runs.
+                // This event will only fire for secondary Enter (Shift+Enter), which
+                // is handled by the Input component inserting a newline directly.
             }
         }
     }
@@ -773,6 +794,7 @@ impl EventEmitter<InputAreaEvent> for InputArea {}
 impl Render for InputArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .capture_action(cx.listener(Self::on_enter))
             .capture_action(cx.listener(Self::on_paste))
             .on_action({
                 let text_input_handle = self.text_input.clone();
