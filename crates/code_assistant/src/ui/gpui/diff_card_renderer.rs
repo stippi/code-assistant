@@ -888,7 +888,6 @@ mod tests {
     }
 
     #[test]
-
     fn test_extract_path() {
         use crate::ui::gpui::elements::ParameterBlock;
         let tool = ToolUseBlock {
