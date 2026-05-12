@@ -23,6 +23,10 @@ pub struct WriteFileOutput {
     pub path: PathBuf,
     pub content: String,
     pub error: Option<String>,
+    /// If the file existed before writing, this holds the original content.
+    /// Used by the UI to render a proper diff instead of showing all lines as new.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_content: Option<String>,
 }
 
 // Render implementation for output formatting
@@ -44,6 +48,16 @@ impl Render for WriteFileOutput {
                 self.content.len(),
                 self.path.display()
             )
+        }
+    }
+
+    fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
+        // Emit JSON with original_content (if present) so the diff card renderer
+        // can show a proper unified diff for file overwrites.
+        if let Some(original) = &self.original_content {
+            json!({ "original_content": original }).to_string()
+        } else {
+            String::new()
         }
     }
 }
@@ -133,6 +147,7 @@ impl Tool for WriteFileTool {
                         "Failed to get explorer for project {}: {}",
                         input.project, e
                     )),
+                    original_content: None,
                 });
             }
         };
@@ -150,6 +165,7 @@ impl Tool for WriteFileTool {
                 path,
                 content: String::new(),
                 error: Some("Absolute paths are not allowed".to_string()),
+                original_content: None,
             });
         }
 
@@ -158,7 +174,15 @@ impl Tool for WriteFileTool {
         // Join with root_dir to get full path
         let full_path = project_root.join(&path);
 
-        // Write the file first
+        // Read the original content before writing (if the file exists and we're not appending).
+        // This allows the UI to show a proper diff for overwrites.
+        let original_content = if !input.append {
+            explorer.read_file(&full_path).await.ok()
+        } else {
+            None
+        };
+
+        // Write the file
         match explorer
             .write_file(&full_path, &input.content, input.append)
             .await
@@ -194,12 +218,14 @@ impl Tool for WriteFileTool {
                     path,
                     content: input.content.clone(),
                     error: None,
+                    original_content,
                 })
             }
             Err(e) => Ok(WriteFileOutput {
                 path,
                 content: String::new(), // Empty content on error
                 error: Some(e.to_string()),
+                original_content: None,
             }),
         }
     }
@@ -218,6 +244,7 @@ mod tests {
             path: PathBuf::from("test.txt"),
             content: "Test content".to_string(),
             error: None,
+            original_content: None,
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -230,6 +257,7 @@ mod tests {
             path: PathBuf::from("test.txt"),
             content: String::new(),
             error: Some("File not writable".to_string()),
+            original_content: None,
         };
 
         let rendered_error = output_error.render(&mut tracker);

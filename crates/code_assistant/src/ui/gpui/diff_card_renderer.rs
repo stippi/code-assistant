@@ -134,13 +134,43 @@ impl ToolBlockRenderer for DiffCardRenderer {
                 .child(header_label),
         );
 
-        let mut header_right = div().flex().flex_row().items_center().gap_2();
+        let mut header_right = div().flex().flex_row().items_center().gap_1();
         if has_error {
             header_right = header_right.child(
                 gpui::svg()
                     .size(px(13.0))
                     .path(SharedString::from("icons/close.svg"))
                     .text_color(theme.danger),
+            );
+        }
+        // Diff/File toggle button for write_file with original_content
+        if tool.name == "write_file" && write_file_has_original_content(tool) {
+            let diff_mode = card_ctx.write_file_diff_mode;
+            let label: SharedString = if diff_mode { "diff" } else { "file" }.into();
+            let btn_text_color = if diff_mode {
+                theme.accent
+            } else {
+                header_text_color
+            };
+            header_right = header_right.child(
+                div()
+                    .id(SharedString::from(format!("diff-toggle-{}", tool.id)))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px_1p5()
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(header_text_color.opacity(0.1)))
+                    .text_size(rems(0.6875))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(btn_text_color)
+                    .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                        view.toggle_write_file_diff_mode(cx);
+                    }))
+                    .child(label),
             );
         }
         // Chevron — highlights on header hover via group
@@ -199,7 +229,9 @@ impl ToolBlockRenderer for DiffCardRenderer {
             let body_content = match tool.name.as_str() {
                 "edit" => render_edit_body(tool, is_generating, theme, rem_size),
                 "replace_in_file" => render_replace_body(tool, is_generating, theme, rem_size),
-                "write_file" => render_write_body(tool, theme, rem_size),
+                "write_file" => {
+                    render_write_body(tool, theme, rem_size, card_ctx.write_file_diff_mode)
+                }
                 "delete_files" => render_delete_body(tool, theme),
                 _ => None,
             };
@@ -358,17 +390,47 @@ fn render_replace_body(
     )
 }
 
-/// Render body for the `write_file` tool — all-green additions with line numbers.
+/// Render body for the `write_file` tool.
+///
+/// When `diff_mode` is true and the tool output contains `original_content`
+/// (indicating an existing file was overwritten), renders a unified diff.
+/// Otherwise falls back to all-green additions with line numbers.
 fn render_write_body(
     tool: &ToolUseBlock,
     theme: &gpui_component::theme::Theme,
     rem_size: gpui::Pixels,
+    diff_mode: bool,
 ) -> Option<gpui::AnyElement> {
     let content = get_param(tool, "content")?;
     if content.is_empty() {
         return None;
     }
 
+    // Try to extract original_content from the tool output JSON
+    let original_content = tool
+        .output
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| {
+            v.get("original_content")
+                .and_then(|c| c.as_str())
+                .map(String::from)
+        });
+
+    // If we have original content and diff mode is on, show a unified diff
+    if diff_mode {
+        if let Some(ref original) = original_content {
+            return Some(render_unified_diff(
+                original,
+                content,
+                theme,
+                Some(1),
+                rem_size,
+            ));
+        }
+    }
+
+    // Fall back to all-green additions (new file or diff mode toggled off)
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let gutter_width = total_lines.to_string().len();
@@ -752,6 +814,16 @@ fn get_param<'a>(tool: &'a ToolUseBlock, name: &str) -> Option<&'a str> {
         .iter()
         .find(|p| p.name == name)
         .map(|p| p.value.as_str())
+}
+
+/// Check whether a write_file tool's output JSON contains `original_content`,
+/// indicating the file was overwritten (not newly created).
+fn write_file_has_original_content(tool: &ToolUseBlock) -> bool {
+    tool.output
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("original_content").cloned())
+        .is_some()
 }
 
 /// Extract match start line numbers from the tool's output JSON.

@@ -90,6 +90,37 @@ impl ToolCollapseState {
     }
 }
 
+/// Convenience helpers for write_file diff mode state.
+///
+/// When a write_file tool overwrites an existing file, the card can show either
+/// a unified diff or the plain new-file content.  This persists the user's
+/// choice per tool block.
+pub struct ToolDiffModeState;
+
+impl ToolDiffModeState {
+    /// Look up a previously stored diff mode override for a tool in a session.
+    /// Returns `None` if no override exists (default = diff mode on).
+    pub fn get(session_id: &str, tool_id: &str) -> Option<bool> {
+        UiStateStore::try_global()?
+            .lock()
+            .ok()
+            .and_then(|mut store| store.get_tool_diff_mode(session_id, tool_id))
+    }
+
+    /// Record a diff mode override for a tool in a session.
+    /// Returns `true` if the store was marked dirty (i.e. a save should be
+    /// scheduled).
+    pub fn set(session_id: &str, tool_id: &str, diff_mode: bool) -> bool {
+        if let Some(store) = UiStateStore::try_global() {
+            if let Ok(mut store) = store.lock() {
+                store.set_tool_diff_mode(session_id, tool_id, diff_mode);
+                return true;
+            }
+        }
+        false
+    }
+}
+
 /// Animation configuration for expand/collapse
 #[derive(Clone)]
 pub struct AnimationConfig {
@@ -1039,6 +1070,13 @@ impl BlockData {
         }
     }
 
+    fn as_tool(&self) -> Option<&ToolUseBlock> {
+        match self {
+            BlockData::ToolUse(b) => Some(b),
+            _ => None,
+        }
+    }
+
     fn as_tool_mut(&mut self) -> Option<&mut ToolUseBlock> {
         match self {
             BlockData::ToolUse(b) => Some(b),
@@ -1070,6 +1108,9 @@ pub struct BlockView {
     current_project: Arc<Mutex<String>>,
     /// Session ID this block belongs to (for collapse-state persistence).
     session_id: Option<String>,
+    /// For write_file tool blocks: whether to show the diff view (true) or the
+    /// plain new-file view (false). Only relevant when original_content is available.
+    pub write_file_diff_mode: bool,
 }
 
 impl BlockView {
@@ -1081,6 +1122,20 @@ impl BlockView {
         session_id: Option<String>,
         _cx: &mut Context<Self>,
     ) -> Self {
+        // Load persisted diff mode preference for write_file tool blocks.
+        let write_file_diff_mode = if let Some(tool) = block.as_tool() {
+            if tool.name == "write_file" {
+                session_id
+                    .as_deref()
+                    .and_then(|sid| ToolDiffModeState::get(sid, &tool.id))
+                    .unwrap_or(true) // default: show diff
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
         Self {
             block,
             block_id,
@@ -1091,6 +1146,7 @@ impl BlockView {
             animation_task: None,
             current_project,
             session_id,
+            write_file_diff_mode,
         }
     }
 
@@ -1158,6 +1214,23 @@ impl BlockView {
         }
 
         self.start_expand_collapse_animation(should_expand, cx);
+    }
+
+    /// Toggle between diff view and plain new-file view for write_file tool blocks.
+    pub fn toggle_write_file_diff_mode(&mut self, cx: &mut Context<Self>) {
+        self.write_file_diff_mode = !self.write_file_diff_mode;
+
+        // Persist the new state
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool()) {
+            if ToolDiffModeState::set(session_id, &tool.id, self.write_file_diff_mode) {
+                // Schedule a debounced save
+                if let Some(sender) = cx.try_global::<super::UiEventSender>() {
+                    let _ = sender.0.try_send(crate::ui::UiEvent::PersistUiState);
+                }
+            }
+        }
+
+        cx.notify();
     }
 
     fn toggle_compaction(&mut self, cx: &mut Context<Self>) {
@@ -1719,6 +1792,7 @@ impl Render for BlockView {
                                         ToolBlockState::Expanded => 1.0,
                                     },
                                 };
+
                                 let card_ctx =
                                     crate::ui::gpui::tool_block_renderers::CardRenderContext {
                                         animation_scale: scale,
@@ -1729,6 +1803,7 @@ impl Render for BlockView {
                                             .lock()
                                             .unwrap()
                                             .clone(),
+                                        write_file_diff_mode: self.write_file_diff_mode,
                                     };
 
                                 if let Some(element) = renderer.render(

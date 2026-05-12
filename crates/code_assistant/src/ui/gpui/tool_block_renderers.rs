@@ -46,6 +46,9 @@ pub struct CardRenderContext {
     /// The session's current/default project name.  Card renderers can compare
     /// this against the tool's `project` parameter to decide whether to show it.
     pub current_project: String,
+    /// For write_file tool blocks: whether to show diff view (true) or plain
+    /// new-file view (false). Only relevant when original_content is available.
+    pub write_file_diff_mode: bool,
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@
 
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
+use serde_json;
 use similar::{ChangeTag, TextDiff};
 
 use super::{
@@ -122,6 +123,7 @@ fn generate_tool_diff_lines(tool_block: &ToolUseBlock) -> Vec<DiffLine> {
             }
             generate_search_replace_diff_lines(diff)
         }
+
         "write_file" => {
             let content = tool_block
                 .parameters
@@ -131,7 +133,21 @@ fn generate_tool_diff_lines(tool_block: &ToolUseBlock) -> Vec<DiffLine> {
             if content.is_empty() {
                 return Vec::new();
             }
-            generate_write_file_diff_lines(content)
+            // If the tool output contains original_content, show a proper diff
+            let original_content = tool_block
+                .output
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| {
+                    v.get("original_content")
+                        .and_then(|c| c.as_str())
+                        .map(String::from)
+                });
+            if let Some(ref original) = original_content {
+                generate_diff_lines(original, content)
+            } else {
+                generate_write_file_diff_lines(content)
+            }
         }
         _ => Vec::new(),
     }
