@@ -1424,25 +1424,15 @@ impl BlockView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        use crate::ui::gpui::theme::colors;
-
         let theme = cx.theme().clone();
 
         // Icon
         let icon = file_icons::get().get_tool_icon(&block.name);
         let (icon_color, desc_color) = match block.status {
             ToolStatus::Error => (theme.danger, theme.danger),
-            ToolStatus::Running | ToolStatus::Pending => {
-                if self.is_generating {
-                    (theme.muted_foreground, theme.muted_foreground)
-                } else {
-                    (
-                        colors::tool_block_icon(&theme, &block.status),
-                        theme.foreground,
-                    )
-                }
+            ToolStatus::Running | ToolStatus::Pending | ToolStatus::Success => {
+                (theme.muted_foreground, theme.muted_foreground)
             }
-            ToolStatus::Success => (theme.muted_foreground, theme.muted_foreground),
         };
 
         // Description text

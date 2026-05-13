@@ -376,6 +376,24 @@ impl SessionManager {
         Ok(ui_events)
     }
 
+    /// Advance the UI-sync baseline to match the current on-disk state.
+    ///
+    /// Call this after the local agent finishes and its UI has already
+    /// streamed all content to the client.  This ensures the subsequent
+    /// file-watcher debounce will find no diff and won't replay content
+    /// that was already sent via streaming.
+    pub fn advance_ui_sync_baseline(&mut self, session_id: &str) -> Result<()> {
+        let session_instance = self
+            .active_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        session_instance.reload_from_persistence(&self.persistence)?;
+        session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
+        session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
+        Ok(())
+    }
+
     /// Add a user message to a session and return the new node_id.
     /// This is used to add the message before displaying it in the UI,
     /// ensuring the node_id is available for the edit button.

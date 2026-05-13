@@ -885,6 +885,19 @@ impl acp::Agent for ACPAgentImpl {
                 arguments.session_id.0
             );
 
+            // Advance the UI-sync baseline so the file-watcher debounce
+            // (which fires ~300ms later) won't replay content already
+            // streamed during this prompt.
+            {
+                let mut manager = session_manager.lock().await;
+                if let Err(e) = manager.advance_ui_sync_baseline(&arguments.session_id.0) {
+                    tracing::warn!(
+                        "ACP: Failed to advance UI sync baseline for {}: {e}",
+                        arguments.session_id.0
+                    );
+                }
+            }
+
             // Mark session as disconnected and remove UI from active set
             {
                 let mut manager = session_manager.lock().await;
