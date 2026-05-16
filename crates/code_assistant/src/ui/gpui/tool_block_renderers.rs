@@ -46,6 +46,9 @@ pub struct CardRenderContext {
     /// The session's current/default project name.  Card renderers can compare
     /// this against the tool's `project` parameter to decide whether to show it.
     pub current_project: String,
+    /// For write_file tool blocks: whether to show diff view (true) or plain
+    /// new-file view (false). Only relevant when original_content is available.
+    pub write_file_diff_mode: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +205,8 @@ struct DescribeTemplate {
     /// Format string with `{param}` placeholders.  The renderer substitutes
     /// the first matching parameter value found in the tool block.
     template: &'static str,
+    /// Fallback text shown before parameters have been resolved.
+    fallback: &'static str,
 }
 
 /// Inline renderer for exploration / read-only tools.
@@ -216,26 +221,37 @@ impl InlineToolRenderer {
             DescribeTemplate {
                 tool_name: "list_files",
                 template: "List {paths}",
+                fallback: "List files",
             },
             DescribeTemplate {
                 tool_name: "glob_files",
                 template: "Glob {pattern}",
+                fallback: "Glob files",
             },
             DescribeTemplate {
                 tool_name: "web_search",
                 template: "Search web for \"{query}\"",
+                fallback: "Search web",
             },
             DescribeTemplate {
                 tool_name: "web_fetch",
                 template: "Fetch {url}",
+                fallback: "Fetch URL",
             },
             DescribeTemplate {
                 tool_name: "perplexity_ask",
                 template: "Ask Perplexity",
+                fallback: "Ask Perplexity",
             },
             DescribeTemplate {
                 tool_name: "view_images",
                 template: "View {paths}",
+                fallback: "View images",
+            },
+            DescribeTemplate {
+                tool_name: "view_documents",
+                template: "View {paths}",
+                fallback: "View documents",
             },
         ];
 
@@ -278,9 +294,9 @@ impl ToolBlockRenderer for InlineToolRenderer {
         if let Some(tmpl) = self.templates.iter().find(|t| t.tool_name == tool.name) {
             let desc = Self::resolve_template(tmpl.template, tool);
             // If the template still has unresolved placeholders (params not yet
-            // streamed), show a friendlier fallback.
+            // streamed), show the stable fallback text.
             if desc.contains('{') {
-                tool.name.replace('_', " ")
+                tmpl.fallback.to_string()
             } else {
                 desc
             }

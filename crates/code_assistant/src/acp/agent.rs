@@ -56,6 +56,9 @@ pub struct ACPAgentImpl {
     client_capabilities: Arc<Mutex<Option<acp::ClientCapabilities>>>,
     /// Sessions created in new_session() but not yet persisted (deferred until first prompt)
     pending_sessions: Arc<Mutex<HashMap<String, PendingSession>>>,
+    /// The session ID currently connected via ACP (for cross-instance awareness).
+    /// Updated when load_session or new_session is called.
+    connected_session_id: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct ModelStateInfo {
@@ -72,6 +75,7 @@ impl ACPAgentImpl {
         playback_path: Option<std::path::PathBuf>,
         fast_playback: bool,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+        connected_session_id: Arc<std::sync::Mutex<Option<String>>>,
     ) -> Self {
         Self {
             session_manager,
@@ -83,6 +87,7 @@ impl ACPAgentImpl {
             session_update_tx,
             active_uis: Arc::new(Mutex::new(HashMap::new())),
             client_capabilities: Arc::new(Mutex::new(None)),
+            connected_session_id,
         }
     }
 
@@ -328,6 +333,7 @@ impl acp::Agent for ACPAgentImpl {
         let model_name = self.model_name.clone();
         let session_config_template = self.session_config_template.clone();
         let pending_sessions = self.pending_sessions.clone();
+        let connected_session_id = self.connected_session_id.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
@@ -357,6 +363,12 @@ impl acp::Agent for ACPAgentImpl {
 
             tracing::info!("ACP: Created pending session: {}", session_id);
 
+            // Track this as the connected session for cross-instance awareness
+            {
+                let mut connected = connected_session_id.lock().unwrap();
+                *connected = Some(session_id.clone());
+            }
+
             let models_state =
                 ACPAgentImpl::compute_model_state(&model_name, Some(model_name.as_str()))
                     .map(|info| info.state);
@@ -381,9 +393,16 @@ impl acp::Agent for ACPAgentImpl {
         let session_manager = self.session_manager.clone();
         let session_update_tx = self.session_update_tx.clone();
         let default_model_name = self.model_name.clone();
+        let connected_session_id = self.connected_session_id.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Loading session: {}", arguments.session_id.0);
+
+            // Track this as the connected session for cross-instance awareness
+            {
+                let mut connected = connected_session_id.lock().unwrap();
+                *connected = Some(arguments.session_id.0.to_string());
+            }
 
             // Load session into manager
             {
@@ -865,6 +884,19 @@ impl acp::Agent for ACPAgentImpl {
                 "ACP: Prompt completed for session: {}",
                 arguments.session_id.0
             );
+
+            // Advance the UI-sync baseline so the file-watcher debounce
+            // (which fires ~300ms later) won't replay content already
+            // streamed during this prompt.
+            {
+                let mut manager = session_manager.lock().await;
+                if let Err(e) = manager.advance_ui_sync_baseline(&arguments.session_id.0) {
+                    tracing::warn!(
+                        "ACP: Failed to advance UI sync baseline for {}: {e}",
+                        arguments.session_id.0
+                    );
+                }
+            }
 
             // Mark session as disconnected and remove UI from active set
             {

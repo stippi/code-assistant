@@ -3,6 +3,9 @@ name = "code-assistant"
 version = "0.2.7"
 edition = "2021"
 
+[features]
+default = ["document-conversion"]
+document-conversion = ["transmutation", "fs_explorer/document-conversion"]
 
 [dependencies]
 command_executor = { path = "../command_executor" }
@@ -85,6 +88,9 @@ base64 = "0.22"
 
 # Image processing
 image = "0.25"
+
+# Document conversion (behind feature flag)
+transmutation = { version = "0.3", features = ["office"], optional = true }
 
 # Clipboard access for paste
 arboard = "3"

@@ -133,7 +133,7 @@ pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) -> ThemeMod
 
 /// Color utility functions for specific components
 pub mod colors {
-    use gpui::{black, rgba, white, Hsla};
+    use gpui::{rgba, Hsla};
     use gpui_component::theme::Theme;
 
     // Thinking block colors
@@ -150,20 +150,6 @@ pub mod colors {
             rgba(0x0099EEFF).into() // Dark mode blue chevron
         } else {
             rgba(0x0077CCFF).into() // Light mode blue chevron
-        }
-    }
-
-    // Tool block colors
-    pub fn tool_block_icon(theme: &Theme, status: &crate::ui::ToolStatus) -> Hsla {
-        match status {
-            crate::ui::ToolStatus::Error => theme.warning,
-            _ => {
-                if theme.is_dark() {
-                    white()
-                } else {
-                    black()
-                }
-            }
         }
     }
 }

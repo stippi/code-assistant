@@ -708,6 +708,75 @@ impl UserInterface for ACPUserUI {
                 );
             }
 
+            UiEvent::AppendMessages {
+                messages,
+                tool_results,
+            } => {
+                // Cross-instance awareness: replay new messages that another
+                // code-assistant instance appended to the currently connected session.
+                use crate::ui::gpui::elements::MessageRole;
+
+                for message_data in &messages {
+                    match message_data.role {
+                        MessageRole::User => {
+                            for fragment in &message_data.fragments {
+                                match fragment {
+                                    DisplayFragment::PlainText(text) => {
+                                        let content = acp::ContentBlock::Text(
+                                            acp::TextContent::new(text.clone()),
+                                        );
+                                        let chunk = Self::content_chunk(content);
+                                        self.queue_session_update(
+                                            acp::SessionUpdate::UserMessageChunk(chunk),
+                                        );
+                                    }
+                                    DisplayFragment::CompactionDivider { .. } => {
+                                        self.display_fragment(fragment)?;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        MessageRole::Assistant => {
+                            for fragment in &message_data.fragments {
+                                self.display_fragment(fragment)?;
+                            }
+                        }
+                    }
+                }
+
+                // Replay tool results as ToolCallUpdate with final status
+                for tool_result in &tool_results {
+                    let status = match tool_result.status {
+                        crate::ui::ToolStatus::Success => acp::ToolCallStatus::Completed,
+                        crate::ui::ToolStatus::Error => acp::ToolCallStatus::Failed,
+                        _ => acp::ToolCallStatus::InProgress,
+                    };
+
+                    let output_content: Vec<acp::ToolCallContent> = tool_result
+                        .output
+                        .as_ref()
+                        .map(|o| {
+                            vec![acp::ToolCallContent::Content(acp::Content::new(
+                                acp::ContentBlock::Text(acp::TextContent::new(o.clone())),
+                            ))]
+                        })
+                        .unwrap_or_default();
+
+                    let mut update_fields = acp::ToolCallUpdateFields::new().status(status);
+                    if !output_content.is_empty() {
+                        update_fields = update_fields.content(output_content);
+                    }
+
+                    let tool_call_update = acp::ToolCallUpdate::new(
+                        acp::ToolCallId::new(tool_result.tool_id.clone()),
+                        update_fields,
+                    );
+
+                    self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
+                }
+            }
+
             // Events that don't translate to ACP
             UiEvent::SetMessages { .. }
             | UiEvent::DisplayCompactionSummary { .. }
@@ -735,8 +804,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::RollbackStreaming { .. }
             | UiEvent::ShowTransientStatus { .. }
             | UiEvent::ClearTransientStatus
-            | UiEvent::RefreshCurrentSession { .. }
-            | UiEvent::AppendMessages { .. } => {
+            | UiEvent::RefreshCurrentSession { .. } => {
                 // These are UI management events, not relevant for ACP
                 // (RollbackStreaming: ACP cannot retract already-sent notifications)
             }

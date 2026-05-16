@@ -1,16 +1,21 @@
 use super::AgentRunConfig;
 use crate::acp::{
     register_fs_worker, register_terminal_worker, set_acp_client_connection, ACPAgentImpl,
+    ACPUserUI,
 };
 use crate::persistence::FileSessionPersistence;
+use crate::session::watcher::SessionWatcher;
 use crate::session::{SessionConfig, SessionManager};
+use crate::ui::ui_events::UiEvent;
+use crate::ui::UserInterface;
+use agent_client_protocol as acp;
 use agent_client_protocol::Client;
 use anyhow::Result;
 
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     // Setup logging to file since stdout is used for ACP protocol
@@ -61,6 +66,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
 
     // Create session manager
     let persistence = FileSessionPersistence::new();
+    let persistence_for_watcher = FileSessionPersistence::new();
     let session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         session_config_template.clone(),
@@ -74,15 +80,36 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     // Create channel for session notifications
     let (session_update_tx, mut session_update_rx) = mpsc::unbounded_channel();
 
+    // Connected session ID for the filesystem watcher
+    let connected_session_id: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
+
     // Create the agent
     let agent = ACPAgentImpl::new(
-        session_manager,
+        session_manager.clone(),
         session_config_template,
         model_name.clone(),
         config.playback.clone(),
         config.fast_playback,
-        session_update_tx,
+        session_update_tx.clone(),
+        connected_session_id.clone(),
     );
+
+    // Start the filesystem watcher for cross-instance awareness.
+    let (watcher_event_tx, watcher_event_rx) = async_channel::bounded::<UiEvent>(64);
+    let _session_watcher = match SessionWatcher::start(
+        &persistence_for_watcher,
+        watcher_event_tx,
+        connected_session_id.clone(),
+    ) {
+        Ok(watcher) => {
+            info!("Filesystem session watcher started (ACP mode)");
+            Some(watcher)
+        }
+        Err(e) => {
+            warn!("Failed to start filesystem session watcher: {e}");
+            None
+        }
+    };
 
     // Use LocalSet for non-Send futures from agent-client-protocol,
     // but the spawned futures will themselves spawn agent tasks on the multi-threaded runtime
@@ -117,9 +144,122 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
                 }
             });
 
+            // Kick off a background task to handle filesystem watcher events
+            // and forward cross-instance session changes to the ACP client
+            let session_manager_for_watcher = session_manager.clone();
+            let session_update_tx_for_watcher = session_update_tx.clone();
+            let connected_session_id_for_watcher = connected_session_id.clone();
+            tokio::task::spawn_local(async move {
+                handle_watcher_events(
+                    watcher_event_rx,
+                    session_manager_for_watcher,
+                    session_update_tx_for_watcher,
+                    connected_session_id_for_watcher,
+                )
+                .await;
+            });
+
             // Run the IO handler until stdin/stdout are closed
             handle_io.await
         })
         .await
         .map_err(anyhow::Error::new)
+}
+
+/// Background task that processes filesystem watcher events.
+///
+/// When another code-assistant instance modifies the currently connected
+/// session's file on disk, this task:
+/// 1. Calls `refresh_session_incremental` to compute the diff
+/// 2. Routes the resulting `UiEvent`s through an `ACPUserUI` instance
+///    (the same code path used for local agent streaming)
+async fn handle_watcher_events(
+    event_rx: async_channel::Receiver<UiEvent>,
+    session_manager: Arc<Mutex<SessionManager>>,
+    session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+    connected_session_id: Arc<StdMutex<Option<String>>>,
+) {
+    while let Ok(event) = event_rx.recv().await {
+        match event {
+            UiEvent::RefreshCurrentSession { session_id } => {
+                debug!("ACP watcher: RefreshCurrentSession for {session_id}");
+
+                // Make sure this is still the connected session
+                let current = connected_session_id.lock().unwrap().clone();
+                if current.as_deref() != Some(&session_id) {
+                    debug!(
+                        "ACP watcher: ignoring refresh for {session_id} \
+                         (connected session is {:?})",
+                        current
+                    );
+                    continue;
+                }
+
+                // Compute incremental diff
+                let ui_events = {
+                    let mut manager = session_manager.lock().await;
+                    match manager.refresh_session_incremental(&session_id) {
+                        Ok(events) => events,
+                        Err(e) => {
+                            warn!("ACP watcher: failed to refresh session {session_id}: {e}");
+                            continue;
+                        }
+                    }
+                };
+
+                if ui_events.is_empty() {
+                    continue;
+                }
+
+                // Get base_path for the replay UI
+                let base_path = {
+                    let manager = session_manager.lock().await;
+                    manager
+                        .get_session(&session_id)
+                        .and_then(|s| s.session.config.init_path.clone())
+                };
+
+                // Route events through a temporary ACPUserUI — same conversion
+                // logic as local agent streaming (no duplication).
+                let replay_ui = ACPUserUI::new(
+                    acp::SessionId::new(session_id.clone()),
+                    session_update_tx.clone(),
+                    base_path,
+                );
+
+                for ui_event in ui_events {
+                    if let Err(e) = replay_ui.send_event(ui_event).await {
+                        warn!("ACP watcher: failed to send event for {session_id}: {e}");
+                    }
+                }
+            }
+
+            UiEvent::UpdateSessionActivityState {
+                session_id,
+                activity_state,
+            } => {
+                debug!(
+                    "ACP watcher: UpdateSessionActivityState for {session_id}: {activity_state:?}"
+                );
+
+                // Update the state in the session manager so that
+                // refresh_session_incremental sees RunningExternally and
+                // knows to emit content (rather than the early-return for
+                // locally running agents).
+                let mut manager = session_manager.lock().await;
+                if let Some(instance) = manager.get_session_mut(&session_id) {
+                    instance.set_activity_state(activity_state);
+                }
+            }
+
+            UiEvent::RefreshChatList => {
+                // In ACP mode the client manages its own session list via list_sessions().
+                debug!("ACP watcher: RefreshChatList (ignored, client uses list_sessions)");
+            }
+
+            _ => {
+                debug!("ACP watcher: unexpected event: {:?}", event);
+            }
+        }
+    }
 }

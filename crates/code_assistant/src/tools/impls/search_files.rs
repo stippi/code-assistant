@@ -2,7 +2,7 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
-use fs_explorer::{SearchMode, SearchOptions, SearchResult};
+use fs_explorer::{DocumentMatchResult, SearchMode, SearchOptions, SearchResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -29,6 +29,10 @@ pub struct SearchFilesOutput {
     pub truncated: bool,
     #[serde(default)]
     pub summary_mode: bool,
+    /// Results from searching within documents (PDF, DOCX, etc.) - only present when
+    /// the `document-conversion` feature is enabled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub document_results: Vec<DocumentMatchResult>,
 }
 
 impl SearchFilesOutput {
@@ -104,127 +108,59 @@ impl SearchFilesOutput {
 // Render implementation for output formatting
 impl Render for SearchFilesOutput {
     fn status(&self) -> String {
+        let doc_matches: usize = self.document_results.iter().map(|r| r.match_count).sum();
+        let total = self.results.len() + doc_matches;
         if self.truncated {
             format!(
                 "Found {} matches (showing {}) for '{}'",
-                self.total_matches,
-                self.results.len(),
+                self.total_matches + doc_matches,
+                total,
                 self.regex
             )
         } else {
-            format!("Found {} matches for '{}'", self.results.len(), self.regex)
+            format!("Found {} matches for '{}'", total, self.regex)
         }
     }
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
-        if self.results.is_empty() {
+        if self.results.is_empty() && self.document_results.is_empty() {
             return format!("No matches found for '{}'", self.regex);
         }
 
         let mut formatted = String::new();
 
         // Header with match count and mode information
+        let doc_matches: usize = self.document_results.iter().map(|r| r.match_count).sum();
+        let total_display = self.total_matches + doc_matches;
         if self.truncated {
             formatted.push_str(&format!(
                 "Found {} matches for '{}' (showing top {} results):\n",
-                self.total_matches,
+                total_display,
                 self.regex,
                 self.results.len()
             ));
-        } else {
+        } else if !self.results.is_empty() {
             formatted.push_str(&format!(
                 "Found {} matches for '{}':\n",
-                self.total_matches, self.regex
+                total_display, self.regex
             ));
         }
 
-        if self.summary_mode {
-            // Summary mode: show only file paths with match counts
-            formatted.push_str(
-                "\nToo many code snippets would be displayed. Showing file paths only.\n",
-            );
-            formatted.push_str("Use the 'paths' parameter to search within specific directories for detailed results.\n\n");
+        // Render text file results (if any)
+        if !self.results.is_empty() {
+            if self.summary_mode {
+                // Summary mode: show only file paths with match counts
+                formatted.push_str(
+                    "\nToo many code snippets would be displayed. Showing file paths only.\n",
+                );
+                formatted.push_str("Use the 'paths' parameter to search within specific directories for detailed results.\n\n");
 
-            // Group results by file path and sum match counts
-            let mut file_matches = std::collections::HashMap::new();
-            for result in &self.results {
-                let match_count = result.match_lines.len();
-                *file_matches.entry(result.file.clone()).or_insert(0) += match_count;
-            }
-
-            // Sort files by path for consistent output
-            let mut sorted_files: Vec<_> = file_matches.iter().collect();
-            sorted_files.sort_by_key(|(path, _)| path.as_path());
-
-            for (file_path, total_matches) in sorted_files {
-                formatted.push_str(&format!(
-                    "{} ({} matches)\n",
-                    file_path.display(),
-                    total_matches
-                ));
-            }
-
-            if self.truncated {
-                let unique_files = file_matches.len();
-                formatted.push_str(&format!(
-                    "\n... and {} more files with matches.\n",
-                    self.total_matches - unique_files
-                ));
-            }
-        } else {
-            // Full mode: show snippets with context, but limit by snippet count
-            const MAX_DISPLAYED_SNIPPETS: usize = 20; // Show max 20 snippets in full mode
-            let mut files_with_snippets = 0;
-
-            // Show detailed results for top matches
-            for (snippets_shown, result) in self.results.iter().enumerate() {
-                if snippets_shown >= MAX_DISPLAYED_SNIPPETS {
-                    break;
-                }
-
-                // Display the file path with line range (same format as accepted by read_files)
-                let end_line = result.start_line + result.line_content.len() - 1;
-                formatted.push_str(&format!(
-                    ">>>>> RESULT: {}:{}-{}\n",
-                    result.file.display(),
-                    result.start_line + 1,
-                    end_line + 1
-                ));
-
-                // Display the matched content with context
-                for (line_idx, line) in result.line_content.iter().enumerate() {
-                    let rendered_line = Self::format_line_with_excerpt(
-                        line,
-                        line_idx,
-                        &result.match_lines,
-                        &result.match_ranges,
-                    );
-                    formatted.push_str(&rendered_line);
-
-                    // Add a newline if not already present
-                    if !rendered_line.ends_with('\n') {
-                        formatted.push('\n');
-                    }
-                }
-
-                formatted.push_str("<<<<< END RESULT\n\n");
-                files_with_snippets += 1;
-            }
-
-            // Show remaining files as paths only
-            let remaining_results = &self.results[files_with_snippets..];
-            if !remaining_results.is_empty() {
-                // Group remaining results by file path and sum match counts
-                let mut file_matches = HashMap::new();
-                for result in remaining_results {
+                // Group results by file path and sum match counts
+                let mut file_matches = std::collections::HashMap::new();
+                for result in &self.results {
                     let match_count = result.match_lines.len();
                     *file_matches.entry(result.file.clone()).or_insert(0) += match_count;
                 }
-
-                formatted.push_str(&format!(
-                    "Additional {} files with matches:\n",
-                    file_matches.len()
-                ));
 
                 // Sort files by path for consistent output
                 let mut sorted_files: Vec<_> = file_matches.iter().collect();
@@ -232,17 +168,110 @@ impl Render for SearchFilesOutput {
 
                 for (file_path, total_matches) in sorted_files {
                     formatted.push_str(&format!(
-                        "📄 {} ({} matches)\n",
+                        "{} ({} matches)\n",
                         file_path.display(),
                         total_matches
                     ));
                 }
-                formatted.push('\n');
+
+                if self.truncated {
+                    let unique_files = file_matches.len();
+                    formatted.push_str(&format!(
+                        "\n... and {} more files with matches.\n",
+                        self.total_matches - unique_files
+                    ));
+                }
+            } else {
+                // Full mode: show snippets with context, but limit by snippet count
+                const MAX_DISPLAYED_SNIPPETS: usize = 20; // Show max 20 snippets in full mode
+                let mut files_with_snippets = 0;
+
+                // Show detailed results for top matches
+                for (snippets_shown, result) in self.results.iter().enumerate() {
+                    if snippets_shown >= MAX_DISPLAYED_SNIPPETS {
+                        break;
+                    }
+
+                    // Display the file path with line range (same format as accepted by read_files)
+                    let end_line = result.start_line + result.line_content.len() - 1;
+                    formatted.push_str(&format!(
+                        ">>>>> RESULT: {}:{}-{}\n",
+                        result.file.display(),
+                        result.start_line + 1,
+                        end_line + 1
+                    ));
+
+                    // Display the matched content with context
+                    for (line_idx, line) in result.line_content.iter().enumerate() {
+                        let rendered_line = Self::format_line_with_excerpt(
+                            line,
+                            line_idx,
+                            &result.match_lines,
+                            &result.match_ranges,
+                        );
+                        formatted.push_str(&rendered_line);
+
+                        // Add a newline if not already present
+                        if !rendered_line.ends_with('\n') {
+                            formatted.push('\n');
+                        }
+                    }
+
+                    formatted.push_str("<<<<< END RESULT\n\n");
+                    files_with_snippets += 1;
+                }
+
+                // Show remaining files as paths only
+                let remaining_results = &self.results[files_with_snippets..];
+                if !remaining_results.is_empty() {
+                    // Group remaining results by file path and sum match counts
+                    let mut file_matches = HashMap::new();
+                    for result in remaining_results {
+                        let match_count = result.match_lines.len();
+                        *file_matches.entry(result.file.clone()).or_insert(0) += match_count;
+                    }
+
+                    formatted.push_str(&format!(
+                        "Additional {} files with matches:\n",
+                        file_matches.len()
+                    ));
+
+                    // Sort files by path for consistent output
+                    let mut sorted_files: Vec<_> = file_matches.iter().collect();
+                    sorted_files.sort_by_key(|(path, _)| path.as_path());
+
+                    for (file_path, total_matches) in sorted_files {
+                        formatted.push_str(&format!(
+                            "📄 {} ({} matches)\n",
+                            file_path.display(),
+                            total_matches
+                        ));
+                    }
+                    formatted.push('\n');
+                }
+            }
+
+            if self.truncated {
+                formatted.push_str("Use the 'paths' parameter to search within specific directories for more focused results.\n");
             }
         }
 
-        if self.truncated {
-            formatted.push_str("Use the 'paths' parameter to search within specific directories for more focused results.\n");
+        // Append document search results if any
+        if !self.document_results.is_empty() {
+            formatted.push_str(
+                "\n--- Document matches (use view_documents to read full content) ---\n\n",
+            );
+            for doc_result in &self.document_results {
+                formatted.push_str(&format!(
+                    ">>>>> DOCUMENT MATCH: {} ({}, page {})\n",
+                    doc_result.file, doc_result.format, doc_result.page
+                ));
+                formatted.push_str(&doc_result.excerpt);
+                if !doc_result.excerpt.ends_with('\n') {
+                    formatted.push('\n');
+                }
+                formatted.push_str("<<<<< END DOCUMENT MATCH\n\n");
+            }
         }
 
         formatted
@@ -483,6 +512,10 @@ impl Tool for SearchFilesTool {
             (all_results, false, false)
         };
 
+        // Search within documents if the feature is enabled
+        let document_results =
+            Self::search_documents(&root_dir, &input.regex, input.paths.as_deref()).await;
+
         Ok(SearchFilesOutput {
             project: input.project.clone(),
             regex: input.regex.clone(),
@@ -490,7 +523,30 @@ impl Tool for SearchFilesTool {
             total_matches: total_files,
             truncated,
             summary_mode,
+            document_results,
         })
+    }
+}
+
+impl SearchFilesTool {
+    /// Search within document files (PDF, DOCX, etc.) for the given pattern.
+    /// Only active when the `document-conversion` feature is enabled.
+    #[cfg(feature = "document-conversion")]
+    async fn search_documents(
+        root_dir: &std::path::Path,
+        regex_pattern: &str,
+        paths: Option<&[String]>,
+    ) -> Vec<DocumentMatchResult> {
+        fs_explorer::document_search::search_in_documents(root_dir, regex_pattern, paths).await
+    }
+
+    #[cfg(not(feature = "document-conversion"))]
+    async fn search_documents(
+        _root_dir: &std::path::Path,
+        _regex_pattern: &str,
+        _paths: Option<&[String]>,
+    ) -> Vec<DocumentMatchResult> {
+        Vec::new()
     }
 }
 
@@ -529,6 +585,7 @@ mod tests {
             total_matches: results.len(),
             truncated: false,
             summary_mode: false,
+            document_results: vec![],
         };
 
         // Render the output
@@ -552,6 +609,7 @@ mod tests {
             total_matches: 0,
             truncated: false,
             summary_mode: false,
+            document_results: vec![],
         };
 
         // Render the output
@@ -560,6 +618,40 @@ mod tests {
 
         // Verify the output format for no results
         assert!(rendered.contains("No matches found for 'NonExistentPattern'"));
+    }
+
+    #[tokio::test]
+    async fn test_document_results_shown_when_no_text_results() {
+        // Regression test: document results must be shown even when no text file results exist
+        let output = SearchFilesOutput {
+            project: "test-project".to_string(),
+            regex: "MemGPT".to_string(),
+            results: Vec::new(), // No text file matches
+            total_matches: 0,
+            truncated: false,
+            summary_mode: false,
+            document_results: vec![DocumentMatchResult {
+                file: "paper.pdf".to_string(),
+                format: "PDF".to_string(),
+                page: 3,
+                excerpt: "...explored previously in MemGPT [3]...".to_string(),
+                match_count: 4,
+            }],
+        };
+
+        let mut tracker = ResourcesTracker::new();
+        let rendered = output.render(&mut tracker);
+
+        // Must NOT say "No matches found"
+        assert!(
+            !rendered.contains("No matches found"),
+            "Should not say 'No matches found' when document results exist"
+        );
+        // Must show the document match
+        assert!(rendered.contains("DOCUMENT MATCH"));
+        assert!(rendered.contains("paper.pdf"));
+        assert!(rendered.contains("page 3"));
+        assert!(rendered.contains("MemGPT"));
     }
 
     #[tokio::test]
@@ -612,6 +704,7 @@ mod tests {
             total_matches: 100,
             truncated: false,
             summary_mode: true,
+            document_results: vec![],
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -645,6 +738,7 @@ mod tests {
             total_matches: 1,
             truncated: false,
             summary_mode: false,
+            document_results: vec![],
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -715,6 +809,7 @@ mod tests {
             total_matches: 2,
             truncated: false,
             summary_mode: false,
+            document_results: vec![],
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -742,6 +837,7 @@ mod tests {
             total_matches: 50,
             truncated: false,
             summary_mode: true,
+            document_results: vec![],
         };
 
         let rendered_many = many_output.render(&mut tracker);
@@ -802,6 +898,7 @@ mod tests {
             total_matches: 2, // Should be 2 unique files, not 3 results
             truncated: false,
             summary_mode: true,
+            document_results: vec![],
         };
 
         let mut tracker = ResourcesTracker::new();

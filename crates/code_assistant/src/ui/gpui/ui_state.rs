@@ -44,6 +44,13 @@ pub struct UiSessionState {
     /// blocks at their renderer-default state are omitted.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tool_collapse_overrides: HashMap<String, bool>,
+
+    /// write_file diff mode overrides set by the user.
+    /// Key: tool_id, Value: `true` means show diff view, `false` means show
+    /// plain new-file view. Only stored when the user explicitly toggles away
+    /// from the default (diff mode = true).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tool_diff_mode_overrides: HashMap<String, bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +134,22 @@ impl UiStateStore {
         state
             .tool_collapse_overrides
             .insert(tool_id.to_owned(), collapsed);
+        self.dirty.insert(session_id.to_owned());
+    }
+
+    /// Return the diff mode override for a write_file tool block, loading from
+    /// disk if the session hasn't been loaded yet.
+    pub fn get_tool_diff_mode(&mut self, session_id: &str, tool_id: &str) -> Option<bool> {
+        let state = self.get(session_id);
+        state.tool_diff_mode_overrides.get(tool_id).copied()
+    }
+
+    /// Set a write_file diff mode override.
+    pub fn set_tool_diff_mode(&mut self, session_id: &str, tool_id: &str, diff_mode: bool) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        state
+            .tool_diff_mode_overrides
+            .insert(tool_id.to_owned(), diff_mode);
         self.dirty.insert(session_id.to_owned());
     }
 
