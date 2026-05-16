@@ -91,6 +91,21 @@ pub struct SearchResult {
     pub match_ranges: Vec<Vec<(usize, usize)>>,
 }
 
+/// A match found inside a document file (PDF, DOCX, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentMatchResult {
+    /// Path to the document file (relative to project root).
+    pub file: String,
+    /// Document format (e.g. "PDF", "DOCX").
+    pub format: String,
+    /// Page number where the match was found (1-indexed).
+    pub page: usize,
+    /// A text excerpt around the match.
+    pub excerpt: String,
+    /// Number of matches on this page.
+    pub match_count: usize,
+}
+
 #[async_trait::async_trait]
 pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;

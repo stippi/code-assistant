@@ -2,7 +2,7 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
-use fs_explorer::{SearchMode, SearchOptions, SearchResult};
+use fs_explorer::{DocumentMatchResult, SearchMode, SearchOptions, SearchResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -33,21 +33,6 @@ pub struct SearchFilesOutput {
     /// the `document-conversion` feature is enabled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub document_results: Vec<DocumentMatchResult>,
-}
-
-/// A match found inside a document file (PDF, DOCX, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocumentMatchResult {
-    /// Path to the document file (relative to project root).
-    pub file: String,
-    /// Document format (e.g. "PDF", "DOCX").
-    pub format: String,
-    /// Page number where the match was found (1-indexed).
-    pub page: usize,
-    /// A text excerpt around the match.
-    pub excerpt: String,
-    /// Number of matches on this page.
-    pub match_count: usize,
 }
 
 impl SearchFilesOutput {
@@ -273,7 +258,9 @@ impl Render for SearchFilesOutput {
 
         // Append document search results if any
         if !self.document_results.is_empty() {
-            formatted.push_str("\n--- Document matches ---\n\n");
+            formatted.push_str(
+                "\n--- Document matches (use view_documents to read full content) ---\n\n",
+            );
             for doc_result in &self.document_results {
                 formatted.push_str(&format!(
                     ">>>>> DOCUMENT MATCH: {} ({}, page {})\n",
@@ -550,7 +537,7 @@ impl SearchFilesTool {
         regex_pattern: &str,
         paths: Option<&[String]>,
     ) -> Vec<DocumentMatchResult> {
-        super::document_search::search_in_documents(root_dir, regex_pattern, paths).await
+        fs_explorer::document_search::search_in_documents(root_dir, regex_pattern, paths).await
     }
 
     #[cfg(not(feature = "document-conversion"))]

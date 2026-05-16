@@ -5,7 +5,7 @@
 //! converts them to Markdown page-by-page using `transmutation`, and searches the
 //! resulting text with the user's regex pattern. Matches are reported with page numbers.
 
-use super::search_files::DocumentMatchResult;
+use crate::types::DocumentMatchResult;
 use regex::RegexBuilder;
 use std::path::{Path, PathBuf};
 use transmutation::{Converter, OutputFormat};
@@ -79,10 +79,10 @@ pub async fn search_in_documents(
             }
 
             // Skip large files
-            if let Ok(metadata) = path.metadata() {
-                if metadata.len() > MAX_SEARCH_DOCUMENT_SIZE {
-                    continue;
-                }
+            if let Ok(metadata) = path.metadata()
+                && metadata.len() > MAX_SEARCH_DOCUMENT_SIZE
+            {
+                continue;
             }
 
             document_files.push(path.to_path_buf());

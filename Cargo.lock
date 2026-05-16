@@ -3003,6 +3003,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "transmutation",
+ "walkdir",
 ]
 
 [[package]]

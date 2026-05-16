@@ -1,3 +1,5 @@
+#[cfg(feature = "document-conversion")]
+pub mod document_search;
 pub mod encoding;
 mod explorer;
 pub mod file_updater;

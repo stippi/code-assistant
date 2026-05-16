@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["document-conversion"]
-document-conversion = ["transmutation"]
+document-conversion = ["transmutation", "fs_explorer/document-conversion"]
 
 [dependencies]
 command_executor = { path = "../command_executor" }

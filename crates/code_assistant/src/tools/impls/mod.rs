@@ -1,7 +1,5 @@
 // Tool implementations
 pub mod delete_files;
-#[cfg(feature = "document-conversion")]
-pub mod document_search;
 pub mod edit;
 pub mod execute_command;
 pub mod glob_files;
