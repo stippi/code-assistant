@@ -2,6 +2,7 @@
 
 mod general_section;
 mod models_section;
+pub(crate) mod provider_forms;
 mod providers_section;
 
 use gpui::{

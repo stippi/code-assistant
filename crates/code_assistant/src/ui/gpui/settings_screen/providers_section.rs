@@ -1,5 +1,6 @@
 //! Providers settings section — list configured providers, add/edit/remove.
 
+use super::provider_forms::ProviderFormHolder;
 use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, SharedString};
 use gpui_component::input::{Input, InputState};
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -14,6 +15,8 @@ pub struct ProviderEntry {
     pub provider_type: String,
     pub base_url: Option<String>,
     pub has_api_key: bool,
+    /// The raw config object from providers.json (for populating provider-specific forms)
+    pub raw_config: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// State of the "Add Provider" form.
@@ -31,11 +34,11 @@ pub struct ProvidersSection {
     focus_handle: FocusHandle,
     providers: Vec<ProviderEntry>,
     form_mode: FormMode,
-    // Input states for the add/edit form
+    // Input states for the add/edit form (label is always present)
     form_label_input: Entity<InputState>,
-    form_key_input: Entity<InputState>,
-    form_base_url_input: Entity<InputState>,
     form_provider_type: String,
+    // Provider-specific form
+    form_holder: ProviderFormHolder,
 }
 
 impl ProvidersSection {
@@ -44,18 +47,16 @@ impl ProvidersSection {
 
         let form_label_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("e.g. My Anthropic"));
-        let form_key_input = cx.new(|cx| InputState::new(window, cx).placeholder("sk-..."));
-        let form_base_url_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("https://api.anthropic.com/v1"));
+
+        let form_holder = ProviderFormHolder::new("anthropic", window, cx);
 
         Self {
             focus_handle: cx.focus_handle(),
             providers,
             form_mode: FormMode::Hidden,
             form_label_input,
-            form_key_input,
-            form_base_url_input,
             form_provider_type: "anthropic".to_string(),
+            form_holder,
         }
     }
 
@@ -91,8 +92,20 @@ impl ProvidersSection {
                     .get("config")
                     .and_then(|c| c.get("base_url"))
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let has_api_key = value.get("config").and_then(|c| c.get("api_key")).is_some();
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        // For AI Core, show api_base_url instead
+                        value
+                            .get("config")
+                            .and_then(|c| c.get("api_base_url"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    });
+                let has_api_key = value
+                    .get("config")
+                    .and_then(|c| c.get("api_key").or_else(|| c.get("client_id")))
+                    .is_some();
+                let raw_config = value.get("config").and_then(|c| c.as_object()).cloned();
 
                 ProviderEntry {
                     key,
@@ -100,6 +113,7 @@ impl ProvidersSection {
                     provider_type,
                     base_url,
                     has_api_key,
+                    raw_config,
                 }
             })
             .collect()
@@ -128,25 +142,23 @@ impl ProvidersSection {
 
     /// Populate form fields from an existing provider entry for editing.
     fn populate_form_from_entry(
-        &self,
+        &mut self,
         entry: &ProviderEntry,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        // Set label
         self.form_label_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(entry.label.clone()), window, cx);
         });
-        self.form_base_url_input.update(cx, |state, cx| {
-            state.set_value(
-                SharedString::from(entry.base_url.clone().unwrap_or_default()),
-                window,
-                cx,
-            );
-        });
-        // We don't populate the API key field for security — show placeholder instead
-        self.form_key_input.update(cx, |state, cx| {
-            state.set_value(SharedString::from(""), window, cx);
-        });
+
+        // Switch form holder to correct provider type
+        self.form_holder.switch_to(&entry.provider_type, window, cx);
+
+        // Populate provider-specific fields from raw config
+        if let Some(ref config) = entry.raw_config {
+            self.form_holder.load_config(config, window, cx);
+        }
     }
 
     fn render_provider_card(
@@ -198,8 +210,9 @@ impl ProvidersSection {
                             if let Some(entry) =
                                 this.providers.iter().find(|e| e.key == key_for_click)
                             {
+                                let entry = entry.clone();
                                 this.form_provider_type = entry.provider_type.clone();
-                                this.populate_form_from_entry(entry, window, cx);
+                                this.populate_form_from_entry(&entry, window, cx);
                             }
                             this.form_mode = FormMode::Editing(key_for_click.clone());
                         }
@@ -284,9 +297,15 @@ impl ProvidersSection {
                     .text_color(cx.theme().muted_foreground)
                     .child("Add"),
             )
-            .on_click(cx.listener(|this, _, _window, cx| {
+            .on_click(cx.listener(|this, _, window, cx| {
                 this.form_mode = FormMode::Adding;
                 this.form_provider_type = "anthropic".to_string();
+                this.form_holder.switch_to("anthropic", window, cx);
+                this.form_holder.reset(window, cx);
+                // Reset label
+                this.form_label_input.update(cx, |state, cx| {
+                    state.set_value(SharedString::from(""), window, cx);
+                });
                 cx.notify();
             }))
     }
@@ -319,7 +338,7 @@ impl ProvidersSection {
                         "New Provider"
                     }),
             )
-            // Label field
+            // Label field (always present)
             .child(
                 div()
                     .flex()
@@ -383,48 +402,17 @@ impl ProvidersSection {
                                             .hover(|s| s.border_color(cx.theme().ring))
                                     })
                                     .child(SharedString::from(display_name.to_string()))
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                    .on_click(cx.listener(move |this, _, window, cx| {
                                         this.form_provider_type = type_id_owned.clone();
+                                        this.form_holder.switch_to(&type_id_owned, window, cx);
                                         cx.notify();
                                     }))
                             }),
                         ),
                     ),
             )
-            // Base URL field
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Base URL"),
-                    )
-                    .child(Input::new(&self.form_base_url_input)),
-            )
-            // API Key field
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(cx.theme().muted_foreground)
-                            .child(if is_editing {
-                                "API Key (leave empty to keep current)"
-                            } else {
-                                "API Key"
-                            }),
-                    )
-                    .child(Input::new(&self.form_key_input)),
-            )
+            // Provider-specific form fields (delegated to form holder)
+            .child(self.form_holder.render())
             // Action buttons
             .child(
                 div()
@@ -494,8 +482,6 @@ impl ProvidersSection {
 
     fn save_provider(&mut self, cx: &mut Context<Self>) {
         let label = self.form_label_input.read(cx).value().to_string();
-        let api_key = self.form_key_input.read(cx).value().to_string();
-        let base_url = self.form_base_url_input.read(cx).value().to_string();
 
         if label.is_empty() {
             return;
@@ -520,46 +506,61 @@ impl ProvidersSection {
                 Err(_) => serde_json::Map::new(),
             };
 
-        // Build config object, preserving existing api_key if not overwritten
-        let mut config = serde_json::Map::new();
+        // Get config from the provider-specific form
+        let mut config = self.form_holder.to_config_json(cx);
 
-        // Preserve existing config values when editing
+        // When editing, preserve fields that weren't overwritten
         if let FormMode::Editing(ref existing_key) = self.form_mode {
             if let Some(existing) = map.get(existing_key) {
                 if let Some(existing_config) = existing.get("config").and_then(|c| c.as_object()) {
-                    // Keep existing api_key if the user didn't provide a new one
-                    if api_key.is_empty() {
+                    // For the default form: preserve api_key if not provided
+                    if !config.contains_key("api_key") {
                         if let Some(existing_key_val) = existing_config.get("api_key") {
                             config.insert("api_key".to_string(), existing_key_val.clone());
+                        }
+                    }
+                    // For AI Core: preserve client_secret if not provided
+                    if !config.contains_key("client_secret")
+                        || config
+                            .get("client_secret")
+                            .and_then(|v: &serde_json::Value| v.as_str())
+                            .map(|s: &str| s.is_empty())
+                            .unwrap_or(false)
+                    {
+                        if let Some(existing_val) = existing_config.get("client_secret") {
+                            config.insert("client_secret".to_string(), existing_val.clone());
                         }
                     }
                 }
             }
         }
 
-        if !api_key.is_empty() {
-            config.insert("api_key".to_string(), serde_json::Value::String(api_key));
-        }
+        // Remove empty string values
+        config.retain(|_, v: &mut serde_json::Value| {
+            if let Some(s) = v.as_str() {
+                !s.is_empty()
+            } else {
+                true
+            }
+        });
 
-        if !base_url.is_empty() {
-            config.insert("base_url".to_string(), serde_json::Value::String(base_url));
-        } else {
-            // Set default base URL based on provider type
+        // Set default base_url for standard providers if not specified
+        if !config.contains_key("base_url") && !config.contains_key("api_base_url") {
             let default_url = match self.form_provider_type.as_str() {
-                "anthropic" => "https://api.anthropic.com/v1",
-                "openai" | "openai-responses" => "https://api.openai.com/v1",
-                "ollama" => "http://localhost:11434",
-                "openrouter" => "https://openrouter.ai/api/v1",
-                "vertex" => "https://generativelanguage.googleapis.com/v1beta",
-                "cerebras" => "https://api.cerebras.ai/v1",
-                "groq" => "https://api.groq.com/openai/v1",
-                "mistral-ai" => "https://api.mistral.ai/v1",
-                _ => "",
+                "anthropic" => Some("https://api.anthropic.com/v1"),
+                "openai" | "openai-responses" => Some("https://api.openai.com/v1"),
+                "ollama" => Some("http://localhost:11434"),
+                "openrouter" => Some("https://openrouter.ai/api/v1"),
+                "vertex" => Some("https://generativelanguage.googleapis.com/v1beta"),
+                "cerebras" => Some("https://api.cerebras.ai/v1"),
+                "groq" => Some("https://api.groq.com/openai/v1"),
+                "mistral-ai" => Some("https://api.mistral.ai/v1"),
+                _ => None,
             };
-            if !default_url.is_empty() {
+            if let Some(url) = default_url {
                 config.insert(
                     "base_url".to_string(),
-                    serde_json::Value::String(default_url.to_string()),
+                    serde_json::Value::String(url.to_string()),
                 );
             }
         }
