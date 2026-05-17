@@ -387,6 +387,12 @@ impl ProvidersSection {
                             Select::new(&self.provider_type_select)
                                 .placeholder("Select provider type")
                                 .with_size(Size::Small)
+                                .icon(
+                                    Icon::default()
+                                        .path("icons/chevron_up_down.svg")
+                                        .with_size(Size::XSmall)
+                                        .text_color(cx.theme().muted_foreground),
+                                )
                                 .min_w(px(200.)),
                         )
                         .into_any_element(),
