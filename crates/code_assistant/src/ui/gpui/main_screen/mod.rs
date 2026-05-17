@@ -1494,11 +1494,12 @@ impl Render for MainScreen {
                     .child(
                         div()
                             .id("settings-btn")
-                            .size(px(28.))
-                            .rounded_sm()
                             .flex()
                             .items_center()
-                            .justify_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
                             .cursor_pointer()
                             .hover(|s| s.bg(cx.theme().muted))
                             .child(
@@ -1506,6 +1507,12 @@ impl Render for MainScreen {
                                     .path(SharedString::from("icons/settings.svg"))
                                     .with_size(Size::Small)
                                     .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Settings"),
                             )
                             .on_click(cx.listener(Self::on_open_settings)),
                     ),

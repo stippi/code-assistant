@@ -136,90 +136,121 @@ impl Render for SettingsScreen {
             .track_focus(&self.focus_handle(cx))
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
             .bg(cx.theme().background)
-            // Left navigation sidebar
+            // Titlebar
             .child(
                 div()
+                    .id("settings-titlebar")
                     .flex_none()
-                    .w(px(220.))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
+                    .h(px(48.))
+                    .w_full()
+                    .bg(cx.theme().title_bar)
+                    .border_b_1()
+                    .border_color(cx.theme().title_bar_border)
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .items_center()
                     .justify_between()
+                    // Left padding for macOS traffic lights
+                    .pl(px(86.))
+                    .pr(px(16.))
+                    // Left side - title
                     .child(
-                        // Nav items
+                        div().flex().items_center().gap_2().child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(cx.theme().foreground)
+                                .child("Settings"),
+                        ),
+                    )
+                    // Right side - Back button
+                    .child(
                         div()
+                            .id("settings-back-btn")
                             .flex()
-                            .flex_col()
+                            .items_center()
                             .gap_1()
-                            .p_3()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(cx.theme().muted))
+                            .child(
+                                Icon::default()
+                                    .path(SharedString::from("icons/arrow_left.svg"))
+                                    .with_size(Size::Small)
+                                    .text_color(cx.theme().muted_foreground),
+                            )
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().muted_foreground)
-                                    .mb_2()
-                                    .child("Settings"),
+                                    .child("Back"),
                             )
-                            .child(self.render_nav_item(
-                                SettingsSection::General,
-                                "General",
-                                "icons/settings_alt.svg",
-                                cx,
-                            ))
-                            .child(self.render_nav_item(
-                                SettingsSection::Providers,
-                                "Providers",
-                                "icons/ai_anthropic.svg",
-                                cx,
-                            ))
-                            .child(self.render_nav_item(
-                                SettingsSection::Models,
-                                "Models",
-                                "icons/brain.svg",
-                                cx,
-                            )),
-                    )
-                    // Back button at bottom
-                    .child(
-                        div().p_3().child(
-                            div()
-                                .id("settings-back-btn")
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().muted))
-                                .child(
-                                    Icon::default()
-                                        .path(SharedString::from("icons/arrow_left.svg"))
-                                        .with_size(Size::Small)
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Back"),
-                                )
-                                .on_click(cx.listener(Self::on_back_clicked)),
-                        ),
+                            .on_click(cx.listener(Self::on_back_clicked)),
                     ),
             )
-            // Right content area (scrollable)
-            .child(div().flex_1().h_full().overflow_y_scrollbar().p_6().child(
-                match self.active_section {
-                    SettingsSection::General => self.general_section.clone().into_any_element(),
-                    SettingsSection::Providers => self.providers_section.clone().into_any_element(),
-                    SettingsSection::Models => self.models_section.clone().into_any_element(),
-                },
-            ))
+            // Main content: sidebar + content area
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    // Left navigation sidebar
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(220.))
+                            .h_full()
+                            .border_r_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .flex()
+                            .flex_col()
+                            .child(
+                                // Nav items
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .p_3()
+                                    .child(self.render_nav_item(
+                                        SettingsSection::General,
+                                        "General",
+                                        "icons/settings_alt.svg",
+                                        cx,
+                                    ))
+                                    .child(self.render_nav_item(
+                                        SettingsSection::Providers,
+                                        "Providers",
+                                        "icons/ai_anthropic.svg",
+                                        cx,
+                                    ))
+                                    .child(self.render_nav_item(
+                                        SettingsSection::Models,
+                                        "Models",
+                                        "icons/brain.svg",
+                                        cx,
+                                    )),
+                            ),
+                    )
+                    // Right content area (scrollable)
+                    .child(div().flex_1().h_full().overflow_y_scrollbar().p_6().child(
+                        match self.active_section {
+                            SettingsSection::General => {
+                                self.general_section.clone().into_any_element()
+                            }
+                            SettingsSection::Providers => {
+                                self.providers_section.clone().into_any_element()
+                            }
+                            SettingsSection::Models => {
+                                self.models_section.clone().into_any_element()
+                            }
+                        },
+                    )),
+            )
     }
 }
