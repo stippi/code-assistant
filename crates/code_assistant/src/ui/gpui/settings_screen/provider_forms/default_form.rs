@@ -3,7 +3,7 @@
 //! Used for most providers (Anthropic, OpenAI, Ollama, etc.)
 
 use super::ProviderForm;
-use gpui::{div, prelude::*, App, Context, Entity, SharedString, Window};
+use gpui::{div, prelude::*, px, App, Context, Entity, SharedString, Window};
 use gpui_component::input::{Input, InputState};
 use gpui_component::ActiveTheme;
 use serde_json::Value;
@@ -26,6 +26,29 @@ impl DefaultProviderForm {
             api_key_input,
             is_editing: false,
         }
+    }
+
+    /// Render a form row with label on left, widget on right.
+    fn form_row(
+        &self,
+        label: &str,
+        widget: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(80.))
+                    .flex_none()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(label.to_string())),
+            )
+            .child(div().flex_1().child(widget))
     }
 }
 
@@ -79,7 +102,7 @@ impl ProviderForm for DefaultProviderForm {
 impl Render for DefaultProviderForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let api_key_label = if self.is_editing {
-            "API Key (leave empty to keep current)"
+            "API Key *"
         } else {
             "API Key"
         };
@@ -87,36 +110,25 @@ impl Render for DefaultProviderForm {
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            // Base URL field
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Base URL"),
-                    )
-                    .child(Input::new(&self.base_url_input)),
-            )
-            // API Key field
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(api_key_label.to_string())),
-                    )
-                    .child(Input::new(&self.api_key_input)),
-            )
+            .gap_2()
+            .child(self.form_row(
+                "Base URL",
+                Input::new(&self.base_url_input).into_any_element(),
+                cx,
+            ))
+            .child(self.form_row(
+                api_key_label,
+                Input::new(&self.api_key_input).into_any_element(),
+                cx,
+            ))
+            .when(self.is_editing, |el| {
+                el.child(
+                    div()
+                        .pl(px(83.))
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("* Leave empty to keep current key"),
+                )
+            })
     }
 }

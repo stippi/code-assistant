@@ -3,6 +3,7 @@
 use super::provider_forms::ProviderFormHolder;
 use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, SharedString};
 use gpui_component::input::{Input, InputState};
+use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
 use std::collections::BTreeMap;
 use tracing::{debug, warn};
@@ -30,6 +31,48 @@ enum FormMode {
     Editing(String),
 }
 
+/// Item for the provider type dropdown.
+#[derive(Clone, Debug)]
+struct ProviderTypeItem {
+    id: String,
+    display_name: String,
+}
+
+impl SelectItem for ProviderTypeItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(self.display_name.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
+}
+
+const PROVIDER_TYPES: &[(&str, &str)] = &[
+    ("anthropic", "Anthropic"),
+    ("openai", "OpenAI"),
+    ("openai-responses", "OpenAI Responses"),
+    ("ollama", "Ollama"),
+    ("openrouter", "OpenRouter"),
+    ("vertex", "Google Vertex"),
+    ("cerebras", "Cerebras"),
+    ("groq", "Groq"),
+    ("mistral-ai", "Mistral"),
+    ("ai-core", "SAP AI Core"),
+];
+
+fn provider_type_items() -> Vec<ProviderTypeItem> {
+    PROVIDER_TYPES
+        .iter()
+        .map(|(id, name)| ProviderTypeItem {
+            id: id.to_string(),
+            display_name: name.to_string(),
+        })
+        .collect()
+}
+
 pub struct ProvidersSection {
     focus_handle: FocusHandle,
     providers: Vec<ProviderEntry>,
@@ -37,6 +80,9 @@ pub struct ProvidersSection {
     // Input states for the add/edit form (label is always present)
     form_label_input: Entity<InputState>,
     form_provider_type: String,
+    // Provider type dropdown
+    provider_type_select: Entity<SelectState<Vec<ProviderTypeItem>>>,
+    _provider_type_subscription: gpui::Subscription,
     // Provider-specific form
     form_holder: ProviderFormHolder,
 }
@@ -48,6 +94,19 @@ impl ProvidersSection {
         let form_label_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("e.g. My Anthropic"));
 
+        // Create provider type dropdown
+        let provider_type_select =
+            cx.new(|cx| SelectState::new(Vec::<ProviderTypeItem>::new(), None, window, cx));
+        provider_type_select.update(cx, |state, cx| {
+            state.set_items(provider_type_items(), window, cx);
+            state.set_selected_value(&"anthropic".to_string(), window, cx);
+        });
+        let provider_type_subscription = cx.subscribe_in(
+            &provider_type_select,
+            window,
+            Self::on_provider_type_changed,
+        );
+
         let form_holder = ProviderFormHolder::new("anthropic", window, cx);
 
         Self {
@@ -56,7 +115,23 @@ impl ProvidersSection {
             form_mode: FormMode::Hidden,
             form_label_input,
             form_provider_type: "anthropic".to_string(),
+            provider_type_select,
+            _provider_type_subscription: provider_type_subscription,
             form_holder,
+        }
+    }
+
+    fn on_provider_type_changed(
+        &mut self,
+        _: &Entity<SelectState<Vec<ProviderTypeItem>>>,
+        event: &SelectEvent<Vec<ProviderTypeItem>>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let SelectEvent::Confirm(Some(provider_id)) = event {
+            self.form_provider_type = provider_id.clone();
+            self.form_holder.switch_to(provider_id, window, cx);
+            cx.notify();
         }
     }
 
@@ -94,7 +169,6 @@ impl ProvidersSection {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .or_else(|| {
-                        // For AI Core, show api_base_url instead
                         value
                             .get("config")
                             .and_then(|c| c.get("api_base_url"))
@@ -152,6 +226,11 @@ impl ProvidersSection {
             state.set_value(SharedString::from(entry.label.clone()), window, cx);
         });
 
+        // Set provider type dropdown
+        self.provider_type_select.update(cx, |state, cx| {
+            state.set_selected_value(&entry.provider_type, window, cx);
+        });
+
         // Switch form holder to correct provider type
         self.form_holder.switch_to(&entry.provider_type, window, cx);
 
@@ -161,6 +240,7 @@ impl ProvidersSection {
         }
     }
 
+    /// Render a single provider card. When expanded, the form is inside the card.
     fn render_provider_card(
         &self,
         entry: &ProviderEntry,
@@ -190,6 +270,7 @@ impl ProvidersSection {
                 cx.theme().border
             })
             .bg(cx.theme().secondary)
+            .overflow_hidden()
             // Header row (always visible)
             .child(
                 div()
@@ -203,10 +284,8 @@ impl ProvidersSection {
                     .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if this.form_mode == FormMode::Editing(key_for_click.clone()) {
-                            // Collapse
                             this.form_mode = FormMode::Hidden;
                         } else {
-                            // Expand — populate form with current values
                             if let Some(entry) =
                                 this.providers.iter().find(|e| e.key == key_for_click)
                             {
@@ -272,6 +351,141 @@ impl ProvidersSection {
                             ),
                     ),
             )
+            // Inline form (inside the card when expanded)
+            .when(is_expanded, |el| el.child(self.render_inline_form(cx)))
+    }
+
+    /// Render the form content that appears inside a provider card or as a standalone new-provider card.
+    fn render_inline_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let editing_key = match &self.form_mode {
+            FormMode::Editing(key) => Some(key.clone()),
+            _ => None,
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_4()
+            .pb_4()
+            .pt_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            // Form rows (label + widget side by side)
+            // Label field
+            .child(self.render_form_row(
+                "Label",
+                Input::new(&self.form_label_input).into_any_element(),
+                cx,
+            ))
+            // Provider type dropdown
+            .child(
+                self.render_form_row(
+                    "Type",
+                    div()
+                        .child(
+                            Select::new(&self.provider_type_select)
+                                .placeholder("Select provider type")
+                                .with_size(Size::Small)
+                                .min_w(px(200.)),
+                        )
+                        .into_any_element(),
+                    cx,
+                ),
+            )
+            // Provider-specific form fields
+            .child(self.form_holder.render())
+            // Action buttons
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .mt_2()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    // Left: Delete button (only when editing)
+                    .child(div().when_some(editing_key.clone(), |el, key| {
+                        el.child(
+                            div()
+                                .id("delete-provider")
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .text_xs()
+                                .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
+                                .hover(|s| s.bg(gpui::hsla(0.0, 0.7, 0.5, 0.1)))
+                                .child("Delete")
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.delete_provider(&key, cx);
+                                })),
+                        )
+                    }))
+                    // Right: Cancel + Save
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("cancel-form")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child("Cancel")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.form_mode = FormMode::Hidden;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("save-provider")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .bg(cx.theme().primary)
+                                    .text_color(cx.theme().primary_foreground)
+                                    .hover(|s| s.opacity(0.9))
+                                    .child("Save")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.save_provider(cx);
+                                    })),
+                            ),
+                    ),
+            )
+    }
+
+    /// Render a form row with label on the left and widget on the right.
+    fn render_form_row(
+        &self,
+        label: &str,
+        widget: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(80.))
+                    .flex_none()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(label.to_string())),
+            )
+            .child(div().flex_1().child(widget))
     }
 
     fn render_add_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -300,184 +514,16 @@ impl ProvidersSection {
             .on_click(cx.listener(|this, _, window, cx| {
                 this.form_mode = FormMode::Adding;
                 this.form_provider_type = "anthropic".to_string();
+                this.provider_type_select.update(cx, |state, cx| {
+                    state.set_selected_value(&"anthropic".to_string(), window, cx);
+                });
                 this.form_holder.switch_to("anthropic", window, cx);
                 this.form_holder.reset(window, cx);
-                // Reset label
                 this.form_label_input.update(cx, |state, cx| {
                     state.set_value(SharedString::from(""), window, cx);
                 });
                 cx.notify();
             }))
-    }
-
-    fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_editing = matches!(&self.form_mode, FormMode::Editing(_));
-        let editing_key = match &self.form_mode {
-            FormMode::Editing(key) => Some(key.clone()),
-            _ => None,
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_4()
-            .rounded_lg()
-            .border_1()
-            .border_color(cx.theme().primary)
-            .bg(cx.theme().secondary)
-            // Title
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(cx.theme().foreground)
-                    .child(if is_editing {
-                        "Edit Provider"
-                    } else {
-                        "New Provider"
-                    }),
-            )
-            // Label field (always present)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Label"),
-                    )
-                    .child(Input::new(&self.form_label_input)),
-            )
-            // Provider type selector
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Provider Type"),
-                    )
-                    .child(
-                        div().flex().flex_wrap().gap_2().children(
-                            [
-                                ("anthropic", "Anthropic"),
-                                ("openai", "OpenAI"),
-                                ("ollama", "Ollama"),
-                                ("openrouter", "OpenRouter"),
-                                ("vertex", "Google"),
-                                ("cerebras", "Cerebras"),
-                                ("groq", "Groq"),
-                                ("mistral-ai", "Mistral"),
-                                ("ai-core", "SAP AI Core"),
-                            ]
-                            .into_iter()
-                            .map(|(type_id, display_name)| {
-                                let is_selected = self.form_provider_type == type_id;
-                                let type_id_owned = type_id.to_string();
-                                div()
-                                    .id(SharedString::from(format!("ptype-{}", type_id)))
-                                    .px_2()
-                                    .py(px(3.))
-                                    .rounded_md()
-                                    .border_1()
-                                    .cursor_pointer()
-                                    .text_xs()
-                                    .when(is_selected, |s| {
-                                        s.border_color(cx.theme().primary)
-                                            .bg(cx.theme().primary.opacity(0.1))
-                                            .text_color(cx.theme().primary)
-                                    })
-                                    .when(!is_selected, |s| {
-                                        s.border_color(cx.theme().border)
-                                            .text_color(cx.theme().muted_foreground)
-                                            .hover(|s| s.border_color(cx.theme().ring))
-                                    })
-                                    .child(SharedString::from(display_name.to_string()))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.form_provider_type = type_id_owned.clone();
-                                        this.form_holder.switch_to(&type_id_owned, window, cx);
-                                        cx.notify();
-                                    }))
-                            }),
-                        ),
-                    ),
-            )
-            // Provider-specific form fields (delegated to form holder)
-            .child(self.form_holder.render())
-            // Action buttons
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .mt_1()
-                    // Left: Delete button (only when editing)
-                    .child(div().when_some(editing_key.clone(), |el, key| {
-                        el.child(
-                            div()
-                                .id("delete-provider")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_sm()
-                                .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                                .hover(|s| s.bg(gpui::hsla(0.0, 0.7, 0.5, 0.1)))
-                                .child("Delete")
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.delete_provider(&key, cx);
-                                })),
-                        )
-                    }))
-                    // Right: Cancel + Save
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("cancel-form")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .child("Cancel")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.form_mode = FormMode::Hidden;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id("save-provider")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_sm()
-                                    .bg(cx.theme().primary)
-                                    .text_color(cx.theme().primary_foreground)
-                                    .hover(|s| s.opacity(0.9))
-                                    .child("Save")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.save_provider(cx);
-                                    })),
-                            ),
-                    ),
-            )
     }
 
     fn save_provider(&mut self, cx: &mut Context<Self>) {
@@ -513,13 +559,11 @@ impl ProvidersSection {
         if let FormMode::Editing(ref existing_key) = self.form_mode {
             if let Some(existing) = map.get(existing_key) {
                 if let Some(existing_config) = existing.get("config").and_then(|c| c.as_object()) {
-                    // For the default form: preserve api_key if not provided
                     if !config.contains_key("api_key") {
                         if let Some(existing_key_val) = existing_config.get("api_key") {
                             config.insert("api_key".to_string(), existing_key_val.clone());
                         }
                     }
-                    // For AI Core: preserve client_secret if not provided
                     if !config.contains_key("client_secret")
                         || config
                             .get("client_secret")
@@ -658,19 +702,37 @@ impl Render for ProvidersSection {
                     )
                     .child(self.render_add_button(cx)),
             )
-            // Provider cards with inline edit form
-            .children(self.providers.clone().iter().map(|entry| {
-                let is_editing_this = form_mode == FormMode::Editing(entry.key.clone());
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(self.render_provider_card(entry, cx))
-                    .when(is_editing_this, |el| el.child(self.render_form(cx)))
-                    .into_any_element()
-            }))
-            // Add form (when adding new)
+            // Provider cards (form is inline inside the expanded card)
+            .children(
+                self.providers
+                    .clone()
+                    .iter()
+                    .map(|entry| self.render_provider_card(entry, cx).into_any_element()),
+            )
+            // Add new provider card (standalone form when adding)
             .when(form_mode == FormMode::Adding, |el| {
-                el.child(self.render_form(cx))
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().primary)
+                        .bg(cx.theme().secondary)
+                        .overflow_hidden()
+                        // Title header
+                        .child(
+                            div().px_4().py_3().child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(cx.theme().foreground)
+                                    .child("New Provider"),
+                            ),
+                        )
+                        // Form content
+                        .child(self.render_inline_form(cx)),
+                )
             })
             // Empty state
             .when(

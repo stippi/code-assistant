@@ -60,11 +60,10 @@ impl AiCoreProviderForm {
             InputState::new(window, cx)
                 .placeholder("https://api.ai.<region>.aws.ml.hana.ondemand.com/v2/inference")
         });
-        let service_key_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Paste your AI Core service key JSON here...")
-        });
+        let service_key_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Paste service key JSON here..."));
         let new_deployment_model_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. claude-sonnet-4"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("model-id"));
         let new_deployment_id_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("deployment UUID"));
 
@@ -80,6 +79,29 @@ impl AiCoreProviderForm {
             new_deployment_id_input,
             new_deployment_api_type: "anthropic".to_string(),
         }
+    }
+
+    /// Render a form row with label on left, widget on right.
+    fn form_row(
+        &self,
+        label: &str,
+        widget: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(80.))
+                    .flex_none()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(label.to_string())),
+            )
+            .child(div().flex_1().child(widget))
     }
 
     /// Parse the service key JSON and populate credential fields.
@@ -100,7 +122,6 @@ impl AiCoreProviderForm {
             }
         };
 
-        // Extract fields from the service key
         let client_id = parsed
             .get("clientid")
             .and_then(|v| v.as_str())
@@ -125,14 +146,12 @@ impl AiCoreProviderForm {
             return;
         }
 
-        // Build token URL from auth base URL
         let token_url = if auth_url.is_empty() {
             String::new()
         } else {
             format!("{}/oauth/token", auth_url.trim_end_matches('/'))
         };
 
-        // Build inference URL from AI_API_URL
         let inference_url = if api_url.is_empty() {
             String::new()
         } else {
@@ -144,7 +163,6 @@ impl AiCoreProviderForm {
             }
         };
 
-        // Set values
         self.client_id_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(client_id.to_string()), window, cx);
         });
@@ -174,7 +192,7 @@ impl AiCoreProviderForm {
 
         self.service_key_status = Some((true, format!("Extracted: {}", extracted.join(", "))));
 
-        // Clear the service key input after successful extraction
+        // Clear input after success
         self.service_key_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(""), window, cx);
         });
@@ -182,7 +200,7 @@ impl AiCoreProviderForm {
         cx.notify();
     }
 
-    /// Add a new deployment entry from the "add" row inputs.
+    /// Add a new deployment entry.
     fn add_deployment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let model_id = self.new_deployment_model_input.read(cx).value().to_string();
         let deployment_id = self.new_deployment_id_input.read(cx).value().to_string();
@@ -197,7 +215,6 @@ impl AiCoreProviderForm {
             api_type: self.new_deployment_api_type.clone(),
         });
 
-        // Clear the add row inputs
         self.new_deployment_model_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(""), window, cx);
         });
@@ -239,18 +256,15 @@ impl ProviderForm for AiCoreProviderForm {
             config.insert("api_base_url".to_string(), Value::String(api_base_url));
         }
 
-        // Build models map
         if !self.deployments.is_empty() {
             let mut models = serde_json::Map::new();
             for entry in &self.deployments {
                 if entry.api_type == "anthropic" {
-                    // Simple format for anthropic (default)
                     models.insert(
                         entry.model_id.clone(),
                         Value::String(entry.deployment_id.clone()),
                     );
                 } else {
-                    // Extended format with api_type
                     let mut obj = serde_json::Map::new();
                     obj.insert(
                         "deployment".to_string(),
@@ -275,7 +289,6 @@ impl ProviderForm for AiCoreProviderForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Populate credential fields
         if let Some(v) = config.get("client_id").and_then(|v| v.as_str()) {
             self.client_id_input.update(cx, |state, cx| {
                 state.set_value(SharedString::from(v.to_string()), window, cx);
@@ -297,7 +310,6 @@ impl ProviderForm for AiCoreProviderForm {
             });
         }
 
-        // Populate deployments
         self.deployments.clear();
         if let Some(models) = config.get("models").and_then(|v| v.as_object()) {
             for (model_id, value) in models {
@@ -316,7 +328,7 @@ impl ProviderForm for AiCoreProviderForm {
                         .to_string();
                     (dep, api)
                 } else {
-                    warn!("Skipping invalid deployment entry for model '{}'", model_id);
+                    warn!("Skipping invalid deployment for model '{}'", model_id);
                     continue;
                 };
 
@@ -362,36 +374,35 @@ impl Render for AiCoreProviderForm {
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            // Service key quick-setup section
+            .gap_2()
+            // Service key quick-setup (compact inline)
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_2()
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    // Title row
+                    .items_center()
+                    .gap_3()
                     .child(
                         div()
+                            .w(px(80.))
+                            .flex_none()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Service Key"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(cx.theme().foreground)
-                                    .child("Quick Setup: Paste Service Key"),
-                            )
+                            .gap_2()
+                            .child(div().flex_1().child(Input::new(&self.service_key_input)))
                             .child(
                                 div()
                                     .id("apply-service-key")
+                                    .flex_none()
                                     .px_2()
-                                    .py(px(2.))
+                                    .py(px(4.))
                                     .rounded_md()
                                     .cursor_pointer()
                                     .text_xs()
@@ -403,145 +414,78 @@ impl Render for AiCoreProviderForm {
                                         this.apply_service_key(window, cx);
                                     })),
                             ),
-                    )
-                    .child(
-                        div().text_xs().text_color(cx.theme().muted_foreground).child(
-                            "Paste the JSON service key from SAP BTP Cockpit to auto-fill credentials.",
-                        ),
-                    )
-                    .child(Input::new(&self.service_key_input))
-                    // Status message
-                    .when_some(status, |el, (success, msg)| {
-                        el.child(
-                            div()
-                                .text_xs()
-                                .text_color(if success {
-                                    gpui::hsla(142.0 / 360.0, 0.7, 0.45, 1.0)
-                                } else {
-                                    gpui::hsla(0.0, 0.7, 0.5, 1.0)
-                                })
-                                .child(SharedString::from(msg)),
-                        )
-                    }),
-            )
-            // Credentials section
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    // Client ID
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Client ID"),
-                            )
-                            .child(Input::new(&self.client_id_input)),
-                    )
-                    // Client Secret
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Client Secret"),
-                            )
-                            .child(Input::new(&self.client_secret_input)),
-                    )
-                    // Token URL
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Token URL"),
-                            )
-                            .child(Input::new(&self.token_url_input)),
-                    )
-                    // API Base URL
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("API Base URL"),
-                            )
-                            .child(Input::new(&self.api_base_url_input)),
                     ),
             )
+            // Status / help text
+            .child(
+                div().pl(px(83.)).child(match status {
+                    Some((true, msg)) => div()
+                        .text_xs()
+                        .text_color(gpui::hsla(142.0 / 360.0, 0.7, 0.45, 1.0))
+                        .child(SharedString::from(msg)),
+                    Some((false, msg)) => div()
+                        .text_xs()
+                        .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
+                        .child(SharedString::from(msg)),
+                    None => div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Paste BTP service key JSON to auto-fill credentials below"),
+                }),
+            )
+            // Credential fields
+            .child(self.form_row(
+                "Client ID",
+                Input::new(&self.client_id_input).into_any_element(),
+                cx,
+            ))
+            .child(self.form_row(
+                "Secret",
+                Input::new(&self.client_secret_input).into_any_element(),
+                cx,
+            ))
+            .child(self.form_row(
+                "Token URL",
+                Input::new(&self.token_url_input).into_any_element(),
+                cx,
+            ))
+            .child(self.form_row(
+                "API URL",
+                Input::new(&self.api_base_url_input).into_any_element(),
+                cx,
+            ))
             // Deployments section
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    // Section header
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().foreground)
-                            .child("Model Deployments"),
-                    )
-                    .child(
-                        div().text_xs().text_color(cx.theme().muted_foreground).child(
-                            "Map model IDs (from your models.json) to AI Core deployment UUIDs.",
-                        ),
-                    )
-                    // Column headers
+                    .gap_1()
+                    .mt_2()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    // Header
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .px_2()
+                            .gap_3()
                             .child(
                                 div()
-                                    .flex_1()
+                                    .w(px(80.))
+                                    .flex_none()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Model ID"),
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().foreground)
+                                    .child("Deployments"),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("Deployment UUID"),
-                            )
-                            .child(
-                                div()
-                                    .w(px(90.))
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("API Type"),
-                            )
-                            .child(div().w(px(24.))),
+                                    .child("Map model IDs to AI Core deployment UUIDs"),
+                            ),
                     )
                     // Existing entries
                     .children(deployments.iter().enumerate().map(|(idx, entry)| {
@@ -551,10 +495,8 @@ impl Render for AiCoreProviderForm {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .px_2()
+                            .ml(px(83.))
                             .py_1()
-                            .rounded_md()
-                            .bg(cx.theme().secondary)
                             .child(
                                 div()
                                     .flex_1()
@@ -564,30 +506,39 @@ impl Render for AiCoreProviderForm {
                             )
                             .child(
                                 div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("→"),
+                            )
+                            .child(
+                                div()
                                     .flex_1()
                                     .text_xs()
                                     .text_color(cx.theme().foreground)
                                     .overflow_x_hidden()
+                                    .text_ellipsis()
                                     .child(SharedString::from(entry_clone.deployment_id)),
                             )
                             .child(
                                 div()
-                                    .w(px(90.))
+                                    .px_1()
+                                    .py(px(1.))
+                                    .rounded(px(3.))
                                     .text_xs()
+                                    .bg(cx.theme().muted)
                                     .text_color(cx.theme().muted_foreground)
                                     .child(SharedString::from(entry_clone.api_type)),
                             )
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("del-deployment-{}", idx)))
-                                    .w(px(24.))
-                                    .flex()
-                                    .justify_center()
+                                    .id(SharedString::from(format!("del-dep-{}", idx)))
+                                    .flex_none()
+                                    .px_1()
                                     .cursor_pointer()
                                     .text_xs()
                                     .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
                                     .hover(|s| s.text_color(gpui::hsla(0.0, 0.8, 0.4, 1.0)))
-                                    .child("x")
+                                    .child("×")
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.remove_deployment(idx, cx);
                                     })),
@@ -600,6 +551,7 @@ impl Render for AiCoreProviderForm {
                             .flex()
                             .items_center()
                             .gap_2()
+                            .ml(px(83.))
                             .mt_1()
                             .child(
                                 div()
@@ -611,53 +563,48 @@ impl Render for AiCoreProviderForm {
                                     .flex_1()
                                     .child(Input::new(&self.new_deployment_id_input)),
                             )
-                            .child(
-                                // API type selector (compact)
-                                div().w(px(90.)).child(
-                                    div().flex().flex_col().gap(px(2.)).children(
-                                        ["anthropic", "openai", "vertex"].iter().map(|&api_type| {
-                                            let is_selected =
-                                                self.new_deployment_api_type == api_type;
-                                            let api_type_owned = api_type.to_string();
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "api-type-{}",
-                                                    api_type
-                                                )))
-                                                .px_1()
-                                                .py(px(1.))
-                                                .rounded(px(3.))
-                                                .cursor_pointer()
-                                                .text_xs()
-                                                .when(is_selected, |s| {
-                                                    s.bg(cx.theme().primary.opacity(0.15))
-                                                        .text_color(cx.theme().primary)
-                                                })
-                                                .when(!is_selected, |s| {
-                                                    s.text_color(cx.theme().muted_foreground)
-                                                        .hover(|s| {
-                                                            s.text_color(cx.theme().foreground)
-                                                        })
-                                                })
-                                                .child(SharedString::from(api_type.to_string()))
-                                                .on_click(cx.listener(
-                                                    move |this, _, _window, cx| {
-                                                        this.new_deployment_api_type =
-                                                            api_type_owned.clone();
-                                                        cx.notify();
-                                                    },
-                                                ))
-                                                .into_any_element()
-                                        }),
-                                    ),
-                                ),
-                            )
+                            // API type mini-selector
+                            .child(div().flex().gap_1().children(
+                                ["anthropic", "openai", "vertex"].iter().map(|&api_type| {
+                                    let is_selected = self.new_deployment_api_type == api_type;
+                                    let api_type_owned = api_type.to_string();
+                                    let short_label = match api_type {
+                                        "anthropic" => "A",
+                                        "openai" => "O",
+                                        "vertex" => "V",
+                                        _ => "?",
+                                    };
+                                    div()
+                                        .id(SharedString::from(format!("api-type-{}", api_type)))
+                                        .size(px(20.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(3.))
+                                        .cursor_pointer()
+                                        .text_xs()
+                                        .when(is_selected, |s| {
+                                            s.bg(cx.theme().primary.opacity(0.2))
+                                                .text_color(cx.theme().primary)
+                                        })
+                                        .when(!is_selected, |s| {
+                                            s.text_color(cx.theme().muted_foreground)
+                                                .hover(|s| s.bg(cx.theme().muted))
+                                        })
+                                        .child(short_label)
+                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                            this.new_deployment_api_type = api_type_owned.clone();
+                                            cx.notify();
+                                        }))
+                                        .into_any_element()
+                                }),
+                            ))
+                            // Add button
                             .child(
                                 div()
                                     .id("add-deployment-btn")
-                                    .w(px(24.))
-                                    .flex()
-                                    .justify_center()
+                                    .flex_none()
+                                    .px_1()
                                     .cursor_pointer()
                                     .text_xs()
                                     .text_color(gpui::hsla(142.0 / 360.0, 0.7, 0.45, 1.0))
