@@ -248,7 +248,14 @@ impl BatchedTextRun {
                 std::slice::from_ref(&self.style),
                 Some(dimensions.cell_width),
             )
-            .paint(pos, dimensions.line_height, window, cx);
+            .paint(
+                pos,
+                dimensions.line_height,
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
     }
 }
 
@@ -313,7 +320,14 @@ impl CursorLayout {
                             std::slice::from_ref(&run),
                             Some(dimensions.cell_width),
                         )
-                        .paint(point(x, y), dimensions.line_height, window, cx);
+                        .paint(
+                            point(x, y),
+                            dimensions.line_height,
+                            gpui::TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
                 }
             }
             AlacCursorShape::Beam => {

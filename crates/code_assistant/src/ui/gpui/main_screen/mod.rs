@@ -10,9 +10,10 @@ use crate::ui::gpui::theme;
 use crate::ui::gpui::BackendEvent;
 use crate::ui::gpui::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
 use crate::ui::ui_events::UiEvent;
+
 use gpui::{
     div, prelude::*, px, rems, rgba, svg, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    PathPromptOptions, Pixels, SharedString, Subscription, Task, Timer,
+    PathPromptOptions, Pixels, SharedString, Subscription, Task,
 };
 
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -223,33 +224,32 @@ impl MainScreen {
     }
 
     fn start_sidebar_animation_task(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |weak_entity, async_cx| {
-            let mut timer = Timer::after(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS));
-            loop {
-                timer.await;
-                timer = Timer::after(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS));
+        let task = cx.spawn(async move |weak_entity, async_cx| loop {
+            async_cx
+                .background_executor()
+                .timer(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS))
+                .await;
 
-                let should_continue = weak_entity.update(async_cx, |view, cx| {
-                    view.update_sidebar_animation();
-                    match &view.sidebar_animation_state {
-                        SidebarAnimationState::Idle => false,
-                        _ => {
-                            cx.notify();
-                            true
-                        }
+            let should_continue = weak_entity.update(async_cx, |view, cx| {
+                view.update_sidebar_animation();
+                match &view.sidebar_animation_state {
+                    SidebarAnimationState::Idle => false,
+                    _ => {
+                        cx.notify();
+                        true
                     }
-                });
+                }
+            });
 
-                if let Ok(should_continue) = should_continue {
-                    if !should_continue {
-                        let _ = weak_entity.update(async_cx, |view, _cx| {
-                            view.sidebar_animation_task = None;
-                        });
-                        break;
-                    }
-                } else {
+            if let Ok(should_continue) = should_continue {
+                if !should_continue {
+                    let _ = weak_entity.update(async_cx, |view, _cx| {
+                        view.sidebar_animation_task = None;
+                    });
                     break;
                 }
+            } else {
+                break;
             }
         });
         self.sidebar_animation_task = Some(task);

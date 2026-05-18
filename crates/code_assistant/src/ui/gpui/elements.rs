@@ -5,7 +5,7 @@ use crate::ui::gpui::image;
 use crate::ui::ToolStatus;
 use gpui::{
     div, img, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, Entity,
-    ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task, Timer, Transformation,
+    ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{text::TextView, ActiveTheme};
@@ -1286,11 +1286,11 @@ impl BlockView {
     fn start_animation_task(&mut self, cx: &mut Context<Self>) {
         let config = AnimationConfig::default();
         let task = cx.spawn(async move |weak_entity, async_app_cx| {
-            let mut timer = Timer::after(Duration::from_millis(config.frame_ms));
-
             loop {
-                timer.await;
-                timer = Timer::after(Duration::from_millis(config.frame_ms));
+                async_app_cx
+                    .background_executor()
+                    .timer(Duration::from_millis(config.frame_ms))
+                    .await;
 
                 let should_continue = weak_entity.update(async_app_cx, |view, cx| {
                     view.update_animation(&config);
@@ -1594,13 +1594,8 @@ impl Render for BlockView {
             BlockData::TextBlock(block) => div()
                 .text_color(cx.theme().foreground)
                 .child(
-                    TextView::markdown(
-                        ("md-block", self.block_id),
-                        block.content.clone(),
-                        window,
-                        cx,
-                    )
-                    .selectable(true),
+                    TextView::markdown(("md-block", self.block_id), block.content.clone())
+                        .selectable(true),
                 )
                 .into_any_element(),
             BlockData::ThinkingBlock(block) => {
@@ -1738,8 +1733,6 @@ impl Render for BlockView {
                                     .child(TextView::markdown(
                                         ("thinking-content", self.block_id),
                                         block.get_expanded_content(self.is_generating),
-                                        window,
-                                        cx,
                                     ))
                                     .into_any()
                             } else {
@@ -1879,8 +1872,6 @@ impl Render for BlockView {
                                 TextView::markdown(
                                     ("compaction-summary", self.block_id),
                                     block.summary.clone(),
-                                    window,
-                                    cx,
                                 )
                                 .selectable(true),
                             )

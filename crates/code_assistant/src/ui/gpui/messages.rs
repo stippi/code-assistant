@@ -1,9 +1,10 @@
 use super::branch_switcher::BranchSwitcherElement;
 use super::elements::MessageContainer;
 use crate::session::instance::SessionActivityState;
+
 use gpui::{
     div, list, prelude::*, px, rems, rgb, App, Context, CursorStyle, Entity, FocusHandle,
-    Focusable, ListAlignment, ListState, Point, SharedString, Task, Timer, Window,
+    Focusable, ListAlignment, ListState, Point, SharedString, Task, Window,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon};
@@ -127,7 +128,7 @@ impl MessagesView {
                         this.smooth_scroll_task = None;
                     } else if delta < -0.5 {
                         // User scrolled DOWN → check if near bottom, re-enable follow
-                        let max: f32 = this.list_state.max_offset_for_scrollbar().height.into();
+                        let max: f32 = this.list_state.max_offset_for_scrollbar().y.into();
                         let distance_from_bottom = max + current; // current is negative
                         if distance_from_bottom < 50.0 && !this.follow_tail {
                             trace!("User scrolled to bottom — re-enabling follow_tail");
@@ -143,9 +144,12 @@ impl MessagesView {
         // Spawn a periodic task that triggers a repaint every 80ms while the
         // activity indicator is visible. This drives the braille spinner.
         let activity_for_tick = activity_state.clone();
+
         let spinner_task = cx.spawn(async move |weak_entity, cx| {
             loop {
-                Timer::after(Duration::from_millis(80)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(80))
+                    .await;
                 // Only notify when there's an active activity state
                 let should_tick = activity_for_tick
                     .lock()
@@ -292,7 +296,9 @@ impl MessagesView {
             let mut idle_elapsed_ms: u64 = 0;
 
             loop {
-                Timer::after(Duration::from_millis(ANIMATION_FRAME_MS)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(ANIMATION_FRAME_MS))
+                    .await;
 
                 if !active.get() {
                     break;
@@ -300,7 +306,8 @@ impl MessagesView {
 
                 // Compute current position (negative) and target.
                 let current_offset: f32 = list_state.scroll_px_offset_for_scrollbar().y.into();
-                let max: f32 = list_state.max_offset_for_scrollbar().height.into();
+
+                let max: f32 = list_state.max_offset_for_scrollbar().y.into();
 
                 // Target offset is -max (fully scrolled to bottom). The
                 // scrollbar API returns offset.y as negative.
@@ -753,7 +760,7 @@ impl MessagesView {
     /// Render the pending message indicator
     fn render_pending_message(
         &self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let pending_message = self.current_pending_message.lock().unwrap().clone();
@@ -803,8 +810,6 @@ impl MessagesView {
                         gpui_component::text::TextView::markdown(
                             "pending-message",
                             pending_message,
-                            window,
-                            cx,
                         )
                         .selectable(true),
                     ),

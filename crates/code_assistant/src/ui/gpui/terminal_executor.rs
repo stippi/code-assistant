@@ -85,7 +85,7 @@ impl Drop for TerminalCleanup {
 }
 
 fn interrupt_terminal(terminal: &Entity<Terminal>, cx: &mut gpui::AsyncApp) {
-    let _ = cx.update_entity(terminal, |terminal: &mut Terminal, _cx| {
+    cx.update_entity(terminal, |terminal: &mut Terminal, _cx| {
         terminal.write_to_pty(&b"\x03"[..]);
     });
 }
@@ -342,8 +342,7 @@ async fn run_command(
     });
 
     let (terminal_id, terminal) = match spawn_result {
-        Ok(Ok(tuple)) => tuple,
-        Ok(Err(e)) => return Err(e),
+        Ok(tuple) => tuple,
         Err(e) => return Err(e),
     };
 
@@ -406,11 +405,12 @@ async fn run_command(
                     return Err(anyhow!("Terminal exit channel closed unexpectedly"));
                 };
 
+
                 // Child exited. Read final output and styled content.
                 let (output, styled) = cx.update(|cx| {
                     let t = terminal.read(cx);
                     (t.get_content_text(), t.get_styled_content())
-                })?;
+                });
 
                 // Cache styled output for the terminal card renderer
                 if let Some(tid) = &tool_id {
@@ -432,11 +432,12 @@ async fn run_command(
                     return Err(anyhow!("Terminal wakeup channel closed unexpectedly"));
                 }
 
+
                 // Terminal content changed. Stream the delta.
                 let (output, exited, exit_status) = cx.update(|cx| {
                     let t = terminal.read(cx);
                     (t.get_content_text(), t.has_exited(), t.exit_status())
-                })?;
+                });
 
                 let total_chars = output.chars().count();
                 if total_chars > seen_chars {
@@ -454,9 +455,8 @@ async fn run_command(
 
                     // Cache styled output before terminal cleanup
                     if let Some(tid) = &tool_id {
-                        if let Ok(styled) = cx.update(|cx| terminal.read(cx).get_styled_content()) {
-                            cache_styled_output(tid, styled);
-                        }
+                        let styled = cx.update(|cx| terminal.read(cx).get_styled_content());
+                        cache_styled_output(tid, styled);
                     }
 
                     let success = exit_status
@@ -471,20 +471,20 @@ async fn run_command(
             // subscription callback or wakeup events are not delivered.
             // (The timeout is enforced at the top of the loop.)
 
+
             _ = poll_timer.fuse() => {
                 let (exited, exit_status, output) = cx.update(|cx| {
                     let t = terminal.read(cx);
                     (t.has_exited(), t.exit_status(), t.get_content_text())
-                })?;
+                });
 
                 if exited {
                     debug!("Terminal exit detected via periodic poll fallback");
 
                     // Cache styled output before terminal cleanup
                     if let Some(tid) = &tool_id {
-                        if let Ok(styled) = cx.update(|cx| terminal.read(cx).get_styled_content()) {
-                            cache_styled_output(tid, styled);
-                        }
+                        let styled = cx.update(|cx| terminal.read(cx).get_styled_content());
+                        cache_styled_output(tid, styled);
                     }
 
                     let total_chars = output.chars().count();

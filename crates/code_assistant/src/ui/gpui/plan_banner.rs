@@ -1,9 +1,10 @@
 use super::file_icons;
 use crate::types::{PlanItemStatus, PlanState};
 use gpui::prelude::*;
+
 use gpui::{
     div, percentage, px, rems, Animation, AnimationExt, Bounds, ClickEvent, Context, EventEmitter,
-    Pixels, Render, SharedString, Task, Timer, Transformation, Window,
+    Pixels, Render, SharedString, Task, Transformation, Window,
 };
 use gpui_component::{ActiveTheme, StyledExt};
 use std::cell::Cell;
@@ -128,33 +129,32 @@ impl PlanBanner {
     }
 
     fn start_animation_task(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |weak_entity, async_cx| {
-            let mut timer = Timer::after(Duration::from_millis(ANIMATION_FRAME_MS));
-            loop {
-                timer.await;
-                timer = Timer::after(Duration::from_millis(ANIMATION_FRAME_MS));
+        let task = cx.spawn(async move |weak_entity, async_cx| loop {
+            async_cx
+                .background_executor()
+                .timer(Duration::from_millis(ANIMATION_FRAME_MS))
+                .await;
 
-                let should_continue = weak_entity.update(async_cx, |view, cx| {
-                    view.update_animation();
-                    match &view.animation_state {
-                        AnimationState::Idle => false,
-                        _ => {
-                            cx.notify();
-                            true
-                        }
+            let should_continue = weak_entity.update(async_cx, |view, cx| {
+                view.update_animation();
+                match &view.animation_state {
+                    AnimationState::Idle => false,
+                    _ => {
+                        cx.notify();
+                        true
                     }
-                });
+                }
+            });
 
-                if let Ok(should_continue) = should_continue {
-                    if !should_continue {
-                        let _ = weak_entity.update(async_cx, |view, _cx| {
-                            view.animation_task = None;
-                        });
-                        break;
-                    }
-                } else {
+            if let Ok(should_continue) = should_continue {
+                if !should_continue {
+                    let _ = weak_entity.update(async_cx, |view, _cx| {
+                        view.animation_task = None;
+                    });
                     break;
                 }
+            } else {
+                break;
             }
         });
         self.animation_task = Some(task);
