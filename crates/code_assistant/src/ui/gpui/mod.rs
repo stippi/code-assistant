@@ -259,7 +259,7 @@ impl Gpui {
         let new_len = self.message_queue.lock().unwrap().len();
         if new_len != old_len {
             self.update_messages_view(cx, |view, cx| {
-                view.messages_spliced(old_len, new_len);
+                view.messages_spliced(old_len, new_len, cx);
                 cx.notify();
             });
         }
@@ -270,7 +270,7 @@ impl Gpui {
     fn notify_messages_reset(&self, cx: &mut gpui::AsyncApp) {
         let new_len = self.message_queue.lock().unwrap().len();
         self.update_messages_view(cx, |view, cx| {
-            view.messages_reset(new_len);
+            view.messages_reset(new_len, cx);
             cx.notify();
         });
     }
@@ -288,6 +288,24 @@ impl Gpui {
             // MessageContainer).
             cx.notify();
         });
+    }
+
+    /// Remove empty containers from the message queue and sync the ListState.
+    /// Called after cancellation/rollback removes blocks from containers.
+    fn remove_empty_containers(&self, cx: &mut gpui::AsyncApp) {
+        let mut queue = self.message_queue.lock().unwrap();
+        let old_len = queue.len();
+        queue.retain(|container| cx.update_entity(container, |c, _cx| !c.is_empty()));
+        let new_len = queue.len();
+        drop(queue);
+
+        if new_len != old_len {
+            // Full reset since items may have been removed from arbitrary positions
+            self.update_messages_view(cx, |view, cx| {
+                view.messages_reset(new_len, cx);
+                cx.notify();
+            });
+        }
     }
 
     /// Clear all UI state associated with the current session.
@@ -865,57 +883,31 @@ impl Gpui {
                     String::new()
                 };
 
-                // Process message data with on-demand container creation
+                // Process message data — each MessageData gets its own container.
+                // This ensures the virtual list has fine-grained items (one per
+                // LLM request/node) so that GPUI's list virtualization can skip
+                // off-screen items efficiently.
                 for message_data in messages {
                     let current_container = {
                         let mut queue = self.message_queue.lock().unwrap();
 
-                        // Check if we can reuse the last container (same role)
-                        // Note: For user messages, we always create a new container to preserve
-                        // node_id and branch_info for each message
-                        let needs_new_container = if let Some(last_container) = queue.last() {
-                            let last_role = cx.update_entity(last_container, |container, _cx| {
-                                if container.is_user_message() {
-                                    MessageRole::User
-                                } else {
-                                    MessageRole::Assistant
-                                }
-                            });
-                            // User messages always get their own container (for branching)
-                            last_role == MessageRole::User || last_role != message_data.role
-                        } else {
-                            true
-                        };
+                        // Always create a new container per message (each MessageData
+                        // corresponds to one persisted node / LLM request).
+                        let container =
+                            cx.new(|cx| MessageContainer::with_role(message_data.role.clone(), cx));
 
-                        if needs_new_container {
-                            // Create new container for this role
-                            let container = cx.new(|cx| {
-                                MessageContainer::with_role(message_data.role.clone(), cx)
-                            });
+                        let node_id = message_data.node_id;
+                        let branch_info = message_data.branch_info.clone();
+                        let sid = session_id.clone();
+                        self.update_container(&container, cx, |container, _cx| {
+                            container.set_current_project(current_project.clone());
+                            container.set_node_id(node_id);
+                            container.set_branch_info(branch_info);
+                            container.set_session_id(sid);
+                        });
 
-                            // Set current project, node_id, branch_info, and session_id
-                            let node_id = message_data.node_id;
-                            let branch_info = message_data.branch_info.clone();
-                            let sid = session_id.clone();
-                            self.update_container(&container, cx, |container, _cx| {
-                                container.set_current_project(current_project.clone());
-                                container.set_node_id(node_id);
-                                container.set_branch_info(branch_info);
-                                container.set_session_id(sid);
-                            });
-
-                            queue.push(container.clone());
-                            container
-                        } else {
-                            // Use existing container - also set current project in case it changed
-                            let container = queue.last().unwrap().clone();
-                            let sid = session_id.clone();
-                            self.update_container(&container, cx, |container, _cx| {
-                                container.set_current_project(current_project.clone());
-                                container.set_session_id(sid);
-                            });
-                            container
-                        }
+                        queue.push(container.clone());
+                        container
                     }; // Lock is released here
 
                     // Process fragments into the current container
@@ -1025,45 +1017,23 @@ impl Gpui {
                     let current_container = {
                         let mut queue = self.message_queue.lock().unwrap();
 
-                        let needs_new_container = if let Some(last_container) = queue.last() {
-                            let last_role = cx.update_entity(last_container, |container, _cx| {
-                                if container.is_user_message() {
-                                    MessageRole::User
-                                } else {
-                                    MessageRole::Assistant
-                                }
-                            });
-                            last_role == MessageRole::User || last_role != message_data.role
-                        } else {
-                            true
-                        };
+                        // Always create a new container per message (each MessageData
+                        // corresponds to one persisted node / LLM request).
+                        let container =
+                            cx.new(|cx| MessageContainer::with_role(message_data.role.clone(), cx));
 
-                        if needs_new_container {
-                            let container = cx.new(|cx| {
-                                MessageContainer::with_role(message_data.role.clone(), cx)
-                            });
+                        let node_id = message_data.node_id;
+                        let branch_info = message_data.branch_info.clone();
+                        let sid = session_id.clone();
+                        self.update_container(&container, cx, |container, _cx| {
+                            container.set_current_project(current_project.clone());
+                            container.set_node_id(node_id);
+                            container.set_branch_info(branch_info);
+                            container.set_session_id(sid);
+                        });
 
-                            let node_id = message_data.node_id;
-                            let branch_info = message_data.branch_info.clone();
-                            let sid = session_id.clone();
-                            self.update_container(&container, cx, |container, _cx| {
-                                container.set_current_project(current_project.clone());
-                                container.set_node_id(node_id);
-                                container.set_branch_info(branch_info);
-                                container.set_session_id(sid);
-                            });
-
-                            queue.push(container.clone());
-                            container
-                        } else {
-                            let container = queue.last().unwrap().clone();
-                            let sid = session_id.clone();
-                            self.update_container(&container, cx, |container, _cx| {
-                                container.set_current_project(current_project.clone());
-                                container.set_session_id(sid);
-                            });
-                            container
-                        }
+                        queue.push(container.clone());
+                        container
                     };
 
                     self.process_fragments_for_container(
@@ -1107,37 +1077,36 @@ impl Gpui {
                     let mut queue = self.message_queue.lock().unwrap();
                     old_len = queue.len();
 
-                    // Grab the last container so we can reuse it without holding the lock
-                    let last_container = queue.last().cloned();
+                    // Check if the last container is an empty assistant container
+                    // that we can reuse (e.g. pre-allocated by SetMessages).
+                    let reuse_last = queue.last().is_some_and(|last| {
+                        cx.update_entity(last, |c, _cx| !c.is_user_message() && c.is_empty())
+                    });
 
-                    // Check if we need to create a new assistant container
-                    let needs_new_container = if let Some(last) = last_container.as_ref() {
-                        cx.update_entity(last, |message, _cx| message.is_user_message())
-                    } else {
-                        true
-                    };
-
-                    if needs_new_container {
-                        // Create new assistant container with pre-allocated node_id
-                        let sid = self.current_session_id.lock().unwrap().clone();
-                        let assistant_container = cx.new(|cx| {
-                            let container = MessageContainer::with_role(MessageRole::Assistant, cx);
-                            container.set_current_request_id(request_id);
-                            container.set_node_id(Some(node_id));
-                            container.set_session_id(sid);
-                            container
-                        });
-                        queue.push(assistant_container);
-                    } else if let Some(last_container) = last_container {
-                        // Reuse existing container — no push, just update request_id and node_id
+                    if reuse_last {
+                        // Reuse the existing empty assistant container
+                        let last = queue.last().unwrap().clone();
                         drop(queue);
-                        self.update_container(&last_container, cx, |container, cx| {
+                        self.update_container(&last, cx, |container, cx| {
                             container.set_current_request_id(request_id);
                             container.set_node_id(Some(node_id));
                             cx.notify();
                         });
                         return;
                     }
+
+                    // Create a new assistant container for this streaming request.
+                    // Each LLM request maps to one list item, enabling effective
+                    // virtualized scrolling.
+                    let sid = self.current_session_id.lock().unwrap().clone();
+                    let assistant_container = cx.new(|cx| {
+                        let container = MessageContainer::with_role(MessageRole::Assistant, cx);
+                        container.set_current_request_id(request_id);
+                        container.set_node_id(Some(node_id));
+                        container.set_session_id(sid);
+                        container
+                    });
+                    queue.push(assistant_container);
                 }
 
                 // Sync ListState if we pushed a new container
@@ -1152,6 +1121,7 @@ impl Gpui {
                     self.update_all_messages(cx, |message_container, cx| {
                         message_container.remove_blocks_with_request_id(id, cx);
                     });
+                    self.remove_empty_containers(cx);
                 }
             }
             UiEvent::RollbackStreaming { id } => {
@@ -1160,6 +1130,7 @@ impl Gpui {
                 self.update_all_messages(cx, |message_container, cx| {
                     message_container.remove_blocks_with_request_id(id, cx);
                 });
+                self.remove_empty_containers(cx);
             }
             UiEvent::RefreshChatList => {
                 debug!("UI: RefreshChatList event received");
@@ -1613,45 +1584,23 @@ impl Gpui {
                     let current_container = {
                         let mut queue = self.message_queue.lock().unwrap();
 
-                        let needs_new_container = if let Some(last_container) = queue.last() {
-                            let last_role = cx.update_entity(last_container, |container, _cx| {
-                                if container.is_user_message() {
-                                    MessageRole::User
-                                } else {
-                                    MessageRole::Assistant
-                                }
-                            });
-                            last_role == MessageRole::User || last_role != message_data.role
-                        } else {
-                            true
-                        };
+                        // Always create a new container per message (each MessageData
+                        // corresponds to one persisted node / LLM request).
+                        let container =
+                            cx.new(|cx| MessageContainer::with_role(message_data.role.clone(), cx));
 
-                        if needs_new_container {
-                            let container = cx.new(|cx| {
-                                MessageContainer::with_role(message_data.role.clone(), cx)
-                            });
+                        let node_id = message_data.node_id;
+                        let branch_info = message_data.branch_info.clone();
+                        let sid = session_id.clone();
+                        self.update_container(&container, cx, |container, _cx| {
+                            container.set_current_project(current_project.clone());
+                            container.set_node_id(node_id);
+                            container.set_branch_info(branch_info);
+                            container.set_session_id(sid);
+                        });
 
-                            let node_id = message_data.node_id;
-                            let branch_info = message_data.branch_info.clone();
-                            let sid = session_id.clone();
-                            self.update_container(&container, cx, |container, _cx| {
-                                container.set_current_project(current_project.clone());
-                                container.set_node_id(node_id);
-                                container.set_branch_info(branch_info);
-                                container.set_session_id(sid);
-                            });
-
-                            queue.push(container.clone());
-                            container
-                        } else {
-                            let container = queue.last().unwrap().clone();
-                            let sid = session_id.clone();
-                            self.update_container(&container, cx, |container, _cx| {
-                                container.set_current_project(current_project.clone());
-                                container.set_session_id(sid);
-                            });
-                            container
-                        }
+                        queue.push(container.clone());
+                        container
                     };
 
                     self.process_fragments_for_container(
@@ -2119,7 +2068,7 @@ impl Gpui {
                     // Tell MessagesView there is no session
                     self.update_messages_view(cx, |view, cx| {
                         view.set_current_session_id(None);
-                        view.messages_reset(0);
+                        view.messages_reset(0, cx);
                         cx.notify();
                     });
                 }

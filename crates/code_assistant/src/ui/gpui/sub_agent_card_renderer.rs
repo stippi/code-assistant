@@ -19,11 +19,11 @@ use crate::ui::gpui::tool_block_renderers::{
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, Element,
+    div, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, Element, Entity,
     InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
     Styled, Transformation, Window,
 };
-use gpui_component::text::TextView;
+use gpui_component::text::{TextView, TextViewState};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -360,7 +360,13 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 // Final response as markdown
                 if let Some(ref response) = parsed.response {
                     if !response.is_empty() {
-                        body = body.child(render_response(response, theme, window, cx));
+                        body = body.child(render_response(
+                            response,
+                            theme,
+                            card_ctx.markdown_state.as_ref(),
+                            window,
+                            cx,
+                        ));
                     }
                 }
             } else if output_str.is_empty() && is_running {
@@ -494,19 +500,27 @@ fn render_status_line(
 fn render_response(
     response: &str,
     theme: &gpui_component::theme::Theme,
+    markdown_state: Option<&Entity<TextViewState>>,
     _window: &mut Window,
-    _cx: &mut Context<BlockView>,
+    cx: &mut Context<BlockView>,
 ) -> gpui::AnyElement {
+    let response = response.to_string();
+    let response_element = if let Some(state) = markdown_state {
+        state.update(cx, |state, cx| {
+            state.set_text(&response, cx);
+        });
+        TextView::new(state).into_any_element()
+    } else {
+        TextView::markdown("sub-agent-response", response).into_any_element()
+    };
+
     div()
         .mt_1()
         .pt_1()
         .border_t_1()
         .border_color(theme.border)
         .text_color(theme.foreground)
-        .child(TextView::markdown(
-            "sub-agent-response",
-            response.to_string(),
-        ))
+        .child(response_element)
         .into_any()
 }
 

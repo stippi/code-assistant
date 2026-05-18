@@ -12,7 +12,6 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::trace;
 
 /// Braille spinner frames for the activity indicator.
 const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -67,6 +66,8 @@ pub struct MessagesView {
     // -- Smooth-scroll animation state --
     /// Running animation task. Dropping it cancels the animation.
     smooth_scroll_task: Option<Task<()>>,
+    /// Short-lived task that remeasures list rows after markdown parsing catches up.
+    height_cache_refresh_task: Option<Task<()>>,
     /// Shared flag read by the animation loop — set to `false` to request stop.
     animation_active: Rc<Cell<bool>>,
     /// The pixel offset we last wrote via the animation loop. Kept in sync
@@ -84,8 +85,10 @@ impl MessagesView {
     ) -> Self {
         let initial_count = message_queue.lock().unwrap().len();
         // Overdraw of 1024px means items within ~1024px outside the visible viewport
-        // are pre-rendered, avoiding flicker when scrolling.
-        let list_state = ListState::new(initial_count, ListAlignment::Top, px(1024.));
+        // are pre-rendered, avoiding flicker when scrolling. Measure all rows after
+        // resets so upward scrolling from the bottom does not discover zero-height
+        // history rows above the viewport and remap the visual scroll offset.
+        let list_state = ListState::new(initial_count, ListAlignment::Top, px(1024.)).measure_all();
 
         let animation_active: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         let last_animation_offset: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
@@ -114,27 +117,45 @@ impl MessagesView {
                     let previous = prev_offset.get();
                     prev_offset.set(current);
 
+                    let scroll_top = this.list_state.logical_scroll_top();
+                    let max: f32 = this.list_state.max_offset_for_scrollbar().y.into();
+
                     // delta > 0 means offset.y moved toward 0 (= scrolled UP)
                     let delta = current - previous;
 
+                    // Log scroll events where the position jump doesn't match
+                    // what a smooth scroll would produce. Normal trackpad scrolls
+                    // produce small increments (1-10px). Anything bigger is suspicious.
+                    if delta.abs() > 10.0 {
+                        tracing::warn!(
+                            "scroll_handler: JUMP delta={:.0}, scroll=({},{:.0}px), px={:.0}, max={:.0}, follow={}",
+                            delta, scroll_top.item_ix, f32::from(scroll_top.offset_in_item), current, max, this.follow_tail,
+                        );
+                    }
+
                     if delta > 0.5 {
                         // User scrolled UP → disable follow
-                        trace!(
-                            "User scrolled up (delta={:.1}px) — disabling follow_tail",
-                            delta
-                        );
+                        if this.follow_tail {
+                            tracing::info!(
+                                "scroll_handler: UP, disabling follow_tail. scroll=({},{:.0}px), px_offset={:.0}",
+                                scroll_top.item_ix, f32::from(scroll_top.offset_in_item), current,
+                            );
+                        }
                         this.follow_tail = false;
                         anim_active.set(false);
                         this.smooth_scroll_task = None;
                     } else if delta < -0.5 {
-                        // User scrolled DOWN → check if near bottom, re-enable follow
-                        let max: f32 = this.list_state.max_offset_for_scrollbar().y.into();
-                        let distance_from_bottom = max + current; // current is negative
-                        if distance_from_bottom < 50.0 && !this.follow_tail {
-                            trace!("User scrolled to bottom — re-enabling follow_tail");
-                            this.follow_tail = true;
-                            // Kick off smooth scroll to snap to exact bottom
-                            this.ensure_animation_running();
+                        // User scrolled DOWN → check if near bottom, re-enable follow.
+                        let current_abs: f32 = (-current).max(0.0);
+                        if max > 100.0 && current_abs > max * 0.8 {
+                            let distance_from_bottom = max - current_abs;
+                            if distance_from_bottom < 50.0 && !this.follow_tail {
+                                tracing::info!(
+                                    "scroll_handler: DOWN near bottom, re-enabling follow_tail. scroll=({},{:.0}px), px_offset={:.0}, max={:.0}, dist={:.0}",
+                                    scroll_top.item_ix, f32::from(scroll_top.offset_in_item), current, max, distance_from_bottom,
+                                );
+                                this.follow_tail = true;
+                            }
                         }
                     }
                 });
@@ -177,6 +198,7 @@ impl MessagesView {
             list_state,
             follow_tail: true,
             smooth_scroll_task: None,
+            height_cache_refresh_task: None,
             animation_active,
             last_animation_offset,
             _spinner_task: Some(spinner_task),
@@ -195,35 +217,66 @@ impl MessagesView {
 
     /// Notify that messages have been added. Call this after pushing to message_queue.
     /// Splices new items into the ListState so it knows about the new count.
-    pub fn messages_spliced(&mut self, old_len: usize, new_len: usize) {
+    pub fn messages_spliced(&mut self, old_len: usize, new_len: usize, cx: &mut Context<Self>) {
         if new_len > old_len {
+            let scroll_before = self.list_state.logical_scroll_top();
+            let offset_before: f32 = self.list_state.scroll_px_offset_for_scrollbar().y.into();
+            let max_before: f32 = self.list_state.max_offset_for_scrollbar().y.into();
+
             // Insert new items at the end
             self.list_state.splice(old_len..old_len, new_len - old_len);
-            trace!(
-                "ListState spliced: added {} items ({}→{})",
+
+            let scroll_after = self.list_state.logical_scroll_top();
+            let offset_after: f32 = self.list_state.scroll_px_offset_for_scrollbar().y.into();
+            let max_after: f32 = self.list_state.max_offset_for_scrollbar().y.into();
+
+            tracing::info!(
+                "messages_spliced: added {} items ({}→{}), scroll: ({},{:.0}px)→({},{:.0}px), px_offset: {:.0}→{:.0}, max: {:.0}→{:.0}, follow_tail={}",
                 new_len - old_len,
                 old_len,
-                new_len
+                new_len,
+                scroll_before.item_ix,
+                f32::from(scroll_before.offset_in_item),
+                scroll_after.item_ix,
+                f32::from(scroll_after.offset_in_item),
+                offset_before,
+                offset_after,
+                max_before,
+                max_after,
+                self.follow_tail,
             );
 
             // Auto-scroll to bottom if following tail
             if self.follow_tail {
                 self.scroll_to_bottom();
             }
+
+            self.schedule_height_cache_refresh(cx);
         }
     }
 
     /// Notify that all messages have been cleared and replaced.
     /// Resets the ListState with the new count.
-    pub fn messages_reset(&mut self, new_count: usize) {
+    pub fn messages_reset(&mut self, new_count: usize, cx: &mut Context<Self>) {
+        tracing::info!(
+            "messages_reset: old_count={}, new_count={}",
+            self.list_state.item_count(),
+            new_count,
+        );
         self.list_state.reset(new_count);
         self.follow_tail = true;
         // For a full reset, jump instantly — no need to animate.
         self.stop_animation();
         if new_count > 0 {
             self.scroll_to_bottom_instant();
+            self.schedule_height_cache_refresh(cx);
         }
-        trace!("ListState reset with {} items", new_count);
+        tracing::info!(
+            "messages_reset: after scroll_to_bottom, scroll=({},{:.0}px), max={:.0}",
+            self.list_state.logical_scroll_top().item_ix,
+            f32::from(self.list_state.logical_scroll_top().offset_in_item),
+            f32::from(self.list_state.max_offset_for_scrollbar().y),
+        );
     }
 
     // -----------------------------------------------------------------
@@ -254,6 +307,39 @@ impl MessagesView {
     fn stop_animation(&mut self) {
         self.animation_active.set(false);
         self.smooth_scroll_task = None;
+    }
+
+    fn remeasure_preserving_anchor(&self) {
+        let count = self.list_state.item_count();
+        if count == 0 {
+            return;
+        }
+
+        let anchor = self.list_state.logical_scroll_top();
+        self.list_state.reset(count);
+        self.list_state.scroll_to(anchor);
+    }
+
+    fn schedule_height_cache_refresh(&mut self, cx: &mut Context<Self>) {
+        self.height_cache_refresh_task = None;
+
+        let task = cx.spawn(async move |weak_entity, cx| {
+            for delay_ms in [50_u64, 150, 350, 750, 1500] {
+                cx.background_executor()
+                    .timer(Duration::from_millis(delay_ms))
+                    .await;
+
+                let ok = weak_entity.update(cx, |this, cx| {
+                    this.remeasure_preserving_anchor();
+                    cx.notify();
+                });
+                if ok.is_err() {
+                    break;
+                }
+            }
+        });
+
+        self.height_cache_refresh_task = Some(task);
     }
 
     /// Ensure the spring animation task is running. If it's already running
@@ -309,6 +395,24 @@ impl MessagesView {
 
                 let max: f32 = list_state.max_offset_for_scrollbar().y.into();
 
+                // Safety: if max_offset is tiny or zero, the list likely has many
+                // unmeasured items. Using set_offset_from_scrollbar in this state
+                // would scroll to a wrong position. Fall back to reveal_item.
+                if max < 100.0 {
+                    let count = list_state.item_count();
+                    if count > 0 {
+                        list_state.scroll_to_reveal_item(count - 1);
+                    }
+                    let _ = weak_entity.update(cx, |_this, cx| {
+                        cx.notify();
+                    });
+                    idle_elapsed_ms += ANIMATION_FRAME_MS;
+                    if idle_elapsed_ms >= ANIMATION_IDLE_MS {
+                        break;
+                    }
+                    continue;
+                }
+
                 // Target offset is -max (fully scrolled to bottom). The
                 // scrollbar API returns offset.y as negative.
                 let target: f32 = -max;
@@ -319,12 +423,13 @@ impl MessagesView {
                 if displacement.abs() < MIN_DISTANCE_TO_STOP && velocity.abs() < MIN_SPEED_TO_STOP {
                     // We've converged. Snap to exact bottom and enter idle phase.
                     if displacement.abs() > 0.01 {
-                        let max_rounded = max.round();
+                        // set_offset_from_scrollbar expects negative y (same
+                        // convention as scroll_px_offset_for_scrollbar).
                         list_state.set_offset_from_scrollbar(Point {
                             x: px(0.),
-                            y: px(max_rounded),
+                            y: px(-max.round()),
                         });
-                        last_offset.set(-max_rounded);
+                        last_offset.set(-max.round());
                         let _ = weak_entity.update(cx, |_this, cx| {
                             cx.notify();
                         });
@@ -364,13 +469,13 @@ impl MessagesView {
                     delta = -displacement;
                 }
 
-                // Convert the new offset back to the absolute (positive)
-                // offset that `set_offset_from_scrollbar` expects.
+                // new_y is the new scroll offset (negative, like
+                // scroll_px_offset_for_scrollbar returns).
+                // set_offset_from_scrollbar expects this same sign convention.
                 let new_y = current_offset + delta;
-                let abs_offset = (-new_y).max(0.0).round();
                 list_state.set_offset_from_scrollbar(Point {
                     x: px(0.),
-                    y: px(abs_offset),
+                    y: px(new_y.min(0.0)),
                 });
                 last_offset.set(new_y);
 
@@ -610,12 +715,15 @@ impl MessagesView {
         // overflowing via margin.
         if is_user_message {
             div()
+                .id(("message-item", msg.entity_id()))
                 .w_full()
                 .p_3()
                 .child(message_container)
                 .into_any_element()
         } else {
-            message_container.into_any_element()
+            message_container
+                .id(("message-item", msg.entity_id()))
+                .into_any_element()
         }
     }
 }
@@ -720,6 +828,9 @@ impl Render for MessagesView {
         // current scroll position and cached item heights.
         let current_count = self.list_state.item_count();
         if current_count != item_count {
+            let scroll_before = self.list_state.logical_scroll_top();
+            let offset_before: f32 = self.list_state.scroll_px_offset_for_scrollbar().y.into();
+
             if item_count > current_count {
                 // Items were added at the end (e.g. pending message appeared)
                 self.list_state
@@ -728,10 +839,20 @@ impl Render for MessagesView {
                 // Items were removed from the end (e.g. pending message disappeared)
                 self.list_state.splice(item_count..current_count, 0);
             }
-            trace!(
-                "ListState count sync: {} → {} (splice, not reset)",
+
+            let scroll_after = self.list_state.logical_scroll_top();
+            let offset_after: f32 = self.list_state.scroll_px_offset_for_scrollbar().y.into();
+
+            tracing::info!(
+                "render_sync: {} → {}, scroll: ({},{:.0}px)→({},{:.0}px), px_offset: {:.0}→{:.0}",
                 current_count,
-                item_count
+                item_count,
+                scroll_before.item_ix,
+                f32::from(scroll_before.offset_in_item),
+                scroll_after.item_ix,
+                f32::from(scroll_after.offset_in_item),
+                offset_before,
+                offset_after,
             );
         }
 
@@ -748,6 +869,7 @@ impl Render for MessagesView {
             .flex_col()
             .items_center()
             .size_full()
+            .overflow_hidden() // Prevent width fluctuation that invalidates list item heights
             .bg(cx.theme().popover)
             .text_size(rems(1.0))
             .child(message_list)

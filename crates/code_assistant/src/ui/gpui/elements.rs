@@ -8,7 +8,10 @@ use gpui::{
     ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
-use gpui_component::{text::TextView, ActiveTheme};
+use gpui_component::{
+    text::{TextView, TextViewState},
+    ActiveTheme,
+};
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -150,16 +153,15 @@ enum AnimationState {
     },
 }
 
-/// Container for all elements within a message
+/// Container for all elements within a single message (one LLM request/response).
+/// Each MessageContainer maps to exactly one item in the virtualized list,
+/// enabling efficient scroll virtualization.
 #[derive(Clone)]
 pub struct MessageContainer {
     elements: Arc<Mutex<Vec<Entity<BlockView>>>>,
     role: MessageRole,
-    /// The current_request_id is used to remove all blocks from a canceled request.
-    /// The same MessageContainer may assemble blocks from multiple subsequent LLM responses.
-    /// While the agent loop sends requests to the LLM provider, the request ID is updated for
-    /// each new request (see `UiEvent::StreamingStarted` in gpui/mod). When the user cancels
-    /// streaming, all blocks that were created for that last, canceled request are removed.
+    /// The request_id identifying which LLM request produced this container's blocks.
+    /// Used to remove blocks when a request is cancelled or rolled back.
     current_request_id: Arc<Mutex<u64>>,
 
     /// Current project for parameter filtering (used to detect cross-project tool calls)
@@ -314,6 +316,11 @@ impl MessageContainer {
     pub fn elements(&self) -> Vec<Entity<BlockView>> {
         let elements = self.elements.lock().unwrap();
         elements.clone()
+    }
+
+    /// Returns true if this container has no block elements.
+    pub fn is_empty(&self) -> bool {
+        self.elements.lock().unwrap().is_empty()
     }
 
     // Add a new text block
@@ -1095,8 +1102,8 @@ impl BlockData {
 /// Entity view for a block
 pub struct BlockView {
     block: BlockData,
-    block_id: u64,
     request_id: u64,
+    markdown_state: Option<Entity<TextViewState>>,
     is_generating: bool, // Universal generating state for all block types
     // Animation state
     animation_state: AnimationState,
@@ -1116,7 +1123,7 @@ pub struct BlockView {
 impl BlockView {
     pub fn new(
         block: BlockData,
-        block_id: u64,
+        _block_id: u64,
         request_id: u64,
         current_project: Arc<Mutex<String>>,
         session_id: Option<String>,
@@ -1136,10 +1143,19 @@ impl BlockView {
             true
         };
 
+        let initial_markdown = match &block {
+            BlockData::TextBlock(block) => Some(block.content.clone()),
+            BlockData::ThinkingBlock(block) => Some(block.content.clone()),
+            BlockData::CompactionSummary(block) => Some(block.summary.clone()),
+            BlockData::ToolUse(_) | BlockData::ImageBlock(_) => None,
+        };
+        let markdown_state =
+            initial_markdown.map(|text| _cx.new(|cx| TextViewState::markdown(&text, cx)));
+
         Self {
             block,
-            block_id,
             request_id,
+            markdown_state,
             is_generating: true, // Default to generating when first created
             animation_state: AnimationState::Idle,
             content_height: Rc::new(Cell::new(px(0.0))),
@@ -1148,6 +1164,27 @@ impl BlockView {
             session_id,
             write_file_diff_mode,
         }
+    }
+
+    fn markdown_state(&mut self, text: &str, cx: &mut Context<Self>) -> Entity<TextViewState> {
+        let state = if let Some(state) = &self.markdown_state {
+            state.clone()
+        } else {
+            let state = cx.new(|cx| TextViewState::markdown(text, cx));
+            self.markdown_state = Some(state.clone());
+            state
+        };
+
+        state.update(cx, |state, cx| {
+            state.set_text(text, cx);
+        });
+
+        state
+    }
+
+    fn markdown_view(&mut self, text: &str, selectable: bool, cx: &mut Context<Self>) -> TextView {
+        let state = self.markdown_state(text, cx);
+        TextView::new(&state).selectable(selectable)
     }
 
     /// Check if this block is an image block
@@ -1590,13 +1627,10 @@ impl BlockView {
 
 impl Render for BlockView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match &self.block {
+        match self.block.clone() {
             BlockData::TextBlock(block) => div()
                 .text_color(cx.theme().foreground)
-                .child(
-                    TextView::markdown(("md-block", self.block_id), block.content.clone())
-                        .selectable(true),
-                )
+                .child(self.markdown_view(&block.content, true, cx))
                 .into_any_element(),
             BlockData::ThinkingBlock(block) => {
                 // Get the appropriate icon based on completed state
@@ -1723,6 +1757,7 @@ impl Render for BlockView {
                             };
 
                             let body_content = if !block.is_collapsed || scale > 0.0 {
+                                let content = block.get_expanded_content(self.is_generating);
                                 div()
                                     .px_3()
                                     .pt_1()
@@ -1730,10 +1765,7 @@ impl Render for BlockView {
                                     .text_size(rems(0.875))
                                     .italic()
                                     .text_color(text_color)
-                                    .child(TextView::markdown(
-                                        ("thinking-content", self.block_id),
-                                        block.get_expanded_content(self.is_generating),
-                                    ))
+                                    .child(self.markdown_view(&content, false, cx))
                                     .into_any()
                             } else {
                                 div().into_any()
@@ -1776,17 +1808,16 @@ impl Render for BlockView {
                                     },
                                 };
 
+                                let current_project = self.current_project.lock().unwrap().clone();
+                                let markdown_state = self.markdown_state("", cx);
                                 let card_ctx =
                                     crate::ui::gpui::tool_block_renderers::CardRenderContext {
                                         animation_scale: scale,
                                         is_collapsed: block.state == ToolBlockState::Collapsed,
                                         content_height: self.content_height.clone(),
-                                        current_project: self
-                                            .current_project
-                                            .lock()
-                                            .unwrap()
-                                            .clone(),
+                                        current_project,
                                         write_file_diff_mode: self.write_file_diff_mode,
+                                        markdown_state: Some(markdown_state),
                                     };
 
                                 if let Some(element) = renderer.render(
@@ -1803,7 +1834,11 @@ impl Render for BlockView {
                                 // streaming) — show a skeleton card with just
                                 // the header so we don't flash a raw "[name]"
                                 // placeholder.
-                                return self.render_card_skeleton(block, renderer.as_ref(), &theme);
+                                return self.render_card_skeleton(
+                                    &block,
+                                    renderer.as_ref(),
+                                    &theme,
+                                );
                             }
                         }
                     } else {
@@ -1868,13 +1903,7 @@ impl Render for BlockView {
                     children.push(
                         div()
                             .text_color(cx.theme().foreground)
-                            .child(
-                                TextView::markdown(
-                                    ("compaction-summary", self.block_id),
-                                    block.summary.clone(),
-                                )
-                                .selectable(true),
-                            )
+                            .child(self.markdown_view(&block.summary, true, cx))
                             .into_any_element(),
                     );
                 } else {

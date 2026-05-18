@@ -16,7 +16,8 @@
 
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::ToolStatus;
-use gpui::{px, AnyElement, Context, Element, Pixels, Window};
+use gpui::{px, AnyElement, Context, Element, Entity, Pixels, Window};
+use gpui_component::text::TextViewState;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -49,6 +50,10 @@ pub struct CardRenderContext {
     /// For write_file tool blocks: whether to show diff view (true) or plain
     /// new-file view (false). Only relevant when original_content is available.
     pub write_file_diff_mode: bool,
+    /// Optional markdown state owned by the surrounding `BlockView`. Card
+    /// renderers that show markdown should use this instead of `TextView::markdown`
+    /// so virtualized rows do not recreate parsed markdown state on remount.
+    pub markdown_state: Option<Entity<TextViewState>>,
 }
 
 // ---------------------------------------------------------------------------

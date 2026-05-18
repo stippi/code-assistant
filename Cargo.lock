@@ -3401,7 +3401,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.5.2"
-source = "git+https://github.com/longbridge/gpui-component#a5268cd640da080d9d383856ee62990dfb23d6f0"
+source = "git+https://github.com/longbridge/gpui-component#6b8d9773392a627eed4e9b93d3b840d43e7fdf1f"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3444,7 +3444,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.5.1"
-source = "git+https://github.com/longbridge/gpui-component#a5268cd640da080d9d383856ee62990dfb23d6f0"
+source = "git+https://github.com/longbridge/gpui-component#6b8d9773392a627eed4e9b93d3b840d43e7fdf1f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3454,7 +3454,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#bfe914beec96ca0c509f6ffb03f74c5a737b4620"
+source = "git+https://github.com/zed-industries/zed#533e975df091b1547ec44e0eb5e15de8b00d627f"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3485,7 +3485,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#bfe914beec96ca0c509f6ffb03f74c5a737b4620"
+source = "git+https://github.com/zed-industries/zed#533e975df091b1547ec44e0eb5e15de8b00d627f"
 dependencies = [
  "anyhow",
  "async-task",
@@ -3539,7 +3539,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#bfe914beec96ca0c509f6ffb03f74c5a737b4620"
+source = "git+https://github.com/zed-industries/zed#533e975df091b1547ec44e0eb5e15de8b00d627f"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -3571,7 +3571,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#bfe914beec96ca0c509f6ffb03f74c5a737b4620"
+source = "git+https://github.com/zed-industries/zed#533e975df091b1547ec44e0eb5e15de8b00d627f"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3595,7 +3595,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#bfe914beec96ca0c509f6ffb03f74c5a737b4620"
+source = "git+https://github.com/zed-industries/zed#533e975df091b1547ec44e0eb5e15de8b00d627f"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3623,7 +3623,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed#bfe914beec96ca0c509f6ffb03f74c5a737b4620"
+source = "git+https://github.com/zed-industries/zed#533e975df091b1547ec44e0eb5e15de8b00d627f"
 dependencies = [
  "anyhow",
  "collections",

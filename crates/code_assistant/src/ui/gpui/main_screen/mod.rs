@@ -634,7 +634,7 @@ impl MainScreen {
             // in the SessionDeleted response handler will be a no-op).
             self.messages_view.update(cx, |view, cx| {
                 view.set_current_session_id(None);
-                view.messages_reset(0);
+                view.messages_reset(0, cx);
                 cx.notify();
             });
 
