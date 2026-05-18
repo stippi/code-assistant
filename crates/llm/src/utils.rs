@@ -5,6 +5,16 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::warn;
 
+/// Check if an authentication error is transient and worth retrying.
+/// Examples: expired JWT tokens that will be refreshed on the next attempt.
+fn is_transient_auth_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("jwt is expired")
+        || lower.contains("token expired")
+        || lower.contains("token has expired")
+        || lower.contains("expired token")
+}
+
 /// Check response error and extract rate limit information.
 /// Returns Ok(Response) if successful, or an error with rate limit context if not.
 pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
@@ -129,6 +139,20 @@ pub async fn handle_retryable_error<
                         sleep(delay).await;
                         return true;
                     }
+                }
+            }
+            ApiError::Authentication(msg) if is_transient_auth_error(msg) => {
+                if attempts < max_retries {
+                    let delay = Duration::from_secs(2u64.pow(attempts.saturating_sub(1)));
+                    warn!(
+                        "Transient auth error: {} (attempt {}/{}), retrying in {} seconds",
+                        error,
+                        attempts,
+                        max_retries,
+                        delay.as_secs()
+                    );
+                    sleep(delay).await;
+                    return true;
                 }
             }
             ApiError::ServiceError(_) | ApiError::NetworkError(_) | ApiError::Overloaded(_) => {

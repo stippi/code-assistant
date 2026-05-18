@@ -67,6 +67,16 @@ impl ConfigurationSystem {
         Ok(Self { providers, models })
     }
 
+    /// Get the resolved path to providers.json (first found or fallback).
+    pub fn providers_config_path() -> PathBuf {
+        Self::determine_config_path("providers.json", None).0
+    }
+
+    /// Get the resolved path to models.json (first found or fallback).
+    pub fn models_config_path() -> PathBuf {
+        Self::determine_config_path("models.json", None).0
+    }
+
     /// Load providers configuration from file
     pub fn load_providers_config(custom_path: Option<PathBuf>) -> Result<ProvidersConfig> {
         let custom_path_ref = custom_path.as_ref();

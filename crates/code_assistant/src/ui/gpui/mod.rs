@@ -10,12 +10,14 @@ pub mod elements;
 pub mod file_icons;
 pub mod image;
 pub mod input_area;
+pub mod main_screen;
 mod messages;
 pub mod model_selector;
 pub mod new_project_dialog;
 mod plan_banner;
 mod root;
 pub mod sandbox_selector;
+pub mod settings_screen;
 pub mod sub_agent_card_renderer;
 pub mod terminal_card_renderer;
 
