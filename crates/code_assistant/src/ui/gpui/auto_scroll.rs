@@ -1,7 +1,8 @@
 #![allow(dead_code)]
+
 use gpui::{
     div, prelude::*, px, Bounds, Context, Entity, Pixels, Point, ScrollHandle, SharedString, Size,
-    Task, Timer, Window,
+    Task, Window,
 };
 use gpui_component::scroll::Scrollbar;
 use std::cell::{Cell, RefCell};
@@ -192,14 +193,14 @@ impl<T: Render> AutoScrollContainer<T> {
         let config = self.config.clone();
 
         let task = cx.spawn(async move |weak_entity, async_app_cx| {
-            let mut timer = Timer::after(Duration::from_millis(config.animation_frame_ms));
-
             // Easing animation variables
             let mut current_scroll_speed: f32 = 0.0;
 
             loop {
-                timer.await;
-                timer = Timer::after(Duration::from_millis(config.animation_frame_ms));
+                async_app_cx
+                    .background_executor()
+                    .timer(Duration::from_millis(config.animation_frame_ms))
+                    .await;
 
                 let autoscroll_active_for_update = autoscroll_active_orig.clone();
                 let scroll_handle_for_update = scroll_handle_orig.clone();

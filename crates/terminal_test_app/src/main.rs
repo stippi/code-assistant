@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
-    actions, div, px, rems, size, App, Application, Bounds, Context, Entity, IntoElement,
-    KeyBinding, ParentElement, Render, SharedString, Styled, Window, WindowBounds, WindowOptions,
+    actions, div, px, rems, size, App, Bounds, Context, Entity, IntoElement, KeyBinding,
+    ParentElement, Render, SharedString, Styled, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::Root;
 use terminal::{Terminal, TerminalBuilder, TerminalOptions};
@@ -512,7 +512,7 @@ fn dark_theme_colors() -> TerminalThemeColors {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
         gpui_component::theme::init(cx);
 
@@ -541,7 +541,8 @@ fn main() {
             |window, cx| {
                 let view = cx.new(TestApp::new);
                 // Focus the root view so keyboard shortcuts work
-                view.read(cx).focus_handle.focus(window);
+                let focus_handle = view.read(cx).focus_handle.clone();
+                focus_handle.focus(window, cx);
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )

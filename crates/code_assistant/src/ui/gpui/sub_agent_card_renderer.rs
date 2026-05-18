@@ -494,8 +494,8 @@ fn render_status_line(
 fn render_response(
     response: &str,
     theme: &gpui_component::theme::Theme,
-    window: &mut Window,
-    cx: &mut Context<BlockView>,
+    _window: &mut Window,
+    _cx: &mut Context<BlockView>,
 ) -> gpui::AnyElement {
     div()
         .mt_1()
@@ -506,8 +506,6 @@ fn render_response(
         .child(TextView::markdown(
             "sub-agent-response",
             response.to_string(),
-            window,
-            cx,
         ))
         .into_any()
 }
