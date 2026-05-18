@@ -34,7 +34,8 @@ use crate::utils::file_utils;
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, trace, warn};
@@ -157,6 +158,8 @@ async fn flush_loop(
     event_tx: async_channel::Sender<UiEvent>,
     current_session_id: Arc<Mutex<Option<String>>>,
 ) {
+    let mut externally_locked_sessions = scan_external_agent_locks(&sessions_dir);
+
     loop {
         tokio::time::sleep(DEBOUNCE_DURATION).await;
 
@@ -194,34 +197,23 @@ async fn flush_loop(
         // Therefore: if the lock file belongs to us (PID matches), skip the
         // event entirely.  For foreign locks we emit RunningExternally so
         // the UI shows the "session blocked" state (disabled input, lock
-        // icon in sidebar).  When a lock disappears we also skip if we can
-        // no longer tell who owned it from our side — the local agent, if
-        // it was ours, will have already broadcast Idle via the
-        // SessionManager cleanup path.
+        // icon in sidebar).  When a lock disappears, emit Idle only if this
+        // watcher had previously observed that lock as external.  Once the
+        // file is gone we can no longer read its PID, so treating every
+        // disappearance as external would let our own lock cleanup overwrite
+        // richer local states such as Errored.
         for session_id in &snapshot.changed_agent_locks {
-            let is_locked = file_utils::is_agent_locked(&sessions_dir, session_id);
-            let belongs_to_us =
-                file_utils::agent_lock_belongs_to_current_process(&sessions_dir, session_id);
-
-            if belongs_to_us {
-                trace!(
-                    "Watcher flush: skipping agent lock event for own session {session_id} \
-                     (locked={is_locked})"
-                );
-                continue;
+            if let Some(activity_state) = activity_state_for_lock_change(
+                &sessions_dir,
+                session_id,
+                &mut externally_locked_sessions,
+            ) {
+                debug!("Watcher flush: agent lock for {session_id} → {activity_state:?}");
+                let _ = event_tx.try_send(UiEvent::UpdateSessionActivityState {
+                    session_id: session_id.clone(),
+                    activity_state,
+                });
             }
-
-            let activity_state = if is_locked {
-                SessionActivityState::RunningExternally
-            } else {
-                SessionActivityState::Idle
-            };
-
-            debug!("Watcher flush: agent lock for {session_id} → {activity_state:?}");
-            let _ = event_tx.try_send(UiEvent::UpdateSessionActivityState {
-                session_id: session_id.clone(),
-                activity_state,
-            });
         }
 
         // 3) Session file changes → reload currently viewed session
@@ -236,5 +228,153 @@ async fn flush_loop(
                 }
             }
         }
+    }
+}
+
+fn activity_state_for_lock_change(
+    sessions_dir: &Path,
+    session_id: &str,
+    externally_locked_sessions: &mut HashSet<String>,
+) -> Option<SessionActivityState> {
+    let is_locked = file_utils::is_agent_locked(sessions_dir, session_id);
+    let belongs_to_us = file_utils::agent_lock_belongs_to_current_process(sessions_dir, session_id);
+
+    if is_locked {
+        if belongs_to_us {
+            trace!(
+                "Watcher flush: skipping agent lock event for own session {session_id} \
+                 (locked=true)"
+            );
+            externally_locked_sessions.remove(session_id);
+            return None;
+        }
+
+        externally_locked_sessions.insert(session_id.to_string());
+        return Some(SessionActivityState::RunningExternally);
+    }
+
+    if externally_locked_sessions.remove(session_id) {
+        Some(SessionActivityState::Idle)
+    } else {
+        trace!(
+            "Watcher flush: skipping unlocked agent lock event for {session_id} \
+             because it was not previously observed as external"
+        );
+        None
+    }
+}
+
+fn scan_external_agent_locks(sessions_dir: &Path) -> HashSet<String> {
+    let mut externally_locked_sessions = HashSet::new();
+
+    let Ok(entries) = fs::read_dir(sessions_dir) else {
+        return externally_locked_sessions;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(session_id) = file_name.strip_suffix(".agent.lock") else {
+            continue;
+        };
+
+        if file_utils::is_agent_locked(sessions_dir, session_id)
+            && !file_utils::agent_lock_belongs_to_current_process(sessions_dir, session_id)
+        {
+            externally_locked_sessions.insert(session_id.to_string());
+        }
+    }
+
+    externally_locked_sessions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn unknown_unlock_does_not_emit_idle() {
+        let dir = tempdir().unwrap();
+        let sessions_dir = dir.path().to_path_buf();
+        let mut external_locks = HashSet::new();
+
+        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+
+        assert_eq!(state, None);
+        assert!(external_locks.is_empty());
+    }
+
+    #[test]
+    fn known_external_unlock_emits_idle_once() {
+        let dir = tempdir().unwrap();
+        let sessions_dir = dir.path().to_path_buf();
+        let mut external_locks = HashSet::from(["session-1".to_string()]);
+
+        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+
+        assert_eq!(state, Some(SessionActivityState::Idle));
+        assert!(external_locks.is_empty());
+
+        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        assert_eq!(state, None);
+    }
+
+    #[test]
+    fn own_lock_events_are_ignored() {
+        let dir = tempdir().unwrap();
+        let sessions_dir = dir.path().to_path_buf();
+        let mut external_locks = HashSet::new();
+        let guard = file_utils::try_acquire_agent_lock(&sessions_dir, "session-1")
+            .unwrap()
+            .unwrap();
+
+        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+
+        assert_eq!(state, None);
+        assert!(external_locks.is_empty());
+
+        drop(guard);
+
+        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        assert_eq!(state, None);
+        assert!(external_locks.is_empty());
+    }
+
+    #[test]
+    fn foreign_lock_emits_running_then_idle() {
+        let dir = tempdir().unwrap();
+        let sessions_dir = dir.path().to_path_buf();
+        let lock_path = sessions_dir.join("session-1.agent.lock");
+        let mut lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        lock_file.write_all(b"999999").unwrap();
+        lock_file.flush().unwrap();
+        lock_file.lock_exclusive().unwrap();
+
+        let mut external_locks = HashSet::new();
+        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+
+        assert_eq!(state, Some(SessionActivityState::RunningExternally));
+        assert!(external_locks.contains("session-1"));
+
+        lock_file.unlock().unwrap();
+        drop(lock_file);
+        fs::remove_file(lock_path).unwrap();
+
+        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+
+        assert_eq!(state, Some(SessionActivityState::Idle));
+        assert!(external_locks.is_empty());
     }
 }
