@@ -54,6 +54,7 @@ const PROVIDER_TYPES: &[(&str, &str)] = &[
     ("anthropic", "Anthropic"),
     ("openai", "OpenAI"),
     ("openai-responses", "OpenAI Responses"),
+    ("openai-responses-ws", "ChatGPT Subscription"),
     ("ollama", "Ollama"),
     ("openrouter", "OpenRouter"),
     ("vertex", "Google Vertex"),

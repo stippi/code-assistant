@@ -5,6 +5,7 @@
 //! in the parent providers section view.
 
 pub mod ai_core_form;
+pub mod chatgpt_subscription_form;
 pub mod default_form;
 
 use gpui::{AnyElement, App, AppContext as _, Context, Entity, IntoElement, Window};
@@ -36,6 +37,7 @@ pub trait ProviderForm: 'static + Sized {
 pub fn form_type_for_provider(provider_type: &str) -> ProviderFormType {
     match provider_type {
         "ai-core" => ProviderFormType::AiCore,
+        "openai-responses-ws" => ProviderFormType::ChatGptSubscription,
         _ => ProviderFormType::Default,
     }
 }
@@ -47,6 +49,8 @@ pub enum ProviderFormType {
     Default,
     /// AI Core form: service key paste + deployment mapping
     AiCore,
+    /// ChatGPT Subscription: OAuth2 browser login
+    ChatGptSubscription,
 }
 
 /// A wrapper that can hold any provider form entity and delegate to it.
@@ -56,6 +60,7 @@ pub struct ProviderFormHolder {
     pub form_type: ProviderFormType,
     pub default_form: Option<Entity<default_form::DefaultProviderForm>>,
     pub ai_core_form: Option<Entity<ai_core_form::AiCoreProviderForm>>,
+    pub chatgpt_form: Option<Entity<chatgpt_subscription_form::ChatGptSubscriptionForm>>,
 }
 
 impl ProviderFormHolder {
@@ -70,12 +75,24 @@ impl ProviderFormHolder {
                 form_type,
                 default_form: Some(cx.new(|cx| default_form::DefaultProviderForm::new(window, cx))),
                 ai_core_form: None,
+                chatgpt_form: None,
             },
             ProviderFormType::AiCore => Self {
                 form_type,
                 default_form: None,
                 ai_core_form: Some(cx.new(|cx| ai_core_form::AiCoreProviderForm::new(window, cx))),
+                chatgpt_form: None,
             },
+            ProviderFormType::ChatGptSubscription => {
+                Self {
+                    form_type,
+                    default_form: None,
+                    ai_core_form: None,
+                    chatgpt_form: Some(cx.new(|cx| {
+                        chatgpt_subscription_form::ChatGptSubscriptionForm::new(window, cx)
+                    })),
+                }
+            }
         }
     }
 
@@ -98,6 +115,7 @@ impl ProviderFormHolder {
                         Some(cx.new(|cx| default_form::DefaultProviderForm::new(window, cx)));
                 }
                 self.ai_core_form = None;
+                self.chatgpt_form = None;
             }
             ProviderFormType::AiCore => {
                 if self.ai_core_form.is_none() {
@@ -105,6 +123,16 @@ impl ProviderFormHolder {
                         Some(cx.new(|cx| ai_core_form::AiCoreProviderForm::new(window, cx)));
                 }
                 self.default_form = None;
+                self.chatgpt_form = None;
+            }
+            ProviderFormType::ChatGptSubscription => {
+                if self.chatgpt_form.is_none() {
+                    self.chatgpt_form = Some(cx.new(|cx| {
+                        chatgpt_subscription_form::ChatGptSubscriptionForm::new(window, cx)
+                    }));
+                }
+                self.default_form = None;
+                self.ai_core_form = None;
             }
         }
     }
@@ -127,6 +155,13 @@ impl ProviderFormHolder {
                     gpui::Empty.into_any_element()
                 }
             }
+            ProviderFormType::ChatGptSubscription => {
+                if let Some(form) = &self.chatgpt_form {
+                    form.clone().into_any_element()
+                } else {
+                    gpui::Empty.into_any_element()
+                }
+            }
         }
     }
 
@@ -142,6 +177,13 @@ impl ProviderFormHolder {
             }
             ProviderFormType::AiCore => {
                 if let Some(form) = &self.ai_core_form {
+                    form.read(cx).to_config_json(cx)
+                } else {
+                    serde_json::Map::new()
+                }
+            }
+            ProviderFormType::ChatGptSubscription => {
+                if let Some(form) = &self.chatgpt_form {
                     form.read(cx).to_config_json(cx)
                 } else {
                     serde_json::Map::new()
@@ -168,6 +210,11 @@ impl ProviderFormHolder {
                     form.update(cx, |form, cx| form.load_config(config, window, cx));
                 }
             }
+            ProviderFormType::ChatGptSubscription => {
+                if let Some(form) = &self.chatgpt_form {
+                    form.update(cx, |form, cx| form.load_config(config, window, cx));
+                }
+            }
         }
     }
 
@@ -185,6 +232,11 @@ impl ProviderFormHolder {
             }
             ProviderFormType::AiCore => {
                 if let Some(form) = &self.ai_core_form {
+                    form.update(cx, |form, cx| form.reset(window, cx));
+                }
+            }
+            ProviderFormType::ChatGptSubscription => {
+                if let Some(form) = &self.chatgpt_form {
                     form.update(cx, |form, cx| form.reset(window, cx));
                 }
             }
