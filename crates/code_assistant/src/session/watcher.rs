@@ -49,6 +49,7 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
 /// Dropping this stops the watcher.
 pub struct SessionWatcher {
     _watcher: RecommendedWatcher,
+    _config_watcher: Option<RecommendedWatcher>,
 }
 
 /// Categorised dirty-file set, accumulated between debounce flushes.
@@ -97,11 +98,82 @@ impl SessionWatcher {
         rt.spawn(flush_loop(
             dirty,
             sessions_dir,
-            event_tx,
+            event_tx.clone(),
             current_session_id,
         ));
 
-        Ok(Self { _watcher: watcher })
+        // --- config file watcher ---
+        let config_watcher = Self::start_config_watcher(event_tx, &rt);
+
+        Ok(Self {
+            _watcher: watcher,
+            _config_watcher: config_watcher,
+        })
+    }
+
+    /// Start a separate watcher for the config directory (providers.json, models.json).
+    fn start_config_watcher(
+        event_tx: async_channel::Sender<UiEvent>,
+        rt: &tokio::runtime::Handle,
+    ) -> Option<RecommendedWatcher> {
+        let config_path = llm::provider_config::ConfigurationSystem::providers_config_path();
+        let config_dir = config_path.parent()?.to_path_buf();
+
+        if !config_dir.exists() {
+            debug!("Config directory does not exist yet, skipping config watcher");
+            return None;
+        }
+
+        debug!("Starting config file watcher on {}", config_dir.display());
+
+        let config_dirty = Arc::new(Mutex::new(false));
+        let config_dirty_for_callback = config_dirty.clone();
+
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
+                Ok(event) => {
+                    for path in &event.paths {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if name == "providers.json" || name == "models.json" {
+                                trace!("Config watcher: {name} changed ({:?})", event.kind);
+                                *config_dirty_for_callback.lock().unwrap() = true;
+                            }
+                        }
+                    }
+                }
+                Err(e) => warn!("Config watcher error: {e}"),
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("Failed to create config watcher: {e}");
+                    return None;
+                }
+            };
+
+        if let Err(e) = watcher.watch(&config_dir, RecursiveMode::NonRecursive) {
+            warn!("Failed to watch config directory: {e}");
+            return None;
+        }
+
+        // Debounce flush for config changes
+        let event_tx = event_tx.clone();
+        rt.spawn(async move {
+            loop {
+                tokio::time::sleep(DEBOUNCE_DURATION).await;
+                let dirty = {
+                    let mut flag = config_dirty.lock().unwrap();
+                    let was_dirty = *flag;
+                    *flag = false;
+                    was_dirty
+                };
+                if dirty {
+                    debug!("Config watcher flush: emitting ConfigChanged");
+                    let _ = event_tx.try_send(UiEvent::ConfigChanged);
+                }
+            }
+        });
+
+        Some(watcher)
     }
 }
 

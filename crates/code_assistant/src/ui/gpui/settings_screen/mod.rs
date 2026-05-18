@@ -3,6 +3,7 @@
 mod general_section;
 mod models_section;
 pub(crate) mod provider_forms;
+pub(crate) mod provider_suggestions;
 mod providers_section;
 
 use gpui::{
@@ -76,6 +77,18 @@ impl SettingsScreen {
     ) {
         self.active_section = section;
         debug!("Settings: switched to {:?}", section);
+
+        // Reload section data from disk when switching to it
+        match section {
+            SettingsSection::Providers => {
+                self.providers_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::Models => {
+                self.models_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::General => {}
+        }
+
         cx.notify();
     }
 

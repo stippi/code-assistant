@@ -28,6 +28,11 @@ impl ModelsSection {
         }
     }
 
+    /// Reload models from disk (called when this section becomes visible).
+    pub fn reload(&mut self) {
+        self.models = Self::load_models();
+    }
+
     fn load_models() -> Vec<ModelEntry> {
         let config_path = llm::provider_config::ConfigurationSystem::models_config_path();
         let content = match std::fs::read_to_string(&config_path) {

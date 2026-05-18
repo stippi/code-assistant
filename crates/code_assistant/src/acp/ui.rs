@@ -821,6 +821,9 @@ impl UserInterface for ACPUserUI {
             UiEvent::PersistUiState => {
                 // GPUI-specific, not applicable to ACP UI
             }
+            UiEvent::ConfigChanged => {
+                // Config file changes not relevant in ACP mode
+            }
         }
         Ok(())
     }

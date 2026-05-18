@@ -71,6 +71,8 @@ pub struct ModelSelector {
     dropdown_state: Entity<SelectState<Vec<ModelItem>>>,
     config: Option<Arc<ConfigurationSystem>>,
     _dropdown_subscription: gpui::Subscription,
+    /// Last seen config generation (to know when to reload)
+    last_config_generation: u64,
 }
 
 impl EventEmitter<ModelSelectorEvent> for ModelSelector {}
@@ -89,6 +91,7 @@ impl ModelSelector {
             dropdown_state,
             config: None,
             _dropdown_subscription: dropdown_subscription,
+            last_config_generation: 0,
         };
 
         selector.refresh_models(window, cx);
@@ -202,7 +205,16 @@ impl Focusable for ModelSelector {
 }
 
 impl Render for ModelSelector {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Check if config has changed since last refresh
+        if let Some(gpui) = cx.try_global::<super::Gpui>() {
+            let current_gen = gpui.config_generation();
+            if current_gen != self.last_config_generation {
+                self.last_config_generation = current_gen;
+                self.refresh_models(window, cx);
+            }
+        }
+
         gpui::div().text_color(cx.theme().muted_foreground).child(
             Select::new(&self.dropdown_state)
                 .placeholder("Select Model")

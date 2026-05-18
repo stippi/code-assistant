@@ -135,6 +135,10 @@ pub struct Gpui {
     /// Project names that exist in projects.json (i.e. first-class projects).
     /// Used by the sidebar to decide whether to show a "persist" icon.
     persisted_projects: Arc<Mutex<std::collections::HashSet<String>>>,
+
+    /// Incremented each time config files (providers.json / models.json) change on disk.
+    /// Components compare their locally cached generation with this to know when to reload.
+    config_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// State for a pending message edit (for branching)
@@ -427,6 +431,8 @@ impl Gpui {
                     .cloned()
                     .collect(),
             )),
+
+            config_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -1716,6 +1722,13 @@ impl Gpui {
                 cx.refresh();
             }
 
+            UiEvent::ConfigChanged => {
+                debug!("UI: ConfigChanged event — config files modified on disk");
+                self.config_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                cx.refresh();
+            }
+
             UiEvent::PersistUiState => {
                 // Cancel any pending save task and start a new one with a debounce
                 // delay.  When the timer fires, dirty entries are taken from the
@@ -1887,6 +1900,14 @@ impl Gpui {
     /// Used by the filesystem watcher to inject events into the UI loop.
     pub fn event_sender(&self) -> async_channel::Sender<UiEvent> {
         self.event_sender.lock().unwrap().clone()
+    }
+
+    /// Current config generation counter. Incremented each time providers.json
+    /// or models.json change on disk. Components compare this to their cached
+    /// value to decide when to reload.
+    pub fn config_generation(&self) -> u64 {
+        self.config_generation
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn get_current_error(&self) -> Option<String> {
