@@ -175,8 +175,23 @@ impl ModelSelector {
             Vec::new()
         };
 
+        // Determine which model should be selected: keep the existing
+        // selection if there is one, otherwise fall back to the Gpui global.
+        let model_to_select = self
+            .dropdown_state
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .or_else(|| {
+                cx.try_global::<super::Gpui>()
+                    .and_then(|gpui| gpui.get_current_model())
+            });
+
         self.dropdown_state.update(cx, |state, cx| {
             state.set_items(model_items, window, cx);
+            if let Some(selected) = model_to_select {
+                state.set_selected_value(&selected, window, cx);
+            }
         });
 
         self.config = config;
