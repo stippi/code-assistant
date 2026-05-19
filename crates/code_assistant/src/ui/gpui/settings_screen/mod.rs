@@ -178,29 +178,30 @@ impl Render for SettingsScreen {
                                 .child("Settings"),
                         ),
                     )
-                    // Right side - Back button
+                    // Right side - Done button
                     .child(
                         div()
-                            .id("settings-back-btn")
+                            .id("settings-done-btn")
                             .flex()
                             .items_center()
                             .gap_1()
-                            .px_2()
+                            .px_3()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_md()
                             .cursor_pointer()
-                            .hover(|s| s.bg(cx.theme().muted))
+                            .bg(cx.theme().primary)
+                            .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
                             .child(
                                 Icon::default()
-                                    .path(SharedString::from("icons/arrow_left.svg"))
+                                    .path(SharedString::from("icons/check.svg"))
                                     .with_size(Size::Small)
-                                    .text_color(cx.theme().muted_foreground),
+                                    .text_color(cx.theme().primary_foreground),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Back"),
+                                    .text_sm()
+                                    .text_color(cx.theme().primary_foreground)
+                                    .child("Done"),
                             )
                             .on_click(cx.listener(Self::on_back_clicked)),
                     ),
