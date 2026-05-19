@@ -94,12 +94,9 @@ impl Default for UiSettings {
 }
 
 impl UiSettings {
-    /// Path to the settings file.
+    /// Path to the settings file (uses the central config directory).
     fn settings_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| std::env::current_dir().unwrap())
-            .join("code-assistant")
-            .join("ui-settings.json")
+        crate::config_dir::config_dir().join("ui-settings.json")
     }
 
     /// Load settings from disk, returning defaults if the file is missing or invalid.

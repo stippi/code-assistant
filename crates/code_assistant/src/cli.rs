@@ -71,6 +71,10 @@ pub struct Args {
     #[command(subcommand)]
     pub mode: Option<Mode>,
 
+    /// Override configuration directory (where models.json, providers.json, etc. live)
+    #[arg(long)]
+    pub config_dir: Option<PathBuf>,
+
     /// Path to the code directory to analyze
     #[arg(long, default_value = ".")]
     pub path: PathBuf,

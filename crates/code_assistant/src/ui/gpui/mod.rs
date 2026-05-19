@@ -1078,6 +1078,16 @@ impl Gpui {
                 request_id,
                 node_id,
             } => {
+                // Finish any open thinking blocks in the previous container.
+                // After the restructuring (one container per LLM request), a
+                // thinking block in container A would never be completed if the
+                // next text/tool fragment arrives in a new container B, because
+                // finish_any_thinking_blocks only operates within the same
+                // container.
+                self.update_last_message(cx, |message, cx| {
+                    message.finish_any_thinking_blocks(cx);
+                });
+
                 let old_len;
                 {
                     let mut queue = self.message_queue.lock().unwrap();
@@ -1128,6 +1138,13 @@ impl Gpui {
                         message_container.remove_blocks_with_request_id(id, cx);
                     });
                     self.remove_empty_containers(cx);
+                } else {
+                    // Finish any open thinking blocks when streaming ends normally.
+                    // This handles the edge case where the LLM response ends after
+                    // thinking without producing text or tool calls.
+                    self.update_last_message(cx, |message, cx| {
+                        message.finish_any_thinking_blocks(cx);
+                    });
                 }
             }
             UiEvent::RollbackStreaming { id } => {

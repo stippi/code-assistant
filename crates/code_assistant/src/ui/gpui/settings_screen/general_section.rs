@@ -58,7 +58,10 @@ impl Render for GeneralSection {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("Configuration files are stored in ~/.config/code-assistant/"),
+                            .child(format!(
+                                "Configuration files are stored in {}",
+                                crate::config_dir::config_dir().display()
+                            )),
                     ),
             )
             // Config paths

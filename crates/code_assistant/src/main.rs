@@ -4,6 +4,7 @@ mod app;
 mod cli;
 mod codex_commands;
 mod config;
+mod config_dir;
 mod logging;
 mod mcp;
 mod permissions;
@@ -24,6 +25,11 @@ use anyhow::Result;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Apply config-dir override before anything loads config files
+    if let Some(ref dir) = args.config_dir {
+        config_dir::apply_override(dir);
+    }
 
     // Handle list commands first
     if args.handle_list_commands()? {
