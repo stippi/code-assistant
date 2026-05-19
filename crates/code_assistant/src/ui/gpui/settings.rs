@@ -67,6 +67,11 @@ pub struct UiSettings {
     /// Window position and size (if previously saved).
     #[serde(default)]
     pub window_bounds: Option<WindowBoundsSettings>,
+
+    /// Preferred default model for new sessions.
+    /// Used when no `--model` CLI argument is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
 }
 
 fn default_theme_mode() -> ThemeModeSetting {
@@ -83,6 +88,7 @@ impl Default for UiSettings {
             theme_mode: default_theme_mode(),
             ui_scale: default_ui_scale(),
             window_bounds: None,
+            default_model: None,
         }
     }
 }

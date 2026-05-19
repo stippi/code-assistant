@@ -424,6 +424,15 @@ pub fn apply_suggestion(
     let models_json = serde_json::to_string_pretty(&models_map)?;
     std::fs::write(&models_path, models_json)?;
 
+    // Set the first model as default if no default is configured yet
+    let mut settings = crate::ui::gpui::settings::UiSettings::load();
+    if settings.default_model.is_none() {
+        if let Some(first_model) = suggestion.models.first() {
+            settings.default_model = Some(first_model.display_name.to_string());
+            settings.save();
+        }
+    }
+
     Ok(())
 }
 

@@ -1726,6 +1726,39 @@ impl Gpui {
                 debug!("UI: ConfigChanged event — config files modified on disk");
                 self.config_generation
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // If no model is selected yet, try to resolve one from the
+                // updated config (e.g. after onboarding sets a default).
+                let current = self.current_model.lock().unwrap().clone();
+                if current.is_none() || current.as_deref() == Some("") {
+                    let settings = crate::ui::gpui::settings::UiSettings::load();
+                    if let Some(ref default_model) = settings.default_model {
+                        // Verify the model actually exists in config
+                        if let Ok(config) = llm::provider_config::ConfigurationSystem::load() {
+                            if config.get_model(default_model).is_some() {
+                                *self.current_model.lock().unwrap() = Some(default_model.clone());
+                                // Tell the backend to switch the active session's model
+                                // and update the default for future sessions
+                                if let Some(sender) =
+                                    self.backend_event_sender.lock().unwrap().as_ref()
+                                {
+                                    let _ = sender.try_send(BackendEvent::UpdateDefaultModel {
+                                        model_name: default_model.clone(),
+                                    });
+                                    if let Some(session_id) =
+                                        self.current_session_id.lock().unwrap().clone()
+                                    {
+                                        let _ = sender.try_send(BackendEvent::SwitchModel {
+                                            session_id,
+                                            model_name: default_model.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 cx.refresh();
             }
 

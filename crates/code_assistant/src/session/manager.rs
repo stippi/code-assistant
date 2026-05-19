@@ -95,6 +95,11 @@ impl SessionManager {
         SessionModelConfig::new(self.default_model_name.clone())
     }
 
+    /// Update the default model name used for newly created sessions.
+    pub fn set_default_model_name(&mut self, model_name: String) {
+        self.default_model_name = model_name;
+    }
+
     /// Create a new session with optional model config and return its ID
     pub fn create_session_with_config(
         &mut self,
