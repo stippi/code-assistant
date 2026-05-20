@@ -48,7 +48,13 @@ impl ToolBlockRenderer for CodeCardRenderer {
                     } else {
                         regex.to_string()
                     };
-                    format!("Search for \"{}\"", display)
+                    // Trim surrounding quotes from the display value to avoid
+                    // visual duplication with the wrapping quotes we add
+                    // (e.g. regex `cursor_"` would otherwise show as
+                    // `Search for "cursor_""`)
+                    let trimmed = display.strip_suffix('"').unwrap_or(&display);
+                    let trimmed = trimmed.strip_prefix('"').unwrap_or(trimmed);
+                    format!("Search for \"{}\"", trimmed)
                 } else {
                     "Search files".to_string()
                 }

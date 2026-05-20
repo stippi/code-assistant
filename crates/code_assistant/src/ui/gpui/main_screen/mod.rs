@@ -856,7 +856,14 @@ impl MainScreen {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let dialog = cx.new(|cx| NewProjectDialog::new(path, window, cx));
+        // Load existing projects so the dialog can validate name clashes
+        let existing_projects = crate::config::load_projects()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, project)| (name, project.path))
+            .collect();
+
+        let dialog = cx.new(|cx| NewProjectDialog::new(path, existing_projects, window, cx));
         let subscription = cx.subscribe_in(&dialog, window, Self::on_new_project_dialog_event);
         self.new_project_dialog = Some(dialog);
         self._new_project_dialog_subscription = Some(subscription);

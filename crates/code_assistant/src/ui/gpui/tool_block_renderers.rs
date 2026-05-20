@@ -443,6 +443,27 @@ mod tests {
     }
 
     #[test]
+    fn test_describe_search_files_trailing_quote() {
+        use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
+        let renderer = CodeCardRenderer;
+        // Regex ending with a literal " should not produce doubled closing quote
+        let tool = make_tool("search_files", &[("regex", "cursor_not_allowed\"")]);
+        assert_eq!(
+            renderer.describe(&tool),
+            "Search for \"cursor_not_allowed\""
+        );
+    }
+
+    #[test]
+    fn test_describe_search_files_surrounding_quotes() {
+        use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
+        let renderer = CodeCardRenderer;
+        // Regex wrapped in quotes (e.g. "foo") should strip both
+        let tool = make_tool("search_files", &[("regex", "\"cursor_\"")]);
+        assert_eq!(renderer.describe(&tool), "Search for \"cursor_\"");
+    }
+
+    #[test]
     fn test_describe_missing_params_fallback() {
         use crate::ui::gpui::code_card_renderer::CodeCardRenderer;
         let renderer = CodeCardRenderer;
