@@ -816,21 +816,16 @@ impl Render for MessagesView {
             .child(message_list)
             .when(show_scroll_button, |el| {
                 let is_dark = cx.theme().is_dark();
-                let btn_bg = if is_dark {
-                    cx.theme().muted
-                } else {
-                    cx.theme().border
-                };
-                let btn_hover_bg = if is_dark {
-                    cx.theme().muted_foreground.opacity(0.4)
-                } else {
-                    cx.theme().muted_foreground.opacity(0.3)
-                };
+                let btn_bg = cx.theme().muted;
+                // Hover must be fully opaque — opacity() sets alpha and causes
+                // see-through artifacts. Use a solid theme token instead.
+                let btn_hover_bg = cx.theme().secondary;
                 let btn_border = if is_dark {
                     cx.theme().muted_foreground.opacity(0.4)
                 } else {
                     cx.theme().border
                 };
+                let btn_hover_border = cx.theme().muted_foreground;
                 el.child(
                     // Full-width absolute wrapper to center the button horizontally
                     div()
@@ -853,7 +848,7 @@ impl Render for MessagesView {
                                 .border_color(btn_border)
                                 .shadow_md()
                                 .cursor(CursorStyle::PointingHand)
-                                .hover(move |s| s.bg(btn_hover_bg))
+                                .hover(move |s| s.bg(btn_hover_bg).border_color(btn_hover_border))
                                 .child(
                                     Icon::default()
                                         .path(SharedString::from("icons/chevron_down.svg"))
