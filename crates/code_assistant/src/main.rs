@@ -4,6 +4,7 @@ mod app;
 mod cli;
 mod codex_commands;
 mod config;
+mod config_dir;
 mod logging;
 mod mcp;
 mod permissions;
@@ -24,6 +25,11 @@ use anyhow::Result;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Apply config-dir override before anything loads config files
+    if let Some(ref dir) = args.config_dir {
+        config_dir::apply_override(dir);
+    }
 
     // Handle list commands first
     if args.handle_list_commands()? {
@@ -87,7 +93,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Path '{}' is not a directory", args.path.display());
             }
 
-            let model_name = args.get_model_name()?;
+            // In GUI mode, allow starting without a valid model config
+            // (the settings screen will guide the user through setup).
+            let model_name = if args.ui {
+                args.get_model_name().unwrap_or_default()
+            } else {
+                args.get_model_name()?
+            };
             let sandbox_policy = args.sandbox_policy();
 
             let config = app::AgentRunConfig {

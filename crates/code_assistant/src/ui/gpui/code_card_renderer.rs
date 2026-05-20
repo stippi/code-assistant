@@ -7,7 +7,8 @@ use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::gpui::tool_block_renderers::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::ui::ToolStatus;
 use gpui::{
-    div, px, rems, AnyElement, Context, Element, FontWeight, ParentElement, Styled, Window,
+    div, px, rems, AnyElement, Context, Element, FontWeight, HighlightStyle, ParentElement,
+    SharedString, Styled, StyledText, Window,
 };
 use serde_json::Value;
 
@@ -197,6 +198,11 @@ fn render_search_files_output(
     rem_size: gpui::Pixels,
 ) -> Option<AnyElement> {
     let results = json.get("results").and_then(|r| r.as_array())?;
+    let document_results = json
+        .get("document_results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
     let total_matches = json
         .get("total_matches")
         .and_then(|t| t.as_u64())
@@ -207,7 +213,7 @@ fn render_search_files_output(
         .unwrap_or(false);
     let line_height_px = rems(1.25).to_pixels(rem_size).round();
 
-    if results.is_empty() {
+    if results.is_empty() && document_results.is_empty() {
         let regex = json.get("regex").and_then(|r| r.as_str()).unwrap_or("");
         return Some(
             div()
@@ -226,14 +232,19 @@ fn render_search_files_output(
     let mut children: Vec<AnyElement> = Vec::new();
 
     // Summary header
+    let doc_match_count: u64 = document_results
+        .iter()
+        .filter_map(|d| d.get("match_count").and_then(|c| c.as_u64()))
+        .sum();
+    let total_display = total_matches + doc_match_count;
     let header_text = if truncated {
         format!(
             "Found {} matches (showing {})",
-            total_matches,
-            results.len()
+            total_display,
+            results.len() + document_results.len()
         )
     } else {
-        format!("Found {} matches", total_matches)
+        format!("Found {} matches", total_display)
     };
     children.push(
         div()
@@ -316,6 +327,112 @@ fn render_search_files_output(
         // Content with line numbers and inline match highlighting
         children.push(render_search_lines_with_gutter(
             &lines,
+            start_line,
+            &match_lines,
+            &match_ranges,
+            theme,
+            rem_size,
+        ));
+    }
+
+    // Render document matches (PDF, DOCX, etc.) – same layout as text matches
+    for doc_result in &document_results {
+        let file = doc_result
+            .get("file")
+            .and_then(|f| f.as_str())
+            .unwrap_or("unknown");
+        let format_str = doc_result
+            .get("format")
+            .and_then(|f| f.as_str())
+            .unwrap_or("");
+        let page = doc_result.get("page").and_then(|p| p.as_u64()).unwrap_or(0);
+        let start_line = doc_result
+            .get("start_line")
+            .and_then(|s| s.as_u64())
+            .unwrap_or(1) as usize;
+        let lines: Vec<String> = doc_result
+            .get("lines")
+            .and_then(|l| l.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .or_else(|| {
+                // Backward compat: old sessions stored an "excerpt" string instead of "lines"
+                doc_result
+                    .get("excerpt")
+                    .and_then(|e| e.as_str())
+                    .map(|s| s.lines().map(|l| l.to_string()).collect())
+            })
+            .unwrap_or_default();
+        let match_lines: Vec<usize> = doc_result
+            .get("match_lines")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as usize))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let match_ranges: Vec<Vec<(usize, usize)>> = doc_result
+            .get("match_ranges")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|line_ranges| {
+                        line_ranges
+                            .as_array()
+                            .map(|pairs| {
+                                pairs
+                                    .iter()
+                                    .filter_map(|pair| {
+                                        let p = pair.as_array()?;
+                                        Some((
+                                            p.first()?.as_u64()? as usize,
+                                            p.get(1)?.as_u64()? as usize,
+                                        ))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if lines.is_empty() {
+            continue;
+        }
+
+        // Document header with file, format, page, and line range
+        let end_line = start_line + lines.len() - 1;
+        let header = if page > 0 {
+            format!(
+                "── {} ({}, p.{}):{}-{} ──",
+                file, format_str, page, start_line, end_line
+            )
+        } else {
+            format!(
+                "── {} ({}):{}-{} ──",
+                file, format_str, start_line, end_line
+            )
+        };
+        children.push(
+            div()
+                .w_full()
+                .px_3()
+                .pt_1()
+                .pb_0p5()
+                .text_color(theme.muted_foreground.opacity(0.7))
+                .child(header)
+                .into_any(),
+        );
+
+        // Content with line numbers and inline match highlighting (reuse text search renderer)
+        let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        children.push(render_search_lines_with_gutter(
+            &lines_refs,
             start_line,
             &match_lines,
             &match_ranges,
@@ -492,62 +609,32 @@ fn render_search_lines_with_gutter(
 }
 
 /// Render a single line splitting it into normal and highlighted segments.
+/// Render a single line with highlighted match ranges using StyledText.
+/// This ensures proper text wrapping even for lines with highlights.
 fn render_line_with_highlights(
     line: &str,
     ranges: &[(usize, usize)],
-    text_color: gpui::Hsla,
+    _text_color: gpui::Hsla,
     highlight_bg: gpui::Hsla,
 ) -> AnyElement {
     if ranges.is_empty() {
         return div().child(line.to_string()).into_any();
     }
 
-    // Build segments: alternating normal text and highlighted spans
-    let mut segments: Vec<AnyElement> = Vec::new();
-    let mut pos = 0;
+    let highlight_style = HighlightStyle {
+        background_color: Some(highlight_bg),
+        ..Default::default()
+    };
 
-    for &(start, end) in ranges {
-        // Clamp to line length
-        let start = start.min(line.len());
-        let end = end.min(line.len());
-        if start >= end {
-            continue;
-        }
+    let highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = ranges
+        .iter()
+        .filter(|&&(start, end)| start < end && end <= line.len())
+        .map(|&(start, end)| (start..end, highlight_style))
+        .collect();
 
-        // Text before this match
-        if pos < start {
-            segments.push(
-                div()
-                    .text_color(text_color)
-                    .child(line[pos..start].to_string())
-                    .into_any(),
-            );
-        }
+    let styled = StyledText::new(SharedString::from(line.to_string())).with_highlights(highlights);
 
-        // The matched text with highlight background
-        segments.push(
-            div()
-                .bg(highlight_bg)
-                .rounded(px(2.))
-                .text_color(text_color)
-                .child(line[start..end].to_string())
-                .into_any(),
-        );
-
-        pos = end;
-    }
-
-    // Remaining text after last match
-    if pos < line.len() {
-        segments.push(
-            div()
-                .text_color(text_color)
-                .child(line[pos..].to_string())
-                .into_any(),
-        );
-    }
-
-    div().flex().flex_row().children(segments).into_any()
+    div().child(styled).into_any()
 }
 
 /// Fallback: render plain text output (for old sessions or parse errors).

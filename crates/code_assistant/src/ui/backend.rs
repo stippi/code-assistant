@@ -116,6 +116,12 @@ pub enum BackendEvent {
     RefreshSession {
         session_id: String,
     },
+
+    /// Update the default model name used for newly created sessions.
+    /// Sent after onboarding writes config and sets a default model.
+    UpdateDefaultModel {
+        model_name: String,
+    },
 }
 
 // Response from backend to UI
@@ -373,6 +379,13 @@ pub async fn handle_backend_events(
 
             BackendEvent::RefreshSession { session_id } => {
                 handle_refresh_session(&multi_session_manager, &session_id, &ui).await
+            }
+
+            BackendEvent::UpdateDefaultModel { model_name } => {
+                debug!("Updating default model name to: {}", model_name);
+                let mut manager = multi_session_manager.lock().await;
+                manager.set_default_model_name(model_name);
+                None
             }
         };
 

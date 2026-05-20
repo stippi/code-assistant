@@ -71,6 +71,10 @@ pub struct Args {
     #[command(subcommand)]
     pub mode: Option<Mode>,
 
+    /// Override configuration directory (where models.json, providers.json, etc. live)
+    #[arg(long)]
+    pub config_dir: Option<PathBuf>,
+
     /// Path to the code directory to analyze
     #[arg(long, default_value = ".")]
     pub path: PathBuf,
@@ -138,6 +142,11 @@ impl Args {
     }
 
     /// Resolve a model name, ensuring it exists in the configuration and providing a fallback.
+    ///
+    /// Resolution order:
+    /// 1. Explicit `--model` CLI argument
+    /// 2. Persisted `default_model` from ui-settings.json
+    /// 3. First model alphabetically from models.json
     pub fn resolve_model_name(model: Option<String>) -> anyhow::Result<String> {
         let config = ConfigurationSystem::load()?;
 
@@ -170,14 +179,15 @@ impl Args {
             );
         }
 
-        // Look for common model names as defaults
-        let preferred_defaults = ["Claude Sonnet 4.5", "GPT-5", "Claude Opus 4", "GPT-4.1"];
-        for default in &preferred_defaults {
-            if models.iter().any(|entry| entry == default) {
-                return Ok(default.to_string());
+        // Check persisted default model from settings
+        let settings = crate::ui::gpui::settings::UiSettings::load();
+        if let Some(ref default_model) = settings.default_model {
+            if config.get_model(default_model).is_some() {
+                return Ok(default_model.clone());
             }
         }
 
+        // Fallback: first model alphabetically
         models.sort();
         Ok(models
             .first()

@@ -619,8 +619,8 @@ impl CodeExplorer for Explorer {
     ) -> Result<String> {
         let resolved = self.resolve_path(path)?;
         let path = resolved.as_path();
-        // Get the original content
-        let original_content = std::fs::read_to_string(path)?;
+        // Get the original content using encoding-aware reading
+        let (original_content, detected_encoding) = crate::encoding::read_file_with_encoding(path)?;
 
         // Get file format or detect if not available
         let file_format = {
@@ -628,13 +628,12 @@ impl CodeExplorer for Explorer {
             match formats.get(path) {
                 Some(format) => format.clone(),
                 None => {
-                    // Detect format if not already known
-                    let encoding = FileEncoding::UTF8; // Fallback
+                    // Detect format from content
                     let line_ending = crate::encoding::detect_line_ending(&original_content);
                     let has_trailing_whitespace =
                         crate::encoding::detect_trailing_whitespace(&original_content);
                     FileFormat {
-                        encoding,
+                        encoding: detected_encoding,
                         line_ending,
                         has_trailing_whitespace,
                     }
@@ -671,8 +670,8 @@ impl CodeExplorer for Explorer {
         let resolved = self.resolve_path(path)?;
         let path = resolved.as_path();
 
-        // Get the original content
-        let original_content = std::fs::read_to_string(path)?;
+        // Get the original content using encoding-aware reading
+        let (original_content, detected_encoding) = crate::encoding::read_file_with_encoding(path)?;
 
         // Get file format or detect if not available
         let file_format = {
@@ -680,13 +679,12 @@ impl CodeExplorer for Explorer {
             match formats.get(path) {
                 Some(format) => format.clone(),
                 None => {
-                    // Detect format if not already known
-                    let encoding = FileEncoding::UTF8; // Fallback
+                    // Detect format from content
                     let line_ending = crate::encoding::detect_line_ending(&original_content);
                     let has_trailing_whitespace =
                         crate::encoding::detect_trailing_whitespace(&original_content);
                     FileFormat {
-                        encoding,
+                        encoding: detected_encoding,
                         line_ending,
                         has_trailing_whitespace,
                     }
@@ -722,8 +720,8 @@ impl CodeExplorer for Explorer {
             return Ok((updated_content, None));
         }
 
-        // Phase 5: Read formatted content
-        let formatted_content = std::fs::read_to_string(path)?;
+        // Phase 5: Read formatted content (encoding-aware)
+        let (formatted_content, _) = crate::encoding::read_file_with_encoding(path)?;
 
         // Phase 6: Try to reconstruct formatted replacements (if no conflicts)
         let updated_replacements = if has_conflicts {

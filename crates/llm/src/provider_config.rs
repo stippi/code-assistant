@@ -336,9 +336,12 @@ impl ConfigurationSystem {
     fn config_directories() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
 
+        // Explicit override is exclusive — don't search anywhere else.
         if let Ok(custom_dir) = std::env::var("CODE_ASSISTANT_CONFIG_DIR") {
-            Self::push_unique_dir(&mut dirs, PathBuf::from(custom_dir));
+            dirs.push(PathBuf::from(custom_dir));
+            return dirs;
         }
+
         if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
             Self::push_unique_dir(&mut dirs, PathBuf::from(xdg_config).join("code-assistant"));
         }

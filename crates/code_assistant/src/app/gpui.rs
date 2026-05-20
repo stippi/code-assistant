@@ -18,16 +18,13 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     let (backend_event_rx, backend_response_tx) = gui.setup_backend_communication();
 
     // Setup dynamic types for MultiSessionManager
-    let root_path = config.path.canonicalize()?;
     let persistence = crate::persistence::FileSessionPersistence::new();
 
+    // In GPUI mode, don't use the current directory as default session path.
+    // Sessions are project-based and get their path from the sidebar/projects.json.
     let session_config_template = SessionConfig {
-        init_path: Some(root_path.clone()),
-        initial_project: root_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("unknown")
-            .to_string(),
+        init_path: None,
+        initial_project: String::new(),
         tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
         sandbox_policy: config.sandbox_policy.clone(),
@@ -156,41 +153,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                         }
                     }
                 } else {
-                    info!("No existing sessions found - creating a new session automatically");
-
-                    // Create a new session automatically
-                    let new_session_id = {
-                        let mut manager = multi_session_manager.lock().await;
-                        manager
-                            .create_session_with_config(None, None, Some(base_model_config.clone()))
-                            .unwrap_or_else(|e| {
-                                error!("Failed to create new session: {}", e);
-                                // Return a fallback session ID if creation fails
-                                "fallback".to_string()
-                            })
-                    };
-
-                    if new_session_id != "fallback" {
-                        debug!("Created new session: {}", new_session_id);
-
-                        // Connect to the newly created session
-                        let ui_events = {
-                            let mut manager = multi_session_manager.lock().await;
-                            manager
-                                .set_active_session(new_session_id.clone())
-                                .await
-                                .unwrap_or_else(|e| {
-                                    error!("Failed to set active session: {}", e);
-                                    Vec::new()
-                                })
-                        };
-
-                        for event in ui_events {
-                            if let Err(e) = gui_for_thread.send_event(event).await {
-                                error!("Failed to send UI event: {}", e);
-                            }
-                        }
-                    }
+                    info!("No existing sessions found - showing empty state (no session view)");
+                    // In GPUI mode, don't auto-create a session. The user can
+                    // create one from the sidebar. The MessagesView will render
+                    // the "no session" hint since no session is connected.
                 }
             }
 

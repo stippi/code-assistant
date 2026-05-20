@@ -937,7 +937,7 @@ impl MessageContainer {
         }
     }
 
-    fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
+    pub fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
         let elements = self.elements.lock().unwrap();
 
         // Mark any previous thinking blocks as completed and not generating

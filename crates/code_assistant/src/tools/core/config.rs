@@ -42,27 +42,7 @@ impl ToolsConfig {
 
     /// Get the path to the tools configuration file.
     pub fn config_path() -> Result<PathBuf> {
-        // Use the same config directory as other code-assistant configs
-        let config_dir = Self::config_directory()?;
-        Ok(config_dir.join("tools.json"))
-    }
-
-    /// Get the configuration directory.
-    fn config_directory() -> Result<PathBuf> {
-        // Check for custom config directory first
-        if let Ok(custom_dir) = std::env::var("CODE_ASSISTANT_CONFIG_DIR") {
-            return Ok(PathBuf::from(custom_dir));
-        }
-
-        // Check XDG_CONFIG_HOME
-        if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-            return Ok(PathBuf::from(xdg_config).join("code-assistant"));
-        }
-
-        // Fall back to ~/.config/code-assistant
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-        Ok(home.join(".config").join("code-assistant"))
+        Ok(crate::config_dir::config_dir().join("tools.json"))
     }
 
     /// Substitute environment variables in configuration values.

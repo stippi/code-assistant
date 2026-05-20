@@ -3,7 +3,8 @@
 //! When the `document-conversion` feature is enabled, this module walks the project
 //! directory looking for supported document files (PDF, DOCX, XLSX, PPTX, ODT, RTF),
 //! converts them to Markdown page-by-page using `transmutation`, and searches the
-//! resulting text with the user's regex pattern. Matches are reported with page numbers.
+//! resulting text with the user's regex pattern. Matches are reported with context lines
+//! and grouped when they are close together, mirroring the behavior of text file search.
 
 use crate::types::DocumentMatchResult;
 use regex::RegexBuilder;
@@ -20,13 +21,13 @@ const MAX_DOCUMENTS_TO_SEARCH: usize = 20;
 /// Maximum file size for documents to search (10 MB).
 const MAX_SEARCH_DOCUMENT_SIZE: u64 = 10 * 1024 * 1024;
 
-/// Context characters around a match in the excerpt.
-const EXCERPT_CONTEXT: usize = 80;
+/// Context lines before and after a match.
+const CONTEXT_LINES: usize = 2;
 
 /// Search for `regex_pattern` within document files under `root_dir`.
 ///
 /// If `paths` is provided, only documents under those directories are searched.
-/// Returns a list of matches with page numbers and excerpts.
+/// Returns a list of matches with page numbers, context lines, and highlight info.
 pub async fn search_in_documents(
     root_dir: &Path,
     regex_pattern: &str,
@@ -138,58 +139,143 @@ pub async fn search_in_documents(
             Err(_) => continue,
         };
 
+        // Relative path for display
+        let rel_path = doc_path
+            .strip_prefix(root_dir)
+            .unwrap_or(doc_path)
+            .to_string_lossy()
+            .to_string();
+
         // Search each page
         for (page_idx, page_output) in conversion_result.content.iter().enumerate() {
             let page_text = match String::from_utf8(page_output.data.clone()) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
-            let matches: Vec<_> = regex.find_iter(&page_text).collect();
 
-            if matches.is_empty() {
+            let lines: Vec<&str> = page_text.lines().collect();
+            if lines.is_empty() {
                 continue;
             }
 
-            // Build excerpt around the first match
-            let first_match = &matches[0];
-            let start = first_match.start().saturating_sub(EXCERPT_CONTEXT);
-            let end = (first_match.end() + EXCERPT_CONTEXT).min(page_text.len());
+            // Find all matches and map them to line numbers
+            let mut line_matches: Vec<(usize, usize, usize)> = Vec::new(); // (line_idx, start_in_line, end_in_line)
 
-            // Snap to char boundaries
-            let mut excerpt_start = start;
-            while excerpt_start < page_text.len() && !page_text.is_char_boundary(excerpt_start) {
-                excerpt_start += 1;
-            }
-            let mut excerpt_end = end;
-            while excerpt_end < page_text.len() && !page_text.is_char_boundary(excerpt_end) {
-                excerpt_end += 1;
+            // Build line start offset index
+            let mut line_starts: Vec<usize> = Vec::new();
+            let mut offset = 0;
+            for line in &lines {
+                line_starts.push(offset);
+                offset += line.len() + 1; // +1 for newline
             }
 
-            let mut excerpt = String::new();
-            if excerpt_start > 0 {
-                excerpt.push_str("...");
-            }
-            excerpt.push_str(&page_text[excerpt_start..excerpt_end]);
-            if excerpt_end < page_text.len() {
-                excerpt.push_str("...");
+            for m in regex.find_iter(&page_text) {
+                let match_start = m.start();
+                let match_end = m.end();
+
+                // Find which line this match starts on
+                let line_idx = match line_starts.binary_search(&match_start) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+
+                if line_idx >= lines.len() {
+                    continue;
+                }
+
+                let line_offset = line_starts[line_idx];
+                let start_in_line = match_start - line_offset;
+                let end_in_line = (match_end - line_offset).min(lines[line_idx].len());
+
+                line_matches.push((line_idx, start_in_line, end_in_line));
             }
 
-            // Relative path for display
-            let rel_path = doc_path
-                .strip_prefix(root_dir)
-                .unwrap_or(doc_path)
-                .to_string_lossy()
-                .to_string();
+            if line_matches.is_empty() {
+                continue;
+            }
 
-            results.push(DocumentMatchResult {
-                file: rel_path,
-                format: format_name.to_string(),
-                page: page_idx + 1,
-                excerpt,
-                match_count: matches.len(),
-            });
+            // Group matches into sections (merge when context overlaps)
+            let sections = group_matches_into_sections(&line_matches, lines.len());
+
+            for section in sections {
+                let section_start = section.start_line;
+                let section_end = section.end_line;
+
+                let line_content: Vec<String> = lines[section_start..=section_end]
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect();
+
+                // Build match_lines and match_ranges relative to the section
+                let mut match_lines: Vec<usize> = Vec::new();
+                let mut match_ranges: Vec<Vec<(usize, usize)>> = Vec::new();
+
+                for &(line_idx, start, end) in &section.matches {
+                    let rel_line = line_idx - section_start;
+                    if let Some(pos) = match_lines.iter().position(|&x| x == rel_line) {
+                        match_ranges[pos].push((start, end));
+                    } else {
+                        match_lines.push(rel_line);
+                        match_ranges.push(vec![(start, end)]);
+                    }
+                }
+
+                results.push(DocumentMatchResult {
+                    file: rel_path.clone(),
+                    format: format_name.to_string(),
+                    page: page_idx + 1,
+                    line_content,
+                    start_line: section_start,
+                    match_lines,
+                    match_ranges,
+                    match_count: section.matches.len(),
+                });
+            }
         }
     }
 
     results
+}
+
+/// A grouped section of nearby matches.
+struct MatchSection {
+    start_line: usize,
+    end_line: usize,
+    matches: Vec<(usize, usize, usize)>, // (line_idx, start_in_line, end_in_line)
+}
+
+/// Group matches into sections, merging when their context lines would overlap.
+fn group_matches_into_sections(
+    line_matches: &[(usize, usize, usize)],
+    total_lines: usize,
+) -> Vec<MatchSection> {
+    if line_matches.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sections: Vec<MatchSection> = Vec::new();
+
+    for &(line_idx, start, end) in line_matches {
+        let context_start = line_idx.saturating_sub(CONTEXT_LINES);
+        let context_end = (line_idx + CONTEXT_LINES).min(total_lines - 1);
+
+        // Try to merge with the last section if overlapping
+        if let Some(last) = sections.last_mut()
+            && context_start <= last.end_line + 1
+        {
+            // Extend the section
+            last.end_line = last.end_line.max(context_end);
+            last.matches.push((line_idx, start, end));
+            continue;
+        }
+
+        // Start a new section
+        sections.push(MatchSection {
+            start_line: context_start,
+            end_line: context_end,
+            matches: vec![(line_idx, start, end)],
+        });
+    }
+
+    sections
 }

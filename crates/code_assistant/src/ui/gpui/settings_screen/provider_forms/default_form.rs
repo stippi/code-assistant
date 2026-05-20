@@ -36,6 +36,7 @@ impl DefaultProviderForm {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
+            .w_full()
             .flex()
             .items_center()
             .gap_3()
@@ -48,7 +49,7 @@ impl DefaultProviderForm {
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )
-            .child(div().flex_1().child(widget))
+            .child(div().flex_1().min_w_0().child(widget))
     }
 }
 

@@ -250,4 +250,9 @@ pub enum UiEvent {
         current_worktree_path: Option<PathBuf>,
         is_git_repo: bool,
     },
+
+    // === Configuration Events ===
+    /// Configuration files (providers.json / models.json) were changed on disk.
+    /// The UI should reload model lists, settings sections, etc.
+    ConfigChanged,
 }

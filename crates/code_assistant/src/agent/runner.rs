@@ -1255,10 +1255,10 @@ impl Agent {
     fn read_guidance_files(&self) -> Vec<(String, String)> {
         let mut guidance_files = Vec::new();
 
-        if let Some(config_dir) = dirs::home_dir().map(|home| home.join(".config/code-assistant")) {
-            if let Some((_, content)) = Self::read_guidance_from_dir(&config_dir, &["AGENTS.md"]) {
-                guidance_files.push(("~/.config/code-assistant/AGENTS.md".to_string(), content));
-            }
+        let config_dir = crate::config_dir::config_dir();
+        if let Some((_, content)) = Self::read_guidance_from_dir(&config_dir, &["AGENTS.md"]) {
+            let label = format!("{}/AGENTS.md", config_dir.display());
+            guidance_files.push((label, content));
         }
 
         // Determine search root from effective_project_path (worktree or init_path),

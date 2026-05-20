@@ -266,8 +266,8 @@ impl Render for SearchFilesOutput {
                     ">>>>> DOCUMENT MATCH: {} ({}, page {})\n",
                     doc_result.file, doc_result.format, doc_result.page
                 ));
-                formatted.push_str(&doc_result.excerpt);
-                if !doc_result.excerpt.ends_with('\n') {
+                for line in &doc_result.line_content {
+                    formatted.push_str(line);
                     formatted.push('\n');
                 }
                 formatted.push_str("<<<<< END DOCUMENT MATCH\n\n");
@@ -295,6 +295,23 @@ impl Render for SearchFilesOutput {
             })
             .collect();
 
+        let document_results: Vec<serde_json::Value> = self
+            .document_results
+            .iter()
+            .map(|doc| {
+                json!({
+                    "file": doc.file,
+                    "format": doc.format,
+                    "page": doc.page,
+                    "start_line": doc.start_line + 1, // Convert to 1-based
+                    "lines": doc.line_content,
+                    "match_lines": doc.match_lines,
+                    "match_ranges": doc.match_ranges,
+                    "match_count": doc.match_count,
+                })
+            })
+            .collect();
+
         json!({
             "kind": "search_files",
             "regex": self.regex,
@@ -302,6 +319,7 @@ impl Render for SearchFilesOutput {
             "truncated": self.truncated,
             "summary_mode": self.summary_mode,
             "results": results,
+            "document_results": document_results,
         })
         .to_string()
     }
@@ -634,8 +652,14 @@ mod tests {
                 file: "paper.pdf".to_string(),
                 format: "PDF".to_string(),
                 page: 3,
-                excerpt: "...explored previously in MemGPT [3]...".to_string(),
-                match_count: 4,
+                line_content: vec![
+                    "This concept has been explored previously in MemGPT [3].".to_string(),
+                    "MemGPT provides a virtual memory system for LLM agents.".to_string(),
+                ],
+                start_line: 10,
+                match_lines: vec![0, 1],
+                match_ranges: vec![vec![(45, 50)], vec![(0, 5)]],
+                match_count: 2,
             }],
         };
 
@@ -914,5 +938,44 @@ mod tests {
             main_rs_count, 1,
             "main.rs should appear only once in output"
         );
+    }
+
+    #[test]
+    fn test_deserialize_old_format_with_excerpt() {
+        // Old sessions stored DocumentMatchResult with an "excerpt" field instead of
+        // line_content/start_line/match_lines/match_ranges. Deserialization must still work.
+        let old_json = r#"{
+            "project": "test",
+            "regex": "MemGPT",
+            "results": [],
+            "total_matches": 0,
+            "truncated": false,
+            "summary_mode": false,
+            "document_results": [{
+                "file": "paper.pdf",
+                "format": "PDF",
+                "page": 3,
+                "excerpt": "...explored previously in MemGPT [3]...",
+                "match_count": 4
+            }]
+        }"#;
+
+        let output: SearchFilesOutput =
+            serde_json::from_str(old_json).expect("should deserialize old format");
+
+        assert_eq!(output.document_results.len(), 1);
+        let doc = &output.document_results[0];
+        assert_eq!(doc.file, "paper.pdf");
+        assert_eq!(doc.format, "PDF");
+        assert_eq!(doc.page, 3);
+        assert_eq!(doc.match_count, 4);
+        // excerpt should be converted into line_content
+        assert_eq!(
+            doc.line_content,
+            vec!["...explored previously in MemGPT [3]..."]
+        );
+        assert_eq!(doc.start_line, 0);
+        assert!(doc.match_lines.is_empty());
+        assert!(doc.match_ranges.is_empty());
     }
 }

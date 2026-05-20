@@ -80,13 +80,22 @@ pub fn read_file_with_encoding(path: &Path) -> Result<(String, FileEncoding)> {
                 return Some((UTF_8, 100));
             }
 
-            // Try common encodings
-            for enc in &[
-                encoding_rs::UTF_16LE,
-                encoding_rs::UTF_16BE,
-                encoding_rs::WINDOWS_1252,
-                encoding_rs::ISO_8859_2,
-            ] {
+            // Try UTF-16 only if there are strong indicators (frequent null bytes).
+            // UTF-16 encoded ASCII text has a null byte every other byte, so we check
+            // for a high ratio of null bytes as a heuristic.
+            let null_byte_ratio =
+                bytes.iter().filter(|&&b| b == 0).count() as f64 / bytes.len().max(1) as f64;
+            if null_byte_ratio > 0.2 {
+                for enc in &[encoding_rs::UTF_16LE, encoding_rs::UTF_16BE] {
+                    let (_result, _, had_errors) = enc.decode(&bytes);
+                    if !had_errors {
+                        return Some((enc, 80));
+                    }
+                }
+            }
+
+            // Try single-byte encodings (supersets of ASCII)
+            for enc in &[encoding_rs::WINDOWS_1252, encoding_rs::ISO_8859_2] {
                 let (_result, _, had_errors) = enc.decode(&bytes);
                 if !had_errors {
                     return Some((enc, 80));
@@ -245,6 +254,27 @@ pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -
 mod tests {
     use super::*;
     use crate::types::{FileFormat, LineEnding};
+
+    #[test]
+    fn test_iso_8859_1_not_detected_as_utf16() {
+        // Simulate a .properties file encoded in ISO-8859-1 with German umlauts.
+        // ü=0xFC, ä=0xE4, ö=0xF6 in ISO-8859-1.
+        let bytes: &[u8] = b"welcome=Willkommen zur\xfcck\nitem=Eintr\xe4ge \xfcbrig\n";
+        let tmp = std::env::temp_dir().join("test_iso8859.properties");
+        std::fs::write(&tmp, bytes).unwrap();
+
+        let (content, encoding) = read_file_with_encoding(&tmp).unwrap();
+        std::fs::remove_file(&tmp).unwrap();
+
+        // Must be detected as Windows-1252 (encoding_rs maps ISO-8859-1 to it)
+        assert!(
+            matches!(encoding, crate::types::FileEncoding::Windows1252),
+            "Expected Windows1252 but got {:?}",
+            encoding
+        );
+        assert!(content.contains("Willkommen zurück"));
+        assert!(content.contains("Einträge übrig"));
+    }
 
     #[test]
     fn test_normalize_content() {

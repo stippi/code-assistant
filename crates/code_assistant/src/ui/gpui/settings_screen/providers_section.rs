@@ -1,10 +1,12 @@
 //! Providers settings section — list configured providers, add/edit/remove.
 
 use super::provider_forms::ProviderFormHolder;
+use super::provider_suggestions::{self, ProviderSuggestion, UserEnvironment};
 use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, SharedString};
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use tracing::{debug, warn};
 
@@ -86,6 +88,12 @@ pub struct ProvidersSection {
     _provider_type_subscription: gpui::Subscription,
     // Provider-specific form
     form_holder: ProviderFormHolder,
+    // Onboarding suggestions
+    suggestions: Vec<ProviderSuggestion>,
+    /// Index of the suggestion currently being configured (expanded with input fields).
+    active_suggestion: Option<usize>,
+    /// Input states for the active suggestion's required fields.
+    suggestion_field_inputs: Vec<Entity<InputState>>,
 }
 
 impl ProvidersSection {
@@ -110,6 +118,14 @@ impl ProvidersSection {
 
         let form_holder = ProviderFormHolder::new("anthropic", window, cx);
 
+        // Detect user environment and get applicable suggestions
+        let user_env = UserEnvironment::detect();
+        let suggestions = if providers.is_empty() {
+            provider_suggestions::get_suggestions(&user_env)
+        } else {
+            Vec::new()
+        };
+
         Self {
             focus_handle: cx.focus_handle(),
             providers,
@@ -119,6 +135,9 @@ impl ProvidersSection {
             provider_type_select,
             _provider_type_subscription: provider_type_subscription,
             form_holder,
+            suggestions,
+            active_suggestion: None,
+            suggestion_field_inputs: Vec::new(),
         }
     }
 
@@ -194,8 +213,8 @@ impl ProvidersSection {
             .collect()
     }
 
-    /// Reload providers from disk.
-    fn reload(&mut self) {
+    /// Reload providers from disk (called when this section becomes visible).
+    pub fn reload(&mut self) {
         self.providers = Self::load_providers();
     }
 
@@ -356,6 +375,56 @@ impl ProvidersSection {
             .when(is_expanded, |el| el.child(self.render_inline_form(cx)))
     }
 
+    /// Render the "Add Provider" dialog as a centered overlay.
+    fn render_add_provider_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("add-provider-dialog-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(60.))
+            .bg(cx.theme().background.opacity(0.6))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.form_mode = FormMode::Hidden;
+                    cx.notify();
+                }),
+            )
+            .child(
+                // Dialog card
+                div()
+                    .id("add-provider-dialog")
+                    .w(px(480.))
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded_lg()
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    // Prevent backdrop click from closing when clicking inside dialog
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    // Title
+                    .child(
+                        div().px_4().py_3().child(
+                            div()
+                                .text_base()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(cx.theme().foreground)
+                                .child("New Provider"),
+                        ),
+                    )
+                    // Form content (reuse existing inline form)
+                    .child(self.render_inline_form(cx)),
+            )
+    }
+
     /// Render the form content that appears inside a provider card or as a standalone new-provider card.
     fn render_inline_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let editing_key = match &self.form_mode {
@@ -480,6 +549,7 @@ impl ProvidersSection {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
+            .w_full()
             .flex()
             .items_center()
             .gap_3()
@@ -492,7 +562,7 @@ impl ProvidersSection {
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )
-            .child(div().flex_1().child(widget))
+            .child(div().flex_1().min_w_0().child(widget))
     }
 
     fn render_add_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -501,21 +571,22 @@ impl ProvidersSection {
             .flex()
             .items_center()
             .gap_1()
-            .px_2()
+            .px_3()
             .py_1()
             .rounded_md()
             .cursor_pointer()
-            .hover(|s| s.bg(cx.theme().muted))
+            .bg(cx.theme().primary)
+            .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
             .child(
                 Icon::default()
                     .path(SharedString::from("icons/plus.svg"))
                     .with_size(Size::XSmall)
-                    .text_color(cx.theme().muted_foreground),
+                    .text_color(cx.theme().primary_foreground),
             )
             .child(
                 div()
                     .text_xs()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_color(cx.theme().primary_foreground)
                     .child("Add"),
             )
             .on_click(cx.listener(|this, _, window, cx| {
@@ -676,6 +747,323 @@ impl ProvidersSection {
 
         cx.notify();
     }
+
+    // -------------------------------------------------------------------------
+    // Suggestion cards (onboarding)
+    // -------------------------------------------------------------------------
+
+    /// Expand a suggestion card: create input states for its required fields.
+    fn expand_suggestion(
+        &mut self,
+        index: usize,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if index >= self.suggestions.len() {
+            return;
+        }
+        let suggestion = &self.suggestions[index];
+        let inputs: Vec<Entity<InputState>> = suggestion
+            .required_fields
+            .iter()
+            .map(|field| cx.new(|cx| InputState::new(window, cx).placeholder(field.placeholder)))
+            .collect();
+
+        self.active_suggestion = Some(index);
+        self.suggestion_field_inputs = inputs;
+        cx.notify();
+    }
+
+    /// Apply the active suggestion with user-provided field values.
+    fn apply_active_suggestion(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.active_suggestion else {
+            return;
+        };
+        let suggestion = self.suggestions[index].clone();
+
+        // Collect user-provided fields
+        let mut user_fields = Map::new();
+        for (i, field) in suggestion.required_fields.iter().enumerate() {
+            if let Some(input) = self.suggestion_field_inputs.get(i) {
+                let value = input.read(cx).value().to_string();
+                if !value.is_empty() {
+                    user_fields.insert(field.key.to_string(), Value::String(value));
+                }
+            }
+        }
+
+        // Check required fields are filled
+        let all_filled = suggestion.required_fields.iter().enumerate().all(|(i, _)| {
+            self.suggestion_field_inputs
+                .get(i)
+                .map(|input| !input.read(cx).value().is_empty())
+                .unwrap_or(false)
+        });
+
+        // If no required fields, or all are filled, apply
+        if !all_filled && !suggestion.required_fields.is_empty() {
+            // TODO: show validation error
+            return;
+        }
+
+        match provider_suggestions::apply_suggestion(&suggestion, &user_fields) {
+            Ok(()) => {
+                debug!("Applied suggestion '{}' successfully", suggestion.title);
+                // Remove this suggestion and reload providers
+                self.suggestions.remove(index);
+                self.active_suggestion = None;
+                self.suggestion_field_inputs.clear();
+                self.reload();
+            }
+            Err(e) => {
+                warn!("Failed to apply suggestion '{}': {}", suggestion.title, e);
+            }
+        }
+
+        cx.notify();
+    }
+
+    /// Render the suggestions section (shown when no providers exist).
+    fn render_suggestions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            // Header
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .pb_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(cx.theme().foreground)
+                            .child("Quick Setup"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Choose a provider to get started quickly, or use \"+ Add\" above for manual configuration."),
+                    ),
+            )
+            // Suggestion cards
+            .children(
+                self.suggestions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, suggestion)| {
+                        self.render_suggestion_card(i, suggestion, cx)
+                            .into_any_element()
+                    }),
+            )
+    }
+
+    /// Render a single suggestion card.
+    fn render_suggestion_card(
+        &self,
+        index: usize,
+        suggestion: &ProviderSuggestion,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_expanded = self.active_suggestion == Some(index);
+
+        div()
+            .id(SharedString::from(suggestion.id.to_string()))
+            .flex()
+            .flex_col()
+            .rounded_lg()
+            .border_1()
+            .border_color(if is_expanded {
+                cx.theme().primary
+            } else {
+                cx.theme().border
+            })
+            .bg(cx.theme().secondary)
+            .overflow_hidden()
+            // Header (clickable to expand)
+            .child(
+                div()
+                    .id(SharedString::from(format!("{}-header", suggestion.id)))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.active_suggestion == Some(index) {
+                            this.active_suggestion = None;
+                            this.suggestion_field_inputs.clear();
+                            cx.notify();
+                        } else {
+                            this.expand_suggestion(index, window, cx);
+                        }
+                    }))
+                    // Icon
+                    .child(
+                        div().flex_none().child(
+                            Icon::default()
+                                .path(SharedString::from(suggestion.icon.to_string()))
+                                .with_size(Size::Medium)
+                                .text_color(cx.theme().foreground),
+                        ),
+                    )
+                    // Info
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(cx.theme().foreground)
+                                    .child(SharedString::from(suggestion.title.to_string())),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(suggestion.description.to_string())),
+                            ),
+                    )
+                    // Chevron
+                    .child(
+                        div().flex_none().child(
+                            Icon::default()
+                                .path(SharedString::from(if is_expanded {
+                                    "icons/chevron_up.svg"
+                                } else {
+                                    "icons/chevron_down.svg"
+                                }))
+                                .with_size(Size::XSmall)
+                                .text_color(cx.theme().muted_foreground),
+                        ),
+                    ),
+            )
+            // Expanded form (fields + apply button)
+            .when(is_expanded, |el| {
+                el.child(self.render_suggestion_form(index, suggestion, cx))
+            })
+    }
+
+    /// Render the expanded form area for a suggestion.
+    fn render_suggestion_form(
+        &self,
+        _index: usize,
+        suggestion: &ProviderSuggestion,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let has_fields = !suggestion.required_fields.is_empty();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_4()
+            .pb_4()
+            .pt_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            // Required fields
+            .when(has_fields, |el| {
+                let mut container = el;
+                for (i, field) in suggestion.required_fields.iter().enumerate() {
+                    if let Some(input_state) = self.suggestion_field_inputs.get(i) {
+                        container = container.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .flex()
+                                        .items_center()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .w(px(80.))
+                                                .flex_none()
+                                                .text_xs()
+                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(SharedString::from(field.label.to_string())),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(200.))
+                                                .child(Input::new(input_state)),
+                                        ),
+                                )
+                                .when_some(field.help_text, |el, help| {
+                                    el.child(
+                                        div()
+                                            .pl(px(83.))
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground.opacity(0.8))
+                                            .child(SharedString::from(help.to_string())),
+                                    )
+                                }),
+                        );
+                    }
+                }
+                container
+            })
+            // Info about what will be created
+            .child(
+                div().flex().flex_col().gap_1().mt_1().child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(format!(
+                            "This will create the provider \"{}\" and {} model{}.",
+                            suggestion.provider_config.label,
+                            suggestion.models.len(),
+                            if suggestion.models.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ))),
+                ),
+            )
+            // Apply button
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .mt_2()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .id("apply-suggestion")
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_xs()
+                            .bg(cx.theme().primary)
+                            .text_color(cx.theme().primary_foreground)
+                            .hover(|s| s.opacity(0.9))
+                            .child(if has_fields { "Apply" } else { "Set Up" })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.apply_active_suggestion(cx);
+                            })),
+                    ),
+            )
+    }
 }
 
 impl Focusable for ProvidersSection {
@@ -689,84 +1077,75 @@ impl Render for ProvidersSection {
         let form_mode = self.form_mode.clone();
 
         div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .w_full()
-            .max_w(px(700.))
-            // Header
+            .relative()
+            .size_full()
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
+                    .flex_col()
+                    .gap_3()
+                    .w_full()
+                    .max_w(px(700.))
+                    .mx_auto()
+                    // Header
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().muted_foreground)
-                            .child("PROVIDERS"),
-                    )
-                    .child(self.render_add_button(cx)),
-            )
-            // Provider cards (form is inline inside the expanded card)
-            .children(
-                self.providers
-                    .clone()
-                    .iter()
-                    .map(|entry| self.render_provider_card(entry, cx).into_any_element()),
-            )
-            // Add new provider card (standalone form when adding)
-            .when(form_mode == FormMode::Adding, |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(cx.theme().primary)
-                        .bg(cx.theme().secondary)
-                        .overflow_hidden()
-                        // Title header
-                        .child(
-                            div().px_4().py_3().child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().foreground)
-                                    .child("New Provider"),
-                            ),
-                        )
-                        // Form content
-                        .child(self.render_inline_form(cx)),
-                )
-            })
-            // Empty state
-            .when(
-                self.providers.is_empty() && form_mode == FormMode::Hidden,
-                |el| {
-                    el.child(
-                        div()
                             .flex()
-                            .flex_col()
                             .items_center()
-                            .justify_center()
-                            .py_8()
-                            .gap_3()
+                            .justify_between()
                             .child(
                                 div()
-                                    .text_base()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("No providers configured yet"),
+                                    .child("PROVIDERS"),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Click \"+ Add\" above to get started."),
-                            ),
+                            .child(self.render_add_button(cx)),
                     )
-                },
+                    // Provider cards (form is inline inside the expanded card)
+                    .children(
+                        self.providers
+                            .clone()
+                            .iter()
+                            .map(|entry| self.render_provider_card(entry, cx).into_any_element()),
+                    )
+                    // Suggestions (shown as long as there are unapplied suggestions, regardless of form state)
+                    .when(!self.suggestions.is_empty(), |el| {
+                        el.child(self.render_suggestions(cx))
+                    })
+                    // Empty state (only shown if no providers AND no suggestions)
+                    .when(
+                        self.providers.is_empty()
+                            && self.suggestions.is_empty()
+                            && form_mode == FormMode::Hidden,
+                        |el| {
+                            el.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .py_8()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("No providers configured yet"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Click \"+ Add\" above to get started."),
+                                    ),
+                            )
+                        },
+                    ),
             )
+            // Dialog overlay for adding a new provider
+            .when(form_mode == FormMode::Adding, |el| {
+                el.child(self.render_add_provider_dialog(cx))
+            })
     }
 }

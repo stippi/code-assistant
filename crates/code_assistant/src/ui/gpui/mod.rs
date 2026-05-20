@@ -135,6 +135,10 @@ pub struct Gpui {
     /// Project names that exist in projects.json (i.e. first-class projects).
     /// Used by the sidebar to decide whether to show a "persist" icon.
     persisted_projects: Arc<Mutex<std::collections::HashSet<String>>>,
+
+    /// Incremented each time config files (providers.json / models.json) change on disk.
+    /// Components compare their locally cached generation with this to know when to reload.
+    config_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// State for a pending message edit (for branching)
@@ -427,6 +431,8 @@ impl Gpui {
                     .cloned()
                     .collect(),
             )),
+
+            config_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -1072,6 +1078,16 @@ impl Gpui {
                 request_id,
                 node_id,
             } => {
+                // Finish any open thinking blocks in the previous container.
+                // After the restructuring (one container per LLM request), a
+                // thinking block in container A would never be completed if the
+                // next text/tool fragment arrives in a new container B, because
+                // finish_any_thinking_blocks only operates within the same
+                // container.
+                self.update_last_message(cx, |message, cx| {
+                    message.finish_any_thinking_blocks(cx);
+                });
+
                 let old_len;
                 {
                     let mut queue = self.message_queue.lock().unwrap();
@@ -1122,6 +1138,13 @@ impl Gpui {
                         message_container.remove_blocks_with_request_id(id, cx);
                     });
                     self.remove_empty_containers(cx);
+                } else {
+                    // Finish any open thinking blocks when streaming ends normally.
+                    // This handles the edge case where the LLM response ends after
+                    // thinking without producing text or tool calls.
+                    self.update_last_message(cx, |message, cx| {
+                        message.finish_any_thinking_blocks(cx);
+                    });
                 }
             }
             UiEvent::RollbackStreaming { id } => {
@@ -1716,6 +1739,46 @@ impl Gpui {
                 cx.refresh();
             }
 
+            UiEvent::ConfigChanged => {
+                debug!("UI: ConfigChanged event — config files modified on disk");
+                self.config_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // If no model is selected yet, try to resolve one from the
+                // updated config (e.g. after onboarding sets a default).
+                let current = self.current_model.lock().unwrap().clone();
+                if current.is_none() || current.as_deref() == Some("") {
+                    let settings = crate::ui::gpui::settings::UiSettings::load();
+                    if let Some(ref default_model) = settings.default_model {
+                        // Verify the model actually exists in config
+                        if let Ok(config) = llm::provider_config::ConfigurationSystem::load() {
+                            if config.get_model(default_model).is_some() {
+                                *self.current_model.lock().unwrap() = Some(default_model.clone());
+                                // Tell the backend to switch the active session's model
+                                // and update the default for future sessions
+                                if let Some(sender) =
+                                    self.backend_event_sender.lock().unwrap().as_ref()
+                                {
+                                    let _ = sender.try_send(BackendEvent::UpdateDefaultModel {
+                                        model_name: default_model.clone(),
+                                    });
+                                    if let Some(session_id) =
+                                        self.current_session_id.lock().unwrap().clone()
+                                    {
+                                        let _ = sender.try_send(BackendEvent::SwitchModel {
+                                            session_id,
+                                            model_name: default_model.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                cx.refresh();
+            }
+
             UiEvent::PersistUiState => {
                 // Cancel any pending save task and start a new one with a debounce
                 // delay.  When the timer fires, dirty entries are taken from the
@@ -1887,6 +1950,14 @@ impl Gpui {
     /// Used by the filesystem watcher to inject events into the UI loop.
     pub fn event_sender(&self) -> async_channel::Sender<UiEvent> {
         self.event_sender.lock().unwrap().clone()
+    }
+
+    /// Current config generation counter. Incremented each time providers.json
+    /// or models.json change on disk. Components compare this to their cached
+    /// value to decide when to reload.
+    pub fn config_generation(&self) -> u64 {
+        self.config_generation
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn get_current_error(&self) -> Option<String> {
