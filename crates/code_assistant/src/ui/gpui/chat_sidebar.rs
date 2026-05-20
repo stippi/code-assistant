@@ -398,6 +398,11 @@ impl ChatSidebar {
             project_sessions.entry(project).or_default().push(session);
         }
 
+        // Ensure persisted projects appear even when they have zero sessions
+        for project_name in &self.persisted_projects {
+            project_sessions.entry(project_name.clone()).or_default();
+        }
+
         // Sort projects by the most recent session's updated_at
         let mut project_order: Vec<(String, Vec<ChatMetadata>)> =
             project_sessions.into_iter().collect();

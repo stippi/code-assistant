@@ -220,6 +220,11 @@ pub enum BackendResponse {
     ProjectPersisted {
         project_name: String,
     },
+
+    /// The project already exists (same name and path) — no changes were made
+    ProjectAlreadyExists {
+        project_name: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1374,6 +1379,28 @@ async fn handle_add_project(
     path: &PathBuf,
 ) -> BackendResponse {
     info!("Adding project '{}' at {:?}", name, path);
+
+    // Check if this project already exists with the same name and path
+    if let Ok(existing_projects) = crate::config::load_projects() {
+        if let Some(existing) = existing_projects.get(name) {
+            // Canonicalize both paths for comparison
+            let existing_canonical = existing.path.canonicalize().ok();
+            let new_canonical = path.canonicalize().ok();
+            let paths_match = match (&existing_canonical, &new_canonical) {
+                (Some(a), Some(b)) => a == b,
+                _ => existing.path == *path,
+            };
+            if paths_match {
+                info!(
+                    "Project '{}' already exists with the same path — no-op",
+                    name
+                );
+                return BackendResponse::ProjectAlreadyExists {
+                    project_name: name.to_string(),
+                };
+            }
+        }
+    }
 
     // Save to projects.json
     let project = Project {

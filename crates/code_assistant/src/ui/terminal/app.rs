@@ -547,7 +547,8 @@ impl TerminalTuiApp {
                         }
 
                         BackendResponse::ProjectAdded { .. }
-                        | BackendResponse::ProjectPersisted { .. } => {
+                        | BackendResponse::ProjectPersisted { .. }
+                        | BackendResponse::ProjectAlreadyExists { .. } => {
                             // Project management not supported in terminal UI
                         }
                     }
