@@ -568,18 +568,13 @@ fn render_unified_diff(
         });
     }
 
-    // Compute the gutter width (number of digits) if we have line numbers
+    // Compute the gutter width (number of digits) based on new-file line numbers
     let gutter_width = if let Some(start) = start_line {
-        // Estimate the max line number: start + total lines in diff (generous upper bound)
-        let old_count = diff_lines
-            .iter()
-            .filter(|l| l.tag != ChangeTag::Insert)
-            .count();
         let new_count = diff_lines
             .iter()
             .filter(|l| l.tag != ChangeTag::Delete)
             .count();
-        let max_line = start + old_count.max(new_count);
+        let max_line = start + new_count;
         max_line.to_string().len()
     } else {
         0
@@ -610,19 +605,18 @@ fn render_unified_diff(
                 row = row.bg(bg);
             }
 
-            // Gutter with line number
+            // Gutter with line number (shows new-file line numbers)
             if start_line.is_some() {
                 let gutter_text = match dl.tag {
                     ChangeTag::Equal => {
-                        let num = old_line_num;
+                        let num = new_line_num;
                         old_line_num += 1;
                         new_line_num += 1;
                         format!("{:>width$}", num, width = gutter_width)
                     }
                     ChangeTag::Delete => {
-                        let num = old_line_num;
                         old_line_num += 1;
-                        format!("{:>width$}", num, width = gutter_width)
+                        format!("{:>width$}", "", width = gutter_width)
                     }
                     ChangeTag::Insert => {
                         let num = new_line_num;

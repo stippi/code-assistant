@@ -111,7 +111,7 @@ impl MessagesView {
             let anim_active = anim_active_for_handler.clone();
             let prev_offset = prev_scroll_offset.clone();
             cx.defer(move |cx| {
-                let _ = entity.update(cx, |this, _cx| {
+                let _ = entity.update(cx, |this, cx| {
                     // offset.y is negative: 0 = top, -max = bottom
                     let current: f32 = this.list_state.scroll_px_offset_for_scrollbar().y.into();
                     let previous = prev_offset.get();
@@ -124,7 +124,10 @@ impl MessagesView {
 
                     if delta > 0.5 {
                         // User scrolled UP → disable follow
-                        this.follow_tail = false;
+                        if this.follow_tail {
+                            this.follow_tail = false;
+                            cx.notify();
+                        }
                         anim_active.set(false);
                         this.smooth_scroll_task = None;
                     } else if delta < -0.5 {
@@ -134,6 +137,7 @@ impl MessagesView {
                             let distance_from_bottom = max - current_abs;
                             if distance_from_bottom < 50.0 && !this.follow_tail {
                                 this.follow_tail = true;
+                                cx.notify();
                             }
                         }
                     }
@@ -448,7 +452,6 @@ impl MessagesView {
 
     /// Force-enable follow_tail and kick off smooth scrolling.
     /// Called when the user explicitly wants to go to the bottom (e.g. button click).
-    #[allow(dead_code)]
     pub fn activate_follow_tail(&mut self) {
         self.follow_tail = true;
         self.scroll_to_bottom();
@@ -798,6 +801,8 @@ impl Render for MessagesView {
             self.spawn_animation_task(cx);
         }
 
+        let show_scroll_button = !self.follow_tail && total_items > 0;
+
         div()
             .id("messages")
             .relative()
@@ -809,6 +814,59 @@ impl Render for MessagesView {
             .bg(cx.theme().popover)
             .text_size(rems(1.0))
             .child(message_list)
+            .when(show_scroll_button, |el| {
+                let is_dark = cx.theme().is_dark();
+                let btn_bg = if is_dark {
+                    cx.theme().muted
+                } else {
+                    cx.theme().border
+                };
+                let btn_hover_bg = if is_dark {
+                    cx.theme().muted_foreground.opacity(0.4)
+                } else {
+                    cx.theme().muted_foreground.opacity(0.3)
+                };
+                let btn_border = if is_dark {
+                    cx.theme().muted_foreground.opacity(0.4)
+                } else {
+                    cx.theme().border
+                };
+                el.child(
+                    // Full-width absolute wrapper to center the button horizontally
+                    div()
+                        .absolute()
+                        .bottom_4()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("scroll-to-bottom")
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .w_8()
+                                .h_8()
+                                .rounded_full()
+                                .bg(btn_bg)
+                                .border_1()
+                                .border_color(btn_border)
+                                .shadow_md()
+                                .cursor(CursorStyle::PointingHand)
+                                .hover(move |s| s.bg(btn_hover_bg))
+                                .child(
+                                    Icon::default()
+                                        .path(SharedString::from("icons/chevron_down.svg"))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .size(px(16.)),
+                                )
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.activate_follow_tail();
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .vertical_scrollbar(&self.list_state)
             .into_any()
     }
