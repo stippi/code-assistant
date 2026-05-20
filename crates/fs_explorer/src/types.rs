@@ -92,18 +92,83 @@ pub struct SearchResult {
 }
 
 /// A match found inside a document file (PDF, DOCX, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Structured similarly to SearchResult for consistent rendering.
+#[derive(Debug, Clone, Serialize)]
 pub struct DocumentMatchResult {
     /// Path to the document file (relative to project root).
     pub file: String,
     /// Document format (e.g. "PDF", "DOCX").
     pub format: String,
-    /// Page number where the match was found (1-indexed).
+    /// Page number where the match was found (1-indexed, 0 if unknown).
     pub page: usize,
-    /// A text excerpt around the match.
-    pub excerpt: String,
-    /// Number of matches on this page.
+    /// Lines of content in this section (like SearchResult.line_content).
+    pub line_content: Vec<String>,
+    /// Start line (0-based) within the page text for this section.
+    pub start_line: usize,
+    /// Indices into line_content that contain matches (0-based, relative to section).
+    pub match_lines: Vec<usize>,
+    /// Per match-line, a list of (start_byte, end_byte) ranges within that line.
+    pub match_ranges: Vec<Vec<(usize, usize)>>,
+    /// Total number of matches in this section.
     pub match_count: usize,
+}
+
+// Custom Deserialize to support both the old format (with `excerpt` field) and the new format.
+impl<'de> Deserialize<'de> for DocumentMatchResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            file: String,
+            format: String,
+            page: usize,
+            // New fields (optional for backward compat)
+            line_content: Option<Vec<String>>,
+            start_line: Option<usize>,
+            match_lines: Option<Vec<usize>>,
+            match_ranges: Option<Vec<Vec<(usize, usize)>>>,
+            match_count: Option<usize>,
+            // Old field
+            excerpt: Option<String>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+
+        // If new fields are present, use them directly
+        if let Some(line_content) = helper.line_content {
+            Ok(DocumentMatchResult {
+                file: helper.file,
+                format: helper.format,
+                page: helper.page,
+                line_content,
+                start_line: helper.start_line.unwrap_or(0),
+                match_lines: helper.match_lines.unwrap_or_default(),
+                match_ranges: helper.match_ranges.unwrap_or_default(),
+                match_count: helper.match_count.unwrap_or(1),
+            })
+        } else {
+            // Old format: convert excerpt into single-line content
+            let excerpt = helper.excerpt.unwrap_or_default();
+            let lines: Vec<String> = if excerpt.is_empty() {
+                Vec::new()
+            } else {
+                excerpt.lines().map(|l| l.to_string()).collect()
+            };
+            let match_count = helper.match_count.unwrap_or(1);
+            Ok(DocumentMatchResult {
+                file: helper.file,
+                format: helper.format,
+                page: helper.page,
+                line_content: lines,
+                start_line: 0,
+                match_lines: Vec::new(),
+                match_ranges: Vec::new(),
+                match_count,
+            })
+        }
+    }
 }
 
 #[async_trait::async_trait]
