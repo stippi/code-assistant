@@ -375,6 +375,56 @@ impl ProvidersSection {
             .when(is_expanded, |el| el.child(self.render_inline_form(cx)))
     }
 
+    /// Render the "Add Provider" dialog as a centered overlay.
+    fn render_add_provider_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("add-provider-dialog-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(60.))
+            .bg(cx.theme().background.opacity(0.6))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.form_mode = FormMode::Hidden;
+                    cx.notify();
+                }),
+            )
+            .child(
+                // Dialog card
+                div()
+                    .id("add-provider-dialog")
+                    .w(px(480.))
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded_lg()
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    // Prevent backdrop click from closing when clicking inside dialog
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    // Title
+                    .child(
+                        div().px_4().py_3().child(
+                            div()
+                                .text_base()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(cx.theme().foreground)
+                                .child("New Provider"),
+                        ),
+                    )
+                    // Form content (reuse existing inline form)
+                    .child(self.render_inline_form(cx)),
+            )
+    }
+
     /// Render the form content that appears inside a provider card or as a standalone new-provider card.
     fn render_inline_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let editing_key = match &self.form_mode {
@@ -521,21 +571,22 @@ impl ProvidersSection {
             .flex()
             .items_center()
             .gap_1()
-            .px_2()
+            .px_3()
             .py_1()
             .rounded_md()
             .cursor_pointer()
-            .hover(|s| s.bg(cx.theme().muted))
+            .bg(cx.theme().primary)
+            .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
             .child(
                 Icon::default()
                     .path(SharedString::from("icons/plus.svg"))
                     .with_size(Size::XSmall)
-                    .text_color(cx.theme().muted_foreground),
+                    .text_color(cx.theme().primary_foreground),
             )
             .child(
                 div()
                     .text_xs()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_color(cx.theme().primary_foreground)
                     .child("Add"),
             )
             .on_click(cx.listener(|this, _, window, cx| {
@@ -1026,90 +1077,75 @@ impl Render for ProvidersSection {
         let form_mode = self.form_mode.clone();
 
         div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .w_full()
-            .max_w(px(700.))
-            // Header
+            .relative()
+            .size_full()
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
+                    .flex_col()
+                    .gap_3()
+                    .w_full()
+                    .max_w(px(700.))
+                    .mx_auto()
+                    // Header
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().muted_foreground)
-                            .child("PROVIDERS"),
-                    )
-                    .child(self.render_add_button(cx)),
-            )
-            // Provider cards (form is inline inside the expanded card)
-            .children(
-                self.providers
-                    .clone()
-                    .iter()
-                    .map(|entry| self.render_provider_card(entry, cx).into_any_element()),
-            )
-            // Add new provider card (standalone form when adding)
-            .when(form_mode == FormMode::Adding, |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(cx.theme().primary)
-                        .bg(cx.theme().secondary)
-                        .overflow_hidden()
-                        // Title header
-                        .child(
-                            div().px_4().py_3().child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().foreground)
-                                    .child("New Provider"),
-                            ),
-                        )
-                        // Form content
-                        .child(self.render_inline_form(cx)),
-                )
-            })
-            // Suggestions (shown as long as there are unapplied suggestions, regardless of form state)
-            .when(!self.suggestions.is_empty(), |el| {
-                el.child(self.render_suggestions(cx))
-            })
-            // Empty state (only shown if no providers AND no suggestions)
-            .when(
-                self.providers.is_empty()
-                    && self.suggestions.is_empty()
-                    && form_mode == FormMode::Hidden,
-                |el| {
-                    el.child(
-                        div()
                             .flex()
-                            .flex_col()
                             .items_center()
-                            .justify_center()
-                            .py_8()
-                            .gap_3()
+                            .justify_between()
                             .child(
                                 div()
-                                    .text_base()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("No providers configured yet"),
+                                    .child("PROVIDERS"),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Click \"+ Add\" above to get started."),
-                            ),
+                            .child(self.render_add_button(cx)),
                     )
-                },
+                    // Provider cards (form is inline inside the expanded card)
+                    .children(
+                        self.providers
+                            .clone()
+                            .iter()
+                            .map(|entry| self.render_provider_card(entry, cx).into_any_element()),
+                    )
+                    // Suggestions (shown as long as there are unapplied suggestions, regardless of form state)
+                    .when(!self.suggestions.is_empty(), |el| {
+                        el.child(self.render_suggestions(cx))
+                    })
+                    // Empty state (only shown if no providers AND no suggestions)
+                    .when(
+                        self.providers.is_empty()
+                            && self.suggestions.is_empty()
+                            && form_mode == FormMode::Hidden,
+                        |el| {
+                            el.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .py_8()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("No providers configured yet"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Click \"+ Add\" above to get started."),
+                                    ),
+                            )
+                        },
+                    ),
             )
+            // Dialog overlay for adding a new provider
+            .when(form_mode == FormMode::Adding, |el| {
+                el.child(self.render_add_provider_dialog(cx))
+            })
     }
 }
