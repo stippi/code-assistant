@@ -14,6 +14,8 @@ env:
 jobs:
   prepare-version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -118,9 +120,8 @@ jobs:
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         with:
+          token: ${{ secrets.GH_PUSH_TOKEN }}
           tag_name: v${{ steps.release_version.outputs.new_version }}
           name: Release v${{ steps.release_version.outputs.new_version }}
           draft: true
@@ -157,6 +158,8 @@ jobs:
             extension: ".exe"
 
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -238,22 +241,22 @@ jobs:
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         with:
+          token: ${{ secrets.GH_PUSH_TOKEN }}
           tag_name: v${{ needs.prepare-version.outputs.new_version }}
           files: release/code-assistant-${{ matrix.name }}.zip
 
   finalize-release:
     needs: [prepare-version, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: success()
 
     steps:
       - name: Publish Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         with:
+          token: ${{ secrets.GH_PUSH_TOKEN }}
           tag_name: v${{ needs.prepare-version.outputs.new_version }}
           draft: false
