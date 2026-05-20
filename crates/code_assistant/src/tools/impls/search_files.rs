@@ -295,6 +295,20 @@ impl Render for SearchFilesOutput {
             })
             .collect();
 
+        let document_results: Vec<serde_json::Value> = self
+            .document_results
+            .iter()
+            .map(|doc| {
+                json!({
+                    "file": doc.file,
+                    "format": doc.format,
+                    "page": doc.page,
+                    "excerpt": doc.excerpt,
+                    "match_count": doc.match_count,
+                })
+            })
+            .collect();
+
         json!({
             "kind": "search_files",
             "regex": self.regex,
@@ -302,6 +316,7 @@ impl Render for SearchFilesOutput {
             "truncated": self.truncated,
             "summary_mode": self.summary_mode,
             "results": results,
+            "document_results": document_results,
         })
         .to_string()
     }

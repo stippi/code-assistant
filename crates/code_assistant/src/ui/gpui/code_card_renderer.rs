@@ -197,6 +197,11 @@ fn render_search_files_output(
     rem_size: gpui::Pixels,
 ) -> Option<AnyElement> {
     let results = json.get("results").and_then(|r| r.as_array())?;
+    let document_results = json
+        .get("document_results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
     let total_matches = json
         .get("total_matches")
         .and_then(|t| t.as_u64())
@@ -207,7 +212,7 @@ fn render_search_files_output(
         .unwrap_or(false);
     let line_height_px = rems(1.25).to_pixels(rem_size).round();
 
-    if results.is_empty() {
+    if results.is_empty() && document_results.is_empty() {
         let regex = json.get("regex").and_then(|r| r.as_str()).unwrap_or("");
         return Some(
             div()
@@ -226,14 +231,19 @@ fn render_search_files_output(
     let mut children: Vec<AnyElement> = Vec::new();
 
     // Summary header
+    let doc_match_count: u64 = document_results
+        .iter()
+        .filter_map(|d| d.get("match_count").and_then(|c| c.as_u64()))
+        .sum();
+    let total_display = total_matches + doc_match_count;
     let header_text = if truncated {
         format!(
             "Found {} matches (showing {})",
-            total_matches,
-            results.len()
+            total_display,
+            results.len() + document_results.len()
         )
     } else {
-        format!("Found {} matches", total_matches)
+        format!("Found {} matches", total_display)
     };
     children.push(
         div()
@@ -322,6 +332,45 @@ fn render_search_files_output(
             theme,
             rem_size,
         ));
+    }
+
+    // Render document matches (PDF, DOCX, etc.)
+    for doc_result in &document_results {
+        let file = doc_result
+            .get("file")
+            .and_then(|f| f.as_str())
+            .unwrap_or("unknown");
+        let format_str = doc_result
+            .get("format")
+            .and_then(|f| f.as_str())
+            .unwrap_or("");
+        let page = doc_result.get("page").and_then(|p| p.as_u64()).unwrap_or(0);
+        let excerpt = doc_result
+            .get("excerpt")
+            .and_then(|e| e.as_str())
+            .unwrap_or("");
+
+        // Document header
+        children.push(
+            div()
+                .w_full()
+                .px_3()
+                .pt_1()
+                .pb_0p5()
+                .text_color(theme.muted_foreground.opacity(0.7))
+                .child(format!("── {} ({}, page {}) ──", file, format_str, page))
+                .into_any(),
+        );
+
+        // Excerpt content
+        children.push(
+            div()
+                .w_full()
+                .px_3()
+                .text_color(theme.foreground)
+                .child(excerpt.to_string())
+                .into_any(),
+        );
     }
 
     if truncated {
