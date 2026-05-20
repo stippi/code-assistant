@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "code-assistant"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -4768,7 +4768,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llm"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9737,7 +9737,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "async-trait",
