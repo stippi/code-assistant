@@ -2422,6 +2422,9 @@ impl Gpui {
                 // Trigger a re-render so the sidebar picks up the change.
                 cx.refresh();
             }
+            BackendResponse::ProjectAlreadyExists { project_name } => {
+                info!("Project '{}' already exists — nothing to do", project_name);
+            }
         }
     }
 }

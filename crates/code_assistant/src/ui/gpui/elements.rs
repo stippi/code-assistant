@@ -1514,7 +1514,7 @@ impl BlockView {
             && (block.status == ToolStatus::Pending || block.status == ToolStatus::Running);
 
         // --- Build the element ---
-        let mut container = div().w_full();
+        let mut container = div().w_full().mt_0p5();
 
         // Header line: clickable area with icon + description + chevron-on-hover
         let header = div()
@@ -1629,6 +1629,7 @@ impl Render for BlockView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.block.clone() {
             BlockData::TextBlock(block) => div()
+                .mt_3()
                 .text_color(cx.theme().foreground)
                 .child(self.markdown_view(&block.content, true, cx))
                 .into_any_element(),
@@ -1664,6 +1665,7 @@ impl Render for BlockView {
                 let text_color = cx.theme().info_foreground;
 
                 div()
+                    .mt_2()
                     .rounded_md()
                     .bg(thinking_bg)
                     .flex()
@@ -1828,24 +1830,29 @@ impl Render for BlockView {
                                     window,
                                     cx,
                                 ) {
-                                    return element;
+                                    return div().mt_2().child(element).into_any_element();
                                 }
                                 // Renderer returned None (e.g. parameters still
                                 // streaming) — show a skeleton card with just
                                 // the header so we don't flash a raw "[name]"
                                 // placeholder.
-                                return self.render_card_skeleton(
-                                    &block,
-                                    renderer.as_ref(),
-                                    &theme,
-                                );
+                                return div()
+                                    .mt_2()
+                                    .child(self.render_card_skeleton(
+                                        &block,
+                                        renderer.as_ref(),
+                                        &theme,
+                                    ))
+                                    .into_any_element();
                             }
                         }
                     } else {
                         tracing::warn!("No ToolBlockRenderer registered for tool '{}'", block.name);
                     }
                 }
+
                 div()
+                    .mt_0p5()
                     .px_2()
                     .py_1()
                     .text_color(cx.theme().muted_foreground)
@@ -1926,6 +1933,7 @@ impl Render for BlockView {
                 }
 
                 div()
+                    .mt_2()
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
@@ -1939,8 +1947,8 @@ impl Render for BlockView {
             }
             BlockData::ImageBlock(block) => {
                 if let Some(image) = &block.image {
-                    // Render the actual image - margins/spacing handled by parent container
                     div()
+                        .mt_2()
                         .flex_none() // Don't grow or shrink
                         .child(
                             div()
@@ -1960,6 +1968,7 @@ impl Render for BlockView {
                 } else {
                     // Fallback to placeholder if image parsing failed
                     div()
+                        .mt_2()
                         .flex_none()
                         .p_2()
                         .bg(cx.theme().warning.opacity(0.1))

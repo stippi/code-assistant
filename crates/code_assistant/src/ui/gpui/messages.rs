@@ -553,18 +553,25 @@ impl MessagesView {
         };
 
         // Create message container with appropriate styling.
-        // p_3 provides interior padding. max_w is applied via the centering
-        // wrapper returned at the end of this function.
-        let mut message_container = div().w_full().p_3().flex().flex_col().gap(rems(0.625));
-
-        if is_user_message {
-            message_container = message_container
+        // max_w is applied via the centering wrapper returned at the end.
+        // For user messages: uniform padding + gap between children.
+        // For assistant messages: only horizontal padding; each block controls
+        // its own vertical margin so inline tools can be tighter than text.
+        let message_container = if is_user_message {
+            div()
+                .w_full()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap(rems(0.625))
                 .bg(cx.theme().muted)
                 .border_1()
                 .border_color(cx.theme().border)
                 .rounded_md()
-                .shadow_xs();
-        }
+                .shadow_xs()
+        } else {
+            div().w_full().px_3().pb_1().flex().flex_col()
+        };
 
         // Create message container with user badge and edit button if needed
         let message_container = if is_user_message {

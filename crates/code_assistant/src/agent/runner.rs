@@ -702,15 +702,11 @@ impl Agent {
         let parser = parser.as_ref();
         let mut removed = 0usize;
 
-        loop {
-            let Some(last_assistant_idx) = self
-                .message_history
-                .iter()
-                .rposition(|message| message.role == MessageRole::Assistant)
-            else {
-                break;
-            };
-
+        while let Some(last_assistant_idx) = self
+            .message_history
+            .iter()
+            .rposition(|message| message.role == MessageRole::Assistant)
+        {
             let last_assistant = &self.message_history[last_assistant_idx];
 
             if !parser.message_contains_tool_invocation(last_assistant) {
@@ -1876,7 +1872,7 @@ impl Agent {
         }
 
         // Sort descending by size
-        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        sizes.sort_by_key(|item| std::cmp::Reverse(item.1));
 
         // Replace results that are above a minimum threshold (50KB) — there is no
         // point replacing tiny results since they are unlikely to be the cause.

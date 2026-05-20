@@ -833,11 +833,9 @@ impl UserInterface for ProxyUI {
             UiEvent::UpdateSessionActivityState {
                 session_id,
                 activity_state,
-            } => {
-                if session_id == &self.session_id {
-                    self.update_activity_state(activity_state.clone());
-                    return Ok(());
-                }
+            } if session_id == &self.session_id => {
+                self.update_activity_state(activity_state.clone());
+                return Ok(());
             }
             _ => {}
         }

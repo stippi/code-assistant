@@ -60,13 +60,9 @@ impl TestUI {
                     value: new_value,
                     tool_id: new_id,
                 },
-            ) => {
-                if last_name == new_name && last_id == new_id {
-                    last_value.push_str(new_value);
-                    true
-                } else {
-                    false
-                }
+            ) if last_name == new_name && last_id == new_id => {
+                last_value.push_str(new_value);
+                true
             }
 
             // No other fragments can be merged

@@ -672,7 +672,7 @@ impl FileSessionPersistence {
             };
 
         // Sort by updated_at in descending order (newest first)
-        metadata_list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        metadata_list.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
 
         Ok(metadata_list)
     }
