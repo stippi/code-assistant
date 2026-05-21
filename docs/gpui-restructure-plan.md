@@ -132,24 +132,67 @@ or pass them as constructor parameters.
 
 ## Phases
 
-### Phase 0: Test Infrastructure Setup
-- [ ] Add `gpui` test feature / dev-dependency if needed
-- [ ] Create `src/ui/gpui/tests/` module with a minimal "hello world" gpui test
-- [ ] Verify `cargo test --package code-assistant` runs the gpui test
+### Phase 0: Test Infrastructure Setup — DONE ✓
+- [x] Add `gpui` test-support feature to dev-dependencies
+- [x] Write minimal `#[gpui::test]` to verify framework works (in plan_banner)
+- [x] Verify `cargo test --package code-assistant` runs the gpui test
 
-### Phase 1: Extract `shared/` utilities (low coupling, easiest to test)
-- [ ] Extract `theme.rs` → `shared/theme.rs`
-- [ ] Extract `settings.rs` → `shared/settings.rs`
-- [ ] Extract `ui_state.rs` → `shared/ui_state.rs` + add tests for state persistence logic
-- [ ] Extract `assets.rs` → `shared/assets.rs`
-- [ ] Extract `image.rs` → `shared/image.rs`
-- [ ] Extract `file_icons.rs` → `shared/file_icons.rs` + add tests for icon resolution
-- [ ] Extract `context_indicator.rs` → `shared/context_indicator.rs`
-- [ ] Extract `auto_scroll.rs` → `shared/auto_scroll.rs`
-- [ ] Extract `plan_banner.rs` → `shared/plan_banner.rs`
+### Phase 1: Extract `shared/` utilities — DONE ✓
+- [x] Extract `theme.rs` → `shared/theme.rs`
+- [x] Extract `settings.rs` → `shared/settings.rs`
+- [x] Extract `ui_state.rs` → `shared/ui_state.rs` + add 10 tests for persistence logic
+- [x] Extract `assets.rs` → `shared/assets.rs`
+- [x] Extract `image.rs` → `shared/image.rs`
+- [x] Extract `file_icons.rs` → `shared/file_icons.rs`
+- [x] Extract `context_indicator.rs` → `shared/context_indicator.rs`
+- [x] Extract `auto_scroll.rs` → `shared/auto_scroll.rs`
+- [x] Extract `plan_banner.rs` → `shared/plan_banner.rs` + add 5 tests (3 gpui::test)
+- [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
+
+### Phase 3: Extract `tool_cards/` — DONE ✓
+- [x] Extract trait + registry → `tool_cards/mod.rs` (with existing tests migrated)
+- [x] Extract `animated_card_body` → `tool_cards/animated_card.rs`
+- [x] Extract `InlineToolRenderer` → `tool_cards/inline_renderer.rs`
+- [x] Move `code_card_renderer.rs` → `tool_cards/code_card.rs`
+- [x] Move `diff_card_renderer.rs` → `tool_cards/diff_card.rs`
+- [x] Move `terminal_card_renderer.rs` → `tool_cards/terminal_card.rs`
+- [x] Move `sub_agent_card_renderer.rs` → `tool_cards/sub_agent_card.rs`
+- [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
+
+### Phase 4: Extract `project_sidebar/` (rename chat → session) — DONE ✓
+- [x] Rename `ChatSidebar` → `SessionSidebar`, `ChatListItem` → `SessionListItem`
+- [x] Rename `ChatSidebarEvent` → `SessionSidebarEvent`, `ChatListItemEvent` → `SessionListItemEvent`
+- [x] Move `chat_sidebar.rs` → `project_sidebar/mod.rs`
+- [x] Update all references from `chat_sidebar` to `project_sidebar`
+- [x] Fix comments referencing "chat sidebar"
+- [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
+
+### Phase 5: Extract `input/` — DONE ✓
+- [x] Move `input_area.rs` → `input/mod.rs`
+- [x] Move `attachment.rs` → `input/attachment.rs`
+- [x] Move `model_selector.rs` → `input/model_selector.rs`
+- [x] Move `sandbox_selector.rs` → `input/sandbox_selector.rs`
+- [x] Move `worktree_selector.rs` → `input/worktree_selector.rs`
+- [x] Fix `super::` references for new nesting depth
+- [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
+
+### Phase 7: Extract `terminal/` — DONE ✓
+- [x] Move `terminal_executor.rs` → `terminal/executor.rs`
+- [x] Move `terminal_pool.rs` → `terminal/pool.rs`
+- [x] Fix internal references
+- [x] Verify: `cargo check`, `cargo test`
+
+### Phase 6: Extract `messages/` — TODO
+- [ ] Write tests for scroll behavior (follow-tail, scroll-to-bottom trigger)
+- [ ] Write tests for message list splicing / reset
+- [ ] Extract scroll logic → `messages/scroll.rs`
+- [ ] Extract activity indicator → `messages/activity_indicator.rs`
+- [ ] Extract message item rendering → `messages/message_item.rs`
+- [ ] Move `branch_switcher.rs` → `messages/branch_switcher.rs`
+- [ ] Extract `MessagesView` → `messages/mod.rs`
 - [ ] Verify: `cargo check`, `cargo test`
 
-### Phase 2: Extract `blocks/` (data models + container logic)
+### Phase 2: Extract `blocks/` (data models + container logic) — TODO
 - [ ] Write tests for `MessageContainer` mutations (add block, append text, update tool status, etc.)
 - [ ] Extract block type structs → `blocks/block_types.rs`
 - [ ] Extract `MessageContainer` → `blocks/container.rs`
@@ -161,59 +204,14 @@ or pass them as constructor parameters.
 - [ ] Extract compaction rendering → `blocks/compaction_renderer.rs`
 - [ ] Verify: `cargo check`, `cargo test`
 
-### Phase 3: Extract `tool_cards/`
-- [ ] Write tests for `ToolBlockRendererRegistry` (registration, lookup)
-- [ ] Write tests for `InlineToolRenderer` description generation
-- [ ] Extract trait + registry → `tool_cards/mod.rs`
-- [ ] Extract `animated_card_body` → `tool_cards/animated_card.rs`
-- [ ] Extract `InlineToolRenderer` → `tool_cards/inline_renderer.rs`
-- [ ] Move `code_card_renderer.rs` → `tool_cards/code_card.rs`
-- [ ] Move `diff_card_renderer.rs` → `tool_cards/diff_card.rs`
-- [ ] Move `terminal_card_renderer.rs` → `tool_cards/terminal_card.rs`
-- [ ] Move `sub_agent_card_renderer.rs` → `tool_cards/sub_agent_card.rs`
-- [ ] Verify: `cargo check`, `cargo test`
-
-### Phase 4: Extract `project_sidebar/` (rename chat → session)
-- [ ] Write tests for `SessionListItem` (activity state display, event emission)
-- [ ] Write tests for `ProjectGroup` (expand/collapse, show-more logic)
-- [ ] Rename `ChatSidebar` → `SessionSidebar`, `ChatListItem` → `SessionListItem`
-- [ ] Extract → `project_sidebar/mod.rs`, `session_item.rs`, `project_group.rs`
-- [ ] Update all references from `chat_sidebar` to `project_sidebar`/`session_sidebar`
-- [ ] Verify: `cargo check`, `cargo test`
-
-### Phase 5: Extract `input/`
-- [ ] Write tests for `InputArea` (submit event on Enter, cancel, edit mode toggle)
-- [ ] Write tests for paste handling (image paste detection)
-- [ ] Extract paste logic → `input/paste_handler.rs`
-- [ ] Move `attachment.rs` → `input/attachment.rs`
-- [ ] Consolidate selectors → `input/selectors.rs` (or keep as separate files in `input/`)
-- [ ] Extract `InputArea` → `input/mod.rs`
-- [ ] Verify: `cargo check`, `cargo test`
-
-### Phase 6: Extract `messages/`
-- [ ] Write tests for scroll behavior (follow-tail, scroll-to-bottom trigger)
-- [ ] Write tests for message list splicing / reset
-- [ ] Extract scroll logic → `messages/scroll.rs`
-- [ ] Extract activity indicator → `messages/activity_indicator.rs`
-- [ ] Extract message item rendering → `messages/message_item.rs`
-- [ ] Move `branch_switcher.rs` → `messages/branch_switcher.rs`
-- [ ] Extract `MessagesView` → `messages/mod.rs`
-- [ ] Verify: `cargo check`, `cargo test`
-
-### Phase 7: Extract `terminal/`
-- [ ] Write tests for terminal pool (add/get/remove by key)
-- [ ] Move `terminal_executor.rs` → `terminal/executor.rs`
-- [ ] Move `terminal_pool.rs` → `terminal/pool.rs`
-- [ ] Verify: `cargo check`, `cargo test`
-
-### Phase 8: Extract `main_screen/` splits
+### Phase 8: Extract `main_screen/` splits — TODO
 - [ ] Write tests for sidebar animation (easing, state transitions)
 - [ ] Extract animation → `main_screen/animation.rs`
 - [ ] Move `new_project_dialog.rs` → `main_screen/project_dialog.rs`
 - [ ] Extract status popover → `main_screen/status_popover.rs`
 - [ ] Verify: `cargo check`, `cargo test`
 
-### Phase 9: Extract `app/` (the big split of mod.rs)
+### Phase 9: Extract `app/` (the big split of mod.rs) — TODO
 - [ ] Write tests for draft management (save/load/clear round-trip)
 - [ ] Extract `events.rs` (globals, UiEventSender)
 - [ ] Extract `app/drafts.rs`
@@ -224,9 +222,11 @@ or pass them as constructor parameters.
 - [ ] Update top-level `mod.rs` to only declare submodules and re-exports
 - [ ] Verify: `cargo check`, `cargo test`, `cargo clippy`
 
-### Phase 10: Final rename pass (chat → session)
-- [ ] Grep for remaining "chat" references in UI code
-- [ ] Rename types, variables, file references
+### Phase 10: Final rename pass (chat → session) — TODO
+- [ ] Grep for remaining "chat" references in UI code (fields in Gpui struct, method names)
+- [ ] Rename `chat_sessions` field → `sessions` in Gpui struct
+- [ ] Rename `get_chat_sessions()` → `get_sessions()`
+- [ ] Rename `UpdateChatList` event → `UpdateSessionList`
 - [ ] Update any documentation references
 - [ ] Final: `cargo check --tests`, `cargo test`, `cargo clippy --all-targets`
 
@@ -237,3 +237,52 @@ or pass them as constructor parameters.
   work inward toward the core (app/)
 - The `settings_screen/` subdirectory is already well-structured and not touched
 - The `streaming/` module (under `ui/`, not `ui/gpui/`) is not part of this refactor
+- Phases 6, 2, 8, and 9 are the remaining heavy-lifting phases that involve splitting
+  large files (elements.rs at 2324 lines, messages.rs at 1009 lines, mod.rs at 2602 lines)
+
+## Current File Tree (after Phase 5)
+
+```
+crates/code_assistant/src/ui/gpui/
+├── shared/                     ✓ DONE
+│   ├── mod.rs
+│   ├── assets.rs
+│   ├── auto_scroll.rs
+│   ├── context_indicator.rs
+│   ├── file_icons.rs
+│   ├── image.rs
+│   ├── plan_banner.rs         (+ 5 tests)
+│   ├── settings.rs
+│   ├── theme.rs
+│   └── ui_state.rs            (+ 10 tests)
+├── tool_cards/                 ✓ DONE
+│   ├── mod.rs                  (+ migrated tests)
+│   ├── animated_card.rs
+│   ├── code_card.rs
+│   ├── diff_card.rs
+│   ├── inline_renderer.rs
+│   ├── sub_agent_card.rs
+│   └── terminal_card.rs
+├── project_sidebar/            ✓ DONE (renamed from chat_sidebar)
+│   └── mod.rs
+├── input/                      ✓ DONE
+│   ├── mod.rs
+│   ├── attachment.rs
+│   ├── model_selector.rs
+│   ├── sandbox_selector.rs
+│   └── worktree_selector.rs
+├── terminal/                   ✓ DONE
+│   ├── mod.rs
+│   ├── executor.rs
+│   └── pool.rs
+├── main_screen/                (exists, not yet split further)
+│   └── mod.rs
+├── settings_screen/            (untouched)
+│   └── ...
+├── mod.rs                      (still large — to be split in Phase 9)
+├── elements.rs                 (still large — to be split in Phase 2)
+├── messages.rs                 (to be split in Phase 6)
+├── branch_switcher.rs          (to move to messages/ in Phase 6)
+├── new_project_dialog.rs       (to move to main_screen/ in Phase 8)
+└── root.rs
+```
