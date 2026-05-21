@@ -1,6 +1,6 @@
 # GPUI Code Restructure Plan
 
-Status: **In Progress**
+Status: **Nearly Complete** (Phase 10 deferred)
 
 ## Goals
 
@@ -214,11 +214,16 @@ or pass them as constructor parameters.
 - [x] Remaining in mod.rs: struct definitions, new(), run_app(), helper methods, getters, drafts
 - [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
 
-### Phase 10: Final rename pass (chat → session) — TODO
+### Phase 10: Final rename pass (chat → session) — DEFERRED
+Note: This touches files across the entire codebase (session/watcher.rs, acp/,
+ui/terminal/, ui_events.rs), not just ui/gpui/. Deferred to a future session
+to keep this refactoring branch focused on structural reorganization.
+
 - [ ] Grep for remaining "chat" references in UI code (fields in Gpui struct, method names)
 - [ ] Rename `chat_sessions` field → `sessions` in Gpui struct
 - [ ] Rename `get_chat_sessions()` → `get_sessions()`
 - [ ] Rename `UpdateChatList` event → `UpdateSessionList`
+- [ ] Rename `RefreshChatList` event → `RefreshSessionList`
 - [ ] Update any documentation references
 - [ ] Final: `cargo check --tests`, `cargo test`, `cargo clippy --all-targets`
 
