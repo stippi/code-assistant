@@ -13,8 +13,6 @@ pub use shared::ui_state;
 pub mod attachment;
 pub mod branch_switcher;
 pub mod chat_sidebar;
-pub mod code_card_renderer;
-pub mod diff_card_renderer;
 pub mod elements;
 pub mod input_area;
 pub mod main_screen;
@@ -24,12 +22,10 @@ pub mod new_project_dialog;
 mod root;
 pub mod sandbox_selector;
 pub mod settings_screen;
-pub mod sub_agent_card_renderer;
-pub mod terminal_card_renderer;
+pub mod tool_cards;
 
 pub mod terminal_executor;
 pub mod terminal_pool;
-pub mod tool_block_renderers;
 pub mod worktree_selector;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
@@ -344,13 +340,13 @@ impl Gpui {
 
         // Initialize tool block renderer registry
         {
-            use tool_block_renderers::{InlineToolRenderer, ToolBlockRendererRegistry};
+            use tool_cards::{InlineToolRenderer, ToolBlockRendererRegistry};
             let mut tbr_registry = ToolBlockRendererRegistry::new();
             tbr_registry.register(Arc::new(InlineToolRenderer::new()));
-            tbr_registry.register(Arc::new(terminal_card_renderer::TerminalCardRenderer));
-            tbr_registry.register(Arc::new(diff_card_renderer::DiffCardRenderer));
-            tbr_registry.register(Arc::new(sub_agent_card_renderer::SubAgentCardRenderer));
-            tbr_registry.register(Arc::new(code_card_renderer::CodeCardRenderer));
+            tbr_registry.register(Arc::new(tool_cards::terminal_card::TerminalCardRenderer));
+            tbr_registry.register(Arc::new(tool_cards::diff_card::DiffCardRenderer));
+            tbr_registry.register(Arc::new(tool_cards::sub_agent_card::SubAgentCardRenderer));
+            tbr_registry.register(Arc::new(tool_cards::code_card::CodeCardRenderer));
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 

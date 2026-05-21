@@ -8,11 +8,9 @@
 //!
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
+use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
 use crate::ui::gpui::file_icons;
-use crate::ui::gpui::tool_block_renderers::{
-    animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle,
-};
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{

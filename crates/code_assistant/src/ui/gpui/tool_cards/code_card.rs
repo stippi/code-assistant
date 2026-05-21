@@ -3,8 +3,8 @@
 //! Renders file content and search results with line-number gutters,
 //! providing a consistent code-viewing experience in the UI.
 
+use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
-use crate::ui::gpui::tool_block_renderers::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::ui::ToolStatus;
 use gpui::{
     div, px, rems, AnyElement, Context, Element, FontWeight, HighlightStyle, ParentElement,

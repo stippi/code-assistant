@@ -471,13 +471,10 @@ impl MessageContainer {
         {
             override_state
         } else {
-            let is_card =
-                crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
-                    .as_ref()
-                    .and_then(|registry| registry.get(&name).cloned())
-                    .is_some_and(|r| {
-                        r.style() == crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Card
-                    });
+            let is_card = crate::ui::gpui::tool_cards::ToolBlockRendererRegistry::global()
+                .as_ref()
+                .and_then(|registry| registry.get(&name).cloned())
+                .is_some_and(|r| r.style() == crate::ui::gpui::tool_cards::ToolBlockStyle::Card);
             if is_card {
                 ToolBlockState::Expanded
             } else {
@@ -1454,7 +1451,7 @@ impl BlockView {
     fn render_card_skeleton(
         &self,
         block: &ToolUseBlock,
-        renderer: &dyn crate::ui::gpui::tool_block_renderers::ToolBlockRenderer,
+        renderer: &dyn crate::ui::gpui::tool_cards::ToolBlockRenderer,
         theme: &gpui_component::theme::Theme,
     ) -> gpui::AnyElement {
         let is_dark = theme.background.l < 0.5;
@@ -1512,7 +1509,7 @@ impl BlockView {
     fn render_inline_tool(
         &mut self,
         block: &ToolUseBlock,
-        renderer: &dyn crate::ui::gpui::tool_block_renderers::ToolBlockRenderer,
+        renderer: &dyn crate::ui::gpui::tool_cards::ToolBlockRenderer,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
@@ -1667,12 +1664,11 @@ impl BlockView {
             if let Some(output_el) =
                 renderer.render(block, self.is_generating, &theme, None, window, cx)
             {
-                container =
-                    container.child(crate::ui::gpui::tool_block_renderers::animated_card_body(
-                        output_el,
-                        animation_scale,
-                        self.content_height.clone(),
-                    ));
+                container = container.child(crate::ui::gpui::tool_cards::animated_card_body(
+                    output_el,
+                    animation_scale,
+                    self.content_height.clone(),
+                ));
             }
         }
 
@@ -1828,7 +1824,7 @@ impl Render for BlockView {
                                 div().into_any()
                             };
 
-                            crate::ui::gpui::tool_block_renderers::animated_card_body(
+                            crate::ui::gpui::tool_cards::animated_card_body(
                                 body_content,
                                 scale,
                                 self.content_height.clone(),
@@ -1841,18 +1837,18 @@ impl Render for BlockView {
             BlockData::ToolUse(block) => {
                 // Unified tool block rendering via ToolBlockRendererRegistry
                 if let Some(registry) =
-                    crate::ui::gpui::tool_block_renderers::ToolBlockRendererRegistry::global()
+                    crate::ui::gpui::tool_cards::ToolBlockRendererRegistry::global()
                 {
                     if let Some(renderer) = registry.get(&block.name) {
                         match renderer.style() {
-                            crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Inline => {
+                            crate::ui::gpui::tool_cards::ToolBlockStyle::Inline => {
                                 let block_clone = block.clone();
                                 return self
                                     .render_inline_tool(&block_clone, renderer.as_ref(), window, cx)
                                     .into_any_element();
                             }
 
-                            crate::ui::gpui::tool_block_renderers::ToolBlockStyle::Card => {
+                            crate::ui::gpui::tool_cards::ToolBlockStyle::Card => {
                                 let block_clone = block.clone();
                                 let theme = cx.theme().clone();
 
@@ -1867,15 +1863,15 @@ impl Render for BlockView {
 
                                 let current_project = self.current_project.lock().unwrap().clone();
                                 let markdown_state = self.markdown_state("", cx);
-                                let card_ctx =
-                                    crate::ui::gpui::tool_block_renderers::CardRenderContext {
-                                        animation_scale: scale,
-                                        is_collapsed: block.state == ToolBlockState::Collapsed,
-                                        content_height: self.content_height.clone(),
-                                        current_project,
-                                        write_file_diff_mode: self.write_file_diff_mode,
-                                        markdown_state: Some(markdown_state),
-                                    };
+
+                                let card_ctx = crate::ui::gpui::tool_cards::CardRenderContext {
+                                    animation_scale: scale,
+                                    is_collapsed: block.state == ToolBlockState::Collapsed,
+                                    content_height: self.content_height.clone(),
+                                    current_project,
+                                    write_file_diff_mode: self.write_file_diff_mode,
+                                    markdown_state: Some(markdown_state),
+                                };
 
                                 if let Some(element) = renderer.render(
                                     &block_clone,
@@ -2023,12 +2019,11 @@ impl Render for BlockView {
                         .text_color(cx.theme().foreground)
                         .child(self.markdown_view(&block.summary, true, cx));
 
-                    container =
-                        container.child(crate::ui::gpui::tool_block_renderers::animated_card_body(
-                            body,
-                            animation_scale,
-                            self.content_height.clone(),
-                        ));
+                    container = container.child(crate::ui::gpui::tool_cards::animated_card_body(
+                        body,
+                        animation_scale,
+                        self.content_height.clone(),
+                    ));
                 }
 
                 container.into_any_element()

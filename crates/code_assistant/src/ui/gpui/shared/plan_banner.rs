@@ -585,7 +585,7 @@ mod tests {
     fn test_plan_banner_toggle_emits_event(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
             init_test_globals(cx);
-            cx.open_window(Default::default(), |_, cx| cx.new(|cx| PlanBanner::new(cx)))
+            cx.open_window(Default::default(), |_, cx| cx.new(PlanBanner::new))
                 .unwrap()
         });
 
@@ -641,7 +641,7 @@ mod tests {
     #[gpui::test]
     fn test_plan_banner_starts_not_collapsed(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
-            cx.open_window(Default::default(), |_, cx| cx.new(|cx| PlanBanner::new(cx)))
+            cx.open_window(Default::default(), |_, cx| cx.new(PlanBanner::new))
                 .unwrap()
         });
 
@@ -658,7 +658,7 @@ mod tests {
     fn test_plan_banner_set_plan_updates_state(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
             init_test_globals(cx);
-            cx.open_window(Default::default(), |_, cx| cx.new(|cx| PlanBanner::new(cx)))
+            cx.open_window(Default::default(), |_, cx| cx.new(PlanBanner::new))
                 .unwrap()
         });
 

@@ -13,8 +13,8 @@ use command_executor::{
     StreamingCallback,
 };
 
-use super::terminal_card_renderer::evict_cached_terminal_view_for_tool;
 use super::terminal_pool;
+use super::tool_cards::terminal_card::evict_cached_terminal_view_for_tool;
 use gpui::{AppContext as _, Entity};
 use terminal::{StyledLine, Terminal};
 
