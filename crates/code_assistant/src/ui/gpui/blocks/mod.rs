@@ -1,0 +1,2688 @@
+use crate::persistence::{BranchInfo, NodeId};
+use crate::ui::gpui::file_icons;
+use crate::ui::gpui::image;
+
+use crate::ui::ToolStatus;
+use gpui::{
+    div, img, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, Entity,
+    ImageSource, IntoElement, ObjectFit, Pixels, SharedString, Styled, Task, Transformation,
+};
+use gpui::{prelude::*, FontWeight};
+use gpui_component::{
+    text::{TextView, TextViewState},
+    ActiveTheme,
+};
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tracing::{debug, trace, warn};
+
+/// Maximum height for rendered images in pixels
+const MAX_IMAGE_HEIGHT: f32 = 80.0;
+
+/// Role of a message in the conversation
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageRole {
+    User,
+    Assistant,
+    /// System-level messages (e.g. compaction dividers) that have no author header
+    System,
+}
+
+/// State of a tool block for rendering and interaction
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolBlockState {
+    /// Tool is collapsed - show parameters and output but collapsed
+    Collapsed,
+    /// Tool is expanded - show all content expanded
+    Expanded,
+}
+
+// ---------------------------------------------------------------------------
+// Tool-block collapse state helpers
+// ---------------------------------------------------------------------------
+
+use crate::ui::gpui::ui_state::UiStateStore;
+
+/// Convenience helpers for tool-block collapse state.
+///
+/// These delegate to the global [`UiStateStore`], which keeps an in-memory
+/// cache per session and debounces writes to the per-session UI state file.
+pub struct ToolCollapseState;
+
+impl ToolCollapseState {
+    /// Look up a previously stored collapse override for a tool in a session.
+    pub fn get(session_id: &str, tool_id: &str) -> Option<ToolBlockState> {
+        UiStateStore::try_global()?
+            .lock()
+            .ok()
+            .and_then(|mut store| {
+                store
+                    .get_tool_collapsed(session_id, tool_id)
+                    .map(|collapsed| {
+                        if collapsed {
+                            ToolBlockState::Collapsed
+                        } else {
+                            ToolBlockState::Expanded
+                        }
+                    })
+            })
+    }
+
+    /// Record a collapse state override for a tool in a session.
+    /// Returns `true` if the store was marked dirty (i.e. a save should be
+    /// scheduled).
+    pub fn set(session_id: &str, tool_id: &str, state: ToolBlockState) -> bool {
+        let collapsed = matches!(state, ToolBlockState::Collapsed);
+        if let Some(store) = UiStateStore::try_global() {
+            if let Ok(mut store) = store.lock() {
+                store.set_tool_collapsed(session_id, tool_id, collapsed);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Remove all overrides for a session (e.g. when it is deleted).
+    pub fn remove_session(session_id: &str) {
+        if let Some(store) = UiStateStore::try_global() {
+            if let Ok(mut store) = store.lock() {
+                store.remove_session(session_id);
+            }
+        }
+    }
+}
+
+/// Convenience helpers for write_file diff mode state.
+///
+/// When a write_file tool overwrites an existing file, the card can show either
+/// a unified diff or the plain new-file content.  This persists the user's
+/// choice per tool block.
+pub struct ToolDiffModeState;
+
+impl ToolDiffModeState {
+    /// Look up a previously stored diff mode override for a tool in a session.
+    /// Returns `None` if no override exists (default = diff mode on).
+    pub fn get(session_id: &str, tool_id: &str) -> Option<bool> {
+        UiStateStore::try_global()?
+            .lock()
+            .ok()
+            .and_then(|mut store| store.get_tool_diff_mode(session_id, tool_id))
+    }
+
+    /// Record a diff mode override for a tool in a session.
+    /// Returns `true` if the store was marked dirty (i.e. a save should be
+    /// scheduled).
+    pub fn set(session_id: &str, tool_id: &str, diff_mode: bool) -> bool {
+        if let Some(store) = UiStateStore::try_global() {
+            if let Ok(mut store) = store.lock() {
+                store.set_tool_diff_mode(session_id, tool_id, diff_mode);
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Animation configuration for expand/collapse
+#[derive(Clone)]
+pub struct AnimationConfig {
+    /// Animation frame rate (in milliseconds per frame)
+    pub frame_ms: u64,
+    /// Animation duration in milliseconds
+    pub duration_ms: f32,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            frame_ms: 8,        // ~120 FPS
+            duration_ms: 300.0, // 300ms constant animation time
+        }
+    }
+}
+
+/// Animation state for expand/collapse
+#[derive(Clone, Debug, PartialEq)]
+enum AnimationState {
+    Idle,
+    Animating {
+        height_scale: f32,
+        target: f32, // 0.0 for collapsing, 1.0 for expanding
+        start_time: std::time::Instant,
+    },
+}
+
+/// Container for all elements within a single message (one LLM request/response).
+/// Each MessageContainer maps to exactly one item in the virtualized list,
+/// enabling efficient scroll virtualization.
+#[derive(Clone)]
+pub struct MessageContainer {
+    elements: Arc<Mutex<Vec<Entity<BlockView>>>>,
+    role: MessageRole,
+    /// The request_id identifying which LLM request produced this container's blocks.
+    /// Used to remove blocks when a request is cancelled or rolled back.
+    current_request_id: Arc<Mutex<u64>>,
+
+    /// Current project for parameter filtering (used to detect cross-project tool calls)
+    #[allow(dead_code)]
+    current_project: Arc<Mutex<String>>,
+    /// Tracks the last block type for hidden tool paragraph breaks
+    last_block_type_for_hidden_tool: Arc<Mutex<Option<HiddenToolBlockType>>>,
+    /// Flag indicating a hidden tool completed and we may need a paragraph break
+    needs_paragraph_break_after_hidden_tool: Arc<Mutex<bool>>,
+
+    /// Node ID for this message (for branching support)
+    node_id: Arc<Mutex<Option<NodeId>>>,
+    /// Branch info if this message is part of a branch point
+    branch_info: Arc<Mutex<Option<BranchInfo>>>,
+
+    /// Session ID this container belongs to, used by tool blocks to read/write
+    /// the global [`ToolCollapseState`] registry.
+    session_id: Arc<Mutex<Option<String>>>,
+    /// Monotonic block identifier source for stable per-block view state.
+    next_block_id: Arc<Mutex<u64>>,
+}
+
+/// Tracks the last block type for paragraph breaks after hidden tools
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HiddenToolBlockType {
+    Text,
+    Thinking,
+}
+
+impl MessageContainer {
+    pub fn with_role(role: MessageRole, _cx: &mut Context<Self>) -> Self {
+        Self {
+            elements: Arc::new(Mutex::new(Vec::new())),
+            role,
+
+            current_request_id: Arc::new(Mutex::new(0)),
+            current_project: Arc::new(Mutex::new(String::new())),
+            last_block_type_for_hidden_tool: Arc::new(Mutex::new(None)),
+            needs_paragraph_break_after_hidden_tool: Arc::new(Mutex::new(false)),
+            node_id: Arc::new(Mutex::new(None)),
+            branch_info: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
+            next_block_id: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    fn allocate_block_id(&self) -> u64 {
+        let mut next = self.next_block_id.lock().unwrap();
+        let id = *next;
+        *next += 1;
+        id
+    }
+
+    // Set the current request ID for this message container
+    pub fn set_current_request_id(&self, request_id: u64) {
+        *self.current_request_id.lock().unwrap() = request_id;
+    }
+
+    /// Set the session ID for this container (used for collapse-state tracking).
+    pub fn set_session_id(&self, session_id: Option<String>) {
+        *self.session_id.lock().unwrap() = session_id;
+    }
+
+    /// Get the session ID for this container.
+    #[allow(dead_code)]
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.lock().unwrap().clone()
+    }
+
+    /// Set the current project for parameter filtering
+    pub fn set_current_project(&self, project: String) {
+        *self.current_project.lock().unwrap() = project;
+    }
+
+    /// Set the node ID for this message (for branching support)
+    pub fn set_node_id(&self, node_id: Option<NodeId>) {
+        *self.node_id.lock().unwrap() = node_id;
+    }
+
+    /// Get the node ID for this message
+    pub fn node_id(&self) -> Option<NodeId> {
+        *self.node_id.lock().unwrap()
+    }
+
+    /// Set the branch info for this message
+    pub fn set_branch_info(&self, branch_info: Option<BranchInfo>) {
+        *self.branch_info.lock().unwrap() = branch_info;
+    }
+
+    /// Get the branch info for this message
+    pub fn branch_info(&self) -> Option<BranchInfo> {
+        self.branch_info.lock().unwrap().clone()
+    }
+
+    /// Mark that a hidden tool completed - paragraph break may be needed before next text
+    pub fn mark_hidden_tool_completed(&self, _cx: &mut Context<Self>) {
+        *self.needs_paragraph_break_after_hidden_tool.lock().unwrap() = true;
+    }
+
+    /// Check if we need a paragraph break after a hidden tool and return it if so
+    fn get_paragraph_break_if_needed(
+        &self,
+        current_block_type: HiddenToolBlockType,
+    ) -> Option<String> {
+        let mut needs_break = self.needs_paragraph_break_after_hidden_tool.lock().unwrap();
+        if !*needs_break {
+            return None;
+        }
+
+        // Reset the flag
+        *needs_break = false;
+
+        // Check if the block type matches the last one
+        let last_type = *self.last_block_type_for_hidden_tool.lock().unwrap();
+        if last_type == Some(current_block_type) {
+            // Same type as before the hidden tool - need paragraph break
+            Some("\n\n".to_string())
+        } else {
+            None
+        }
+    }
+
+    // Remove all blocks with the given request ID
+    // Used when the user cancels a request while it is streaming
+    pub fn remove_blocks_with_request_id(&self, request_id: u64, cx: &mut Context<Self>) {
+        let mut elements = self.elements.lock().unwrap();
+        let mut blocks_to_remove = Vec::new();
+
+        // Find indices of blocks to remove
+        for (index, element) in elements.iter().enumerate() {
+            let should_remove = element.read(cx).request_id == request_id;
+            if should_remove {
+                blocks_to_remove.push(index);
+            }
+        }
+
+        // Remove blocks in reverse order to maintain indices
+        for &index in blocks_to_remove.iter().rev() {
+            elements.remove(index);
+        }
+
+        if !blocks_to_remove.is_empty() {
+            cx.notify();
+        }
+    }
+
+    /// Check if this is a user message
+    pub fn is_user_message(&self) -> bool {
+        self.role == MessageRole::User
+    }
+
+    /// Check if this is a system message (e.g. compaction dividers)
+    #[allow(dead_code)]
+    pub fn is_system_message(&self) -> bool {
+        self.role == MessageRole::System
+    }
+
+    pub fn elements(&self) -> Vec<Entity<BlockView>> {
+        let elements = self.elements.lock().unwrap();
+        elements.clone()
+    }
+
+    /// Returns true if this container has no block elements.
+    pub fn is_empty(&self) -> bool {
+        self.elements.lock().unwrap().is_empty()
+    }
+
+    // Add a new text block
+    pub fn add_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::TextBlock(TextBlock {
+            content: content.into(),
+        });
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    pub fn add_compaction_divider(&self, summary: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::CompactionSummary(CompactionSummaryBlock {
+            summary: summary.into(),
+            is_expanded: false,
+        });
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Add a new thinking block
+    #[allow(dead_code)]
+    pub fn add_thinking_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Add a new image block
+    pub fn add_image_block(
+        &self,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_any_thinking_blocks(cx);
+
+        let media_type = media_type.into();
+        let data = data.into();
+
+        // Try to parse the base64 image data
+        let image = image::parse_base64_image(&media_type, &data);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::ImageBlock(ImageBlock { media_type, image });
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Add a new tool use block
+    pub fn add_tool_use_block(
+        &self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_tool_use_block_with_duration(name, id, None, cx);
+    }
+
+    /// Add a new tool use block with optional pre-computed duration from persisted ContentBlock timestamps
+    pub fn add_tool_use_block_with_duration(
+        &self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        duration_seconds: Option<f64>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_any_thinking_blocks(cx);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let mut elements = self.elements.lock().unwrap();
+        let name = name.into();
+        let id = id.into();
+        let session_id = self.session_id.lock().unwrap().clone();
+
+        // Check the global collapse-state registry for a user override first.
+        // If the user previously toggled this tool block, honour that choice.
+        // Otherwise fall back to the renderer default (Card → Expanded, Inline → Collapsed).
+        let initial_state = if let Some(override_state) = session_id
+            .as_deref()
+            .and_then(|sid| ToolCollapseState::get(sid, &id))
+        {
+            override_state
+        } else {
+            let is_card = crate::ui::gpui::tool_cards::ToolBlockRendererRegistry::global()
+                .as_ref()
+                .and_then(|registry| registry.get(&name).cloned())
+                .is_some_and(|r| r.style() == crate::ui::gpui::tool_cards::ToolBlockStyle::Card);
+            if is_card {
+                ToolBlockState::Expanded
+            } else {
+                ToolBlockState::Collapsed
+            }
+        };
+
+        let block = BlockData::ToolUse(ToolUseBlock {
+            name,
+            id,
+            parameters: Vec::new(),
+            status: ToolStatus::Pending,
+            status_message: None,
+            output: None,
+            styled_output: None,
+            state: initial_state,
+            duration_seconds,
+            images: Vec::new(),
+        });
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                session_id,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Update the status of a tool block
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_tool_status(
+        &self,
+        tool_id: &str,
+
+        status: ToolStatus,
+        message: Option<String>,
+        output: Option<String>,
+        styled_output: Option<Vec<terminal::StyledLine>>,
+        duration_seconds: Option<f64>,
+        images: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let elements = self.elements.lock().unwrap();
+        let mut updated = false;
+
+        for element in elements.iter() {
+            element.update(cx, |view, cx| {
+                if let Some(tool) = view.block.as_tool_mut() {
+                    if tool.id == tool_id {
+                        tool.status = status;
+                        tool.status_message = message.clone();
+
+                        // Update output if provided
+                        // Note: UpdateToolStatus always replaces output (used by spawn_agent for JSON updates)
+                        // AppendToolOutput is used for streaming append behavior
+                        if let Some(ref new_output) = output {
+                            tool.output = Some(new_output.clone());
+                        }
+
+                        // Update styled output if provided (terminal color data)
+                        if styled_output.is_some() {
+                            tool.styled_output = styled_output.clone();
+                        }
+
+                        // Store duration from ContentBlock timestamps (stable across restores)
+                        if duration_seconds.is_some() {
+                            tool.duration_seconds = duration_seconds;
+                        }
+
+                        // Store image data from tools that produce visual output
+                        if !images.is_empty() {
+                            tool.images = images.clone();
+                        }
+
+                        // Update generating flag on completion — no automatic state changes.
+                        // The tool's collapse/expand state stays exactly as it was set at
+                        // creation time (Card=Expanded, Inline=Collapsed) or as toggled
+                        // by the user. The user is always in control.
+                        if status == ToolStatus::Success || status == ToolStatus::Error {
+                            view.set_generating(false);
+                        } else if !view.is_generating {
+                            view.set_generating(true);
+                        }
+
+                        updated = true;
+                        cx.notify();
+                    }
+                }
+            });
+        }
+
+        updated
+    }
+
+    // Add or append to text block
+    pub fn add_or_append_to_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
+
+        // Check if we need to insert a paragraph break after a hidden tool
+        let paragraph_prefix = self.get_paragraph_break_if_needed(HiddenToolBlockType::Text);
+
+        // Track block type for future hidden tool events
+        *self.last_block_type_for_hidden_tool.lock().unwrap() = Some(HiddenToolBlockType::Text);
+
+        let content = content.into();
+        let mut elements = self.elements.lock().unwrap();
+
+        if let Some(last) = elements.last() {
+            let mut was_appended = false;
+
+            last.update(cx, |view, cx| {
+                if let Some(text_block) = view.block.as_text_mut() {
+                    let appended_text = if let Some(prefix) = &paragraph_prefix {
+                        format!("{}{}", prefix, content)
+                    } else {
+                        content.clone()
+                    };
+                    text_block.content.push_str(&appended_text);
+                    was_appended = true;
+                    cx.notify();
+                }
+            });
+
+            if was_appended {
+                return;
+            }
+        }
+
+        // If we reach here, we need to add a new text block
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let final_content = if let Some(prefix) = paragraph_prefix {
+            format!("{}{}", prefix, content)
+        } else {
+            content.to_string()
+        };
+        let block = BlockData::TextBlock(TextBlock {
+            content: final_content,
+        });
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Add or append to thinking block
+    pub fn add_or_append_to_thinking_block(
+        &self,
+        content: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_or_append_to_thinking_block_with_duration(content, None, cx);
+    }
+
+    /// Add or append to thinking block, with optional pre-computed duration from persisted timestamps
+    pub fn add_or_append_to_thinking_block_with_duration(
+        &self,
+        content: impl Into<String>,
+        duration_seconds: Option<f64>,
+        cx: &mut Context<Self>,
+    ) {
+        // Check if we need to insert a paragraph break after a hidden tool
+        let paragraph_prefix = self.get_paragraph_break_if_needed(HiddenToolBlockType::Thinking);
+
+        // Track block type for future hidden tool events
+        *self.last_block_type_for_hidden_tool.lock().unwrap() = Some(HiddenToolBlockType::Thinking);
+
+        let content = content.into();
+        let mut elements = self.elements.lock().unwrap();
+
+        if let Some(last) = elements.last() {
+            let mut was_appended = false;
+
+            last.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    let appended_text = if let Some(prefix) = &paragraph_prefix {
+                        format!("{}{}", prefix, content)
+                    } else {
+                        content.clone()
+                    };
+                    thinking_block.content.push_str(&appended_text);
+                    // Store duration if provided (from session restore)
+                    if duration_seconds.is_some() {
+                        thinking_block.duration_seconds = duration_seconds;
+                        thinking_block.is_completed = true;
+                        view.set_generating(false);
+                    }
+                    was_appended = true;
+                    cx.notify();
+                }
+            });
+
+            if was_appended {
+                return;
+            }
+        }
+
+        // If we reach here, we need to add a new thinking block
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let final_content = if let Some(prefix) = paragraph_prefix {
+            format!("{}{}", prefix, content)
+        } else {
+            content.to_string()
+        };
+
+        let has_duration = duration_seconds.is_some();
+        let mut thinking = ThinkingBlock::new(final_content);
+        if let Some(dur) = duration_seconds {
+            thinking.duration_seconds = Some(dur);
+            thinking.is_completed = true;
+        }
+        let block = BlockData::ThinkingBlock(thinking);
+        let view = cx.new(|cx| {
+            let mut bv = BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            );
+            if has_duration {
+                bv.set_generating(false);
+            }
+            bv
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Add or update tool parameter
+    pub fn add_or_update_tool_parameter(
+        &self,
+        tool_id: impl Into<String>,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let tool_id = tool_id.into();
+        let name = name.into();
+        let value = value.into();
+        let mut elements = self.elements.lock().unwrap();
+        let mut tool_found = false;
+
+        trace!(
+            "Looking for tool_id: {}, param: {}, value len: {}",
+            tool_id,
+            name,
+            value.len()
+        );
+
+        // Find the tool block with matching ID
+        for element in elements.iter().rev() {
+            let mut param_added = false;
+
+            element.update(cx, |view, cx| {
+                if let Some(tool) = view.block.as_tool_mut() {
+                    if tool.id == tool_id {
+                        tool_found = true;
+                        trace!(
+                            "Found tool: {}, current params: {}",
+                            tool.name,
+                            tool.parameters.len()
+                        );
+
+                        // Check if parameter with this name already exists
+                        for param in tool.parameters.iter_mut() {
+                            if param.name == name {
+                                // Update existing parameter
+                                param.value.push_str(&value);
+                                trace!("Found param: {}, len now {}", name, param.value.len());
+                                param_added = true;
+                                break;
+                            }
+                        }
+
+                        // Add new parameter if not found
+                        if !param_added {
+                            trace!("Adding param: {}, len {}", name, value.len());
+                            tool.parameters.push(ParameterBlock {
+                                name: name.clone(),
+                                value: value.clone(),
+                            });
+                            param_added = true;
+                        }
+
+                        trace!("After update, params: {}", tool.parameters.len());
+                        cx.notify();
+                    }
+                }
+            });
+
+            if param_added {
+                return;
+            }
+        }
+
+        // If we didn't find a matching tool, create a new one with this parameter
+        if !tool_found {
+            warn!(
+                "GPUI add_or_update_tool_parameter: missing tool block for tool_id='{}', param='{}' — creating fallback block",
+                tool_id, name
+            );
+            let request_id = *self.current_request_id.lock().unwrap();
+            let session_id = self.session_id.lock().unwrap().clone();
+
+            // Check the global collapse registry for a user override
+            let initial_state = session_id
+                .as_deref()
+                .and_then(|sid| ToolCollapseState::get(sid, &tool_id))
+                .unwrap_or(ToolBlockState::Collapsed);
+
+            let mut tool = ToolUseBlock {
+                name: "unknown".to_string(), // Default name since we only have ID
+                id: tool_id.clone(),
+                parameters: Vec::new(),
+                status: ToolStatus::Pending,
+                status_message: None,
+                output: None,
+                styled_output: None,
+                state: initial_state,
+                duration_seconds: None,
+                images: Vec::new(),
+            };
+
+            tool.parameters.push(ParameterBlock {
+                name: name.clone(),
+                value: value.clone(),
+            });
+
+            let block = BlockData::ToolUse(tool);
+            let block_id = self.allocate_block_id();
+            let view = cx.new(|cx| {
+                BlockView::new(
+                    block,
+                    block_id,
+                    request_id,
+                    self.current_project.clone(),
+                    session_id,
+                    cx,
+                )
+            });
+            elements.push(view);
+            cx.notify();
+        }
+    }
+
+    /// Replace a tool parameter value entirely (used by post-execution updates
+    /// like format-on-save, where the tool modified its own input).
+    pub fn replace_tool_parameter(
+        &self,
+        tool_id: impl Into<String>,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let tool_id = tool_id.into();
+        let name = name.into();
+        let value = value.into();
+        let elements = self.elements.lock().unwrap();
+
+        for element in elements.iter().rev() {
+            let mut found = false;
+            element.update(cx, |view, cx| {
+                if let Some(tool) = view.block.as_tool_mut() {
+                    if tool.id == tool_id {
+                        for param in tool.parameters.iter_mut() {
+                            if param.name == name {
+                                param.value = value.clone();
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            // Parameter doesn't exist yet — add it
+                            tool.parameters.push(ParameterBlock {
+                                name: name.clone(),
+                                value: value.clone(),
+                            });
+                            found = true;
+                        }
+                        cx.notify();
+                    }
+                }
+            });
+            if found {
+                return;
+            }
+        }
+
+        debug!(
+            "GPUI replace_tool_parameter: tool block not found for tool_id='{}', param='{}'",
+            tool_id, name
+        );
+    }
+
+    // Mark a tool as ended (could add visual indicator)
+    pub fn end_tool_use(&self, id: impl Into<String>, cx: &mut Context<Self>) {
+        let id = id.into();
+        let elements = self.elements.lock().unwrap();
+
+        // Find the tool and mark it as completed
+        for element in elements.iter() {
+            cx.update_entity(element, |block_view, cx| {
+                if let Some(tool_block) = block_view.block.as_tool_mut() {
+                    if tool_block.id == id {
+                        block_view.set_generating(false); // Mark as completed (not generating)
+                        cx.notify(); // Trigger re-render to show virtual parameters
+                    }
+                }
+            }); // Ignore errors from update_entity
+        }
+    }
+
+    // Append streaming output to a tool block
+    pub fn append_tool_output(
+        &self,
+        tool_id: impl Into<String>,
+        chunk: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let tool_id = tool_id.into();
+        let chunk = chunk.into();
+        let elements = self.elements.lock().unwrap();
+        let mut found = false;
+
+        // Find the tool and append the output chunk
+        for element in elements.iter() {
+            cx.update_entity(element, |block_view, cx| {
+                if let Some(tool_block) = block_view.block.as_tool_mut() {
+                    if tool_block.id == tool_id {
+                        found = true;
+                        // Append to existing output or create new output
+                        if let Some(existing_output) = &mut tool_block.output {
+                            existing_output.push_str(&chunk);
+                        } else {
+                            tool_block.output = Some(chunk.clone());
+                        }
+                        cx.notify(); // Trigger re-render
+                    }
+                }
+            }); // Ignore errors from update_entity
+        }
+
+        if !found {
+            warn!(
+                "GPUI append_tool_output: tool block not found for tool_id='{}', chunk_len={}",
+                tool_id,
+                chunk.len()
+            );
+        }
+    }
+
+    pub fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
+        let elements = self.elements.lock().unwrap();
+
+        // Mark any previous thinking blocks as completed and not generating
+        for element in elements.iter() {
+            element.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    if !thinking_block.is_completed {
+                        // Finalize any reasoning content before marking as completed
+                        thinking_block.complete_reasoning();
+
+                        thinking_block.is_completed = true;
+                        thinking_block.end_time = std::time::Instant::now();
+                        view.set_generating(false);
+
+                        cx.notify();
+                    }
+                }
+            });
+        }
+    }
+
+    /// Start a new reasoning summary item for the most recent thinking block
+    pub fn start_reasoning_summary_item(&self, cx: &mut Context<Self>) {
+        let mut elements = self.elements.lock().unwrap();
+
+        if let Some(last) = elements.last() {
+            last.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    thinking_block.start_reasoning_summary_item();
+                    cx.notify();
+                }
+            });
+            return;
+        }
+
+        // If we reach here, we need to add a new thinking block
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let mut new_thinking_block = ThinkingBlock::new(String::new());
+        new_thinking_block.start_reasoning_summary_item();
+
+        let block = BlockData::ThinkingBlock(new_thinking_block);
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    /// Append delta content to the current reasoning summary item
+    pub fn append_reasoning_summary_delta(&self, delta: String, cx: &mut Context<Self>) {
+        let mut elements = self.elements.lock().unwrap();
+
+        if let Some(last) = elements.last() {
+            let mut was_updated = false;
+
+            last.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    thinking_block.append_reasoning_summary_delta(delta.clone());
+                    was_updated = true;
+                    cx.notify();
+                }
+            });
+
+            if was_updated {
+                return;
+            }
+        }
+
+        // If we reach here, we need to add a new thinking block
+        let request_id = *self.current_request_id.lock().unwrap();
+        let block_id = self.allocate_block_id();
+        let mut new_thinking_block = ThinkingBlock::new(String::new());
+        new_thinking_block.start_reasoning_summary_item();
+        new_thinking_block.append_reasoning_summary_delta(delta);
+
+        let block = BlockData::ThinkingBlock(new_thinking_block);
+        let view = cx.new(|cx| {
+            BlockView::new(
+                block,
+                block_id,
+                request_id,
+                self.current_project.clone(),
+                None,
+                cx,
+            )
+        });
+        elements.push(view);
+        cx.notify();
+    }
+
+    /// Complete reasoning for the most recent thinking block
+    pub fn complete_reasoning(&self, cx: &mut Context<Self>) {
+        let elements = self.elements.lock().unwrap();
+
+        if let Some(last) = elements.last() {
+            last.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    thinking_block.complete_reasoning();
+                    view.set_generating(false);
+                    cx.notify();
+                }
+            });
+        }
+    }
+}
+
+/// Different types of blocks that can appear in a message
+#[derive(Debug, Clone)]
+pub enum BlockData {
+    TextBlock(TextBlock),
+    ThinkingBlock(ThinkingBlock),
+    ToolUse(ToolUseBlock),
+    ImageBlock(ImageBlock),
+    CompactionSummary(CompactionSummaryBlock),
+}
+
+impl BlockData {
+    fn as_text_mut(&mut self) -> Option<&mut TextBlock> {
+        match self {
+            BlockData::TextBlock(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn as_thinking_mut(&mut self) -> Option<&mut ThinkingBlock> {
+        match self {
+            BlockData::ThinkingBlock(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn as_tool(&self) -> Option<&ToolUseBlock> {
+        match self {
+            BlockData::ToolUse(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn as_tool_mut(&mut self) -> Option<&mut ToolUseBlock> {
+        match self {
+            BlockData::ToolUse(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn as_compaction_mut(&mut self) -> Option<&mut CompactionSummaryBlock> {
+        match self {
+            BlockData::CompactionSummary(b) => Some(b),
+            _ => None,
+        }
+    }
+}
+
+/// Entity view for a block
+pub struct BlockView {
+    block: BlockData,
+    request_id: u64,
+    markdown_state: Option<Entity<TextViewState>>,
+    is_generating: bool, // Universal generating state for all block types
+    // Animation state
+    animation_state: AnimationState,
+    content_height: Rc<Cell<Pixels>>,
+
+    animation_task: Option<Task<()>>,
+    /// Current project for parameter filtering (used to detect cross-project tool calls)
+    #[allow(dead_code)]
+    current_project: Arc<Mutex<String>>,
+    /// Session ID this block belongs to (for collapse-state persistence).
+    session_id: Option<String>,
+    /// For write_file tool blocks: whether to show the diff view (true) or the
+    /// plain new-file view (false). Only relevant when original_content is available.
+    pub write_file_diff_mode: bool,
+}
+
+impl BlockView {
+    pub fn new(
+        block: BlockData,
+        _block_id: u64,
+        request_id: u64,
+        current_project: Arc<Mutex<String>>,
+        session_id: Option<String>,
+        _cx: &mut Context<Self>,
+    ) -> Self {
+        // Load persisted diff mode preference for write_file tool blocks.
+        let write_file_diff_mode = if let Some(tool) = block.as_tool() {
+            if tool.name == "write_file" {
+                session_id
+                    .as_deref()
+                    .and_then(|sid| ToolDiffModeState::get(sid, &tool.id))
+                    .unwrap_or(true) // default: show diff
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        let initial_markdown = match &block {
+            BlockData::TextBlock(block) => Some(block.content.clone()),
+            BlockData::ThinkingBlock(block) => Some(block.content.clone()),
+            BlockData::CompactionSummary(block) => Some(block.summary.clone()),
+            BlockData::ToolUse(_) | BlockData::ImageBlock(_) => None,
+        };
+        let markdown_state =
+            initial_markdown.map(|text| _cx.new(|cx| TextViewState::markdown(&text, cx)));
+
+        Self {
+            block,
+            request_id,
+            markdown_state,
+            is_generating: true, // Default to generating when first created
+            animation_state: AnimationState::Idle,
+            content_height: Rc::new(Cell::new(px(0.0))),
+            animation_task: None,
+            current_project,
+            session_id,
+            write_file_diff_mode,
+        }
+    }
+
+    fn markdown_state(&mut self, text: &str, cx: &mut Context<Self>) -> Entity<TextViewState> {
+        let state = if let Some(state) = &self.markdown_state {
+            state.clone()
+        } else {
+            let state = cx.new(|cx| TextViewState::markdown(text, cx));
+            self.markdown_state = Some(state.clone());
+            state
+        };
+
+        state.update(cx, |state, cx| {
+            state.set_text(text, cx);
+        });
+
+        state
+    }
+
+    fn markdown_view(&mut self, text: &str, selectable: bool, cx: &mut Context<Self>) -> TextView {
+        let state = self.markdown_state(text, cx);
+        TextView::new(&state).selectable(selectable)
+    }
+
+    /// Check if this block is an image block
+    pub fn is_image_block(&self) -> bool {
+        matches!(self.block, BlockData::ImageBlock(_))
+    }
+
+    /// Set the generating state of this block
+    pub fn set_generating(&mut self, generating: bool) {
+        self.is_generating = generating;
+    }
+
+    /// Check if this block can toggle expansion
+    pub fn can_toggle_expansion(&self) -> bool {
+        match &self.block {
+            BlockData::ToolUse(_) => true, // Tools can always toggle, even while generating
+            BlockData::ThinkingBlock(_) => true,
+            BlockData::CompactionSummary(_) => true,
+            _ => false, // Other blocks don't have expansion
+        }
+    }
+
+    fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
+        let should_expand = if let Some(thinking) = self.block.as_thinking_mut() {
+            thinking.is_collapsed = !thinking.is_collapsed;
+            !thinking.is_collapsed
+        } else {
+            return;
+        };
+        self.start_expand_collapse_animation(should_expand, cx);
+    }
+
+    pub fn toggle_tool_collapsed(&mut self, cx: &mut Context<Self>) {
+        // Check if we can toggle expansion
+        if !self.can_toggle_expansion() {
+            return;
+        }
+
+        let should_expand = if let Some(tool) = self.block.as_tool_mut() {
+            match tool.state {
+                ToolBlockState::Collapsed => {
+                    tool.state = ToolBlockState::Expanded;
+                    true
+                }
+                ToolBlockState::Expanded => {
+                    tool.state = ToolBlockState::Collapsed;
+                    false
+                }
+            }
+        } else {
+            return;
+        };
+
+        // Persist the new state in the global UI state store (in-memory +
+        // debounced write to disk) so it survives session reconnects and app
+        // restarts.
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool_mut()) {
+            if ToolCollapseState::set(session_id, &tool.id, tool.state.clone()) {
+                // Schedule a debounced save
+                if let Some(sender) = cx.try_global::<crate::ui::gpui::UiEventSender>() {
+                    let _ = sender.0.try_send(crate::ui::UiEvent::PersistUiState);
+                }
+            }
+        }
+
+        self.start_expand_collapse_animation(should_expand, cx);
+    }
+
+    /// Toggle between diff view and plain new-file view for write_file tool blocks.
+    pub fn toggle_write_file_diff_mode(&mut self, cx: &mut Context<Self>) {
+        self.write_file_diff_mode = !self.write_file_diff_mode;
+
+        // Persist the new state
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool()) {
+            if ToolDiffModeState::set(session_id, &tool.id, self.write_file_diff_mode) {
+                // Schedule a debounced save
+                if let Some(sender) = cx.try_global::<crate::ui::gpui::UiEventSender>() {
+                    let _ = sender.0.try_send(crate::ui::UiEvent::PersistUiState);
+                }
+            }
+        }
+
+        cx.notify();
+    }
+
+    fn toggle_compaction(&mut self, cx: &mut Context<Self>) {
+        if let Some(summary) = self.block.as_compaction_mut() {
+            let should_expand = !summary.is_expanded;
+            summary.is_expanded = should_expand;
+            self.start_expand_collapse_animation(should_expand, cx);
+        }
+    }
+
+    /// Render a zigzag/wiggle line using a canvas element.
+    /// The line fills the available width and is vertically centered.
+    fn render_zigzag_line(color: gpui::Hsla) -> impl IntoElement {
+        use gpui::{canvas, point, PathBuilder};
+
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _cx| {
+                let width = bounds.size.width;
+                let height = bounds.size.height;
+                let y_center = bounds.origin.y + height / 2.0;
+                let x_start = bounds.origin.x;
+
+                // Zigzag parameters
+                let segment_width_f = 6.0_f32;
+                let amplitude = px(2.5);
+
+                // Compute number of segments from the width (Pixels -> f32 via division trick)
+                // width / px(1.0) isn't available, so we'll use a large fixed count
+                // and clamp x positions to not exceed bounds.
+                let approx_segments = 200_i32; // More than enough for any realistic width
+
+                let mut builder = PathBuilder::stroke(px(1.0));
+                builder.move_to(point(x_start, y_center));
+
+                for i in 1..=approx_segments {
+                    let x = x_start + px(segment_width_f * i as f32);
+                    if x > x_start + width {
+                        break;
+                    }
+                    let y = if i % 2 == 0 {
+                        y_center - amplitude
+                    } else {
+                        y_center + amplitude
+                    };
+                    builder.line_to(point(x, y));
+                }
+
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, color);
+                }
+            },
+        )
+        .size_full()
+    }
+
+    fn start_expand_collapse_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
+        let target = if should_expand { 1.0 } else { 0.0 };
+        let now = std::time::Instant::now();
+
+        // Update animation state
+        match &self.animation_state.clone() {
+            AnimationState::Animating {
+                height_scale,
+                target: current_target,
+                ..
+            } if *current_target != target => {
+                // Reverse direction: keep current height_scale, but adjust start_time for smooth transition
+                let current_progress = if target == 1.0 {
+                    *height_scale
+                } else {
+                    1.0 - *height_scale
+                };
+                let adjusted_start_time =
+                    now - std::time::Duration::from_millis((current_progress * 300.0) as u64);
+
+                self.animation_state = AnimationState::Animating {
+                    height_scale: *height_scale,
+                    target,
+                    start_time: adjusted_start_time,
+                };
+            }
+            _ => {
+                // Start new animation
+                let initial_height_scale = if should_expand { 0.0 } else { 1.0 };
+                self.animation_state = AnimationState::Animating {
+                    height_scale: initial_height_scale,
+                    target,
+                    start_time: now,
+                };
+            }
+        }
+
+        // Start animation task if not already running
+        if self.animation_task.is_none() {
+            self.start_animation_task(cx);
+        }
+    }
+
+    fn start_animation_task(&mut self, cx: &mut Context<Self>) {
+        let config = AnimationConfig::default();
+        let task = cx.spawn(async move |weak_entity, async_app_cx| {
+            loop {
+                async_app_cx
+                    .background_executor()
+                    .timer(Duration::from_millis(config.frame_ms))
+                    .await;
+
+                let should_continue = weak_entity.update(async_app_cx, |view, cx| {
+                    view.update_animation(&config);
+
+                    // Check if animation should continue
+                    match &view.animation_state {
+                        AnimationState::Idle => false,
+                        _ => {
+                            cx.notify();
+                            true
+                        }
+                    }
+                });
+
+                if let Ok(should_continue) = should_continue {
+                    if !should_continue {
+                        // Animation finished, clean up task
+                        let _ = weak_entity.update(async_app_cx, |view, _cx| {
+                            view.animation_task = None;
+                        });
+                        break;
+                    }
+                } else {
+                    // Entity was dropped, stop animation
+                    break;
+                }
+            }
+        });
+
+        self.animation_task = Some(task);
+    }
+
+    fn update_animation(&mut self, config: &AnimationConfig) {
+        match &mut self.animation_state {
+            AnimationState::Animating {
+                height_scale,
+                target,
+                start_time,
+            } => {
+                let elapsed = start_time.elapsed().as_millis() as f32;
+                let progress = (elapsed / config.duration_ms).min(1.0);
+
+                // Easing function (ease_out_cubic for smooth deceleration)
+                let eased_progress = 1.0 - (1.0 - progress).powi(3);
+
+                *height_scale = if *target == 1.0 {
+                    eased_progress // Animate from 0.0 -> 1.0
+                } else {
+                    1.0 - eased_progress // Animate from 1.0 -> 0.0
+                };
+
+                // Stop when animation complete
+                if progress >= 1.0 {
+                    *height_scale = *target;
+                    self.animation_state = AnimationState::Idle;
+                }
+            }
+            AnimationState::Idle => {}
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Card skeleton (shown while parameters are still streaming)
+    // ------------------------------------------------------------------
+
+    /// Render a minimal card header for a tool whose renderer returned `None`
+    /// (typically because parameters haven't arrived yet). This prevents the
+    /// ugly `[edit]` / `[spawn_agent]` text flash.
+    fn render_card_skeleton(
+        &self,
+        block: &ToolUseBlock,
+        renderer: &dyn crate::ui::gpui::tool_cards::ToolBlockRenderer,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
+        let is_dark = theme.background.l < 0.5;
+        let header_bg = if is_dark {
+            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+        } else {
+            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+        };
+        let header_text_color = theme.muted_foreground;
+        let icon = file_icons::get().get_tool_icon(&block.name);
+        let label = renderer.describe(block);
+
+        div()
+            .w_full()
+            .border_1()
+            .border_color(theme.border)
+            .rounded_md()
+            .overflow_hidden()
+            .child(
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .bg(header_bg)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .child(file_icons::render_icon_container(
+                        &icon,
+                        13.0,
+                        header_text_color,
+                        "⚙",
+                    ))
+                    .child(
+                        div()
+                            .text_size(rems(0.75))
+                            .text_color(header_text_color)
+                            .child(label),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    // ------------------------------------------------------------------
+    // Inline tool rendering
+    // ------------------------------------------------------------------
+
+    /// Render a tool block in the compact inline style.
+    ///
+    /// Layout:
+    /// ```text
+    /// [icon]  Description text                          [▾]   (chevron on hover)
+    /// │  output content when expanded …
+    /// ```
+    fn render_inline_tool(
+        &mut self,
+        block: &ToolUseBlock,
+        renderer: &dyn crate::ui::gpui::tool_cards::ToolBlockRenderer,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let theme = cx.theme().clone();
+
+        // Icon
+        let icon = file_icons::get().get_tool_icon(&block.name);
+        let (icon_color, desc_color) = match block.status {
+            ToolStatus::Error => (theme.danger, theme.danger),
+            ToolStatus::Running | ToolStatus::Pending | ToolStatus::Success => {
+                (theme.muted_foreground, theme.muted_foreground)
+            }
+        };
+
+        // Description text
+        let description = if block.status == ToolStatus::Error {
+            if let Some(ref msg) = block.status_message {
+                format!("{} — {}", renderer.describe(block), msg)
+            } else {
+                renderer.describe(block)
+            }
+        } else {
+            renderer.describe(block)
+        };
+
+        // Determine expansion state — purely based on ToolBlockState, no is_generating override
+        let is_expanded = block.state == ToolBlockState::Expanded;
+        let has_output =
+            block.output.as_ref().is_some_and(|o| !o.is_empty()) || !block.images.is_empty();
+        let can_expand = has_output;
+
+        // Animation scale for smooth expand/collapse
+        let animation_scale = match &self.animation_state {
+            AnimationState::Animating { height_scale, .. } => *height_scale,
+            AnimationState::Idle => {
+                if is_expanded {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        };
+
+        // Chevron icon (only visible on hover, via group)
+        let chevron_icon = if is_expanded {
+            file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
+        } else {
+            file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
+        };
+        let chevron_color = theme.muted_foreground;
+
+        // Running spinner
+        let show_spinner = self.is_generating
+            && (block.status == ToolStatus::Pending || block.status == ToolStatus::Running);
+
+        // --- Build the element ---
+        let mut container = div().w_full().mt_0p5();
+
+        // Header line: clickable area with icon + description + chevron-on-hover
+        let header = div()
+            .id("inline-tool-header")
+            .group("inline-tool")
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_1()
+            .py_1p5()
+            .px_3()
+            .cursor_pointer()
+            .when(!can_expand && !is_expanded, |d| d.cursor_default())
+            .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                view.toggle_tool_collapsed(cx);
+            }))
+            .child(
+                // Left side: icon + description
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .flex_grow()
+                    .min_w_0()
+                    // Icon (or spinner) — both wrapped in a 14×14 container
+                    // to prevent layout shift when transitioning.
+                    .when(show_spinner, |d| {
+                        d.child(
+                            div()
+                                .w(px(14.))
+                                .h(px(14.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    gpui::svg()
+                                        .size(px(14.))
+                                        .path(SharedString::from("icons/arrow_circle.svg"))
+                                        .text_color(icon_color)
+                                        .with_animation(
+                                            "inline_spinner",
+                                            Animation::new(Duration::from_secs(2)).repeat(),
+                                            |svg, delta| {
+                                                svg.with_transformation(Transformation::rotate(
+                                                    percentage(delta),
+                                                ))
+                                            },
+                                        ),
+                                ),
+                        )
+                    })
+                    .when(!show_spinner, |d| {
+                        d.child(file_icons::render_icon_container(
+                            &icon, 14.0, icon_color, "🔧",
+                        ))
+                    })
+                    // Description text
+                    .child(
+                        div()
+                            .text_size(rems(0.8125))
+                            .text_color(desc_color)
+                            .overflow_hidden()
+                            .text_overflow(gpui::TextOverflow::Truncate(SharedString::from("…")))
+                            .child(description),
+                    ),
+            )
+            // Chevron area — always laid out to prevent height changes when
+            // output becomes available. The icon itself is only visible when
+            // expandable, with a highlight on hover.
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(24.))
+                    .rounded(px(6.))
+                    .when(can_expand, |d| {
+                        d.group_hover("inline-tool", |s| s.bg(theme.muted_foreground.opacity(0.1)))
+                            .child(file_icons::render_icon(
+                                &chevron_icon,
+                                14.0,
+                                chevron_color.opacity(0.4),
+                                "▾",
+                            ))
+                    }),
+            );
+
+        container = container.child(header);
+
+        // Animated output area
+        if (is_expanded || animation_scale > 0.0) && has_output {
+            if let Some(output_el) =
+                renderer.render(block, self.is_generating, &theme, None, window, cx)
+            {
+                container = container.child(crate::ui::gpui::tool_cards::animated_card_body(
+                    output_el,
+                    animation_scale,
+                    self.content_height.clone(),
+                ));
+            }
+        }
+
+        container
+    }
+}
+
+impl Render for BlockView {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.block.clone() {
+            BlockData::TextBlock(block) => div()
+                .mt_3()
+                .text_color(cx.theme().foreground)
+                .child(self.markdown_view(&block.content, true, cx))
+                .into_any_element(),
+            BlockData::ThinkingBlock(block) => {
+                // Get the appropriate icon based on completed state
+                let (icon, icon_text) = if block.is_completed {
+                    (
+                        file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
+                        "🧠",
+                    )
+                } else {
+                    (Some(SharedString::from("icons/arrow_circle.svg")), "🔄")
+                };
+
+                // Get the chevron icon based on collapsed state
+                let (chevron_icon, chevron_text) = if block.is_collapsed {
+                    (
+                        file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
+                        "▼",
+                    )
+                } else {
+                    (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
+                };
+
+                // Define header text based on state using reasoning-aware method
+                let header_text = block.get_display_title(self.is_generating);
+
+                // Use theme utilities for colors
+                let blue_base = cx.theme().info; // Theme color for thinking block
+                let thinking_bg = crate::ui::gpui::theme::colors::thinking_block_bg(cx.theme());
+                let chevron_color =
+                    crate::ui::gpui::theme::colors::thinking_block_chevron(cx.theme());
+                let text_color = cx.theme().info_foreground;
+
+                div()
+                    .mt_2()
+                    .rounded_md()
+                    .bg(thinking_bg)
+                    .flex()
+                    .flex_col()
+                    .children(vec![
+                        // Header row — entire row is clickable
+                        div()
+                            .id("thinking-header")
+                            .group("thinking-header")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .w_full()
+                            .px_3()
+                            .py_1p5()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                                view.toggle_thinking_collapsed(cx);
+                            }))
+                            .children(vec![
+                                // Left side with icon and text
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .children(vec![
+                                        // Rotating arrow or brain icon
+                                        if block.is_completed {
+                                            file_icons::render_icon_container(
+                                                &icon, 18.0, blue_base, icon_text,
+                                            )
+                                            .into_any()
+                                        } else {
+                                            svg()
+                                                .size(px(18.))
+                                                .path(SharedString::from("icons/arrow_circle.svg"))
+                                                .text_color(blue_base)
+                                                .with_animation(
+                                                    "image_circle",
+                                                    Animation::new(Duration::from_secs(2)).repeat(),
+                                                    |svg, delta| {
+                                                        svg.with_transformation(
+                                                            Transformation::rotate(percentage(
+                                                                delta,
+                                                            )),
+                                                        )
+                                                    },
+                                                )
+                                                .into_any()
+                                        },
+                                        // Header text
+                                        div()
+                                            .font_weight(FontWeight(500.0))
+                                            .text_color(blue_base)
+                                            .child(header_text)
+                                            .into_any(),
+                                    ])
+                                    .into_any(),
+                                // Chevron — highlights on header hover via group
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(24.))
+                                    .rounded(px(6.))
+                                    .group_hover("thinking-header", |s| {
+                                        s.bg(blue_base.opacity(0.1))
+                                    })
+                                    .child(file_icons::render_icon(
+                                        &chevron_icon,
+                                        16.0,
+                                        chevron_color,
+                                        chevron_text,
+                                    ))
+                                    .into_any(),
+                            ])
+                            .into_any(),
+                        // Animated content container (uses shared helper)
+                        {
+                            let scale = match &self.animation_state {
+                                AnimationState::Animating { height_scale, .. } => *height_scale,
+                                AnimationState::Idle => {
+                                    if block.is_collapsed {
+                                        0.0
+                                    } else {
+                                        1.0
+                                    }
+                                }
+                            };
+
+                            let body_content = if !block.is_collapsed || scale > 0.0 {
+                                let content = block.get_expanded_content(self.is_generating);
+                                div()
+                                    .px_3()
+                                    .pt_1()
+                                    .pb_2()
+                                    .text_size(rems(0.875))
+                                    .italic()
+                                    .text_color(text_color)
+                                    .child(self.markdown_view(&content, false, cx))
+                                    .into_any()
+                            } else {
+                                div().into_any()
+                            };
+
+                            crate::ui::gpui::tool_cards::animated_card_body(
+                                body_content,
+                                scale,
+                                self.content_height.clone(),
+                            )
+                            .into_any()
+                        },
+                    ])
+                    .into_any_element()
+            }
+            BlockData::ToolUse(block) => {
+                // Unified tool block rendering via ToolBlockRendererRegistry
+                if let Some(registry) =
+                    crate::ui::gpui::tool_cards::ToolBlockRendererRegistry::global()
+                {
+                    if let Some(renderer) = registry.get(&block.name) {
+                        match renderer.style() {
+                            crate::ui::gpui::tool_cards::ToolBlockStyle::Inline => {
+                                let block_clone = block.clone();
+                                return self
+                                    .render_inline_tool(&block_clone, renderer.as_ref(), window, cx)
+                                    .into_any_element();
+                            }
+
+                            crate::ui::gpui::tool_cards::ToolBlockStyle::Card => {
+                                let block_clone = block.clone();
+                                let theme = cx.theme().clone();
+
+                                // Build animation context from BlockView state
+                                let scale = match &self.animation_state {
+                                    AnimationState::Animating { height_scale, .. } => *height_scale,
+                                    AnimationState::Idle => match block.state {
+                                        ToolBlockState::Collapsed => 0.0,
+                                        ToolBlockState::Expanded => 1.0,
+                                    },
+                                };
+
+                                let current_project = self.current_project.lock().unwrap().clone();
+                                let markdown_state = self.markdown_state("", cx);
+
+                                let card_ctx = crate::ui::gpui::tool_cards::CardRenderContext {
+                                    animation_scale: scale,
+                                    is_collapsed: block.state == ToolBlockState::Collapsed,
+                                    content_height: self.content_height.clone(),
+                                    current_project,
+                                    write_file_diff_mode: self.write_file_diff_mode,
+                                    markdown_state: Some(markdown_state),
+                                };
+
+                                if let Some(element) = renderer.render(
+                                    &block_clone,
+                                    self.is_generating,
+                                    &theme,
+                                    Some(&card_ctx),
+                                    window,
+                                    cx,
+                                ) {
+                                    return div().mt_2().child(element).into_any_element();
+                                }
+                                // Renderer returned None (e.g. parameters still
+                                // streaming) — show a skeleton card with just
+                                // the header so we don't flash a raw "[name]"
+                                // placeholder.
+                                return div()
+                                    .mt_2()
+                                    .child(self.render_card_skeleton(
+                                        &block,
+                                        renderer.as_ref(),
+                                        &theme,
+                                    ))
+                                    .into_any_element();
+                            }
+                        }
+                    } else {
+                        tracing::warn!("No ToolBlockRenderer registered for tool '{}'", block.name);
+                    }
+                }
+
+                div()
+                    .mt_0p5()
+                    .px_2()
+                    .py_1()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_size(rems(0.8125))
+                    .child(format!("[{}]", block.name))
+                    .into_any_element()
+            }
+            BlockData::CompactionSummary(block) => {
+                let is_expanded = block.is_expanded;
+
+                // Chevron icon
+                let chevron_icon = if is_expanded {
+                    file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
+                } else {
+                    file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
+                };
+                let zigzag_color = cx.theme().border;
+                let label_color = cx.theme().muted_foreground;
+
+                // Zigzag line element (canvas-drawn)
+                let zigzag_left = Self::render_zigzag_line(zigzag_color);
+                let zigzag_right = Self::render_zigzag_line(zigzag_color);
+
+                let header = div()
+                    .id("compaction-header")
+                    .group("compaction")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .py_1p5()
+                    .px_3()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|view, _event: &ClickEvent, _window, cx| {
+                        view.toggle_compaction(cx);
+                    }))
+                    // Left zigzag line
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(8.))
+                            .overflow_hidden()
+                            .child(zigzag_left),
+                    )
+                    // Center: icon + label
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1p5()
+                            .flex_none()
+                            .child(
+                                svg()
+                                    .size(px(14.))
+                                    .path(SharedString::from("icons/clear.svg"))
+                                    .text_color(label_color),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.8125))
+                                    .text_color(label_color)
+                                    .child("Conversation compacted"),
+                            ),
+                    )
+                    // Right zigzag line
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(8.))
+                            .overflow_hidden()
+                            .child(zigzag_right),
+                    )
+                    // Chevron
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .group_hover("compaction", |s| {
+                                s.bg(cx.theme().muted_foreground.opacity(0.1))
+                            })
+                            .child(file_icons::render_icon(
+                                &chevron_icon,
+                                14.0,
+                                label_color.opacity(0.4),
+                                "▾",
+                            )),
+                    );
+
+                let mut container = div().mt_2().w_full().flex().flex_col();
+                container = container.child(header);
+
+                // Animated expand/collapse for the summary content
+                let animation_scale = match &self.animation_state {
+                    AnimationState::Animating { height_scale, .. } => *height_scale,
+                    AnimationState::Idle => {
+                        if is_expanded {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                };
+
+                if is_expanded || animation_scale > 0.0 {
+                    let body = div()
+                        .px_3()
+                        .pb_2()
+                        .text_color(cx.theme().foreground)
+                        .child(self.markdown_view(&block.summary, true, cx));
+
+                    container = container.child(crate::ui::gpui::tool_cards::animated_card_body(
+                        body,
+                        animation_scale,
+                        self.content_height.clone(),
+                    ));
+                }
+
+                container.into_any_element()
+            }
+            BlockData::ImageBlock(block) => {
+                if let Some(image) = &block.image {
+                    div()
+                        .mt_2()
+                        .flex_none() // Don't grow or shrink
+                        .child(
+                            div()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_md()
+                                .overflow_hidden()
+                                .bg(cx.theme().popover)
+                                .shadow_sm()
+                                .child(
+                                    img(ImageSource::Image(image.clone()))
+                                        .max_h(px(MAX_IMAGE_HEIGHT)) // Use constant for max height
+                                        .object_fit(ObjectFit::Contain), // Maintain aspect ratio
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    // Fallback to placeholder if image parsing failed
+                    div()
+                        .mt_2()
+                        .flex_none()
+                        .p_2()
+                        .bg(cx.theme().warning.opacity(0.1))
+                        .border_1()
+                        .border_color(cx.theme().warning.opacity(0.3))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .max_w(px(200.0)) // Limit width of error message
+                        .child(
+                            div()
+                                .text_color(cx.theme().warning_foreground)
+                                .text_xs()
+                                .child("⚠️"),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().warning_foreground.opacity(0.8))
+                                .text_xs()
+                                .child(format!("Failed: {}", block.media_type)),
+                        )
+                        .into_any_element()
+                }
+            }
+        }
+    }
+}
+
+/// Regular text block
+#[derive(Debug, Clone)]
+pub struct TextBlock {
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompactionSummaryBlock {
+    pub summary: String,
+    pub is_expanded: bool,
+}
+
+/// Thinking text block with collapsible content
+#[derive(Debug, Clone)]
+pub struct ThinkingBlock {
+    pub content: String,
+    pub is_collapsed: bool,
+    pub is_completed: bool,
+    pub start_time: std::time::Instant,
+    pub end_time: std::time::Instant,
+    /// Pre-computed duration in seconds from persisted ContentBlock timestamps.
+    /// When set (e.g. after session restore), this takes precedence over Instant-based measurement.
+    pub duration_seconds: Option<f64>,
+    // NEW: OpenAI reasoning fields
+    pub reasoning_summary_items: Vec<llm::ReasoningSummaryItem>,
+    pub current_generating_title: Option<String>,
+    pub current_generating_content: Option<String>,
+}
+
+/// Image block with media type and base64 data
+#[derive(Debug, Clone)]
+pub struct ImageBlock {
+    pub media_type: String,
+    /// Parsed image ready for rendering, if parsing was successful
+    pub image: Option<Arc<gpui::Image>>,
+}
+
+impl ThinkingBlock {
+    pub fn new(content: String) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            content,
+            is_collapsed: true,  // Default is collapsed
+            is_completed: false, // Default is not completed
+            start_time: now,
+            end_time: now, // Initially same as start_time
+            duration_seconds: None,
+            // Initialize reasoning fields
+            reasoning_summary_items: Vec::new(),
+            current_generating_title: None,
+            current_generating_content: None,
+        }
+    }
+
+    pub fn formatted_duration(&self) -> String {
+        // Prefer pre-computed duration from persisted timestamps (survives session restore)
+        let secs = if let Some(dur) = self.duration_seconds {
+            dur as u64
+        } else if self.is_completed {
+            self.end_time.duration_since(self.start_time).as_secs()
+        } else {
+            self.start_time.elapsed().as_secs()
+        };
+
+        if secs < 60 {
+            format!("{secs}s")
+        } else {
+            let minutes = secs / 60;
+            let seconds = secs % 60;
+            format!("{minutes}m{seconds}s")
+        }
+    }
+
+    /// Start a new reasoning summary item, finalizing the previous one if present
+    pub fn start_reasoning_summary_item(&mut self) {
+        if let Some(content) = &self.current_generating_content {
+            if !content.is_empty() {
+                self.reasoning_summary_items
+                    .push(llm::ReasoningSummaryItem::SummaryText {
+                        text: content.clone(),
+                    });
+            }
+        }
+
+        self.current_generating_content = Some(String::new());
+        self.current_generating_title = None;
+    }
+
+    /// Append delta text to the current reasoning summary item
+    pub fn append_reasoning_summary_delta(&mut self, delta: String) {
+        if self.current_generating_content.is_none() {
+            self.current_generating_content = Some(String::new());
+        }
+
+        if let Some(content) = &mut self.current_generating_content {
+            content.push_str(&delta);
+            self.current_generating_title = Self::parse_title_from_content(content);
+        }
+    }
+
+    /// Complete reasoning and finalize any remaining items
+    pub fn complete_reasoning(&mut self) {
+        // Finalize current item if any
+        if let Some(content) = &self.current_generating_content {
+            if !content.is_empty() {
+                self.reasoning_summary_items
+                    .push(llm::ReasoningSummaryItem::SummaryText {
+                        text: content.clone(),
+                    });
+            }
+        }
+
+        // Clear current state
+        self.current_generating_title = None;
+        self.current_generating_content = None;
+
+        // Ensure we have content to display - if we have reasoning items but no fallback content,
+        // populate the fallback content with the joined reasoning content
+        if !self.reasoning_summary_items.is_empty() && self.content.is_empty() {
+            self.content = self
+                .reasoning_summary_items
+                .iter()
+                .map(|item| match item {
+                    llm::ReasoningSummaryItem::SummaryText { text } => text.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+        }
+    }
+
+    /// Get display title based on generating state
+    pub fn get_display_title(&self, is_generating: bool) -> String {
+        if is_generating {
+            // While generating, show current summary title or "Thinking..."
+            self.current_generating_title
+                .as_deref()
+                .unwrap_or("Thinking...")
+                .to_string()
+        } else {
+            // When completed, show duration
+            format!("Thought for {}", self.formatted_duration())
+        }
+    }
+
+    /// Get expanded content based on generating state
+    pub fn get_expanded_content(&self, is_generating: bool) -> String {
+        let result = if is_generating {
+            // While generating, show current item content
+            let content = self
+                .current_generating_content
+                .as_deref()
+                .unwrap_or(&self.content)
+                .to_string();
+            content
+        } else if self.is_reasoning_block() {
+            // When completed with reasoning, show all summary items as raw content
+            let reasoning_content = self
+                .reasoning_summary_items
+                .iter()
+                .map(|item| match item {
+                    llm::ReasoningSummaryItem::SummaryText { text } => text.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+
+            // Fallback: if reasoning_summary_items is empty but we had content,
+            // there might have been a timing issue during completion
+            if reasoning_content.is_empty() && !self.content.is_empty() {
+                self.content.clone()
+            } else {
+                reasoning_content
+            }
+        } else {
+            // Traditional thinking block
+            self.content.clone()
+        };
+
+        result
+    }
+
+    /// Check if this is a reasoning block (has reasoning summary items)
+    pub fn is_reasoning_block(&self) -> bool {
+        !self.reasoning_summary_items.is_empty() || self.current_generating_content.is_some()
+    }
+
+    /// Parse title from reasoning content in OpenAI format "**title**\n\ncontent"
+    fn parse_title_from_content(content: &str) -> Option<String> {
+        // Look for markdown bold pattern: **title** followed by newlines
+        if let Some(start) = content.find("**") {
+            if let Some(end) = content[start + 2..].find("**") {
+                let title_end = start + 2 + end;
+                let title = content[start + 2..title_end].trim();
+                if !title.is_empty() {
+                    return Some(title.to_string());
+                }
+            }
+        }
+
+        // Fallback: use the first line or first few words
+        let first_line = content.lines().next().unwrap_or(content);
+        let words: Vec<&str> = first_line.split_whitespace().take(5).collect();
+        if !words.is_empty() {
+            Some(words.join(" "))
+        } else {
+            None
+        }
+    }
+}
+
+/// Tool use block with name and parameters
+#[derive(Debug, Clone)]
+pub struct ToolUseBlock {
+    pub name: String,
+    pub id: String,
+    pub parameters: Vec<ParameterBlock>,
+    pub status: ToolStatus,
+    pub status_message: Option<String>,
+    pub output: Option<String>,
+    /// Styled terminal output with ANSI color information preserved.
+    /// Used by terminal card renderer for colored static output.
+    pub styled_output: Option<Vec<terminal::StyledLine>>,
+    pub state: ToolBlockState, // Only collapsed/expanded, no generating
+    /// Execution duration in seconds, computed from persisted ContentBlock timestamps.
+    /// Stable across session restores (unlike Instant-based measurement).
+    pub duration_seconds: Option<f64>,
+    /// Image data from tools that produce visual output (e.g. view_images).
+    /// Stored as (media_type, base64_data) pairs; rendered when the tool block is expanded.
+    pub images: Vec<(String, String)>,
+}
+
+/// Parameter for a tool
+#[derive(Debug, Clone)]
+pub struct ParameterBlock {
+    pub name: String,
+    pub value: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::ToolStatus;
+    use gpui::TestAppContext;
+
+    /// Initialize globals needed for tests (theme).
+    fn init_test_globals(cx: &mut gpui::App) {
+        gpui_component::theme::init(cx);
+    }
+
+    /// Helper to create a MessageContainer entity for testing.
+    /// MessageContainer doesn't implement Render so we use cx.new() directly.
+    fn make_container(role: MessageRole, cx: &mut TestAppContext) -> Entity<MessageContainer> {
+        cx.update(|cx| {
+            init_test_globals(cx);
+            cx.new(|cx| MessageContainer::with_role(role, cx))
+        })
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_text_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                assert!(container.is_empty());
+                container.add_text_block("Hello world", cx);
+                assert!(!container.is_empty());
+                let elements = container.elements();
+                assert_eq!(elements.len(), 1);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_or_append_to_text_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                // First call creates a new text block
+                container.add_or_append_to_text_block("Hello", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Second call appends to existing
+                container.add_or_append_to_text_block(" world", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Verify content was appended
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::TextBlock(text) = &block.block {
+                    assert_eq!(text.content, "Hello world");
+                } else {
+                    panic!("Expected TextBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_or_append_to_thinking_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_or_append_to_thinking_block("Thinking...", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Append more
+                container.add_or_append_to_thinking_block(" more thoughts", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Verify content
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                    assert_eq!(thinking.content, "Thinking... more thoughts");
+                    assert!(!thinking.is_completed);
+                } else {
+                    panic!("Expected ThinkingBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_tool_use_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("read_files", "tool-1", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.name, "read_files");
+                    assert_eq!(tool.id, "tool-1");
+                    assert_eq!(tool.status, ToolStatus::Pending);
+                    assert!(tool.parameters.is_empty());
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_update_tool_status(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("edit", "tool-2", cx);
+
+                let updated = container.update_tool_status(
+                    "tool-2",
+                    ToolStatus::Success,
+                    Some("Done".to_string()),
+                    Some("output text".to_string()),
+                    None,
+                    Some(1.5),
+                    vec![],
+                    cx,
+                );
+                assert!(updated);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.status, ToolStatus::Success);
+                    assert_eq!(tool.status_message, Some("Done".to_string()));
+                    assert_eq!(tool.output, Some("output text".to_string()));
+                    assert_eq!(tool.duration_seconds, Some(1.5));
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_update_tool_status_nonexistent(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("edit", "tool-2", cx);
+
+                // Try to update a non-existent tool
+                let updated = container.update_tool_status(
+                    "non-existent",
+                    ToolStatus::Success,
+                    None,
+                    None,
+                    None,
+                    None,
+                    vec![],
+                    cx,
+                );
+                assert!(!updated);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_or_update_tool_parameter(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("read_files", "tool-3", cx);
+
+                // Add a parameter
+                container.add_or_update_tool_parameter("tool-3", "path", "src/main.rs", cx);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.parameters.len(), 1);
+                    assert_eq!(tool.parameters[0].name, "path");
+                    assert_eq!(tool.parameters[0].value, "src/main.rs");
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+
+                // Append to existing parameter
+                container.add_or_update_tool_parameter("tool-3", "path", "/extra", cx);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.parameters.len(), 1);
+                    assert_eq!(tool.parameters[0].value, "src/main.rs/extra");
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_remove_blocks_with_request_id(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.set_current_request_id(1);
+                container.add_text_block("First", cx);
+
+                container.set_current_request_id(2);
+                container.add_text_block("Second", cx);
+                container.add_tool_use_block("edit", "tool-x", cx);
+
+                assert_eq!(container.elements().len(), 3);
+
+                // Remove blocks from request 2
+                container.remove_blocks_with_request_id(2, cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Verify remaining block is from request 1
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::TextBlock(text) = &block.block {
+                    assert_eq!(text.content, "First");
+                } else {
+                    panic!("Expected TextBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_finish_thinking_blocks(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                // Add a thinking block
+                container.add_or_append_to_thinking_block("Thought 1", cx);
+
+                // Verify it's not completed
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                    assert!(!thinking.is_completed);
+                } else {
+                    panic!("Expected ThinkingBlock");
+                }
+
+                // Adding a text block should finish the thinking block
+                container.add_text_block("Response", cx);
+
+                // Verify thinking block is now completed
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                    assert!(thinking.is_completed);
+                } else {
+                    panic!("Expected ThinkingBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_append_tool_output(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("execute_command", "tool-4", cx);
+
+                // Append streaming output
+                container.append_tool_output("tool-4", "line 1\n", cx);
+                container.append_tool_output("tool-4", "line 2\n", cx);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.output, Some("line 1\nline 2\n".to_string()));
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_is_user_message(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::User, cx);
+
+        cx.update(|cx| {
+            assert!(container.read(cx).is_user_message());
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_node_id_and_branch_info(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::User, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, _cx| {
+                assert!(container.node_id().is_none());
+                assert!(container.branch_info().is_none());
+
+                container.set_node_id(Some(42));
+                assert_eq!(container.node_id(), Some(42));
+
+                let info = BranchInfo {
+                    parent_node_id: None,
+                    active_index: 0,
+                    sibling_ids: vec![42, 43],
+                };
+                container.set_branch_info(Some(info.clone()));
+                assert_eq!(container.branch_info(), Some(info));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_thinking_block_formatted_duration(cx: &mut TestAppContext) {
+        cx.update(|_cx| {
+            let thinking = ThinkingBlock {
+                content: "test".to_string(),
+                is_collapsed: false,
+                is_completed: true,
+                start_time: std::time::Instant::now(),
+                end_time: std::time::Instant::now(),
+                duration_seconds: Some(45.0),
+                reasoning_summary_items: vec![],
+                current_generating_title: None,
+                current_generating_content: None,
+            };
+            assert_eq!(thinking.formatted_duration(), "45s");
+
+            let thinking_long = ThinkingBlock {
+                duration_seconds: Some(125.0),
+                ..thinking.clone()
+            };
+            assert_eq!(thinking_long.formatted_duration(), "2m5s");
+        });
+    }
+
+    #[gpui::test]
+    fn test_thinking_block_reasoning_summary(cx: &mut TestAppContext) {
+        cx.update(|_cx| {
+            let mut thinking = ThinkingBlock::new(String::new());
+            assert!(!thinking.is_reasoning_block());
+
+            // Start a reasoning summary item
+            thinking.start_reasoning_summary_item();
+            assert!(thinking.is_reasoning_block());
+
+            // Append content
+            thinking.append_reasoning_summary_delta("**Plan**\n\nI will do something".to_string());
+            assert_eq!(thinking.current_generating_title, Some("Plan".to_string()));
+
+            // Complete reasoning
+            thinking.complete_reasoning();
+            assert!(thinking.current_generating_content.is_none());
+            assert_eq!(thinking.reasoning_summary_items.len(), 1);
+        });
+    }
+}

@@ -10,6 +10,7 @@ pub use shared::settings;
 pub use shared::theme;
 pub use shared::ui_state;
 
+pub mod blocks;
 pub mod elements;
 pub mod input;
 pub mod main_screen;
