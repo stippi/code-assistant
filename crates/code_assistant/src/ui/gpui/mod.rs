@@ -10,11 +10,10 @@ pub use shared::settings;
 pub use shared::theme;
 pub use shared::ui_state;
 
-pub mod branch_switcher;
 pub mod elements;
 pub mod input;
 pub mod main_screen;
-mod messages;
+pub mod messages;
 pub mod new_project_dialog;
 pub mod project_sidebar;
 mod root;

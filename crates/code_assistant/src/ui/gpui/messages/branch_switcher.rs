@@ -1,3 +1,5 @@
+//! Branch navigation component for message branching/editing.
+
 use crate::persistence::BranchInfo;
 use gpui::{div, prelude::*, px, App, CursorStyle, SharedString, Window};
 use gpui_component::{ActiveTheme, Icon};
@@ -96,7 +98,7 @@ impl RenderOnce for BranchSwitcherElement {
                                 .on_click(move |_event, _window, cx| {
                                     if let Some(node_id) = prev_node_id {
                                         if let Some(sender) =
-                                            cx.try_global::<super::UiEventSender>()
+                                            cx.try_global::<super::super::UiEventSender>()
                                         {
                                             let _ = sender.0.try_send(
                                                 crate::ui::UiEvent::SwitchBranch {
@@ -144,7 +146,7 @@ impl RenderOnce for BranchSwitcherElement {
                                 .on_click(move |_event, _window, cx| {
                                     if let Some(node_id) = next_node_id {
                                         if let Some(sender) =
-                                            cx.try_global::<super::UiEventSender>()
+                                            cx.try_global::<super::super::UiEventSender>()
                                         {
                                             let _ = sender.0.try_send(
                                                 crate::ui::UiEvent::SwitchBranch {

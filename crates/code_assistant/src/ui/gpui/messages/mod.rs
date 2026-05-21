@@ -1,10 +1,13 @@
-use super::branch_switcher::BranchSwitcherElement;
-use super::elements::MessageContainer;
+mod activity_indicator;
+mod branch_switcher;
+mod message_item;
+mod scroll;
+
 use crate::session::instance::SessionActivityState;
 
 use gpui::{
-    div, list, prelude::*, px, rems, rgb, App, Context, CursorStyle, Entity, FocusHandle,
-    Focusable, ListAlignment, ListState, Point, SharedString, Task, Window,
+    div, list, prelude::*, px, rems, App, Context, Entity, FocusHandle, Focusable, ListAlignment,
+    ListState, SharedString, Task, Window,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon};
@@ -13,33 +16,19 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use scroll::{
+    ANIMATION_FRAME_MS, ANIMATION_IDLE_MS, DAMPING_C, MIN_DISTANCE_TO_STOP, MIN_SPEED_TO_STOP,
+    SPRING_K,
+};
+
+use super::elements::MessageContainer;
+
 /// Braille spinner frames for the activity indicator.
 const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Maximum width of the message content area. On wide viewports, messages
 /// stay centered rather than stretching edge-to-edge for comfortable reading.
 const MAX_MESSAGE_WIDTH: f32 = 720.0;
-
-// ---------------------------------------------------------------------------
-// Smooth-scroll configuration (spring-damper model, same tuning as the old
-// AutoScrollContainer).
-// ---------------------------------------------------------------------------
-
-/// How often the animation loop ticks (~120 FPS).
-const ANIMATION_FRAME_MS: u64 = 8;
-/// Spring constant.
-const SPRING_K: f32 = 0.035;
-/// Damping constant.
-const DAMPING_C: f32 = 0.32;
-/// Stop threshold: distance in pixels.
-const MIN_DISTANCE_TO_STOP: f32 = 0.5;
-/// Stop threshold: speed in pixels/frame.
-const MIN_SPEED_TO_STOP: f32 = 0.5;
-/// How long the animation idles at the bottom before shutting down.
-/// While idling, it keeps checking for new content growth and instantly
-/// resumes scrolling — this avoids the race where content arrives between
-/// animation stop and the next `scroll_to_bottom()` call.
-const ANIMATION_IDLE_MS: u64 = 2000;
 
 /// MessagesView - Component responsible for displaying the message history.
 ///
@@ -94,56 +83,7 @@ impl MessagesView {
         let last_animation_offset: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
 
         // Install scroll handler to detect manual user scrolling.
-        //
-        // This handler is ONLY called on real ScrollWheelEvent (mouse/trackpad),
-        // never for programmatic offset changes (set_offset_from_scrollbar).
-        //
-        // Strategy: we only care about *direction*. If the user scrolls upward
-        // (away from bottom), we disable follow_tail and stop the animation.
-        // If they scroll downward, we check if they reached the bottom and
-        // re-enable follow_tail. We track the previous offset to compute the
-        // direction.
-        let entity = cx.entity().downgrade();
-        let anim_active_for_handler = animation_active.clone();
-        let prev_scroll_offset: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
-        list_state.set_scroll_handler(move |_event, _window, cx| {
-            let entity = entity.clone();
-            let anim_active = anim_active_for_handler.clone();
-            let prev_offset = prev_scroll_offset.clone();
-            cx.defer(move |cx| {
-                let _ = entity.update(cx, |this, cx| {
-                    // offset.y is negative: 0 = top, -max = bottom
-                    let current: f32 = this.list_state.scroll_px_offset_for_scrollbar().y.into();
-                    let previous = prev_offset.get();
-                    prev_offset.set(current);
-
-                    let max: f32 = this.list_state.max_offset_for_scrollbar().y.into();
-
-                    // delta > 0 means offset.y moved toward 0 (= scrolled UP)
-                    let delta = current - previous;
-
-                    if delta > 0.5 {
-                        // User scrolled UP → disable follow
-                        if this.follow_tail {
-                            this.follow_tail = false;
-                            cx.notify();
-                        }
-                        anim_active.set(false);
-                        this.smooth_scroll_task = None;
-                    } else if delta < -0.5 {
-                        // User scrolled DOWN → check if near bottom, re-enable follow.
-                        let current_abs: f32 = (-current).max(0.0);
-                        if max > 100.0 && current_abs > max * 0.8 {
-                            let distance_from_bottom = max - current_abs;
-                            if distance_from_bottom < 50.0 && !this.follow_tail {
-                                this.follow_tail = true;
-                                cx.notify();
-                            }
-                        }
-                    }
-                });
-            });
-        });
+        scroll::install_scroll_handler(&list_state, &animation_active, cx);
 
         // Spawn a periodic task that triggers a repaint every 80ms while the
         // activity indicator is visible. This drives the braille spinner.
@@ -194,6 +134,7 @@ impl MessagesView {
     }
 
     /// Get the current session ID
+    #[cfg(test)]
     fn get_current_session_id(&self) -> Option<String> {
         self.current_session_id.lock().unwrap().clone()
     }
@@ -381,7 +322,7 @@ impl MessagesView {
                     if displacement.abs() > 0.01 {
                         // set_offset_from_scrollbar expects negative y (same
                         // convention as scroll_px_offset_for_scrollbar).
-                        list_state.set_offset_from_scrollbar(Point {
+                        list_state.set_offset_from_scrollbar(gpui::Point {
                             x: px(0.),
                             y: px(-max.round()),
                         });
@@ -429,7 +370,7 @@ impl MessagesView {
                 // scroll_px_offset_for_scrollbar returns).
                 // set_offset_from_scrollbar expects this same sign convention.
                 let new_y = current_offset + delta;
-                list_state.set_offset_from_scrollbar(Point {
+                list_state.set_offset_from_scrollbar(gpui::Point {
                     x: px(0.),
                     y: px(new_y.min(0.0)),
                 });
@@ -463,51 +404,6 @@ impl MessagesView {
         &self.list_state
     }
 
-    /// Group consecutive image blocks into horizontal galleries for user messages
-    fn group_user_message_elements(
-        elements: Vec<Entity<super::elements::BlockView>>,
-        cx: &Context<Self>,
-    ) -> Vec<gpui::AnyElement> {
-        let mut result = Vec::new();
-        let mut current_images = Vec::new();
-
-        for element in elements {
-            if element.read(cx).is_image_block() {
-                // Collect consecutive image blocks
-                current_images.push(element);
-            } else {
-                // If we have accumulated images, create a gallery first
-                if !current_images.is_empty() {
-                    let image_gallery = div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap_2()
-                        .mt_2() // Add top margin to separate from text above
-                        .children(current_images.drain(..).map(|img| img.into_any_element()));
-                    result.push(image_gallery.into_any_element());
-                }
-
-                // Add the non-image element
-                result.push(element.into_any_element());
-            }
-        }
-
-        // Handle any remaining images at the end
-        if !current_images.is_empty() {
-            let image_gallery = div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_2()
-                .mt_2() // Add top margin to separate from text above
-                .children(current_images.drain(..).map(|img| img.into_any_element()));
-            result.push(image_gallery.into_any_element());
-        }
-
-        result
-    }
-
     /// Update the pending message for the current session
     pub fn update_pending_message(&self, message: Option<String>) {
         *self.current_pending_message.lock().unwrap() = message;
@@ -516,177 +412,6 @@ impl MessagesView {
     /// Update the current project for parameter filtering
     pub fn set_current_project(&self, project: String) {
         *self.current_project.lock().unwrap() = project;
-    }
-
-    /// Render a single message at the given index.
-    /// Called by the list's render callback — only for visible items.
-    fn render_message(
-        &self,
-        index: usize,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let messages = self.message_queue.lock().unwrap();
-        let Some(msg) = messages.get(index) else {
-            // Index out of bounds — might be the pending message slot
-            // or a race condition. Return empty.
-            return div().into_any_element();
-        };
-        let msg = msg.clone();
-        drop(messages); // Release lock before reading entity
-
-        let current_project = self.current_project.lock().unwrap().clone();
-        let current_session_id = self.get_current_session_id();
-
-        // Update the message container with current project
-        msg.read(cx).set_current_project(current_project);
-
-        let is_user_message = msg.read(cx).is_user_message();
-        let node_id = msg.read(cx).node_id();
-        let branch_info = msg.read(cx).branch_info();
-
-        // Get the theme colors for user messages
-        let user_accent = if cx.theme().is_dark() {
-            rgb(0x6BD9A8)
-        } else {
-            rgb(0x0A8A55)
-        };
-
-        // Create message container with appropriate styling.
-        // max_w is applied via the centering wrapper returned at the end.
-        // For user messages: uniform padding + gap between children.
-        // For assistant messages: only horizontal padding; each block controls
-        // its own vertical margin so inline tools can be tighter than text.
-        let message_container = if is_user_message {
-            div()
-                .w_full()
-                .p_3()
-                .flex()
-                .flex_col()
-                .gap(rems(0.625))
-                .bg(cx.theme().muted)
-                .border_1()
-                .border_color(cx.theme().border)
-                .rounded_md()
-                .shadow_xs()
-        } else {
-            div().w_full().px_3().pb_1().flex().flex_col()
-        };
-
-        // Create message container with user badge and edit button if needed
-        let message_container = if is_user_message {
-            let session_id_for_edit = current_session_id.clone();
-            let node_id_for_edit = node_id;
-
-            let header_row = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .w_full()
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .children(vec![
-                            super::file_icons::render_icon_container(
-                                &super::file_icons::get()
-                                    .get_type_icon(super::file_icons::TOOL_USER_INPUT),
-                                16.0,
-                                user_accent,
-                                "👤",
-                            )
-                            .into_any_element(),
-                            div()
-                                .font_weight(gpui::FontWeight(600.0))
-                                .text_color(user_accent)
-                                .child("You")
-                                .into_any_element(),
-                        ]),
-                )
-                .when(node_id.is_some(), |el| {
-                    el.child(
-                        div()
-                            .id("edit-message-btn")
-                            .p_1()
-                            .rounded_sm()
-                            .cursor(CursorStyle::PointingHand)
-                            .hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
-                            .on_click(move |_event, _window, cx| {
-                                if let (Some(session_id), Some(node_id)) =
-                                    (session_id_for_edit.clone(), node_id_for_edit)
-                                {
-                                    if let Some(sender) = cx.try_global::<super::UiEventSender>() {
-                                        let _ = sender.0.try_send(
-                                            crate::ui::UiEvent::StartMessageEdit {
-                                                session_id,
-                                                node_id,
-                                            },
-                                        );
-                                    }
-                                }
-                            })
-                            .child(
-                                Icon::default()
-                                    .path(SharedString::from("icons/pencil.svg"))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .size_4(),
-                            ),
-                    )
-                });
-
-            message_container.child(header_row)
-        } else {
-            message_container
-        };
-
-        // Render all block elements
-        let elements = msg.read(cx).elements();
-
-        let message_container = if is_user_message {
-            let container_children = Self::group_user_message_elements(elements, cx);
-            message_container.children(container_children)
-        } else {
-            let container_children: Vec<_> = elements
-                .into_iter()
-                .map(|element| element.into_any_element())
-                .collect();
-            message_container.children(container_children)
-        };
-
-        // Add branch switcher if applicable
-        let message_container = if is_user_message {
-            if let (Some(branch_info), Some(session_id)) = (branch_info, current_session_id.clone())
-            {
-                if branch_info.sibling_ids.len() > 1 {
-                    message_container.child(BranchSwitcherElement::new(branch_info, session_id))
-                } else {
-                    message_container
-                }
-            } else {
-                message_container
-            }
-        } else {
-            message_container
-        };
-
-        // Wrap user messages in a padding container so the card (with its
-        // border + shadow) sits inset from the max-width boundary without
-        // overflowing via margin.
-        if is_user_message {
-            div()
-                .id(("message-item", msg.entity_id()))
-                .w_full()
-                .p_3()
-                .child(message_container)
-                .into_any_element()
-        } else {
-            message_container
-                .id(("message-item", msg.entity_id()))
-                .into_any_element()
-        }
     }
 }
 
@@ -761,12 +486,12 @@ impl Render for MessagesView {
                 // hitbox receives scroll-wheel events everywhere, not only
                 // over the narrow content column).
                 let inner = if index < total_items {
-                    this.render_message(index, window, cx)
+                    message_item::render_message(this, index, window, cx)
                 } else if index == pending_index && has_pending {
-                    this.render_pending_message(window, cx)
+                    activity_indicator::render_pending_message(this, cx)
                 } else {
                     // Activity indicator (last item)
-                    this.render_activity_indicator(cx)
+                    activity_indicator::render_activity_indicator(this, cx)
                 };
                 let scale = cx.theme().font_size / px(16.0);
                 div()
@@ -854,7 +579,7 @@ impl Render for MessagesView {
                                 .border_1()
                                 .border_color(btn_border)
                                 .shadow_md()
-                                .cursor(CursorStyle::PointingHand)
+                                .cursor(gpui::CursorStyle::PointingHand)
                                 .hover(move |s| s.bg(btn_hover_bg).border_color(btn_hover_border))
                                 .child(
                                     Icon::default()
@@ -874,136 +599,321 @@ impl Render for MessagesView {
     }
 }
 
-impl MessagesView {
-    /// Render the pending message indicator
-    fn render_pending_message(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let pending_message = self.current_pending_message.lock().unwrap().clone();
-        let Some(pending_message) = pending_message else {
-            return div().into_any_element();
-        };
-        if pending_message.is_empty() {
-            return div().into_any_element();
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
 
-        let pending_card = div()
-            .w_full()
-            .m_3()
-            .bg(cx.theme().muted)
-            .border_1()
-            .border_color(cx.theme().warning)
-            .rounded_md()
-            .shadow_xs()
-            .p_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .children(vec![
-                        super::file_icons::render_icon_container(
-                            &super::file_icons::get()
-                                .get_type_icon(super::file_icons::TOOL_USER_INPUT),
-                            16.0,
-                            cx.theme().warning,
-                            "👤",
-                        )
-                        .into_any_element(),
-                        div()
-                            .font_weight(gpui::FontWeight(600.0))
-                            .text_color(cx.theme().warning)
-                            .child("Pending")
-                            .into_any_element(),
-                    ]),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_color(cx.theme().foreground.opacity(0.8))
-                    .child(
-                        gpui_component::text::TextView::markdown(
-                            "pending-message",
-                            pending_message,
-                        )
-                        .selectable(true),
-                    ),
-            );
-
-        pending_card.into_any_element()
+    /// Initialize globals needed for tests (theme).
+    fn init_test_globals(cx: &mut gpui::App) {
+        gpui_component::theme::init(cx);
     }
 
-    /// Render the inline activity indicator (braille spinner or rate-limit text).
-    ///
-    /// Only shown for `WaitingForResponse` (pre-stream) and `RateLimited`.
-    /// During `AgentRunning` the streaming content itself signals activity.
-    fn render_activity_indicator(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let activity = self.activity_state.lock().ok().and_then(|g| g.clone());
+    #[gpui::test]
+    fn test_messages_view_starts_with_follow_tail(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            let queue = Arc::new(Mutex::new(Vec::new()));
+            let activity = Arc::new(Mutex::new(None));
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
 
-        let Some(activity) = activity else {
-            return div().into_any_element();
-        };
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.follow_tail);
+            })
+            .unwrap();
+    }
 
-        // Pick the current braille frame based on wall-clock time (~80ms per frame)
-        let frame_index = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            / 80) as usize
-            % BRAILLE_FRAMES.len();
-        let braille_char = BRAILLE_FRAMES[frame_index];
+    #[gpui::test]
+    fn test_messages_spliced_updates_list_state(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+        let queue_clone = queue.clone();
 
-        match activity {
-            SessionActivityState::RateLimited { seconds_remaining } => {
-                // Orange rate-limit message with spinner
-                let color = cx.theme().warning;
-                div()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(rems(0.875))
-                            .text_color(color)
-                            .child(braille_char.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(0.8125))
-                            .text_color(color)
-                            .child(format!(
-                                "Rate limited — retrying in {}s…",
-                                seconds_remaining
-                            )),
-                    )
-                    .into_any_element()
-            }
-            SessionActivityState::WaitingForResponse => {
-                // Blue braille spinner, no text
-                let color = cx.theme().primary;
-                div()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .child(
-                        div()
-                            .text_size(rems(0.875))
-                            .text_color(color)
-                            .child(braille_char.to_string()),
-                    )
-                    .into_any_element()
-            }
-            _ => {
-                // AgentRunning / Idle — no indicator
-                div().into_any_element()
-            }
-        }
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue_clone, activity, cx))
+            })
+            .unwrap()
+        });
+
+        // Initially 0 items
+        window
+            .update(cx, |view, _, _| {
+                assert_eq!(view.list_state.item_count(), 0);
+            })
+            .unwrap();
+
+        // Simulate adding 3 messages externally
+        window
+            .update(cx, |view, _, cx| {
+                view.messages_spliced(0, 3, cx);
+            })
+            .unwrap();
+
+        window
+            .update(cx, |view, _, _| {
+                assert_eq!(view.list_state.item_count(), 3);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_messages_spliced_no_op_when_no_growth(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        // Splice with same old/new should be no-op
+        window
+            .update(cx, |view, _, cx| {
+                view.messages_spliced(5, 5, cx);
+                // item_count stays at 0 (initial) because we never actually spliced
+                assert_eq!(view.list_state.item_count(), 0);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_messages_reset_resets_list_state(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        // First add some items
+        window
+            .update(cx, |view, _, cx| {
+                view.messages_spliced(0, 5, cx);
+                assert_eq!(view.list_state.item_count(), 5);
+            })
+            .unwrap();
+
+        // Reset to 2 items
+        window
+            .update(cx, |view, _, cx| {
+                view.messages_reset(2, cx);
+                assert_eq!(view.list_state.item_count(), 2);
+                // follow_tail should be re-enabled on reset
+                assert!(view.follow_tail);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_messages_reset_to_zero(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                view.messages_spliced(0, 10, cx);
+                view.messages_reset(0, cx);
+                assert_eq!(view.list_state.item_count(), 0);
+                assert!(view.follow_tail);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_activate_follow_tail(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                // Add items so scroll_to_bottom does something
+                view.messages_spliced(0, 5, cx);
+                // Disable follow_tail
+                view.follow_tail = false;
+                assert!(!view.follow_tail);
+                // Activate
+                view.activate_follow_tail();
+                assert!(view.follow_tail);
+                // Animation should be flagged
+                assert!(view.animation_active.get());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_scroll_to_bottom_no_op_when_empty(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, _| {
+                view.scroll_to_bottom();
+                // Animation should NOT be active because there are no items
+                assert!(!view.animation_active.get());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_stop_animation(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                view.messages_spliced(0, 5, cx);
+                view.ensure_animation_running();
+                assert!(view.animation_active.get());
+                view.stop_animation();
+                assert!(!view.animation_active.get());
+                assert!(view.smooth_scroll_task.is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_set_current_session_id(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.get_current_session_id().is_none());
+                view.set_current_session_id(Some("session-123".to_string()));
+                assert_eq!(
+                    view.get_current_session_id(),
+                    Some("session-123".to_string())
+                );
+                view.set_current_session_id(None);
+                assert!(view.get_current_session_id().is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_update_pending_message(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.current_pending_message.lock().unwrap().is_none());
+                view.update_pending_message(Some("Hello world".to_string()));
+                assert_eq!(
+                    *view.current_pending_message.lock().unwrap(),
+                    Some("Hello world".to_string())
+                );
+                view.update_pending_message(None);
+                assert!(view.current_pending_message.lock().unwrap().is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_messages_spliced_triggers_animation_when_following(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                assert!(view.follow_tail);
+                view.messages_spliced(0, 3, cx);
+                // Animation should be flagged because follow_tail is true
+                assert!(view.animation_active.get());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_messages_spliced_no_animation_when_not_following(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                view.follow_tail = false;
+                view.messages_spliced(0, 3, cx);
+                // Animation should NOT be triggered because follow_tail is false
+                assert!(!view.animation_active.get());
+            })
+            .unwrap();
     }
 }
