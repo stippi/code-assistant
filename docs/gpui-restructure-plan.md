@@ -206,16 +206,13 @@ or pass them as constructor parameters.
 - [x] Sidebar animation kept in mod.rs (tightly coupled to MainScreen fields)
 - [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
 
-### Phase 9: Extract `app/` (the big split of mod.rs) — TODO
-- [ ] Write tests for draft management (save/load/clear round-trip)
-- [ ] Extract `events.rs` (globals, UiEventSender)
-- [ ] Extract `app/drafts.rs`
-- [ ] Extract `app/user_interface_impl.rs`
-- [ ] Extract `app/backend.rs`
-- [ ] Extract `app/event_loop.rs`
-- [ ] Slim down `app/mod.rs` to struct + new() + run_app()
-- [ ] Update top-level `mod.rs` to only declare submodules and re-exports
-- [ ] Verify: `cargo check`, `cargo test`, `cargo clippy`
+### Phase 9: Extract `app/` (the big split of mod.rs) — DONE ✓
+- [x] Extract `event_loop.rs` (process_ui_event_async, ~1240 lines)
+- [x] Extract `backend.rs` (handle_backend_response, ~320 lines)
+- [x] Extract `user_interface_impl.rs` (UserInterface trait impl, ~170 lines)
+- [x] mod.rs reduced from 2601 → 867 lines
+- [x] Remaining in mod.rs: struct definitions, new(), run_app(), helper methods, getters, drafts
+- [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
 
 ### Phase 10: Final rename pass (chat → session) — TODO
 - [ ] Grep for remaining "chat" references in UI code (fields in Gpui struct, method names)
@@ -235,7 +232,7 @@ or pass them as constructor parameters.
 - Phases 6, 2, 8, and 9 are the remaining heavy-lifting phases that involve splitting
   large files (elements.rs at 2324 lines, messages.rs at 1009 lines, mod.rs at 2602 lines)
 
-## Current File Tree (after Phase 2)
+## Current File Tree (after Phase 9)
 
 ```
 crates/code_assistant/src/ui/gpui/
@@ -280,12 +277,16 @@ crates/code_assistant/src/ui/gpui/
 │   ├── mod.rs                  (BlockView, AnimationConfig, ToolCollapseState, Render impl)
 │   ├── block_types.rs          (TextBlock, ThinkingBlock, ImageBlock, ToolUseBlock, BlockData)
 │   └── container.rs            (MessageContainer + all mutation methods)
-├── main_screen/                (exists, not yet split further)
-│   └── mod.rs
+├── main_screen/                ✓ DONE
+│   ├── mod.rs                  (MainScreen struct, Render, event handlers)
+│   ├── project_dialog.rs       (NewProjectDialog)
+│   └── status_popover.rs       (error/status floating popover)
 ├── settings_screen/            (untouched)
 │   └── ...
+├── mod.rs                      (867 lines: Gpui struct, new(), run_app(), helpers, drafts)
+├── event_loop.rs               (process_ui_event_async, ~1240 lines)
+├── backend.rs                  (handle_backend_response, ~320 lines)
+├── user_interface_impl.rs      (UserInterface trait impl, ~170 lines)
 ├── elements.rs                 (thin re-export shim → blocks/)
-├── mod.rs                      (still large — to be split in Phase 9)
-├── new_project_dialog.rs       (to move to main_screen/ in Phase 8)
 └── root.rs
 ```
