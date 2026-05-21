@@ -241,7 +241,7 @@ mod tests {
     fn test_describe_missing_params_fallback() {
         let renderer = code_card::CodeCardRenderer;
         let tool = make_tool("read_files", &[]);
-        assert_eq!(renderer.describe(&tool), "Read files");
+        assert_eq!(renderer.describe(&tool), "Read");
     }
 
     #[test]
