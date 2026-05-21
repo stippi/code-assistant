@@ -540,3 +540,149 @@ fn truncate_text(text: &str, max_len: usize) -> String {
         truncated
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::PlanItem;
+    use gpui::TestAppContext;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    /// Minimal asset source for tests — returns empty for all paths.
+    struct TestAssets;
+    impl gpui::AssetSource for TestAssets {
+        fn load(&self, _path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+            Ok(None)
+        }
+        fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+            Ok(vec![])
+        }
+    }
+
+    /// Initialize globals needed for rendering (theme, file_icons).
+    fn init_test_globals(cx: &mut gpui::App) {
+        gpui_component::theme::init(cx);
+        file_icons::init_with_assets(&(Arc::new(TestAssets) as Arc<dyn gpui::AssetSource>));
+    }
+
+    fn make_plan(items: Vec<(&str, PlanItemStatus)>) -> PlanState {
+        PlanState {
+            entries: items
+                .into_iter()
+                .map(|(content, status)| PlanItem {
+                    content: content.to_string(),
+                    status,
+                    ..Default::default()
+                })
+                .collect(),
+            meta: None,
+        }
+    }
+
+    #[gpui::test]
+    fn test_plan_banner_toggle_emits_event(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| cx.new(|cx| PlanBanner::new(cx)))
+                .unwrap()
+        });
+
+        // Set a plan so the banner is visible
+        let plan = make_plan(vec![
+            ("Step 1", PlanItemStatus::Completed),
+            ("Step 2", PlanItemStatus::InProgress),
+            ("Step 3", PlanItemStatus::Pending),
+        ]);
+
+        window
+            .update(cx, |banner, _, cx| {
+                banner.set_plan(Some(plan), false, cx);
+            })
+            .unwrap();
+
+        // Collect events by subscribing within the window context
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let events_clone = events.clone();
+        window
+            .update(cx, |_, _, cx| {
+                let entity = cx.entity();
+                cx.subscribe(&entity, move |_, _, event: &PlanBannerEvent, _| {
+                    events_clone.borrow_mut().push(event.clone());
+                })
+                .detach();
+            })
+            .unwrap();
+
+        // Simulate toggle
+        window
+            .update(cx, |banner, window, cx| {
+                assert!(!banner.collapsed);
+                banner.on_toggle(&ClickEvent::default(), window, cx);
+            })
+            .unwrap();
+
+        // Check event was emitted
+        let captured = events.borrow();
+        assert_eq!(captured.len(), 1);
+        match &captured[0] {
+            PlanBannerEvent::Toggle { collapsed } => assert!(collapsed),
+        }
+
+        // Verify state changed
+        window
+            .update(cx, |banner, _, _| {
+                assert!(banner.collapsed);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_plan_banner_starts_not_collapsed(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| cx.new(|cx| PlanBanner::new(cx)))
+                .unwrap()
+        });
+
+        window
+            .update(cx, |banner, _, _| {
+                assert!(!banner.collapsed);
+                assert!(banner.plan.is_none());
+                assert_eq!(banner.animation_scale(), 1.0);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_plan_banner_set_plan_updates_state(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| cx.new(|cx| PlanBanner::new(cx)))
+                .unwrap()
+        });
+
+        let plan = make_plan(vec![("Do something", PlanItemStatus::Pending)]);
+
+        window
+            .update(cx, |banner, _, cx| {
+                banner.set_plan(Some(plan.clone()), true, cx);
+                assert!(banner.collapsed);
+                assert!(banner.plan.is_some());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_normalize_single_line() {
+        assert_eq!(normalize_single_line("  hello  \n  world  "), "hello world");
+        assert_eq!(normalize_single_line("single"), "single");
+        assert_eq!(normalize_single_line("  \n  \n  "), "");
+    }
+
+    #[test]
+    fn test_truncate_text() {
+        assert_eq!(truncate_text("short", 10), "short");
+        assert_eq!(truncate_text("a long text", 6), "a lon…");
+    }
+}

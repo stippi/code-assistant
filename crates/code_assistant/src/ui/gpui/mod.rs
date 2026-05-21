@@ -1,32 +1,35 @@
-pub mod assets;
+pub mod shared;
+
+// Re-exports for backward compatibility during incremental migration
+pub use shared::assets;
+pub use shared::context_indicator;
+pub use shared::file_icons;
+pub use shared::image;
+pub use shared::plan_banner;
+pub use shared::settings;
+pub use shared::theme;
+pub use shared::ui_state;
+
 pub mod attachment;
-pub mod auto_scroll;
 pub mod branch_switcher;
 pub mod chat_sidebar;
 pub mod code_card_renderer;
-mod context_indicator;
 pub mod diff_card_renderer;
 pub mod elements;
-pub mod file_icons;
-pub mod image;
 pub mod input_area;
 pub mod main_screen;
 mod messages;
 pub mod model_selector;
 pub mod new_project_dialog;
-mod plan_banner;
 mod root;
 pub mod sandbox_selector;
 pub mod settings_screen;
 pub mod sub_agent_card_renderer;
 pub mod terminal_card_renderer;
 
-pub mod settings;
 pub mod terminal_executor;
 pub mod terminal_pool;
-pub mod theme;
 pub mod tool_block_renderers;
-pub mod ui_state;
 pub mod worktree_selector;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
