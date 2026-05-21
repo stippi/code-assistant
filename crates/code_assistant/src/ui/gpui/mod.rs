@@ -10,21 +10,17 @@ pub use shared::settings;
 pub use shared::theme;
 pub use shared::ui_state;
 
-pub mod attachment;
 pub mod branch_switcher;
 pub mod elements;
-pub mod input_area;
+pub mod input;
 pub mod main_screen;
 mod messages;
-pub mod model_selector;
 pub mod new_project_dialog;
 pub mod project_sidebar;
 mod root;
-pub mod sandbox_selector;
 pub mod settings_screen;
 pub mod terminal;
 pub mod tool_cards;
-pub mod worktree_selector;
 
 // Re-exports for backward compatibility during migration
 pub use terminal::executor as terminal_executor;

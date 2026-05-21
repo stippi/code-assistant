@@ -1,7 +1,7 @@
 use crate::ui::gpui::project_sidebar::{SessionSidebar, SessionSidebarEvent};
 
 use crate::persistence::ChatMetadata;
-use crate::ui::gpui::input_area::{InputArea, InputAreaEvent};
+use crate::ui::gpui::input::{InputArea, InputAreaEvent};
 use crate::ui::gpui::messages::MessagesView;
 use crate::ui::gpui::new_project_dialog::{NewProjectDialog, NewProjectDialogEvent};
 use crate::ui::gpui::plan_banner;

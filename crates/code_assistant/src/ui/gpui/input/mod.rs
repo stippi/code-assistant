@@ -1,9 +1,11 @@
-use super::attachment::{AttachmentEvent, AttachmentView};
+pub mod attachment;
+pub mod model_selector;
+pub mod sandbox_selector;
+pub mod worktree_selector;
+
 use super::file_icons;
-use super::model_selector::{ModelSelector, ModelSelectorEvent};
-use super::sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
-use super::worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
 use crate::persistence::{DraftAttachment, NodeId};
+use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use gpui::{
     div, prelude::*, px, ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
@@ -11,7 +13,10 @@ use gpui::{
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
 use gpui_component::{ActiveTheme, Icon};
+use model_selector::{ModelSelector, ModelSelectorEvent};
 use sandbox::SandboxPolicy;
+use sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
+use worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
 
 /// Events emitted by the InputArea component
 #[derive(Clone, Debug)]
