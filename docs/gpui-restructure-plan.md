@@ -182,15 +182,15 @@ or pass them as constructor parameters.
 - [x] Fix internal references
 - [x] Verify: `cargo check`, `cargo test`
 
-### Phase 6: Extract `messages/` — TODO
-- [ ] Write tests for scroll behavior (follow-tail, scroll-to-bottom trigger)
-- [ ] Write tests for message list splicing / reset
-- [ ] Extract scroll logic → `messages/scroll.rs`
-- [ ] Extract activity indicator → `messages/activity_indicator.rs`
-- [ ] Extract message item rendering → `messages/message_item.rs`
-- [ ] Move `branch_switcher.rs` → `messages/branch_switcher.rs`
-- [ ] Extract `MessagesView` → `messages/mod.rs`
-- [ ] Verify: `cargo check`, `cargo test`
+### Phase 6: Extract `messages/` — DONE ✓
+- [x] Write tests for scroll behavior (follow-tail, scroll-to-bottom trigger)
+- [x] Write tests for message list splicing / reset
+- [x] Extract scroll logic → `messages/scroll.rs`
+- [x] Extract activity indicator → `messages/activity_indicator.rs`
+- [x] Extract message item rendering → `messages/message_item.rs`
+- [x] Move `branch_switcher.rs` → `messages/branch_switcher.rs`
+- [x] Extract `MessagesView` → `messages/mod.rs`
+- [x] Verify: `cargo check`, `cargo test`
 
 ### Phase 2: Extract `blocks/` (data models + container logic) — TODO
 - [ ] Write tests for `MessageContainer` mutations (add block, append text, update tool status, etc.)
@@ -240,7 +240,7 @@ or pass them as constructor parameters.
 - Phases 6, 2, 8, and 9 are the remaining heavy-lifting phases that involve splitting
   large files (elements.rs at 2324 lines, messages.rs at 1009 lines, mod.rs at 2602 lines)
 
-## Current File Tree (after Phase 5)
+## Current File Tree (after Phase 6)
 
 ```
 crates/code_assistant/src/ui/gpui/
@@ -275,14 +275,18 @@ crates/code_assistant/src/ui/gpui/
 │   ├── mod.rs
 │   ├── executor.rs
 │   └── pool.rs
+├── messages/                   ✓ DONE (+ 12 tests)
+│   ├── mod.rs
+│   ├── scroll.rs
+│   ├── activity_indicator.rs
+│   ├── message_item.rs
+│   └── branch_switcher.rs
 ├── main_screen/                (exists, not yet split further)
 │   └── mod.rs
 ├── settings_screen/            (untouched)
 │   └── ...
 ├── mod.rs                      (still large — to be split in Phase 9)
 ├── elements.rs                 (still large — to be split in Phase 2)
-├── messages.rs                 (to be split in Phase 6)
-├── branch_switcher.rs          (to move to messages/ in Phase 6)
 ├── new_project_dialog.rs       (to move to main_screen/ in Phase 8)
 └── root.rs
 ```

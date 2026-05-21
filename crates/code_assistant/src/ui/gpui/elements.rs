@@ -2317,3 +2317,372 @@ pub struct ParameterBlock {
     pub name: String,
     pub value: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::ToolStatus;
+    use gpui::TestAppContext;
+
+    /// Initialize globals needed for tests (theme).
+    fn init_test_globals(cx: &mut gpui::App) {
+        gpui_component::theme::init(cx);
+    }
+
+    /// Helper to create a MessageContainer entity for testing.
+    /// MessageContainer doesn't implement Render so we use cx.new() directly.
+    fn make_container(role: MessageRole, cx: &mut TestAppContext) -> Entity<MessageContainer> {
+        cx.update(|cx| {
+            init_test_globals(cx);
+            cx.new(|cx| MessageContainer::with_role(role, cx))
+        })
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_text_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                assert!(container.is_empty());
+                container.add_text_block("Hello world", cx);
+                assert!(!container.is_empty());
+                let elements = container.elements();
+                assert_eq!(elements.len(), 1);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_or_append_to_text_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                // First call creates a new text block
+                container.add_or_append_to_text_block("Hello", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Second call appends to existing
+                container.add_or_append_to_text_block(" world", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Verify content was appended
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::TextBlock(text) = &block.block {
+                    assert_eq!(text.content, "Hello world");
+                } else {
+                    panic!("Expected TextBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_or_append_to_thinking_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_or_append_to_thinking_block("Thinking...", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Append more
+                container.add_or_append_to_thinking_block(" more thoughts", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Verify content
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                    assert_eq!(thinking.content, "Thinking... more thoughts");
+                    assert!(!thinking.is_completed);
+                } else {
+                    panic!("Expected ThinkingBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_tool_use_block(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("read_files", "tool-1", cx);
+                assert_eq!(container.elements().len(), 1);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.name, "read_files");
+                    assert_eq!(tool.id, "tool-1");
+                    assert_eq!(tool.status, ToolStatus::Pending);
+                    assert!(tool.parameters.is_empty());
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_update_tool_status(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("edit", "tool-2", cx);
+
+                let updated = container.update_tool_status(
+                    "tool-2",
+                    ToolStatus::Success,
+                    Some("Done".to_string()),
+                    Some("output text".to_string()),
+                    None,
+                    Some(1.5),
+                    vec![],
+                    cx,
+                );
+                assert!(updated);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.status, ToolStatus::Success);
+                    assert_eq!(tool.status_message, Some("Done".to_string()));
+                    assert_eq!(tool.output, Some("output text".to_string()));
+                    assert_eq!(tool.duration_seconds, Some(1.5));
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_update_tool_status_nonexistent(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("edit", "tool-2", cx);
+
+                // Try to update a non-existent tool
+                let updated = container.update_tool_status(
+                    "non-existent",
+                    ToolStatus::Success,
+                    None,
+                    None,
+                    None,
+                    None,
+                    vec![],
+                    cx,
+                );
+                assert!(!updated);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_add_or_update_tool_parameter(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("read_files", "tool-3", cx);
+
+                // Add a parameter
+                container.add_or_update_tool_parameter("tool-3", "path", "src/main.rs", cx);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.parameters.len(), 1);
+                    assert_eq!(tool.parameters[0].name, "path");
+                    assert_eq!(tool.parameters[0].value, "src/main.rs");
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+
+                // Append to existing parameter
+                container.add_or_update_tool_parameter("tool-3", "path", "/extra", cx);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.parameters.len(), 1);
+                    assert_eq!(tool.parameters[0].value, "src/main.rs/extra");
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_remove_blocks_with_request_id(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.set_current_request_id(1);
+                container.add_text_block("First", cx);
+
+                container.set_current_request_id(2);
+                container.add_text_block("Second", cx);
+                container.add_tool_use_block("edit", "tool-x", cx);
+
+                assert_eq!(container.elements().len(), 3);
+
+                // Remove blocks from request 2
+                container.remove_blocks_with_request_id(2, cx);
+                assert_eq!(container.elements().len(), 1);
+
+                // Verify remaining block is from request 1
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::TextBlock(text) = &block.block {
+                    assert_eq!(text.content, "First");
+                } else {
+                    panic!("Expected TextBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_finish_thinking_blocks(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                // Add a thinking block
+                container.add_or_append_to_thinking_block("Thought 1", cx);
+
+                // Verify it's not completed
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                    assert!(!thinking.is_completed);
+                } else {
+                    panic!("Expected ThinkingBlock");
+                }
+
+                // Adding a text block should finish the thinking block
+                container.add_text_block("Response", cx);
+
+                // Verify thinking block is now completed
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                    assert!(thinking.is_completed);
+                } else {
+                    panic!("Expected ThinkingBlock");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_append_tool_output(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.add_tool_use_block("execute_command", "tool-4", cx);
+
+                // Append streaming output
+                container.append_tool_output("tool-4", "line 1\n", cx);
+                container.append_tool_output("tool-4", "line 2\n", cx);
+
+                let elements = container.elements();
+                let block = elements[0].read(cx);
+                if let BlockData::ToolUse(tool) = &block.block {
+                    assert_eq!(tool.output, Some("line 1\nline 2\n".to_string()));
+                } else {
+                    panic!("Expected ToolUse block");
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_is_user_message(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::User, cx);
+
+        cx.update(|cx| {
+            assert!(container.read(cx).is_user_message());
+        });
+    }
+
+    #[gpui::test]
+    fn test_message_container_node_id_and_branch_info(cx: &mut TestAppContext) {
+        let container = make_container(MessageRole::User, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, _cx| {
+                assert!(container.node_id().is_none());
+                assert!(container.branch_info().is_none());
+
+                container.set_node_id(Some(42));
+                assert_eq!(container.node_id(), Some(42));
+
+                let info = BranchInfo {
+                    parent_node_id: None,
+                    active_index: 0,
+                    sibling_ids: vec![42, 43],
+                };
+                container.set_branch_info(Some(info.clone()));
+                assert_eq!(container.branch_info(), Some(info));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_thinking_block_formatted_duration(cx: &mut TestAppContext) {
+        cx.update(|_cx| {
+            let thinking = ThinkingBlock {
+                content: "test".to_string(),
+                is_collapsed: false,
+                is_completed: true,
+                start_time: std::time::Instant::now(),
+                end_time: std::time::Instant::now(),
+                duration_seconds: Some(45.0),
+                reasoning_summary_items: vec![],
+                current_generating_title: None,
+                current_generating_content: None,
+            };
+            assert_eq!(thinking.formatted_duration(), "45s");
+
+            let thinking_long = ThinkingBlock {
+                duration_seconds: Some(125.0),
+                ..thinking.clone()
+            };
+            assert_eq!(thinking_long.formatted_duration(), "2m5s");
+        });
+    }
+
+    #[gpui::test]
+    fn test_thinking_block_reasoning_summary(cx: &mut TestAppContext) {
+        cx.update(|_cx| {
+            let mut thinking = ThinkingBlock::new(String::new());
+            assert!(!thinking.is_reasoning_block());
+
+            // Start a reasoning summary item
+            thinking.start_reasoning_summary_item();
+            assert!(thinking.is_reasoning_block());
+
+            // Append content
+            thinking.append_reasoning_summary_delta("**Plan**\n\nI will do something".to_string());
+            assert_eq!(thinking.current_generating_title, Some("Plan".to_string()));
+
+            // Complete reasoning
+            thinking.complete_reasoning();
+            assert!(thinking.current_generating_content.is_none());
+            assert_eq!(thinking.reasoning_summary_items.len(), 1);
+        });
+    }
+}
