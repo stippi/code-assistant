@@ -47,7 +47,6 @@ impl UserInterface for Gpui {
                     content: text.clone(),
                 });
             }
-
             DisplayFragment::ThinkingText { ref text, .. } => {
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: text.clone(),
@@ -134,12 +133,10 @@ impl UserInterface for Gpui {
                     chunk: chunk.clone(),
                 });
             }
-
             DisplayFragment::ToolTerminal { .. } => {
                 // The GPUI terminal executor registers the tool→terminal
                 // mapping directly in the TerminalPool, so no event needed.
             }
-
             DisplayFragment::CompactionDivider { summary } => {
                 self.push_event(UiEvent::DisplayCompactionSummary {
                     summary: summary.clone(),
