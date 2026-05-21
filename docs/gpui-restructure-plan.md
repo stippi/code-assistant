@@ -192,8 +192,8 @@ or pass them as constructor parameters.
 - [x] Extract `MessagesView` → `messages/mod.rs`
 - [x] Verify: `cargo check`, `cargo test`
 
-### Phase 2: Extract `blocks/` (data models + container logic) — TODO
-- [ ] Write tests for `MessageContainer` mutations (add block, append text, update tool status, etc.)
+### Phase 2: Extract `blocks/` (data models + container logic) — IN PROGRESS
+- [x] Write tests for `MessageContainer` mutations (add block, append text, update tool status, etc.)
 - [ ] Extract block type structs → `blocks/block_types.rs`
 - [ ] Extract `MessageContainer` → `blocks/container.rs`
 - [ ] Extract animation logic → `blocks/animation.rs`
