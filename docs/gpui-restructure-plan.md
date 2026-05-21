@@ -200,12 +200,11 @@ or pass them as constructor parameters.
 - [x] `BlockView` + animation + Render impl remain in `blocks/mod.rs` (tightly coupled)
 - [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
 
-### Phase 8: Extract `main_screen/` splits — TODO
-- [ ] Write tests for sidebar animation (easing, state transitions)
-- [ ] Extract animation → `main_screen/animation.rs`
-- [ ] Move `new_project_dialog.rs` → `main_screen/project_dialog.rs`
-- [ ] Extract status popover → `main_screen/status_popover.rs`
-- [ ] Verify: `cargo check`, `cargo test`
+### Phase 8: Extract `main_screen/` splits — DONE ✓
+- [x] Move `new_project_dialog.rs` → `main_screen/project_dialog.rs`
+- [x] Extract status popover → `main_screen/status_popover.rs`
+- [x] Sidebar animation kept in mod.rs (tightly coupled to MainScreen fields)
+- [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
 
 ### Phase 9: Extract `app/` (the big split of mod.rs) — TODO
 - [ ] Write tests for draft management (save/load/clear round-trip)
