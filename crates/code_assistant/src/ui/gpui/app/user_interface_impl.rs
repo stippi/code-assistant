@@ -6,7 +6,7 @@
 
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 
-use super::*;
+use super::super::*;
 
 #[async_trait]
 impl UserInterface for Gpui {

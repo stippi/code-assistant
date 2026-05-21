@@ -6,14 +6,18 @@
 
 use crate::ui::{DisplayFragment, UiEvent};
 
-use elements::{MessageContainer, MessageRole};
+use super::super::elements::{MessageContainer, MessageRole};
 use gpui::Entity;
 use tracing::{debug, trace, warn};
 
-use super::*;
+use super::super::*;
 
 impl Gpui {
-    pub(super) fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
+    pub(in crate::ui::gpui) fn process_ui_event_async(
+        &self,
+        event: UiEvent,
+        cx: &mut gpui::AsyncApp,
+    ) {
         match event {
             UiEvent::DisplayUserInput {
                 content,
@@ -1160,7 +1164,7 @@ impl Gpui {
     }
 
     /// Process display fragments and add them to a message container
-    pub(super) fn process_fragments_for_container(
+    fn process_fragments_for_container(
         &self,
         container: &Entity<MessageContainer>,
         fragments: Vec<DisplayFragment>,

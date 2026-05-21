@@ -10,19 +10,17 @@ pub use shared::settings;
 pub use shared::theme;
 pub use shared::ui_state;
 
-mod backend;
+mod app;
 pub mod blocks;
 pub mod elements;
-mod event_loop;
 pub mod input;
 pub mod main_screen;
 pub mod messages;
-pub mod project_sidebar;
 mod root;
 pub mod settings_screen;
+pub mod sidebar;
 pub mod terminal;
 pub mod tool_cards;
-mod user_interface_impl;
 
 // Re-exports for backward compatibility during migration
 pub use terminal::executor as terminal_executor;
@@ -98,7 +96,7 @@ pub struct Gpui {
     session_stop_requests: Arc<Mutex<std::collections::HashSet<String>>>,
 
     // UI components
-    project_sidebar: Arc<Mutex<Option<Entity<project_sidebar::SessionSidebar>>>>,
+    project_sidebar: Arc<Mutex<Option<Entity<sidebar::SessionSidebar>>>>,
     messages_view: Arc<Mutex<Option<Entity<MessagesView>>>>,
 
     // Draft storage system
@@ -223,10 +221,7 @@ impl Gpui {
     /// Update the project sidebar entity
     fn update_project_sidebar<F>(&self, cx: &mut gpui::AsyncApp, f: F)
     where
-        F: FnOnce(
-            &mut project_sidebar::SessionSidebar,
-            &mut gpui::Context<project_sidebar::SessionSidebar>,
-        ),
+        F: FnOnce(&mut sidebar::SessionSidebar, &mut gpui::Context<sidebar::SessionSidebar>),
     {
         let project_sidebar_entity = self.project_sidebar.lock().unwrap().clone();
         if let Some(project_sidebar_entity) = project_sidebar_entity.as_ref() {
@@ -629,7 +624,7 @@ impl Gpui {
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
 
                         // Create SessionSidebar and store it in Gpui
-                        let project_sidebar = cx.new(project_sidebar::SessionSidebar::new);
+                        let project_sidebar = cx.new(sidebar::SessionSidebar::new);
                         *gpui_clone.project_sidebar.lock().unwrap() = Some(project_sidebar.clone());
 
                         // Create RootView
@@ -754,114 +749,5 @@ impl Gpui {
     /// Set pending edit state
     pub fn set_pending_edit(&self, edit: PendingEdit) {
         *self.pending_edit.lock().unwrap() = Some(edit);
-    }
-
-    // Extended draft management methods with attachments
-    pub fn save_draft_for_session(
-        &self,
-        session_id: &str,
-        content: &str,
-        attachments: &[crate::persistence::DraftAttachment],
-    ) {
-        // Update in-memory cache
-        {
-            let mut drafts = self.session_drafts.lock().unwrap();
-            if content.is_empty() && attachments.is_empty() {
-                drafts.remove(session_id);
-            } else {
-                drafts.insert(session_id.to_string(), content.to_string());
-            }
-        }
-
-        // Save to disk (non-blocking) with full draft structure
-        let draft_storage = self.draft_storage.clone();
-        let session_id_owned = session_id.to_string();
-        let content_owned = content.to_string();
-        let attachments_owned = attachments.to_vec();
-        let session_drafts = self.session_drafts.clone();
-
-        tokio::spawn(async move {
-            // For empty content and no attachments, always try to delete (idempotent)
-            if content_owned.is_empty() && attachments_owned.is_empty() {
-                if let Err(e) =
-                    draft_storage.save_draft(&session_id_owned, &content_owned, &attachments_owned)
-                {
-                    warn!(
-                        "Failed to delete draft for session {}: {}",
-                        session_id_owned, e
-                    );
-                }
-                return;
-            }
-
-            // For non-empty content or attachments, check cache right before disk write
-            let should_save = {
-                let drafts = session_drafts.lock().unwrap();
-                let exists_in_cache = drafts.contains_key(&session_id_owned);
-                let current_content = drafts.get(&session_id_owned);
-
-                // Only save if draft still exists in cache AND content matches exactly
-                exists_in_cache && current_content == Some(&content_owned)
-            };
-
-            if should_save || !attachments_owned.is_empty() {
-                if let Err(e) =
-                    draft_storage.save_draft(&session_id_owned, &content_owned, &attachments_owned)
-                {
-                    warn!(
-                        "Failed to save draft with attachments for session {}: {}",
-                        session_id_owned, e
-                    );
-                }
-            }
-        });
-    }
-
-    pub fn load_draft_for_session(
-        &self,
-        session_id: &str,
-    ) -> Option<(String, Vec<crate::persistence::DraftAttachment>)> {
-        // First check in-memory cache for text
-        let cached_text = {
-            let drafts = self.session_drafts.lock().unwrap();
-            drafts.get(session_id).cloned()
-        };
-
-        // Load from disk for full draft structure
-        match self.draft_storage.load_draft(session_id) {
-            Ok(Some((draft_text, attachments))) => {
-                // Cache the loaded draft text
-                {
-                    let mut drafts = self.session_drafts.lock().unwrap();
-                    drafts.insert(session_id.to_string(), draft_text.clone());
-                }
-                Some((draft_text, attachments))
-            }
-            Ok(None) => {
-                // Check if we have cached text without attachments
-                cached_text.map(|text| (text, Vec::new()))
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to load draft with attachments for session {}: {}",
-                    session_id, e
-                );
-                // Fallback to cached text if available
-                cached_text.map(|text| (text, Vec::new()))
-            }
-        }
-    }
-
-    pub fn clear_draft_for_session(&self, session_id: &str) {
-        // Remove from in-memory cache FIRST
-        {
-            let mut drafts = self.session_drafts.lock().unwrap();
-            drafts.remove(session_id);
-        }
-
-        // Clear from disk synchronously to ensure it happens before any racing save operations
-        if let Err(e) = self.draft_storage.clear_draft(session_id) {
-            warn!("Failed to clear draft for session {}: {}", session_id, e);
-        }
     }
 }

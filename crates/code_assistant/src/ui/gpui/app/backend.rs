@@ -7,10 +7,14 @@ use crate::ui::backend::BackendResponse;
 use gpui::AsyncApp;
 use tracing::{debug, info, warn};
 
-use super::*;
+use super::super::*;
 
 impl Gpui {
-    pub(super) fn handle_backend_response(&self, response: BackendResponse, cx: &mut AsyncApp) {
+    pub(in crate::ui::gpui) fn handle_backend_response(
+        &self,
+        response: BackendResponse,
+        cx: &mut AsyncApp,
+    ) {
         match response {
             BackendResponse::SessionCreated { session_id } => {
                 debug!("Received BackendResponse::SessionCreated");

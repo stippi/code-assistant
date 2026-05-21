@@ -6,8 +6,8 @@
 
 use super::main_screen::{MainScreen, MainScreenEvent};
 use super::messages::MessagesView;
-use super::project_sidebar::SessionSidebar;
 use super::settings_screen::{SettingsScreen, SettingsScreenEvent};
+use super::sidebar::SessionSidebar;
 use gpui::{div, prelude::*, App, Context, Entity, FocusHandle, Focusable, Subscription};
 use tracing::debug;
 

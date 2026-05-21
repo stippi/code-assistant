@@ -1,7 +1,7 @@
 pub mod project_dialog;
 mod status_popover;
 
-use crate::ui::gpui::project_sidebar::{SessionSidebar, SessionSidebarEvent};
+use crate::ui::gpui::sidebar::{SessionSidebar, SessionSidebarEvent};
 
 use crate::persistence::ChatMetadata;
 use crate::ui::gpui::input::{InputArea, InputAreaEvent};
