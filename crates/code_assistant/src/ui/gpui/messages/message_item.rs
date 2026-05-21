@@ -177,7 +177,7 @@ pub fn render_message(
 
 /// Group consecutive image blocks into horizontal galleries for user messages
 fn group_user_message_elements(
-    elements: Vec<Entity<super::super::elements::BlockView>>,
+    elements: Vec<Entity<super::super::blocks::BlockView>>,
     cx: &Context<MessagesView>,
 ) -> Vec<gpui::AnyElement> {
     let mut result = Vec::new();

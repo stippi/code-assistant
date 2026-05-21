@@ -2,7 +2,7 @@ use crate::persistence::{BranchInfo, ChatMetadata, DraftAttachment, NodeId};
 use crate::session::instance::SessionActivityState;
 use crate::tools::core::ImageData;
 use crate::types::PlanState;
-use crate::ui::gpui::elements::MessageRole;
+use crate::ui::gpui::blocks::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
 use sandbox::SandboxPolicy;
 use std::path::PathBuf;

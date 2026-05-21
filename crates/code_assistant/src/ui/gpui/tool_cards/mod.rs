@@ -21,7 +21,7 @@ pub mod inline_renderer;
 pub mod sub_agent_card;
 pub mod terminal_card;
 
-use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
+use crate::ui::gpui::blocks::{BlockView, ToolUseBlock};
 use gpui::{AnyElement, Context, Entity, Pixels, Window};
 use gpui_component::text::TextViewState;
 use std::cell::Cell;
@@ -171,7 +171,7 @@ impl ToolBlockRendererRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::gpui::elements::{ParameterBlock, ToolUseBlock};
+    use crate::ui::gpui::blocks::{ParameterBlock, ToolUseBlock};
     use crate::ui::ToolStatus;
 
     pub(crate) fn make_tool(name: &str, params: &[(&str, &str)]) -> ToolUseBlock {
@@ -189,7 +189,7 @@ mod tests {
             status_message: None,
             output: None,
             styled_output: None,
-            state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
+            state: crate::ui::gpui::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,
             images: Vec::new(),
         }

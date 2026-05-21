@@ -4,7 +4,7 @@
 //! providing a consistent code-viewing experience in the UI.
 
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
-use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
+use crate::ui::gpui::blocks::{BlockView, ToolUseBlock};
 use crate::ui::ToolStatus;
 use gpui::{
     div, px, rems, AnyElement, Context, Element, FontWeight, HighlightStyle, ParentElement,

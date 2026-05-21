@@ -6,7 +6,7 @@
 
 use crate::ui::{DisplayFragment, UiEvent};
 
-use super::super::elements::{MessageContainer, MessageRole};
+use super::super::blocks::{MessageContainer, MessageRole};
 use gpui::Entity;
 use tracing::{debug, trace, warn};
 

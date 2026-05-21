@@ -30,7 +30,8 @@ impl Gpui {
             BackendResponse::SessionDeleted { session_id } => {
                 debug!("Received BackendResponse::SessionDeleted");
                 // Clean up collapse-state overrides for the deleted session
-                elements::ToolCollapseState::remove_session(&session_id);
+
+                blocks::ToolCollapseState::remove_session(&session_id);
 
                 // If the deleted session was the currently active one, disconnect
                 // from it so the messages view shows the "no session" hint.

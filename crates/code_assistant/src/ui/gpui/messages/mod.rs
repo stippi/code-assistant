@@ -21,7 +21,7 @@ use scroll::{
     SPRING_K,
 };
 
-use super::elements::MessageContainer;
+use super::blocks::MessageContainer;
 
 /// Braille spinner frames for the activity indicator.
 const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

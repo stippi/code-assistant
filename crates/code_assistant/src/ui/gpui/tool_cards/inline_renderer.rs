@@ -4,7 +4,7 @@
 //! Renders as a minimal single-line description with expandable output.
 
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
-use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
+use crate::ui::gpui::blocks::{BlockView, ToolUseBlock};
 use crate::ui::ToolStatus;
 use gpui::{
     div, img, px, rems, AnyElement, Context, Element, ImageSource, ObjectFit, ParentElement,

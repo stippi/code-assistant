@@ -12,7 +12,6 @@ pub use shared::ui_state;
 
 mod app;
 pub mod blocks;
-pub mod elements;
 pub mod input;
 pub mod main_screen;
 pub mod messages;
@@ -31,7 +30,7 @@ use crate::types::PlanState;
 use crate::ui::UiEvent;
 use assets::Assets;
 use async_channel;
-use elements::MessageContainer;
+use blocks::MessageContainer;
 use gpui::{
     actions, px, App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point,
     SharedString,
