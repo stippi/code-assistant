@@ -27,6 +27,8 @@ const MAX_IMAGE_HEIGHT: f32 = 80.0;
 pub enum MessageRole {
     User,
     Assistant,
+    /// System-level messages (e.g. compaction dividers) that have no author header
+    System,
 }
 
 /// State of a tool block for rendering and interaction
@@ -311,6 +313,12 @@ impl MessageContainer {
     /// Check if this is a user message
     pub fn is_user_message(&self) -> bool {
         self.role == MessageRole::User
+    }
+
+    /// Check if this is a system message (e.g. compaction dividers)
+    #[allow(dead_code)]
+    pub fn is_system_message(&self) -> bool {
+        self.role == MessageRole::System
     }
 
     pub fn elements(&self) -> Vec<Entity<BlockView>> {
@@ -1277,6 +1285,52 @@ impl BlockView {
         }
     }
 
+    /// Render a zigzag/wiggle line using a canvas element.
+    /// The line fills the available width and is vertically centered.
+    fn render_zigzag_line(color: gpui::Hsla) -> impl IntoElement {
+        use gpui::{canvas, point, PathBuilder};
+
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _cx| {
+                let width = bounds.size.width;
+                let height = bounds.size.height;
+                let y_center = bounds.origin.y + height / 2.0;
+                let x_start = bounds.origin.x;
+
+                // Zigzag parameters
+                let segment_width_f = 6.0_f32;
+                let amplitude = px(2.5);
+
+                // Compute number of segments from the width (Pixels -> f32 via division trick)
+                // width / px(1.0) isn't available, so we'll use a large fixed count
+                // and clamp x positions to not exceed bounds.
+                let approx_segments = 200_i32; // More than enough for any realistic width
+
+                let mut builder = PathBuilder::stroke(px(1.0));
+                builder.move_to(point(x_start, y_center));
+
+                for i in 1..=approx_segments {
+                    let x = x_start + px(segment_width_f * i as f32);
+                    if x > x_start + width {
+                        break;
+                    }
+                    let y = if i % 2 == 0 {
+                        y_center - amplitude
+                    } else {
+                        y_center + amplitude
+                    };
+                    builder.line_to(point(x, y));
+                }
+
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, color);
+                }
+            },
+        )
+        .size_full()
+    }
+
     fn start_expand_collapse_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
         let target = if should_expand { 1.0 } else { 0.0 };
         let now = std::time::Instant::now();
@@ -1861,89 +1915,105 @@ impl Render for BlockView {
                     .into_any_element()
             }
             BlockData::CompactionSummary(block) => {
-                let icon = file_icons::get().get_type_icon(file_icons::MESSAGE_BUBBLES);
-                let icon_color = cx.theme().info;
-                let toggle_label = if block.is_expanded {
-                    "Hide summary"
+                let is_expanded = block.is_expanded;
+
+                // Chevron icon
+                let chevron_icon = if is_expanded {
+                    file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
                 } else {
-                    "Show summary"
+                    file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
                 };
+                let zigzag_color = cx.theme().border;
+                let label_color = cx.theme().muted_foreground;
+
+                // Zigzag line element (canvas-drawn)
+                let zigzag_left = Self::render_zigzag_line(zigzag_color);
+                let zigzag_right = Self::render_zigzag_line(zigzag_color);
 
                 let header = div()
+                    .id("compaction-header")
+                    .group("compaction")
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_between()
-                    .children(vec![
+                    .gap_2()
+                    .py_1p5()
+                    .px_3()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|view, _event: &ClickEvent, _window, cx| {
+                        view.toggle_compaction(cx);
+                    }))
+                    // Left zigzag line
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(8.))
+                            .overflow_hidden()
+                            .child(zigzag_left),
+                    )
+                    // Center: icon + label
+                    .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_2()
-                            .children(vec![
-                                file_icons::render_icon_container(&icon, 18.0, icon_color, "ℹ️")
-                                    .into_any_element(),
+                            .gap_1p5()
+                            .flex_none()
+                            .child(
+                                svg()
+                                    .size(px(14.))
+                                    .path(SharedString::from("icons/clear.svg"))
+                                    .text_color(label_color),
+                            )
+                            .child(
                                 div()
-                                    .text_sm()
-                                    .font_weight(FontWeight(600.0))
-                                    .text_color(icon_color)
-                                    .child("Conversation compacted")
-                                    .into_any_element(),
-                            ])
-                            .into_any_element(),
+                                    .text_size(rems(0.8125))
+                                    .text_color(label_color)
+                                    .child("Conversation compacted"),
+                            ),
+                    )
+                    // Right zigzag line
+                    .child(
                         div()
-                            .id("compaction-toggle")
-                            .text_sm()
-                            .text_color(cx.theme().link)
-                            .cursor_pointer()
-                            .on_click(cx.listener(|view, _event: &ClickEvent, _window, cx| {
-                                view.toggle_compaction(cx);
-                            }))
-                            .child(toggle_label)
-                            .into_any_element(),
-                    ])
-                    .into_any_element();
-
-                let mut children = vec![header];
-
-                if block.is_expanded {
-                    children.push(
+                            .flex_1()
+                            .h(px(8.))
+                            .overflow_hidden()
+                            .child(zigzag_right),
+                    )
+                    // Chevron
+                    .child(
                         div()
-                            .text_color(cx.theme().foreground)
-                            .child(self.markdown_view(&block.summary, true, cx))
-                            .into_any_element(),
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .group_hover("compaction", |s| {
+                                s.bg(cx.theme().muted_foreground.opacity(0.1))
+                            })
+                            .child(file_icons::render_icon(
+                                &chevron_icon,
+                                14.0,
+                                label_color.opacity(0.4),
+                                "▾",
+                            )),
                     );
-                } else {
-                    let preview_text = block.summary.trim();
-                    if !preview_text.is_empty() {
-                        let first_line = preview_text.lines().next().unwrap_or("");
-                        let truncated = if first_line.len() > 120 {
-                            format!("{}…", &first_line[..120])
-                        } else {
-                            first_line.to_string()
-                        };
-                        children.push(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(truncated)
-                                .into_any_element(),
-                        );
-                    }
+
+                let mut container = div().mt_2().w_full().flex().flex_col();
+                container = container.child(header);
+
+                if is_expanded {
+                    container = container.child(
+                        div()
+                            .px_3()
+                            .pb_2()
+                            .text_color(cx.theme().foreground)
+                            .child(self.markdown_view(&block.summary, true, cx)),
+                    );
                 }
 
-                div()
-                    .mt_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().popover)
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .children(children)
-                    .into_any_element()
+                container.into_any_element()
             }
             BlockData::ImageBlock(block) => {
                 if let Some(image) = &block.image {

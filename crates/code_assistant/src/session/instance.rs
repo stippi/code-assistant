@@ -466,7 +466,7 @@ impl SessionInstance {
                 };
 
                 messages_data.push(MessageData {
-                    role: MessageRole::User,
+                    role: MessageRole::System,
                     fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
                     node_id,
                     branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
@@ -571,7 +571,7 @@ impl SessionInstance {
                         .to_string(),
                 };
                 messages_data.push(MessageData {
-                    role: MessageRole::User,
+                    role: MessageRole::System,
                     fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
                     node_id: Some(node_id),
                     branch_info: self.session.get_branch_info(node_id),

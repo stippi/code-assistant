@@ -724,7 +724,7 @@ impl Gpui {
                     old_len = queue.len();
                     let sid = self.current_session_id.lock().unwrap().clone();
                     let new_message = cx.new(|cx| {
-                        let message = MessageContainer::with_role(MessageRole::User, cx);
+                        let message = MessageContainer::with_role(MessageRole::System, cx);
                         message.set_session_id(sid);
                         message.add_compaction_divider(summary.clone(), cx);
                         message

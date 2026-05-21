@@ -742,6 +742,11 @@ impl UserInterface for ACPUserUI {
                                 self.display_fragment(fragment)?;
                             }
                         }
+                        MessageRole::System => {
+                            for fragment in &message_data.fragments {
+                                self.display_fragment(fragment)?;
+                            }
+                        }
                     }
                 }
 
