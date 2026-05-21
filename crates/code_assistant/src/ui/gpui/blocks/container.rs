@@ -34,20 +34,16 @@ pub struct MessageContainer {
     /// The request_id identifying which LLM request produced this container's blocks.
     /// Used to remove blocks when a request is cancelled or rolled back.
     current_request_id: Arc<Mutex<u64>>,
-
     /// Current project for parameter filtering (used to detect cross-project tool calls)
-    #[allow(dead_code)]
     current_project: Arc<Mutex<String>>,
     /// Tracks the last block type for hidden tool paragraph breaks
     last_block_type_for_hidden_tool: Arc<Mutex<Option<HiddenToolBlockType>>>,
     /// Flag indicating a hidden tool completed and we may need a paragraph break
     needs_paragraph_break_after_hidden_tool: Arc<Mutex<bool>>,
-
     /// Node ID for this message (for branching support)
     node_id: Arc<Mutex<Option<NodeId>>>,
     /// Branch info if this message is part of a branch point
     branch_info: Arc<Mutex<Option<BranchInfo>>>,
-
     /// Session ID this container belongs to, used by tool blocks to read/write
     /// the global [`ToolCollapseState`] registry.
     session_id: Arc<Mutex<Option<String>>>,
@@ -60,7 +56,6 @@ impl MessageContainer {
         Self {
             elements: Arc::new(Mutex::new(Vec::new())),
             role,
-
             current_request_id: Arc::new(Mutex::new(0)),
             current_project: Arc::new(Mutex::new(String::new())),
             last_block_type_for_hidden_tool: Arc::new(Mutex::new(None)),

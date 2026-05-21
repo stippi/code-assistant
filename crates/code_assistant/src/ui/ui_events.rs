@@ -2,10 +2,22 @@ use crate::persistence::{BranchInfo, ChatMetadata, DraftAttachment, NodeId};
 use crate::session::instance::SessionActivityState;
 use crate::tools::core::ImageData;
 use crate::types::PlanState;
-use crate::ui::gpui::blocks::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
 use sandbox::SandboxPolicy;
 use std::path::PathBuf;
+
+/// Role of a message in the conversation.
+///
+/// This is a UI-level concept representing how a message should be displayed.
+/// It maps from `llm::MessageRole` (User/Assistant) with the addition of
+/// `System` for synthetic messages like compaction dividers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageRole {
+    User,
+    Assistant,
+    /// System-level messages (e.g. compaction dividers) that have no author header
+    System,
+}
 
 /// Data for a complete message with its display fragments
 #[derive(Debug, Clone)]

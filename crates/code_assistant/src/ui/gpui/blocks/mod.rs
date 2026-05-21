@@ -14,14 +14,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Role of a message in the conversation
-#[derive(Debug, Clone, PartialEq)]
-pub enum MessageRole {
-    User,
-    Assistant,
-    /// System-level messages (e.g. compaction dividers) that have no author header
-    System,
-}
+pub use crate::ui::ui_events::MessageRole;
 
 /// State of a tool block for rendering and interaction
 #[derive(Debug, Clone, PartialEq)]

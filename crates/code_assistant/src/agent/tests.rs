@@ -1291,10 +1291,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     assert_eq!(ui_messages.len(), 3);
 
     // Verify the first message
-    assert_eq!(
-        ui_messages[0].role,
-        crate::ui::gpui::blocks::MessageRole::User
-    );
+    assert_eq!(ui_messages[0].role, crate::ui::ui_events::MessageRole::User);
     assert!(ui_messages[0].fragments.iter().any(|f| match f {
         crate::ui::streaming::DisplayFragment::PlainText(text) =>
             text.contains("Hello, please help me"),
@@ -1304,7 +1301,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     // Verify the second message
     assert_eq!(
         ui_messages[1].role,
-        crate::ui::gpui::blocks::MessageRole::Assistant
+        crate::ui::ui_events::MessageRole::Assistant
     );
     assert!(ui_messages[1].fragments.iter().any(|f| match f {
         crate::ui::streaming::DisplayFragment::PlainText(text) => text.contains("I'll help you"),
@@ -1312,10 +1309,8 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     }));
 
     // Verify the third message
-    assert_eq!(
-        ui_messages[2].role,
-        crate::ui::gpui::blocks::MessageRole::User
-    );
+
+    assert_eq!(ui_messages[2].role, crate::ui::ui_events::MessageRole::User);
     assert!(ui_messages[2].fragments.iter().any(|f| match f {
         crate::ui::streaming::DisplayFragment::PlainText(text) =>
             text.contains("Thank you for the help!"),

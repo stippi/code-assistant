@@ -714,7 +714,7 @@ impl UserInterface for ACPUserUI {
             } => {
                 // Cross-instance awareness: replay new messages that another
                 // code-assistant instance appended to the currently connected session.
-                use crate::ui::gpui::blocks::MessageRole;
+                use crate::ui::ui_events::MessageRole;
 
                 for message_data in &messages {
                     match message_data.role {
