@@ -1280,8 +1280,9 @@ impl BlockView {
 
     fn toggle_compaction(&mut self, cx: &mut Context<Self>) {
         if let Some(summary) = self.block.as_compaction_mut() {
-            summary.is_expanded = !summary.is_expanded;
-            cx.notify();
+            let should_expand = !summary.is_expanded;
+            summary.is_expanded = should_expand;
+            self.start_expand_collapse_animation(should_expand, cx);
         }
     }
 
@@ -2003,14 +2004,31 @@ impl Render for BlockView {
                 let mut container = div().mt_2().w_full().flex().flex_col();
                 container = container.child(header);
 
-                if is_expanded {
-                    container = container.child(
-                        div()
-                            .px_3()
-                            .pb_2()
-                            .text_color(cx.theme().foreground)
-                            .child(self.markdown_view(&block.summary, true, cx)),
-                    );
+                // Animated expand/collapse for the summary content
+                let animation_scale = match &self.animation_state {
+                    AnimationState::Animating { height_scale, .. } => *height_scale,
+                    AnimationState::Idle => {
+                        if is_expanded {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                };
+
+                if is_expanded || animation_scale > 0.0 {
+                    let body = div()
+                        .px_3()
+                        .pb_2()
+                        .text_color(cx.theme().foreground)
+                        .child(self.markdown_view(&block.summary, true, cx));
+
+                    container =
+                        container.child(crate::ui::gpui::tool_block_renderers::animated_card_body(
+                            body,
+                            animation_scale,
+                            self.content_height.clone(),
+                        ));
                 }
 
                 container.into_any_element()
