@@ -33,12 +33,12 @@ impl InlineToolRenderer {
             DescribeTemplate {
                 tool_name: "list_files",
                 template: "List {paths}",
-                fallback: "List files",
+                fallback: "List",
             },
             DescribeTemplate {
                 tool_name: "glob_files",
                 template: "Glob {pattern}",
-                fallback: "Glob files",
+                fallback: "Glob",
             },
             DescribeTemplate {
                 tool_name: "web_search",
@@ -48,7 +48,7 @@ impl InlineToolRenderer {
             DescribeTemplate {
                 tool_name: "web_fetch",
                 template: "Fetch {url}",
-                fallback: "Fetch URL",
+                fallback: "Fetch",
             },
             DescribeTemplate {
                 tool_name: "perplexity_ask",
@@ -58,12 +58,12 @@ impl InlineToolRenderer {
             DescribeTemplate {
                 tool_name: "view_images",
                 template: "View {paths}",
-                fallback: "View images",
+                fallback: "View",
             },
             DescribeTemplate {
                 tool_name: "view_documents",
                 template: "View {paths}",
-                fallback: "View documents",
+                fallback: "View",
             },
         ];
 
