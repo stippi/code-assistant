@@ -192,17 +192,13 @@ or pass them as constructor parameters.
 - [x] Extract `MessagesView` → `messages/mod.rs`
 - [x] Verify: `cargo check`, `cargo test`
 
-### Phase 2: Extract `blocks/` (data models + container logic) — IN PROGRESS
+### Phase 2: Extract `blocks/` (data models + container logic) — DONE ✓
 - [x] Write tests for `MessageContainer` mutations (add block, append text, update tool status, etc.)
-- [ ] Extract block type structs → `blocks/block_types.rs`
-- [ ] Extract `MessageContainer` → `blocks/container.rs`
-- [ ] Extract animation logic → `blocks/animation.rs`
-- [ ] Extract `BlockView` + `BlockData` → `blocks/mod.rs`
-- [ ] Extract text rendering → `blocks/text_renderer.rs`
-- [ ] Extract thinking rendering → `blocks/thinking_renderer.rs`
-- [ ] Extract image rendering → `blocks/image_renderer.rs`
-- [ ] Extract compaction rendering → `blocks/compaction_renderer.rs`
-- [ ] Verify: `cargo check`, `cargo test`
+- [x] Move `elements.rs` → `blocks/mod.rs` with re-export shim
+- [x] Extract block type structs → `blocks/block_types.rs`
+- [x] Extract `MessageContainer` → `blocks/container.rs`
+- [x] `BlockView` + animation + Render impl remain in `blocks/mod.rs` (tightly coupled)
+- [x] Verify: `cargo check`, `cargo test`, `cargo clippy`
 
 ### Phase 8: Extract `main_screen/` splits — TODO
 - [ ] Write tests for sidebar animation (easing, state transitions)
@@ -240,7 +236,7 @@ or pass them as constructor parameters.
 - Phases 6, 2, 8, and 9 are the remaining heavy-lifting phases that involve splitting
   large files (elements.rs at 2324 lines, messages.rs at 1009 lines, mod.rs at 2602 lines)
 
-## Current File Tree (after Phase 6)
+## Current File Tree (after Phase 2)
 
 ```
 crates/code_assistant/src/ui/gpui/
@@ -281,12 +277,16 @@ crates/code_assistant/src/ui/gpui/
 │   ├── activity_indicator.rs
 │   ├── message_item.rs
 │   └── branch_switcher.rs
+├── blocks/                     ✓ DONE (+ 14 tests)
+│   ├── mod.rs                  (BlockView, AnimationConfig, ToolCollapseState, Render impl)
+│   ├── block_types.rs          (TextBlock, ThinkingBlock, ImageBlock, ToolUseBlock, BlockData)
+│   └── container.rs            (MessageContainer + all mutation methods)
 ├── main_screen/                (exists, not yet split further)
 │   └── mod.rs
 ├── settings_screen/            (untouched)
 │   └── ...
+├── elements.rs                 (thin re-export shim → blocks/)
 ├── mod.rs                      (still large — to be split in Phase 9)
-├── elements.rs                 (still large — to be split in Phase 2)
 ├── new_project_dialog.rs       (to move to main_screen/ in Phase 8)
 └── root.rs
 ```
