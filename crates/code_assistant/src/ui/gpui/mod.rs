@@ -15,7 +15,6 @@ pub mod elements;
 pub mod input;
 pub mod main_screen;
 pub mod messages;
-pub mod new_project_dialog;
 pub mod project_sidebar;
 mod root;
 pub mod settings_screen;
