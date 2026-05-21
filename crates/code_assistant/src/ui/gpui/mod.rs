@@ -22,11 +22,13 @@ pub mod new_project_dialog;
 mod root;
 pub mod sandbox_selector;
 pub mod settings_screen;
+pub mod terminal;
 pub mod tool_cards;
-
-pub mod terminal_executor;
-pub mod terminal_pool;
 pub mod worktree_selector;
+
+// Re-exports for backward compatibility during migration
+pub use terminal::executor as terminal_executor;
+pub use terminal::pool as terminal_pool;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::PlanState;
