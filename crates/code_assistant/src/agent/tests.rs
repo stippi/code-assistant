@@ -1309,7 +1309,6 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     }));
 
     // Verify the third message
-
     assert_eq!(ui_messages[2].role, crate::ui::ui_events::MessageRole::User);
     assert!(ui_messages[2].fragments.iter().any(|f| match f {
         crate::ui::streaming::DisplayFragment::PlainText(text) =>
