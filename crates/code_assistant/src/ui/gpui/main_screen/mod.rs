@@ -1,4 +1,4 @@
-use crate::ui::gpui::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
+use crate::ui::gpui::project_sidebar::{SessionSidebar, SessionSidebarEvent};
 
 use crate::persistence::ChatMetadata;
 use crate::ui::gpui::input_area::{InputArea, InputAreaEvent};
@@ -52,15 +52,15 @@ impl gpui::EventEmitter<MainScreenEvent> for MainScreen {}
 // Main screen - handles overall layout and coordination (chat + sidebar)
 pub struct MainScreen {
     input_area: Entity<InputArea>,
-    chat_sidebar: Entity<ChatSidebar>,
+    project_sidebar: Entity<SessionSidebar>,
     messages_view: Entity<MessagesView>,
     plan_banner: Entity<plan_banner::PlanBanner>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
-    // Chat sidebar state
-    chat_collapsed: bool,
+    // Project sidebar state
+    sidebar_collapsed: bool,
     current_session_id: Option<String>,
-    chat_sessions: Vec<ChatMetadata>,
+    sessions: Vec<ChatMetadata>,
     plan_collapsed_sessions: HashMap<String, bool>,
     plan_collapsed: bool,
     /// Last worktree data synced to the selector (for change detection).
@@ -83,7 +83,7 @@ pub struct MainScreen {
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _plan_banner_subscription: Subscription,
-    _chat_sidebar_subscription: Subscription,
+    _project_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
     _window_bounds_subscription: Subscription,
 }
@@ -91,7 +91,7 @@ pub struct MainScreen {
 impl MainScreen {
     pub fn new(
         messages_view: Entity<MessagesView>,
-        chat_sidebar: Entity<ChatSidebar>,
+        project_sidebar: Entity<SessionSidebar>,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -105,9 +105,9 @@ impl MainScreen {
         let input_area_subscription =
             cx.subscribe_in(&input_area, window, Self::on_input_area_event);
 
-        // Subscribe to chat sidebar events
-        let chat_sidebar_subscription =
-            cx.subscribe_in(&chat_sidebar, window, Self::on_chat_sidebar_event);
+        // Subscribe to project sidebar events
+        let project_sidebar_subscription =
+            cx.subscribe_in(&project_sidebar, window, Self::on_project_sidebar_event);
 
         // Subscribe to plan banner events
         let plan_banner_subscription =
@@ -125,14 +125,14 @@ impl MainScreen {
 
         let mut root_view = Self {
             input_area,
-            chat_sidebar,
+            project_sidebar,
             messages_view,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
-            chat_collapsed: false, // Chat sidebar is visible by default
+            sidebar_collapsed: false, // Project sidebar is visible by default
             current_session_id: None,
-            chat_sessions: Vec::new(),
+            sessions: Vec::new(),
 
             plan_collapsed_sessions: HashMap::new(),
             plan_collapsed: false,
@@ -148,7 +148,7 @@ impl MainScreen {
             context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
-            _chat_sidebar_subscription: chat_sidebar_subscription,
+            _project_sidebar_subscription: project_sidebar_subscription,
             _new_project_dialog_subscription: None,
             _window_bounds_subscription: window_bounds_subscription,
         };
@@ -159,14 +159,14 @@ impl MainScreen {
         root_view
     }
 
-    pub fn on_toggle_chat_sidebar(
+    pub fn on_toggle_project_sidebar(
         &mut self,
         _: &ClickEvent,
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let should_expand = self.chat_collapsed;
-        self.chat_collapsed = !self.chat_collapsed;
+        let should_expand = self.sidebar_collapsed;
+        self.sidebar_collapsed = !self.sidebar_collapsed;
         self.start_sidebar_animation(should_expand, cx);
         cx.notify();
     }
@@ -283,7 +283,7 @@ impl MainScreen {
         match &self.sidebar_animation_state {
             SidebarAnimationState::Animating { width_scale, .. } => *width_scale,
             SidebarAnimationState::Idle => {
-                if self.chat_collapsed {
+                if self.sidebar_collapsed {
                     0.0
                 } else {
                     1.0
@@ -595,15 +595,15 @@ impl MainScreen {
         }
     }
 
-    /// Handle ChatSidebar events
-    fn on_chat_sidebar_event(
+    /// Handle SessionSidebar events
+    fn on_project_sidebar_event(
         &mut self,
-        _chat_sidebar: &Entity<ChatSidebar>,
-        event: &ChatSidebarEvent,
+        _project_sidebar: &Entity<SessionSidebar>,
+        event: &SessionSidebarEvent,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if let ChatSidebarEvent::AddProjectRequested = event {
+        if let SessionSidebarEvent::AddProjectRequested = event {
             self.open_add_project_flow(window, cx);
             return;
         }
@@ -611,7 +611,7 @@ impl MainScreen {
         // Handle session deletion separately because it needs to update the
         // MessagesView entity (which requires &mut cx) before the immutable
         // borrow on the Gpui global for the backend sender.
-        if let ChatSidebarEvent::SessionDeleteRequested { session_id } = event {
+        if let SessionSidebarEvent::SessionDeleteRequested { session_id } = event {
             // If the deleted session is the one currently shown in the messages
             // view, disconnect the UI from it *before* telling the backend to
             // delete it.  This avoids a race where the messages view (or another
@@ -654,12 +654,12 @@ impl MainScreen {
             .expect("Failed to obtain Gpui global");
         if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
             match event {
-                ChatSidebarEvent::SessionSelected { session_id } => {
+                SessionSidebarEvent::SessionSelected { session_id } => {
                     let _ = sender.try_send(BackendEvent::LoadSession {
                         session_id: session_id.clone(),
                     });
                 }
-                ChatSidebarEvent::NewSessionRequested {
+                SessionSidebarEvent::NewSessionRequested {
                     name,
                     initial_project,
                 } => {
@@ -669,13 +669,13 @@ impl MainScreen {
                     });
                 }
 
-                ChatSidebarEvent::PersistProjectRequested { project_name } => {
+                SessionSidebarEvent::PersistProjectRequested { project_name } => {
                     let _ = sender.try_send(BackendEvent::PersistProject {
                         project_name: project_name.clone(),
                     });
                 }
-                ChatSidebarEvent::SessionDeleteRequested { .. }
-                | ChatSidebarEvent::AddProjectRequested => {
+                SessionSidebarEvent::SessionDeleteRequested { .. }
+                | SessionSidebarEvent::AddProjectRequested => {
                     // Handled above
                 }
             }
@@ -1177,7 +1177,7 @@ impl Render for MainScreen {
         // Get current chat state from global Gpui
 
         let (
-            chat_sessions,
+            sessions,
             current_session_id,
             current_activity_state,
             current_model,
@@ -1200,19 +1200,19 @@ impl Render for MainScreen {
             (Vec::new(), None, None, None, None, None, None, None)
         };
 
-        // Update chat sidebar if needed
-        if self.chat_sessions != chat_sessions || self.current_session_id != current_session_id {
+        // Update project sidebar if needed
+        if self.sessions != sessions || self.current_session_id != current_session_id {
             let previous_session_id = self.current_session_id.clone();
-            self.chat_sessions = chat_sessions.clone();
+            self.sessions = sessions.clone();
             self.current_session_id = current_session_id.clone();
 
             let persisted_projects = cx
                 .try_global::<Gpui>()
                 .map(|g| g.persisted_projects.lock().unwrap().clone())
                 .unwrap_or_default();
-            self.chat_sidebar.update(cx, |sidebar, cx| {
+            self.project_sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_persisted_projects(persisted_projects);
-                sidebar.update_sessions(chat_sessions.clone(), cx);
+                sidebar.update_sessions(sessions.clone(), cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });
 
@@ -1327,7 +1327,7 @@ impl Render for MainScreen {
         };
 
         // Compute context usage ratio from the current session's last_usage
-        // (stored in Gpui global, immune to chat_sessions overwrites) + cached model limit
+        // (stored in Gpui global, immune to sessions overwrites) + cached model limit
         let context_usage_ratio = self
             .context_limit_cache
             .as_ref()
@@ -1399,7 +1399,7 @@ impl Render for MainScreen {
                             .flex()
                             .items_center()
                             .gap_1()
-                            // Chat sidebar toggle button
+                            // Project sidebar toggle button
                             .child(
                                 div()
                                     .id("toggle-sidebar-btn")
@@ -1412,7 +1412,7 @@ impl Render for MainScreen {
                                     .hover(|s| s.bg(cx.theme().muted))
                                     .child(
                                         Icon::default()
-                                            .path(SharedString::from(if self.chat_collapsed {
+                                            .path(SharedString::from(if self.sidebar_collapsed {
                                                 "icons/panel_left_open.svg"
                                             } else {
                                                 "icons/panel_left_close.svg"
@@ -1420,7 +1420,7 @@ impl Render for MainScreen {
                                             .with_size(Size::Small)
                                             .text_color(cx.theme().muted_foreground),
                                     )
-                                    .on_click(cx.listener(Self::on_toggle_chat_sidebar)),
+                                    .on_click(cx.listener(Self::on_toggle_project_sidebar)),
                             )
                             // Theme toggle button
                             .child(
@@ -1524,7 +1524,7 @@ impl Render for MainScreen {
                             .on_click(cx.listener(Self::on_open_settings)),
                     ),
             )
-            // Main content area with chat sidebar and messages+input (2-column layout)
+            // Main content area with project sidebar and messages+input (2-column layout)
             .child(
                 div()
                     .size_full()
@@ -1535,7 +1535,7 @@ impl Render for MainScreen {
                     .when(sidebar_scale > 0.0, {
                         let sidebar_content_width = self.sidebar_content_width.clone();
                         let width_for_render = sidebar_content_width.clone();
-                        let sidebar = self.chat_sidebar.clone();
+                        let sidebar = self.project_sidebar.clone();
                         move |el| {
                             el.child(
                                 div()

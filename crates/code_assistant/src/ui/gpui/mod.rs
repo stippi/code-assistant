@@ -12,13 +12,13 @@ pub use shared::ui_state;
 
 pub mod attachment;
 pub mod branch_switcher;
-pub mod chat_sidebar;
 pub mod elements;
 pub mod input_area;
 pub mod main_screen;
 mod messages;
 pub mod model_selector;
 pub mod new_project_dialog;
+pub mod project_sidebar;
 mod root;
 pub mod sandbox_selector;
 pub mod settings_screen;
@@ -101,7 +101,7 @@ pub struct Gpui {
     session_stop_requests: Arc<Mutex<std::collections::HashSet<String>>>,
 
     // UI components
-    chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
+    project_sidebar: Arc<Mutex<Option<Entity<project_sidebar::SessionSidebar>>>>,
     messages_view: Arc<Mutex<Option<Entity<MessagesView>>>>,
 
     // Draft storage system
@@ -223,14 +223,17 @@ impl Gpui {
         }
     }
 
-    /// Update the chat sidebar entity
-    fn update_chat_sidebar<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    /// Update the project sidebar entity
+    fn update_project_sidebar<F>(&self, cx: &mut gpui::AsyncApp, f: F)
     where
-        F: FnOnce(&mut chat_sidebar::ChatSidebar, &mut gpui::Context<chat_sidebar::ChatSidebar>),
+        F: FnOnce(
+            &mut project_sidebar::SessionSidebar,
+            &mut gpui::Context<project_sidebar::SessionSidebar>,
+        ),
     {
-        let chat_sidebar_entity = self.chat_sidebar.lock().unwrap().clone();
-        if let Some(chat_sidebar_entity) = chat_sidebar_entity.as_ref() {
-            cx.update_entity(chat_sidebar_entity, f);
+        let project_sidebar_entity = self.project_sidebar.lock().unwrap().clone();
+        if let Some(project_sidebar_entity) = project_sidebar_entity.as_ref() {
+            cx.update_entity(project_sidebar_entity, f);
         }
     }
 
@@ -396,7 +399,7 @@ impl Gpui {
             current_session_activity_state: Arc::new(Mutex::new(None)),
             session_stop_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
 
-            chat_sidebar: Arc::new(Mutex::new(None)),
+            project_sidebar: Arc::new(Mutex::new(None)),
             messages_view: Arc::new(Mutex::new(None)),
 
             // Draft storage system
@@ -628,13 +631,13 @@ impl Gpui {
                         // Store MessagesView reference in Gpui
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
 
-                        // Create ChatSidebar and store it in Gpui
-                        let chat_sidebar = cx.new(chat_sidebar::ChatSidebar::new);
-                        *gpui_clone.chat_sidebar.lock().unwrap() = Some(chat_sidebar.clone());
+                        // Create SessionSidebar and store it in Gpui
+                        let project_sidebar = cx.new(project_sidebar::SessionSidebar::new);
+                        *gpui_clone.project_sidebar.lock().unwrap() = Some(project_sidebar.clone());
 
                         // Create RootView
                         let root_view = cx.new(|cx| {
-                            RootView::new(messages_view, chat_sidebar.clone(), window, cx)
+                            RootView::new(messages_view, project_sidebar.clone(), window, cx)
                         });
 
                         // Wrap in Root component
@@ -1256,16 +1259,16 @@ impl Gpui {
                     }
                 }
 
-                // Update the chat sidebar entity specifically
+                // Update the project sidebar entity specifically
                 let persisted = self.persisted_projects.lock().unwrap().clone();
-                self.update_chat_sidebar(cx, |sidebar, cx| {
+                self.update_project_sidebar(cx, |sidebar, cx| {
                     sidebar.set_persisted_projects(persisted);
                     // Get updated sessions list
                     let updated_sessions = self.chat_sessions.lock().unwrap().clone();
                     sidebar.update_sessions(updated_sessions, cx);
                     cx.notify();
                 });
-                debug!("UI: Updated chat sidebar for session metadata change");
+                debug!("UI: Updated project sidebar for session metadata change");
             }
             UiEvent::UpdateSessionActivityState {
                 session_id,
@@ -1276,8 +1279,8 @@ impl Gpui {
                     session_id, activity_state
                 );
 
-                // Update the chat sidebar
-                self.update_chat_sidebar(cx, |sidebar, cx| {
+                // Update the project sidebar
+                self.update_project_sidebar(cx, |sidebar, cx| {
                     sidebar.update_single_session_activity_state(
                         session_id.clone(),
                         activity_state.clone(),

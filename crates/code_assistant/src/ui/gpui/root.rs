@@ -2,11 +2,11 @@
 //!
 //! When the app starts without a valid configuration (no providers/models),
 //! it automatically shows the settings screen. Otherwise it shows the main
-//! chat screen with its sidebar, messages, and input area.
+//! screen with its project sidebar, messages, and input area.
 
-use super::chat_sidebar::ChatSidebar;
 use super::main_screen::{MainScreen, MainScreenEvent};
 use super::messages::MessagesView;
+use super::project_sidebar::SessionSidebar;
 use super::settings_screen::{SettingsScreen, SettingsScreenEvent};
 use gpui::{div, prelude::*, App, Context, Entity, FocusHandle, Focusable, Subscription};
 use tracing::debug;
@@ -30,12 +30,12 @@ pub struct RootView {
 impl RootView {
     pub fn new(
         messages_view: Entity<MessagesView>,
-        chat_sidebar: Entity<ChatSidebar>,
+        project_sidebar: Entity<SessionSidebar>,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // Create the main screen (former RootView)
-        let main_screen = cx.new(|cx| MainScreen::new(messages_view, chat_sidebar, window, cx));
+        let main_screen = cx.new(|cx| MainScreen::new(messages_view, project_sidebar, window, cx));
 
         // Subscribe to main screen events
         let main_screen_subscription =

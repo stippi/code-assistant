@@ -15,19 +15,19 @@ use tracing::debug;
 /// Maximum number of sessions shown per project before "Show more" appears
 const DEFAULT_VISIBLE_LIMIT: usize = 5;
 
-// ─── ChatListItem ────────────────────────────────────────────────────────────
+// ─── SessionListItem ─────────────────────────────────────────────────────────
 
-/// Events emitted by individual ChatListItem components
+/// Events emitted by individual SessionListItem components
 #[derive(Clone, Debug)]
-pub enum ChatListItemEvent {
-    /// User clicked to select this chat session
+pub enum SessionListItemEvent {
+    /// User clicked to select this session
     SessionClicked { session_id: String },
-    /// User clicked to delete this chat session
+    /// User clicked to delete this session
     DeleteClicked { session_id: String },
 }
 
-/// Individual chat list item component — simplified to title + date.
-pub struct ChatListItem {
+/// Individual session list item component — simplified to title + date.
+pub struct SessionListItem {
     metadata: ChatMetadata,
     is_selected: bool,
     is_hovered: bool,
@@ -35,7 +35,7 @@ pub struct ChatListItem {
     focus_handle: FocusHandle,
 }
 
-impl ChatListItem {
+impl SessionListItem {
     pub fn new(metadata: ChatMetadata, is_selected: bool, cx: &mut Context<Self>) -> Self {
         Self {
             metadata,
@@ -101,28 +101,28 @@ impl ChatListItem {
     }
 
     fn on_session_click(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(ChatListItemEvent::SessionClicked {
+        cx.emit(SessionListItemEvent::SessionClicked {
             session_id: self.metadata.id.clone(),
         });
     }
 
     fn on_session_delete(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        cx.emit(ChatListItemEvent::DeleteClicked {
+        cx.emit(SessionListItemEvent::DeleteClicked {
             session_id: self.metadata.id.clone(),
         });
     }
 }
 
-impl EventEmitter<ChatListItemEvent> for ChatListItem {}
+impl EventEmitter<SessionListItemEvent> for SessionListItem {}
 
-impl Focusable for ChatListItem {
+impl Focusable for SessionListItem {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for ChatListItem {
+impl Render for SessionListItem {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = if self.metadata.name.is_empty() {
             "Unnamed chat".to_string()
@@ -293,7 +293,7 @@ struct ProjectGroup {
     /// Project name (derived from session metadata)
     name: String,
     /// Session entities in this group, sorted by updated_at desc
-    items: Vec<Entity<ChatListItem>>,
+    items: Vec<Entity<SessionListItem>>,
     /// Whether this group is expanded
     is_expanded: bool,
     /// Whether "Show more" has been clicked (show all items)
@@ -303,7 +303,7 @@ struct ProjectGroup {
 }
 
 impl ProjectGroup {
-    fn visible_items(&self) -> &[Entity<ChatListItem>] {
+    fn visible_items(&self) -> &[Entity<SessionListItem>] {
         if self.show_all || self.items.len() <= DEFAULT_VISIBLE_LIMIT {
             &self.items
         } else {
@@ -324,11 +324,11 @@ impl ProjectGroup {
     }
 }
 
-// ─── ChatSidebar ─────────────────────────────────────────────────────────────
+// ─── SessionSidebar ─────────────────────────────────────────────────────────────
 
-/// Events emitted by the ChatSidebar component
+/// Events emitted by the SessionSidebar component
 #[derive(Clone, Debug)]
-pub enum ChatSidebarEvent {
+pub enum SessionSidebarEvent {
     /// User selected a specific chat session
     SessionSelected { session_id: String },
     /// User requested deletion of a chat session
@@ -344,8 +344,8 @@ pub enum ChatSidebarEvent {
     PersistProjectRequested { project_name: String },
 }
 
-/// Main chat sidebar component — groups sessions by project.
-pub struct ChatSidebar {
+/// Main project sidebar component — groups sessions by project.
+pub struct SessionSidebar {
     /// Project groups, sorted by most-recently-updated session
     groups: Vec<ProjectGroup>,
     /// Preserved UI state per project: (is_expanded, show_all)
@@ -360,7 +360,7 @@ pub struct ChatSidebar {
     _item_subscriptions: Vec<Subscription>,
 }
 
-impl ChatSidebar {
+impl SessionSidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             groups: Vec::new(),
@@ -379,7 +379,7 @@ impl ChatSidebar {
         self._item_subscriptions.clear();
 
         // Collect existing item entities for reuse (keyed by session id)
-        let mut existing_items: HashMap<String, Entity<ChatListItem>> = HashMap::new();
+        let mut existing_items: HashMap<String, Entity<SessionListItem>> = HashMap::new();
         for group in self.groups.drain(..) {
             for item in group.items {
                 let id = cx.read_entity(&item, |item, _| item.metadata.id.clone());
@@ -416,7 +416,7 @@ impl ChatSidebar {
         let mut new_groups: Vec<ProjectGroup> = Vec::new();
 
         for (project_name, sessions) in project_order {
-            let mut items: Vec<Entity<ChatListItem>> = Vec::new();
+            let mut items: Vec<Entity<SessionListItem>> = Vec::new();
 
             for session in &sessions {
                 let entity = if let Some(existing) = existing_items.remove(&session.id) {
@@ -429,7 +429,8 @@ impl ChatSidebar {
                     existing
                 } else {
                     let is_selected = self.selected_session_id.as_deref() == Some(&session.id);
-                    let new_item = cx.new(|cx| ChatListItem::new(session.clone(), is_selected, cx));
+                    let new_item =
+                        cx.new(|cx| SessionListItem::new(session.clone(), is_selected, cx));
                     if let Some(state) = self.activity_states.get(&session.id) {
                         new_item.update(cx, |item, cx| {
                             item.update_activity_state(state.clone(), cx);
@@ -513,13 +514,13 @@ impl ChatSidebar {
         cx: &mut Context<Self>,
     ) {
         debug!("Add project button clicked");
-        cx.emit(ChatSidebarEvent::AddProjectRequested);
+        cx.emit(SessionSidebarEvent::AddProjectRequested);
     }
 
     #[allow(dead_code)]
     pub fn request_new_session(&mut self, cx: &mut Context<Self>) {
         debug!("Requesting new chat session");
-        cx.emit(ChatSidebarEvent::NewSessionRequested {
+        cx.emit(SessionSidebarEvent::NewSessionRequested {
             name: None,
             initial_project: None,
         });
@@ -527,18 +528,18 @@ impl ChatSidebar {
 
     fn on_chat_list_item_event(
         &mut self,
-        _item: Entity<ChatListItem>,
-        event: &ChatListItemEvent,
+        _item: Entity<SessionListItem>,
+        event: &SessionListItemEvent,
         cx: &mut Context<Self>,
     ) {
         match event {
-            ChatListItemEvent::SessionClicked { session_id } => {
-                cx.emit(ChatSidebarEvent::SessionSelected {
+            SessionListItemEvent::SessionClicked { session_id } => {
+                cx.emit(SessionSidebarEvent::SessionSelected {
                     session_id: session_id.clone(),
                 });
             }
-            ChatListItemEvent::DeleteClicked { session_id } => {
-                cx.emit(ChatSidebarEvent::SessionDeleteRequested {
+            SessionListItemEvent::DeleteClicked { session_id } => {
+                cx.emit(SessionSidebarEvent::SessionDeleteRequested {
                     session_id: session_id.clone(),
                 });
             }
@@ -650,7 +651,7 @@ impl ChatSidebar {
                         .on_click(cx.listener(move |_this, _, _, cx| {
                             cx.stop_propagation();
                             debug!("Persist project: {}", project_for_pin);
-                            cx.emit(ChatSidebarEvent::PersistProjectRequested {
+                            cx.emit(SessionSidebarEvent::PersistProjectRequested {
                                 project_name: project_for_pin.clone(),
                             });
                         })),
@@ -691,7 +692,7 @@ impl ChatSidebar {
                         cx.listener(move |_this, _, _, cx| {
                             cx.stop_propagation();
                             debug!("New session in project: {}", project);
-                            cx.emit(ChatSidebarEvent::NewSessionRequested {
+                            cx.emit(SessionSidebarEvent::NewSessionRequested {
                                 name: None,
                                 initial_project: Some(project.clone()),
                             });
@@ -732,15 +733,15 @@ impl ChatSidebar {
     }
 }
 
-impl EventEmitter<ChatSidebarEvent> for ChatSidebar {}
+impl EventEmitter<SessionSidebarEvent> for SessionSidebar {}
 
-impl Focusable for ChatSidebar {
+impl Focusable for SessionSidebar {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for ChatSidebar {
+impl Render for SessionSidebar {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Build the list of project groups with their items
         let mut children: Vec<gpui::AnyElement> = Vec::new();
