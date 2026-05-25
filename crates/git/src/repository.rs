@@ -1,17 +1,18 @@
 use crate::binary::GitBinary;
-use crate::types::RepoInfo;
+use crate::types::{RepoInfo, Worktree};
 use anyhow::{Context, Result};
+use gix::ThreadSafeRepository;
+use gix::sec::trust::DefaultForLevel;
 use std::path::{Path, PathBuf};
 
 /// A handle to a git repository.
 ///
-/// Uses `git2` (libgit2) for fast in-process reads and the system `git`
-/// binary for write operations, worktree management, and anything that
-/// may need hooks or credential helpers.
+/// Uses `gix` for fast in-process operations and the system `git` binary
+/// for operations that need hooks (checkout).
 pub struct GitRepository {
-    /// In-process libgit2 handle for fast reads.
-    pub(crate) repo: git2::Repository,
-    /// System git binary for CLI operations.
+    /// In-process gix handle for fast reads and branch mutations.
+    pub(crate) repo: ThreadSafeRepository,
+    /// System git binary for checkout and worktree operations.
     pub git: GitBinary,
     /// Cached working directory path.
     workdir: PathBuf,
@@ -24,9 +25,17 @@ impl GitRepository {
     /// The repository is discovered by walking up the directory tree.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let repo = git2::Repository::discover(path)
-            .with_context(|| format!("No git repository found at {}", path.display()))?;
+        let shared_repo = ThreadSafeRepository::discover_with_environment_overrides_opts(
+            path,
+            gix::discover::upwards::Options {
+                match_ceiling_dir_or_error: false,
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .with_context(|| format!("No git repository found at {}", path.display()))?;
 
+        let repo = shared_repo.to_thread_local();
         let workdir = repo
             .workdir()
             .context("Bare repositories are not supported")?
@@ -34,29 +43,33 @@ impl GitRepository {
 
         let git = GitBinary::new()?;
 
-        Ok(Self { repo, git, workdir })
+        Ok(Self {
+            repo: shared_repo,
+            git,
+            workdir,
+        })
     }
 
     /// Check whether a path is inside a git repository.
     pub fn is_repo(path: impl AsRef<Path>) -> bool {
-        git2::Repository::discover(path.as_ref()).is_ok()
+        ThreadSafeRepository::discover(path.as_ref()).is_ok()
     }
 
     /// Get summary information about this repository.
     pub fn info(&self) -> Result<RepoInfo> {
-        let head_branch = self.repo.head().ok().and_then(|head| {
-            if head.is_branch() {
-                head.shorthand().map(String::from)
-            } else {
-                None
-            }
-        });
+        let repo = self.repo.to_thread_local();
 
-        let has_origin = self.repo.find_remote("origin").is_ok();
+        let head_branch = repo
+            .head_name()
+            .ok()
+            .flatten()
+            .map(|name| name.shorten().to_string());
+
+        let has_origin = repo.remote_names().iter().any(|n| n.as_ref() == b"origin");
 
         Ok(RepoInfo {
             workdir: self.workdir.clone(),
-            git_dir: self.repo.path().to_path_buf(),
+            git_dir: repo.path().to_path_buf(),
             head_branch,
             has_origin,
         })
@@ -72,26 +85,25 @@ impl GitRepository {
     /// For the main worktree this is the same as `git_dir`.
     /// For linked worktrees this points to the main repo's `.git` directory.
     pub fn commondir(&self) -> PathBuf {
-        self.repo.commondir().to_path_buf()
+        self.repo.to_thread_local().common_dir().to_path_buf()
     }
 
-    /// Provide read access to the underlying `git2::Repository`.
+    /// List all worktrees for this repository using gix (no subprocess).
     ///
-    /// Useful for callers that need direct libgit2 access
-    /// (e.g. for computing in-memory diffs).
-    pub fn libgit2(&self) -> &git2::Repository {
-        &self.repo
+    /// The main worktree is always first. Linked worktrees follow, sorted by
+    /// their git dir path. Worktrees whose checkout path cannot be resolved
+    /// are silently skipped.
+    pub fn list_worktrees(&self) -> Result<Vec<Worktree>> {
+        let repo = self.repo.to_thread_local();
+        crate::worktree::list_worktrees_sync(&repo)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{init_repo, init_repo_with_commit};
     use tempfile::TempDir;
-
-    fn init_repo(dir: &Path) -> git2::Repository {
-        git2::Repository::init(dir).expect("failed to init repo")
-    }
 
     #[test]
     fn open_existing_repo() {
@@ -101,7 +113,8 @@ mod tests {
         let repo = GitRepository::open(dir.path()).unwrap();
         // Use canonicalize to handle macOS /var -> /private/var symlink
         let expected = dir.path().canonicalize().unwrap();
-        assert_eq!(repo.workdir(), expected);
+        let actual = repo.workdir().canonicalize().unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -114,7 +127,8 @@ mod tests {
 
         let repo = GitRepository::open(&sub).unwrap();
         let expected = dir.path().canonicalize().unwrap();
-        assert_eq!(repo.workdir(), expected);
+        let actual = repo.workdir().canonicalize().unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -135,12 +149,12 @@ mod tests {
     #[test]
     fn info_on_empty_repo() {
         let dir = TempDir::new().unwrap();
-        init_repo(dir.path());
+        init_repo_with_commit(dir.path());
 
         let repo = GitRepository::open(dir.path()).unwrap();
         let info = repo.info().unwrap();
-        // HEAD is unborn on an empty repo
-        assert_eq!(info.head_branch, None);
+        // gix resolves the unborn branch name from config (e.g. "main"), unlike git2
+        assert!(info.head_branch.is_some());
         assert!(!info.has_origin);
     }
 }

@@ -1202,7 +1202,7 @@ async fn handle_list_branches_and_worktrees(
 
     let current_branch = repo.current_branch();
 
-    let worktrees = match git::worktree::list_worktrees(&repo.git, repo.workdir()).await {
+    let worktrees = match git::worktree::list_worktrees(&repo).await {
         Ok(w) => w,
         Err(e) => {
             error!("Failed to list worktrees: {}", e);
@@ -1289,7 +1289,7 @@ async fn handle_create_worktree(
     };
 
     // Check if a worktree for this branch already exists
-    match git::worktree::find_worktree_for_branch(&repo.git, repo.workdir(), branch_name).await {
+    match git::worktree::find_worktree_for_branch(&repo, branch_name).await {
         Ok(Some(existing)) => {
             info!(
                 "Reusing existing worktree for branch '{}' at {:?}",

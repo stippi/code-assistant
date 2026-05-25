@@ -5,11 +5,16 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.95"
-git2 = { version = "0.20.1", default-features = false, features = ["vendored-libgit2"] }
 serde = { version = "1.0.215", features = ["derive"] }
 tokio = { version = "1.40.0", features = ["process"] }
 tracing = "0.1.40"
 which = "7.0"
+
+[dependencies.gix]
+version = "0.83.0"
+default-features = false
+features = ["max-performance", "revision", "sha1", "sha256", "worktree-mutation"]
+
 
 [dev-dependencies]
 tempfile = "3.13.0"

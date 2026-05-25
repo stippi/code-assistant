@@ -1,32 +1,35 @@
 use crate::repository::GitRepository;
 use crate::types::Branch;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use gix::refs::Target;
+use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
 impl GitRepository {
-    /// List local branches using `git2`.
+    /// List local branches using `gix`.
     ///
-    /// This is fast because it runs in-process via libgit2 with no
+    /// This is fast because it runs in-process via gix with no
     /// subprocess overhead.
     pub fn list_branches(&self) -> Result<Vec<Branch>> {
+        let repo = self.repo.to_thread_local();
         let mut branches = Vec::new();
 
-        let head_name: Option<String> = self
-            .repo
-            .head()
+        let head_name: Option<String> = repo
+            .head_name()
             .ok()
-            .and_then(|h: git2::Reference<'_>| h.shorthand().map(String::from));
+            .flatten()
+            .map(|n| n.shorten().to_string());
 
-        for entry in self.repo.branches(Some(git2::BranchType::Local))? {
-            let (branch, _branch_type): (git2::Branch<'_>, git2::BranchType) = entry?;
-            let name = branch.name()?.unwrap_or("").to_string();
+        for reference in repo.references()?.local_branches()? {
+            let reference = reference.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let name = reference.name().shorten().to_string();
             if name.is_empty() {
                 continue;
             }
 
-            let upstream = branch
-                .upstream()
-                .ok()
-                .and_then(|u: git2::Branch<'_>| u.name().ok().flatten().map(String::from));
+            let upstream = repo
+                .branch_remote_ref_name(reference.name(), gix::remote::Direction::Fetch)
+                .and_then(Result::ok)
+                .map(|r| r.shorten().to_string());
 
             branches.push(Branch {
                 is_head: head_name.as_deref() == Some(&name),
@@ -43,66 +46,81 @@ impl GitRepository {
 
     /// Create a new local branch pointing at `start_point`.
     ///
-    /// Uses the git CLI because libgit2 branch creation doesn't
-    /// trigger hooks and has limited reflog support.
-    pub async fn create_branch(&self, name: &str, start_point: &str) -> Result<()> {
-        self.git
-            .run(self.workdir(), &["branch", name, start_point])
-            .await?;
+    /// Uses gix in-process ref creation.
+    pub fn create_branch(&self, name: &str, start_point: &str) -> Result<()> {
+        let repo = self.repo.to_thread_local();
+        let target_id = repo
+            .rev_parse_single(start_point)
+            .with_context(|| format!("failed to resolve '{start_point}'"))?
+            .detach();
+        let full_name = format!("refs/heads/{name}");
+        repo.edit_reference(RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: false,
+                    message: format!("branch: Created from {start_point}").into(),
+                },
+                expected: PreviousValue::MustNotExist,
+                new: Target::Object(target_id),
+            },
+            name: full_name.try_into().context("invalid branch name")?,
+            deref: false,
+        })
+        .with_context(|| format!("failed to create branch '{name}'"))?;
         Ok(())
     }
 
     /// Switch the working directory to the given branch.
+    ///
+    /// Uses the git CLI because checkout updates the worktree and fires the
+    /// post-checkout hook.
     pub async fn checkout_branch(&self, name: &str) -> Result<()> {
         self.git.run(self.workdir(), &["checkout", name]).await?;
         Ok(())
     }
 
     /// Delete a local branch. Set `force` to allow deleting unmerged branches.
-    pub async fn delete_branch(&self, name: &str, force: bool) -> Result<()> {
-        let flag = if force { "-D" } else { "-d" };
-        self.git
-            .run(self.workdir(), &["branch", flag, name])
-            .await?;
+    ///
+    /// Uses gix in-process ref deletion.
+    pub fn delete_branch(&self, name: &str, force: bool) -> Result<()> {
+        let repo = self.repo.to_thread_local();
+        let full_name = format!("refs/heads/{name}");
+
+        let expected = if force {
+            PreviousValue::Any
+        } else {
+            PreviousValue::MustExist
+        };
+
+        repo.edit_reference(RefEdit {
+            change: Change::Delete {
+                expected,
+                log: RefLog::AndReference,
+            },
+            name: full_name.try_into().context("invalid branch name")?,
+            deref: false,
+        })
+        .with_context(|| format!("failed to delete branch '{name}'"))?;
         Ok(())
     }
 
     /// Get the current branch name, or `None` if in detached HEAD state.
     pub fn current_branch(&self) -> Option<String> {
-        self.repo.head().ok().and_then(|head: git2::Reference<'_>| {
-            if head.is_branch() {
-                head.shorthand().map(String::from)
-            } else {
-                None
-            }
-        })
+        self.repo
+            .to_thread_local()
+            .head_name()
+            .ok()
+            .flatten()
+            .map(|name| name.shorten().to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::init_repo_with_commit;
     use tempfile::TempDir;
-
-    fn init_repo_with_commit(dir: &std::path::Path) -> git2::Repository {
-        let repo = git2::Repository::init(dir).unwrap();
-        {
-            let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-            let tree_id = {
-                let mut index = repo.index().unwrap();
-                // Create a dummy file so we have something to commit
-                let file_path = dir.join("README.md");
-                std::fs::write(&file_path, "# Test\n").unwrap();
-                index.add_path(std::path::Path::new("README.md")).unwrap();
-                index.write().unwrap();
-                index.write_tree().unwrap()
-            };
-            let tree = repo.find_tree(tree_id).unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
-                .unwrap();
-        }
-        repo
-    }
 
     #[test]
     fn list_branches_on_new_repo() {
@@ -127,18 +145,33 @@ mod tests {
         assert!(branch.is_some());
     }
 
-    #[tokio::test]
-    async fn create_and_list_branch() {
+    #[test]
+    fn create_and_list_branch() {
         let dir = TempDir::new().unwrap();
         init_repo_with_commit(dir.path());
 
         let repo = GitRepository::open(dir.path()).unwrap();
-        repo.create_branch("feature-x", "HEAD").await.unwrap();
+        repo.create_branch("feature-x", "HEAD").unwrap();
 
         let branches = repo.list_branches().unwrap();
         assert_eq!(branches.len(), 2);
 
         let feature = branches.iter().find(|b| b.name == "feature-x").unwrap();
         assert!(!feature.is_head);
+    }
+
+    #[test]
+    fn delete_branch() {
+        let dir = TempDir::new().unwrap();
+        init_repo_with_commit(dir.path());
+
+        let repo = GitRepository::open(dir.path()).unwrap();
+        repo.create_branch("to-delete", "HEAD").unwrap();
+        assert_eq!(repo.list_branches().unwrap().len(), 2);
+
+        repo.delete_branch("to-delete", false).unwrap();
+        let branches = repo.list_branches().unwrap();
+        assert_eq!(branches.len(), 1);
+        assert!(branches.iter().all(|b| b.name != "to-delete"));
     }
 }
