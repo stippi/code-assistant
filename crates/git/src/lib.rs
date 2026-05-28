@@ -32,8 +32,6 @@ pub(crate) mod testutil {
             // Avoid signing
             ("commit.gpgsign", "false"),
             ("tag.gpgsign", "false"),
-            // Set well-known default branch name
-            ("init.defaultBranch", "main"),
             // Disable maintanance tasks
             ("maintenance.auto", "false"),
             ("gc.auto", "0"),
