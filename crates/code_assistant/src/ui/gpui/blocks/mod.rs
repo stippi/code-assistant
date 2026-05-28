@@ -29,7 +29,7 @@ pub enum ToolBlockState {
 // Tool-block collapse state helpers
 // ---------------------------------------------------------------------------
 
-use crate::ui::gpui::ui_state::UiStateStore;
+use crate::ui::gpui::shared::ui_state::UiStateStore;
 
 /// Convenience helpers for tool-block collapse state.
 ///

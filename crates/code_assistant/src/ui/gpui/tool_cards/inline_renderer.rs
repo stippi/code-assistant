@@ -162,7 +162,7 @@ impl ToolBlockRenderer for InlineToolRenderer {
 
             for (media_type, base64_data) in &tool.images {
                 if let Some(image) =
-                    crate::ui::gpui::image::parse_base64_image(media_type, base64_data)
+                    crate::ui::gpui::shared::image::parse_base64_image(media_type, base64_data)
                 {
                     gallery = gallery.child(
                         div()

@@ -6,10 +6,11 @@ use crate::ui::gpui::sidebar::{SessionSidebar, SessionSidebarEvent};
 use crate::persistence::ChatMetadata;
 use crate::ui::gpui::input::{InputArea, InputAreaEvent};
 use crate::ui::gpui::messages::MessagesView;
-use crate::ui::gpui::plan_banner;
-use crate::ui::gpui::settings;
-use crate::ui::gpui::theme;
-use crate::ui::gpui::BackendEvent;
+
+use crate::ui::backend::BackendEvent;
+use crate::ui::gpui::shared::plan_banner;
+use crate::ui::gpui::shared::settings;
+use crate::ui::gpui::shared::theme;
 use crate::ui::gpui::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
 use crate::ui::ui_events::UiEvent;
 
@@ -311,7 +312,9 @@ impl MainScreen {
                         .insert(session_id.clone(), self.plan_collapsed);
 
                     // Persist via the UI state store (debounced write to disk)
-                    if let Ok(mut store) = crate::ui::gpui::ui_state::UiStateStore::global().lock()
+
+                    if let Ok(mut store) =
+                        crate::ui::gpui::shared::ui_state::UiStateStore::global().lock()
                     {
                         store.set_plan_collapsed(session_id, self.plan_collapsed);
                     }
@@ -929,7 +932,7 @@ impl MainScreen {
                 .get(session_id)
                 .copied()
                 .unwrap_or_else(|| {
-                    crate::ui::gpui::ui_state::UiStateStore::global()
+                    crate::ui::gpui::shared::ui_state::UiStateStore::global()
                         .lock()
                         .ok()
                         .map(|mut store| store.get_plan_collapsed(session_id))

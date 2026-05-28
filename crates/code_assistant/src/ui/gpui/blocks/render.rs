@@ -5,7 +5,7 @@
 //! thinking, tool-use, compaction, image).
 
 use super::{AnimationState, BlockData, BlockView, ToolBlockState, ToolUseBlock};
-use crate::ui::gpui::file_icons;
+use crate::ui::gpui::shared::file_icons;
 use crate::ui::ToolStatus;
 
 /// Maximum height for rendered images in pixels
@@ -343,9 +343,11 @@ impl gpui::Render for BlockView {
 
                 // Use theme utilities for colors
                 let blue_base = cx.theme().info; // Theme color for thinking block
-                let thinking_bg = crate::ui::gpui::theme::colors::thinking_block_bg(cx.theme());
+
+                let thinking_bg =
+                    crate::ui::gpui::shared::theme::colors::thinking_block_bg(cx.theme());
                 let chevron_color =
-                    crate::ui::gpui::theme::colors::thinking_block_chevron(cx.theme());
+                    crate::ui::gpui::shared::theme::colors::thinking_block_chevron(cx.theme());
                 let text_color = cx.theme().info_foreground;
 
                 div()

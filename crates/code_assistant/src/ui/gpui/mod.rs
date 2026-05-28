@@ -1,15 +1,5 @@
 pub mod shared;
 
-// Re-exports for backward compatibility during incremental migration
-pub use shared::assets;
-pub use shared::context_indicator;
-pub use shared::file_icons;
-pub use shared::image;
-pub use shared::plan_banner;
-pub use shared::settings;
-pub use shared::theme;
-pub use shared::ui_state;
-
 mod app;
 pub mod blocks;
 pub mod input;
@@ -21,14 +11,10 @@ pub mod sidebar;
 pub mod terminal;
 pub mod tool_cards;
 
-// Re-exports for backward compatibility during migration
-pub use terminal::executor as terminal_executor;
-pub use terminal::pool as terminal_pool;
-
 use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::PlanState;
+use crate::ui::backend::{BackendEvent, BackendResponse};
 use crate::ui::UiEvent;
-use assets::Assets;
 use async_channel;
 use blocks::MessageContainer;
 use gpui::{
@@ -39,6 +25,7 @@ use gpui_component::Root;
 pub use messages::MessagesView;
 pub use root::RootView;
 use sandbox::SandboxPolicy;
+use shared::assets::Assets;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, trace, warn};
@@ -56,12 +43,9 @@ impl Global for UiEventSender {}
 
 /// Global wrapper for persisted UI settings so entities can read/write them.
 #[derive(Clone)]
-pub struct UiSettingsGlobal(pub settings::UiSettings);
+pub struct UiSettingsGlobal(pub shared::settings::UiSettings);
 
 impl Global for UiSettingsGlobal {}
-
-// Re-export backend types for compatibility
-pub use crate::ui::backend::{BackendEvent, BackendResponse};
 
 /// Snapshot of worktree/branch data for the active session, kept in `Gpui`
 /// so that `RootView::render()` can push it into the `WorktreeSelector`.
@@ -352,7 +336,8 @@ impl Gpui {
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("code-assistant")
                 .join("sessions");
-            ui_state::UiStateStore::init_global(sessions_dir);
+
+            shared::ui_state::UiStateStore::init_global(sessions_dir);
         }
 
         // Create a channel to send and receive UiEvents
@@ -458,19 +443,23 @@ impl Gpui {
             .detach();
 
             // Load persisted UI settings
-            let ui_settings = settings::UiSettings::load();
+            let ui_settings = shared::settings::UiSettings::load();
             let saved_theme_mode = match ui_settings.theme_mode {
-                settings::ThemeModeSetting::Light => Some(gpui_component::theme::ThemeMode::Light),
-                settings::ThemeModeSetting::Dark => Some(gpui_component::theme::ThemeMode::Dark),
+                shared::settings::ThemeModeSetting::Light => {
+                    Some(gpui_component::theme::ThemeMode::Light)
+                }
+                shared::settings::ThemeModeSetting::Dark => {
+                    Some(gpui_component::theme::ThemeMode::Dark)
+                }
             };
 
             // Initialize file icons
-            file_icons::init(cx);
+            shared::file_icons::init(cx);
 
             // Initialize gpui-component modules
             gpui_component::init(cx);
             // Apply our custom theme colors (restoring saved mode)
-            theme::init_themes(cx, saved_theme_mode);
+            shared::theme::init_themes(cx, saved_theme_mode);
 
             // Restore saved font scale
             {
@@ -582,7 +571,7 @@ impl Gpui {
             // Register the GPUI terminal worker so that
             // GpuiTerminalCommandExecutor can create PTY terminals.
             cx.spawn(async move |cx: &mut AsyncApp| {
-                terminal_executor::register_gpui_terminal_worker(cx);
+                terminal::executor::register_gpui_terminal_worker(cx);
             })
             .detach();
 

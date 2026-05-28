@@ -10,7 +10,7 @@
 
 use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::ui::gpui::blocks::{BlockView, ToolUseBlock};
-use crate::ui::gpui::file_icons;
+use crate::ui::gpui::shared::file_icons;
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{

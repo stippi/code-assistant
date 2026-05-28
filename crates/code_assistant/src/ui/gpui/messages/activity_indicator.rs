@@ -36,9 +36,9 @@ pub fn render_pending_message(
                 .items_center()
                 .gap_2()
                 .children(vec![
-                    super::super::file_icons::render_icon_container(
-                        &super::super::file_icons::get()
-                            .get_type_icon(super::super::file_icons::TOOL_USER_INPUT),
+                    super::super::shared::file_icons::render_icon_container(
+                        &super::super::shared::file_icons::get()
+                            .get_type_icon(super::super::shared::file_icons::TOOL_USER_INPUT),
                         16.0,
                         cx.theme().warning,
                         "👤",

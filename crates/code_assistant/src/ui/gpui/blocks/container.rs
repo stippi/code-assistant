@@ -6,7 +6,8 @@
 //! calls during streaming (add text, add tool, append, etc.).
 
 use crate::persistence::{BranchInfo, NodeId};
-use crate::ui::gpui::image;
+
+use crate::ui::gpui::shared::image;
 use crate::ui::ToolStatus;
 use gpui::{prelude::*, Context, Entity};
 use std::sync::{Arc, Mutex};

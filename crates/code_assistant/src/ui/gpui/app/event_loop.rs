@@ -151,7 +151,7 @@ impl Gpui {
                 // If the event doesn't carry styled output, check the cache
                 // (populated by terminal_executor just before PTY cleanup).
                 let styled_output = styled_output
-                    .or_else(|| terminal_executor::take_cached_styled_output(&tool_id));
+                    .or_else(|| terminal::executor::take_cached_styled_output(&tool_id));
                 // Convert ImageData to (media_type, base64_data) tuples for the UI
                 let ui_images: Vec<(String, String)> = images
                     .iter()
@@ -1107,7 +1107,7 @@ impl Gpui {
                 // updated config (e.g. after onboarding sets a default).
                 let current = self.current_model.lock().unwrap().clone();
                 if current.is_none() || current.as_deref() == Some("") {
-                    let settings = crate::ui::gpui::settings::UiSettings::load();
+                    let settings = crate::ui::gpui::shared::settings::UiSettings::load();
                     if let Some(ref default_model) = settings.default_model {
                         // Verify the model actually exists in config
                         if let Ok(config) = llm::provider_config::ConfigurationSystem::load() {
@@ -1142,18 +1142,20 @@ impl Gpui {
                 // Cancel any pending save task and start a new one with a debounce
                 // delay.  When the timer fires, dirty entries are taken from the
                 // store and written to disk on a background thread.
+
                 let task = cx.spawn(async move |cx: &mut gpui::AsyncApp| {
                     cx.background_executor()
-                        .timer(ui_state::debounce_duration())
+                        .timer(shared::ui_state::debounce_duration())
                         .await;
-                    let files = if let Ok(mut store) = ui_state::UiStateStore::global().lock() {
-                        store.take_dirty()
-                    } else {
-                        Vec::new()
-                    };
+                    let files =
+                        if let Ok(mut store) = shared::ui_state::UiStateStore::global().lock() {
+                            store.take_dirty()
+                        } else {
+                            Vec::new()
+                        };
                     if !files.is_empty() {
                         cx.background_spawn(async move {
-                            ui_state::write_ui_state_files(files);
+                            shared::ui_state::write_ui_state_files(files);
                         })
                         .await;
                     }
