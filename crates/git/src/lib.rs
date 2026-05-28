@@ -5,6 +5,7 @@ mod types;
 pub mod worktree;
 
 pub use binary::GitBinary;
+pub use branch::BranchNotMerged;
 pub use repository::GitRepository;
 pub use types::*;
 
