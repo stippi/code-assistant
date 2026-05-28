@@ -2,7 +2,6 @@ use crate::binary::GitBinary;
 use crate::types::{RepoInfo, Worktree};
 use anyhow::{Context, Result};
 use gix::ThreadSafeRepository;
-use gix::sec::trust::DefaultForLevel;
 use std::path::{Path, PathBuf};
 
 /// A handle to a git repository.
