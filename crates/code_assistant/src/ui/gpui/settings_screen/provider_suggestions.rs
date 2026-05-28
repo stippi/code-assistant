@@ -425,7 +425,6 @@ pub fn apply_suggestion(
     std::fs::write(&models_path, models_json)?;
 
     // Set the first model as default if no default is configured yet
-
     let mut settings = crate::ui::gpui::shared::settings::UiSettings::load();
     if settings.default_model.is_none() {
         if let Some(first_model) = suggestion.models.first() {
