@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tokio::process::Command;
 
 /// Wrapper around the system `git` binary.
@@ -23,11 +24,17 @@ impl GitBinary {
     pub fn command(&self, working_dir: &Path) -> Command {
         let mut cmd = Command::new(&self.binary_path);
         cmd.current_dir(working_dir);
-        // Disable fsmonitor for predictable behavior
-        cmd.args(["-c", "core.fsmonitor=false"]);
+        // Prevent git from blocking on password prompts or reading stdin
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // GIT_OPTIONAL_LOCKS=0: skip advisory locks during read-only operations
+        // GIT_TERMINAL_PROMPT=0: never prompt for credentials
+        cmd.env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_TERMINAL_PROMPT", "0");
+        // Explicitly disable fsmonitor to avoid spawning hook processes
+        cmd.args(["-c", "core.fsmonitor="]);
         cmd.arg("--no-pager");
-        // Prevent git from prompting for input
-        cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd
     }
 

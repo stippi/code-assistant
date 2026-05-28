@@ -1,21 +1,68 @@
 use crate::binary::GitBinary;
+use crate::repository::GitRepository;
 use crate::types::Worktree;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// List all worktrees for a repository.
+/// List all worktrees for a repository using gix (no subprocess).
 ///
-/// Parses `git worktree list --porcelain` output. Always includes
-/// the main worktree as the first entry.
-pub async fn list_worktrees(git: &GitBinary, workdir: &Path) -> Result<Vec<Worktree>> {
-    let output = git
-        .run(
-            workdir,
-            &["--no-optional-locks", "worktree", "list", "--porcelain"],
-        )
-        .await?;
+/// Always returns the main worktree first. Worktrees with an unborn HEAD
+/// (no commits yet) or inaccessible checkout paths are silently skipped.
+pub async fn list_worktrees(repo: &GitRepository) -> Result<Vec<Worktree>> {
+    let shared = repo.repo.clone();
+    tokio::task::spawn_blocking(move || {
+        let local = shared.to_thread_local();
+        list_worktrees_sync(&local)
+    })
+    .await
+    .context("list_worktrees task panicked")?
+}
 
-    Ok(parse_worktrees(&output))
+pub(crate) fn list_worktrees_sync(repo: &gix::Repository) -> Result<Vec<Worktree>> {
+    let proxies = repo
+        .worktrees()
+        .context("Failed to enumerate linked worktrees")?;
+
+    let linked: Result<Vec<_>> = proxies
+        .into_iter()
+        .filter_map(|proxy| {
+            proxy
+                .into_repo_with_possibly_inaccessible_worktree()
+                .ok()
+                .map(|r| build_worktree_entry(&r, false))
+        })
+        .collect();
+
+    let mut worktrees = Vec::new();
+    worktrees.extend(build_worktree_entry(repo, true)?);
+    worktrees.extend(linked?.into_iter().flatten());
+
+    Ok(worktrees)
+}
+
+fn build_worktree_entry(repo: &gix::Repository, is_main: bool) -> Result<Option<Worktree>> {
+    let path = match repo.workdir() {
+        Some(p) => p.to_path_buf(),
+        None => return Ok(None),
+    };
+
+    let head_sha = match repo.head_id() {
+        Ok(id) => id.to_hex().to_string(),
+        Err(_) => return Ok(None),
+    };
+
+    let branch = repo
+        .head_name()
+        .ok()
+        .flatten()
+        .map(|name| name.as_bstr().to_string());
+
+    Ok(Some(Worktree {
+        path,
+        branch,
+        head_sha,
+        is_main,
+    }))
 }
 
 /// Create a new worktree with a new branch.
@@ -116,13 +163,12 @@ pub async fn remove_worktree(
 
 /// Find the worktree that has the given branch checked out, if any.
 pub async fn find_worktree_for_branch(
-    git: &GitBinary,
-    workdir: &Path,
+    repo: &GitRepository,
     branch_name: &str,
 ) -> Result<Option<Worktree>> {
-    let worktrees = list_worktrees(git, workdir).await?;
     let full_ref = format!("refs/heads/{branch_name}");
-    Ok(worktrees
+    Ok(list_worktrees(repo)
+        .await?
         .into_iter()
         .find(|wt| wt.branch.as_deref() == Some(&full_ref)))
 }
@@ -146,160 +192,18 @@ pub fn suggest_worktree_path(workdir: &Path, branch_name: &str) -> PathBuf {
         .join(sanitized_branch)
 }
 
-/// Parse `git worktree list --porcelain` output into structured data.
-///
-/// The porcelain format emits entries separated by blank lines:
-/// ```text
-/// worktree /path/to/main
-/// HEAD abc123...
-/// branch refs/heads/main
-///
-/// worktree /path/to/feature
-/// HEAD def456...
-/// branch refs/heads/feature
-/// ```
-fn parse_worktrees(output: &str) -> Vec<Worktree> {
-    let mut worktrees = Vec::new();
-    let normalized = output.replace("\r\n", "\n");
-
-    for (idx, entry) in normalized.split("\n\n").enumerate() {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-
-        let mut path = None;
-        let mut head_sha = None;
-        let mut branch = None;
-        let mut is_bare = false;
-
-        for line in entry.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some(rest) = line.strip_prefix("worktree ") {
-                path = Some(PathBuf::from(rest));
-            } else if let Some(rest) = line.strip_prefix("HEAD ") {
-                head_sha = Some(rest.to_string());
-            } else if let Some(rest) = line.strip_prefix("branch ") {
-                branch = Some(rest.to_string());
-            } else if line == "bare" {
-                is_bare = true;
-            }
-        }
-
-        if is_bare {
-            continue;
-        }
-
-        if let (Some(path), Some(head_sha)) = (path, head_sha) {
-            worktrees.push(Worktree {
-                path,
-                branch,
-                head_sha,
-                is_main: idx == 0,
-            });
-        }
-    }
-
-    worktrees
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::GitRepository;
-
-    #[test]
-    fn parse_single_main_worktree() {
-        let input = "\
-worktree /home/user/project
-HEAD abc123def456
-branch refs/heads/main
-";
-        let wts = parse_worktrees(input);
-        assert_eq!(wts.len(), 1);
-        assert_eq!(wts[0].path, PathBuf::from("/home/user/project"));
-        assert_eq!(wts[0].head_sha, "abc123def456");
-        assert_eq!(wts[0].branch.as_deref(), Some("refs/heads/main"));
-        assert_eq!(wts[0].branch_name(), Some("main"));
-        assert!(wts[0].is_main);
-    }
-
-    #[test]
-    fn parse_multiple_worktrees() {
-        let input = "\
-worktree /home/user/project
-HEAD abc123
-branch refs/heads/main
-
-worktree /home/user/.worktrees/project/feature-x
-HEAD def456
-branch refs/heads/feature/x
-";
-        let wts = parse_worktrees(input);
-        assert_eq!(wts.len(), 2);
-
-        assert!(wts[0].is_main);
-        assert_eq!(wts[0].branch_name(), Some("main"));
-
-        assert!(!wts[1].is_main);
-        assert_eq!(wts[1].branch_name(), Some("feature/x"));
-        assert_eq!(
-            wts[1].path,
-            PathBuf::from("/home/user/.worktrees/project/feature-x")
-        );
-    }
-
-    #[test]
-    fn parse_detached_head() {
-        let input = "\
-worktree /home/user/project
-HEAD abc123
-branch refs/heads/main
-
-worktree /tmp/detached
-HEAD 789abc
-detached
-";
-        let wts = parse_worktrees(input);
-        assert_eq!(wts.len(), 2);
-        assert!(wts[1].branch.is_none());
-        assert_eq!(wts[1].branch_name(), None);
-    }
-
-    #[test]
-    fn parse_bare_repo_skipped() {
-        let input = "\
-worktree /home/user/project.git
-HEAD abc123
-bare
-";
-        let wts = parse_worktrees(input);
-        assert_eq!(wts.len(), 0);
-    }
-
-    #[test]
-    fn parse_empty_input() {
-        let wts = parse_worktrees("");
-        assert!(wts.is_empty());
-    }
-
-    #[test]
-    fn parse_crlf_line_endings() {
-        let input = "worktree /home/user/project\r\nHEAD abc123\r\nbranch refs/heads/main\r\n";
-        let wts = parse_worktrees(input);
-        assert_eq!(wts.len(), 1);
-        assert_eq!(wts[0].branch_name(), Some("main"));
-    }
+    use crate::testutil::init_repo_with_commit;
 
     #[test]
     fn test_suggest_worktree_path() {
         let dir = tempfile::TempDir::new().unwrap();
         let repo_dir = dir.path().join("my-project");
         std::fs::create_dir_all(&repo_dir).unwrap();
-        git2::Repository::init(&repo_dir).unwrap();
+        gix::init(&repo_dir).unwrap();
 
         let repo = GitRepository::open(&repo_dir).unwrap();
         let suggested = suggest_worktree_path(repo.workdir(), "feature/login");
@@ -313,7 +217,11 @@ bare
             .join("my-project")
             .join("feature-login");
 
-        assert_eq!(suggested, expected);
+        // Use canonicalize on the root tmpdir to resolve macOS /var -> /private/var symlink,
+        // then re-append the relative suffix that suggest_worktree_path would produce
+        let root = dir.path().canonicalize().unwrap();
+        let suffix = suggested.strip_prefix(dir.path()).unwrap();
+        assert_eq!(root.join(suffix), expected);
     }
 
     // Integration tests that require git binary
@@ -325,23 +233,7 @@ bare
         std::fs::create_dir_all(&repo_dir).unwrap();
 
         // Need a commit before we can create worktrees
-        let git_repo = git2::Repository::init(&repo_dir).unwrap();
-        {
-            let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-            let tree_id = {
-                let mut index = git_repo.index().unwrap();
-                let file_path = repo_dir.join("README.md");
-                std::fs::write(&file_path, "# Test\n").unwrap();
-                index.add_path(std::path::Path::new("README.md")).unwrap();
-                index.write().unwrap();
-                index.write_tree().unwrap()
-            };
-            let tree = git_repo.find_tree(tree_id).unwrap();
-            git_repo
-                .commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
-                .unwrap();
-        }
-        drop(git_repo);
+        init_repo_with_commit(&repo_dir);
 
         let repo = GitRepository::open(&repo_dir).unwrap();
 
@@ -354,20 +246,20 @@ bare
         assert!(wt_path.exists());
 
         // List worktrees
-        let worktrees = list_worktrees(&repo.git, repo.workdir()).await.unwrap();
+        let worktrees = list_worktrees(&repo).await.unwrap();
         assert_eq!(worktrees.len(), 2);
         assert!(worktrees[0].is_main);
         assert!(!worktrees[1].is_main);
         assert_eq!(worktrees[1].branch_name(), Some("feature-branch"));
 
         // Find worktree for branch
-        let found = find_worktree_for_branch(&repo.git, repo.workdir(), "feature-branch")
+        let found = find_worktree_for_branch(&repo, "feature-branch")
             .await
             .unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().branch_name(), Some("feature-branch"));
 
-        let not_found = find_worktree_for_branch(&repo.git, repo.workdir(), "nonexistent")
+        let not_found = find_worktree_for_branch(&repo, "nonexistent")
             .await
             .unwrap();
         assert!(not_found.is_none());
@@ -379,23 +271,7 @@ bare
         let repo_dir = dir.path().join("main-repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
 
-        let git_repo = git2::Repository::init(&repo_dir).unwrap();
-        {
-            let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-            let tree_id = {
-                let mut index = git_repo.index().unwrap();
-                let file_path = repo_dir.join("README.md");
-                std::fs::write(&file_path, "# Test\n").unwrap();
-                index.add_path(std::path::Path::new("README.md")).unwrap();
-                index.write().unwrap();
-                index.write_tree().unwrap()
-            };
-            let tree = git_repo.find_tree(tree_id).unwrap();
-            git_repo
-                .commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
-                .unwrap();
-        }
-        drop(git_repo);
+        init_repo_with_commit(&repo_dir);
 
         let repo = GitRepository::open(&repo_dir).unwrap();
 
@@ -410,7 +286,7 @@ bare
             .unwrap();
         assert!(!wt_path.exists());
 
-        let worktrees = list_worktrees(&repo.git, repo.workdir()).await.unwrap();
+        let worktrees = list_worktrees(&repo).await.unwrap();
         assert_eq!(worktrees.len(), 1); // only main remains
     }
 
@@ -420,25 +296,19 @@ bare
         let repo_dir = dir.path().join("main-repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
 
-        let git_repo = git2::Repository::init(&repo_dir).unwrap();
-        {
-            let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-            let tree_id = {
-                let mut index = git_repo.index().unwrap();
-                let file_path = repo_dir.join("README.md");
-                std::fs::write(&file_path, "# Test\n").unwrap();
-                index.add_path(std::path::Path::new("README.md")).unwrap();
-                index.write().unwrap();
-                index.write_tree().unwrap()
-            };
-            let tree = git_repo.find_tree(tree_id).unwrap();
-            let commit = git_repo
-                .commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
-                .unwrap();
-            let commit = git_repo.find_commit(commit).unwrap();
-            git_repo.branch("existing-branch", &commit, false).unwrap();
-        }
-        drop(git_repo);
+        let repo_gix = init_repo_with_commit(&repo_dir);
+
+        // Create an extra branch using gix
+        let head_id = repo_gix.head_id().unwrap();
+        repo_gix
+            .reference(
+                "refs/heads/existing-branch",
+                head_id,
+                gix::refs::transaction::PreviousValue::MustNotExist,
+                "branch: Created from HEAD",
+            )
+            .unwrap();
+        drop(repo_gix);
 
         let repo = GitRepository::open(&repo_dir).unwrap();
 
@@ -448,7 +318,7 @@ bare
             .unwrap();
         assert!(wt_path.exists());
 
-        let worktrees = list_worktrees(&repo.git, repo.workdir()).await.unwrap();
+        let worktrees = list_worktrees(&repo).await.unwrap();
         assert_eq!(worktrees.len(), 2);
         assert_eq!(worktrees[1].branch_name(), Some("existing-branch"));
     }
