@@ -2,7 +2,6 @@ use crate::config::{save_project, DefaultProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::types::Project;
-
 use crate::ui::gpui::terminal::executor::GpuiTerminalCommandExecutor;
 use crate::ui::UserInterface;
 use crate::utils::content::content_blocks_from;
