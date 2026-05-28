@@ -183,7 +183,7 @@ impl ModelSelector {
             .selected_value()
             .cloned()
             .or_else(|| {
-                cx.try_global::<super::Gpui>()
+                cx.try_global::<crate::ui::gpui::Gpui>()
                     .and_then(|gpui| gpui.get_current_model())
             });
 
@@ -222,7 +222,7 @@ impl Focusable for ModelSelector {
 impl Render for ModelSelector {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Check if config has changed since last refresh
-        if let Some(gpui) = cx.try_global::<super::Gpui>() {
+        if let Some(gpui) = cx.try_global::<crate::ui::gpui::Gpui>() {
             let current_gen = gpui.config_generation();
             if current_gen != self.last_config_generation {
                 self.last_config_generation = current_gen;

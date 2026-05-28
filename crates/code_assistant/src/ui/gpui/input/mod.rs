@@ -1,9 +1,11 @@
-use super::attachment::{AttachmentEvent, AttachmentView};
-use super::file_icons;
-use super::model_selector::{ModelSelector, ModelSelectorEvent};
-use super::sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
-use super::worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
+pub mod attachment;
+pub mod model_selector;
+pub mod sandbox_selector;
+pub mod worktree_selector;
+
+use super::shared::file_icons;
 use crate::persistence::{DraftAttachment, NodeId};
+use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use gpui::{
     div, prelude::*, px, ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
@@ -11,7 +13,10 @@ use gpui::{
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
 use gpui_component::{ActiveTheme, Icon};
+use model_selector::{ModelSelector, ModelSelectorEvent};
 use sandbox::SandboxPolicy;
+use sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
+use worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
 
 /// Events emitted by the InputArea component
 #[derive(Clone, Debug)]
@@ -690,7 +695,8 @@ impl InputArea {
                                             })
                                             .child({
                                                 let scale = cx.theme().font_size / px(16.0);
-                                                super::context_indicator::ContextIndicator::new(
+
+                                                super::shared::context_indicator::ContextIndicator::new(
                                                     ratio,
                                                 )
                                                 .size(px(16.0 * scale))

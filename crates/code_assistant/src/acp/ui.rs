@@ -198,10 +198,8 @@ impl ToolCallState {
     }
 
     fn diff_content(&self, base_path: Option<&Path>) -> Option<acp::ToolCallContent> {
-        if !matches!(
-            self.tool_name.as_deref(),
-            Some("edit") | Some("write_file") | Some("replace_in_file")
-        ) {
+        let tool_name = self.tool_name.as_deref()?;
+        if !matches!(tool_name, "edit" | "write_file" | "replace_in_file") {
             return None;
         }
 
@@ -209,8 +207,43 @@ impl ToolCallState {
         if path.is_empty() {
             return None;
         }
-        let new_text = self.parameters.get("new_text")?.value.clone();
-        let old_text = self.parameters.get("old_text").map(|v| v.value.clone());
+
+        let (new_text, old_text) = match tool_name {
+            "edit" => {
+                let new_text = self.parameters.get("new_text")?.value.clone();
+                let old_text = self.parameters.get("old_text").map(|v| v.value.clone());
+                (new_text, old_text)
+            }
+            "write_file" => {
+                let new_text = self.parameters.get("content")?.value.clone();
+                // Extract original_content from the render_for_ui() JSON output
+                let old_text = self.final_output.as_ref().and_then(|output| {
+                    serde_json::from_str::<serde_json::Value>(output)
+                        .ok()?
+                        .get("original_content")?
+                        .as_str()
+                        .map(|s| s.to_string())
+                });
+                (new_text, old_text)
+            }
+            "replace_in_file" => {
+                let diff_param = self.parameters.get("diff")?.value.clone();
+                // Try to parse the search/replace blocks. If there's exactly one,
+                // use its search/replace as old_text/new_text for a proper diff.
+                match crate::tools::parse_search_replace_blocks(&diff_param) {
+                    Ok(replacements) if replacements.len() == 1 => {
+                        let r = &replacements[0];
+                        (r.replace.clone(), Some(r.search.clone()))
+                    }
+                    _ => {
+                        // Multiple blocks or parse failure: fall back to showing
+                        // the raw diff parameter as new_text.
+                        (diff_param, None)
+                    }
+                }
+            }
+            _ => return None,
+        };
 
         let diff = acp::Diff::new(resolve_path(path, base_path), new_text).old_text(old_text);
 
@@ -714,7 +747,7 @@ impl UserInterface for ACPUserUI {
             } => {
                 // Cross-instance awareness: replay new messages that another
                 // code-assistant instance appended to the currently connected session.
-                use crate::ui::gpui::elements::MessageRole;
+                use crate::ui::ui_events::MessageRole;
 
                 for message_data in &messages {
                     match message_data.role {

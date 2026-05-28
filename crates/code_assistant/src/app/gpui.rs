@@ -2,7 +2,7 @@ use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
 use crate::session::watcher::SessionWatcher;
 use crate::session::{SessionConfig, SessionManager};
-use crate::ui::gpui::terminal_executor::GpuiTerminalCommandExecutor;
+use crate::ui::gpui::terminal::executor::GpuiTerminalCommandExecutor;
 use crate::ui::{self, UserInterface};
 use anyhow::Result;
 use llm::factory::create_llm_client_from_model;

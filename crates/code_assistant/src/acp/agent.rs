@@ -803,13 +803,28 @@ impl acp::Agent for ACPAgentImpl {
                 return Err(to_acp_error(&err));
             }
 
-            // Wait for agent to complete and check for errors
+            // Wait for agent to complete and check for errors.
+            //
+            // On every iteration we advance the UI-sync baseline while holding
+            // the session-manager lock.  This mirrors what the GPUI mode's
+            // intermediate watcher ticks do (early-return path in
+            // refresh_session_incremental) and prevents a race where the watcher
+            // handler gets scheduled during our sleep, sees terminal state, and
+            // replays content that was already streamed to the client.
             tracing::info!("ACP: Waiting for agent to complete");
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
                 let (is_idle, task_result) = {
                     let mut manager = session_manager.lock().await;
+
+                    // Advance baseline while holding the lock — the watcher
+                    // handler can only run after we release, and will find the
+                    // baseline already caught up.
+                    if let Err(e) = manager.advance_ui_sync_baseline(&arguments.session_id.0) {
+                        tracing::trace!("ACP: advance_ui_sync_baseline note: {e}");
+                    }
+
                     if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
                         let state = session.get_activity_state();
                         tracing::trace!("ACP: Session state: {:?}", state);
@@ -884,19 +899,6 @@ impl acp::Agent for ACPAgentImpl {
                 "ACP: Prompt completed for session: {}",
                 arguments.session_id.0
             );
-
-            // Advance the UI-sync baseline so the file-watcher debounce
-            // (which fires ~300ms later) won't replay content already
-            // streamed during this prompt.
-            {
-                let mut manager = session_manager.lock().await;
-                if let Err(e) = manager.advance_ui_sync_baseline(&arguments.session_id.0) {
-                    tracing::warn!(
-                        "ACP: Failed to advance UI sync baseline for {}: {e}",
-                        arguments.session_id.0
-                    );
-                }
-            }
 
             // Mark session as disconnected and remove UI from active set
             {

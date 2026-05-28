@@ -6,12 +6,10 @@
 //!
 //! This replaces the old `ExecuteCommandOutputRenderer` (ToolOutputRenderer)
 //! with a unified `ToolBlockRenderer` that controls the entire card.
-use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
-use crate::ui::gpui::file_icons;
-use crate::ui::gpui::terminal_pool::TerminalPool;
-use crate::ui::gpui::tool_block_renderers::{
-    animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle,
-};
+use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
+use crate::ui::gpui::blocks::{BlockView, ToolUseBlock};
+use crate::ui::gpui::shared::file_icons;
+use crate::ui::gpui::terminal::pool::TerminalPool;
 use crate::ui::gpui::Gpui;
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;

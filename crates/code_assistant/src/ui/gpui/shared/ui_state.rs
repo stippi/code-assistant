@@ -239,3 +239,132 @@ pub fn write_ui_state_files(files: Vec<(PathBuf, String)>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    /// Helper to create a store backed by a temporary directory.
+    fn test_store() -> (UiStateStore, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let store = UiStateStore {
+            sessions_dir: dir.path().to_owned(),
+            states: HashMap::new(),
+            dirty: HashSet::new(),
+        };
+        (store, dir)
+    }
+
+    #[test]
+    fn test_get_returns_default_for_unknown_session() {
+        let (mut store, _dir) = test_store();
+        let state = store.get("nonexistent");
+        assert!(!state.plan_collapsed);
+        assert!(state.tool_collapse_overrides.is_empty());
+        assert!(state.tool_diff_mode_overrides.is_empty());
+    }
+
+    #[test]
+    fn test_set_plan_collapsed_marks_dirty() {
+        let (mut store, _dir) = test_store();
+        store.set_plan_collapsed("session-1", true);
+        assert!(store.dirty.contains("session-1"));
+        assert!(store.get("session-1").plan_collapsed);
+    }
+
+    #[test]
+    fn test_set_tool_collapsed_roundtrip() {
+        let (mut store, _dir) = test_store();
+        store.set_tool_collapsed("s1", "tool-abc", true);
+        assert_eq!(store.get_tool_collapsed("s1", "tool-abc"), Some(true));
+        assert_eq!(store.get_tool_collapsed("s1", "tool-other"), None);
+    }
+
+    #[test]
+    fn test_set_tool_diff_mode_roundtrip() {
+        let (mut store, _dir) = test_store();
+        store.set_tool_diff_mode("s1", "tool-xyz", false);
+        assert_eq!(store.get_tool_diff_mode("s1", "tool-xyz"), Some(false));
+        assert_eq!(store.get_tool_diff_mode("s1", "tool-other"), None);
+    }
+
+    #[test]
+    fn test_take_dirty_clears_dirty_set() {
+        let (mut store, _dir) = test_store();
+        store.set_plan_collapsed("s1", true);
+        store.set_plan_collapsed("s2", false);
+
+        let files = store.take_dirty();
+        assert_eq!(files.len(), 2);
+        assert!(store.dirty.is_empty());
+    }
+
+    #[test]
+    fn test_take_dirty_produces_valid_json() {
+        let (mut store, _dir) = test_store();
+        store.set_plan_collapsed("s1", true);
+        store.set_tool_collapsed("s1", "t1", true);
+
+        let files = store.take_dirty();
+        assert_eq!(files.len(), 1);
+        let (_path, json) = &files[0];
+        let parsed: UiSessionState = serde_json::from_str(json).unwrap();
+        assert!(parsed.plan_collapsed);
+        assert_eq!(parsed.tool_collapse_overrides.get("t1"), Some(&true));
+    }
+
+    #[test]
+    fn test_load_from_disk() {
+        let (mut store, dir) = test_store();
+        // Write a state file manually
+        let state = UiSessionState {
+            plan_collapsed: true,
+            tool_collapse_overrides: HashMap::from([("t1".to_owned(), false)]),
+            tool_diff_mode_overrides: HashMap::new(),
+        };
+        let path = dir.path().join("s1.ui_state.json");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(serde_json::to_string(&state).unwrap().as_bytes())
+            .unwrap();
+
+        // Load it via get
+        let loaded = store.get("s1");
+        assert!(loaded.plan_collapsed);
+        assert_eq!(loaded.tool_collapse_overrides.get("t1"), Some(&false));
+    }
+
+    #[test]
+    fn test_load_from_disk_handles_missing_file() {
+        let (mut store, _dir) = test_store();
+        let state = store.get("no-such-session");
+        assert!(!state.plan_collapsed);
+    }
+
+    #[test]
+    fn test_load_from_disk_handles_corrupt_file() {
+        let (mut store, dir) = test_store();
+        let path = dir.path().join("bad.ui_state.json");
+        std::fs::write(&path, "not valid json!!!").unwrap();
+
+        let state = store.get("bad");
+        assert!(!state.plan_collapsed); // falls back to default
+    }
+
+    #[test]
+    fn test_remove_session() {
+        let (mut store, dir) = test_store();
+        store.set_plan_collapsed("s1", true);
+
+        // Simulate a file on disk
+        let path = dir.path().join("s1.ui_state.json");
+        std::fs::write(&path, "{}").unwrap();
+        assert!(path.exists());
+
+        store.remove_session("s1");
+        assert!(!store.states.contains_key("s1"));
+        assert!(!store.dirty.contains("s1"));
+        assert!(!path.exists());
+    }
+}

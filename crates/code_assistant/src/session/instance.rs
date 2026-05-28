@@ -7,9 +7,8 @@ use tokio::task::JoinHandle;
 // Agent instances are created on-demand, no need to import
 use crate::agent::SubAgentCancellationRegistry;
 use crate::persistence::{ChatMetadata, ChatSession, NodeId};
-use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
-use crate::ui::ui_events::{MessageData, UiEvent};
+use crate::ui::ui_events::{MessageData, MessageRole, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
 use crate::utils::file_utils::AgentLockGuard;
 use async_trait::async_trait;
@@ -316,7 +315,7 @@ impl SessionInstance {
         if !buffered_fragments.is_empty() {
             // Create incomplete assistant message from buffered fragments
             let incomplete_message = MessageData {
-                role: crate::ui::gpui::elements::MessageRole::Assistant,
+                role: MessageRole::Assistant,
                 fragments: buffered_fragments,
                 node_id: None,     // Streaming message doesn't have a node yet
                 branch_info: None, // No branch info for incomplete message

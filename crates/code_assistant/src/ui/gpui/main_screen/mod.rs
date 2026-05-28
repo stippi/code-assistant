@@ -1,18 +1,23 @@
-use crate::ui::gpui::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
+pub mod project_dialog;
+mod status_popover;
+
+use crate::ui::gpui::sidebar::{SessionSidebar, SessionSidebarEvent};
 
 use crate::persistence::ChatMetadata;
-use crate::ui::gpui::input_area::{InputArea, InputAreaEvent};
+use crate::ui::gpui::input::{InputArea, InputAreaEvent};
 use crate::ui::gpui::messages::MessagesView;
-use crate::ui::gpui::new_project_dialog::{NewProjectDialog, NewProjectDialogEvent};
-use crate::ui::gpui::plan_banner;
-use crate::ui::gpui::settings;
-use crate::ui::gpui::theme;
-use crate::ui::gpui::BackendEvent;
+
+use crate::ui::backend::BackendEvent;
+use crate::ui::gpui::shared::plan_banner;
+use crate::ui::gpui::shared::settings;
+use crate::ui::gpui::shared::theme;
 use crate::ui::gpui::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
 use crate::ui::ui_events::UiEvent;
 
+use project_dialog::{NewProjectDialog, NewProjectDialogEvent};
+
 use gpui::{
-    div, prelude::*, px, rems, rgba, svg, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
     PathPromptOptions, Pixels, SharedString, Subscription, Task,
 };
 
@@ -52,15 +57,15 @@ impl gpui::EventEmitter<MainScreenEvent> for MainScreen {}
 // Main screen - handles overall layout and coordination (chat + sidebar)
 pub struct MainScreen {
     input_area: Entity<InputArea>,
-    chat_sidebar: Entity<ChatSidebar>,
+    project_sidebar: Entity<SessionSidebar>,
     messages_view: Entity<MessagesView>,
     plan_banner: Entity<plan_banner::PlanBanner>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
-    // Chat sidebar state
-    chat_collapsed: bool,
+    // Project sidebar state
+    sidebar_collapsed: bool,
     current_session_id: Option<String>,
-    chat_sessions: Vec<ChatMetadata>,
+    sessions: Vec<ChatMetadata>,
     plan_collapsed_sessions: HashMap<String, bool>,
     plan_collapsed: bool,
     /// Last worktree data synced to the selector (for change detection).
@@ -83,7 +88,7 @@ pub struct MainScreen {
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _plan_banner_subscription: Subscription,
-    _chat_sidebar_subscription: Subscription,
+    _project_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
     _window_bounds_subscription: Subscription,
 }
@@ -91,7 +96,7 @@ pub struct MainScreen {
 impl MainScreen {
     pub fn new(
         messages_view: Entity<MessagesView>,
-        chat_sidebar: Entity<ChatSidebar>,
+        project_sidebar: Entity<SessionSidebar>,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -105,9 +110,9 @@ impl MainScreen {
         let input_area_subscription =
             cx.subscribe_in(&input_area, window, Self::on_input_area_event);
 
-        // Subscribe to chat sidebar events
-        let chat_sidebar_subscription =
-            cx.subscribe_in(&chat_sidebar, window, Self::on_chat_sidebar_event);
+        // Subscribe to project sidebar events
+        let project_sidebar_subscription =
+            cx.subscribe_in(&project_sidebar, window, Self::on_project_sidebar_event);
 
         // Subscribe to plan banner events
         let plan_banner_subscription =
@@ -125,14 +130,14 @@ impl MainScreen {
 
         let mut root_view = Self {
             input_area,
-            chat_sidebar,
+            project_sidebar,
             messages_view,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
-            chat_collapsed: false, // Chat sidebar is visible by default
+            sidebar_collapsed: false, // Project sidebar is visible by default
             current_session_id: None,
-            chat_sessions: Vec::new(),
+            sessions: Vec::new(),
 
             plan_collapsed_sessions: HashMap::new(),
             plan_collapsed: false,
@@ -148,7 +153,7 @@ impl MainScreen {
             context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
-            _chat_sidebar_subscription: chat_sidebar_subscription,
+            _project_sidebar_subscription: project_sidebar_subscription,
             _new_project_dialog_subscription: None,
             _window_bounds_subscription: window_bounds_subscription,
         };
@@ -159,14 +164,14 @@ impl MainScreen {
         root_view
     }
 
-    pub fn on_toggle_chat_sidebar(
+    pub fn on_toggle_project_sidebar(
         &mut self,
         _: &ClickEvent,
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let should_expand = self.chat_collapsed;
-        self.chat_collapsed = !self.chat_collapsed;
+        let should_expand = self.sidebar_collapsed;
+        self.sidebar_collapsed = !self.sidebar_collapsed;
         self.start_sidebar_animation(should_expand, cx);
         cx.notify();
     }
@@ -283,7 +288,7 @@ impl MainScreen {
         match &self.sidebar_animation_state {
             SidebarAnimationState::Animating { width_scale, .. } => *width_scale,
             SidebarAnimationState::Idle => {
-                if self.chat_collapsed {
+                if self.sidebar_collapsed {
                     0.0
                 } else {
                     1.0
@@ -307,7 +312,9 @@ impl MainScreen {
                         .insert(session_id.clone(), self.plan_collapsed);
 
                     // Persist via the UI state store (debounced write to disk)
-                    if let Ok(mut store) = crate::ui::gpui::ui_state::UiStateStore::global().lock()
+
+                    if let Ok(mut store) =
+                        crate::ui::gpui::shared::ui_state::UiStateStore::global().lock()
                     {
                         store.set_plan_collapsed(session_id, self.plan_collapsed);
                     }
@@ -595,15 +602,15 @@ impl MainScreen {
         }
     }
 
-    /// Handle ChatSidebar events
-    fn on_chat_sidebar_event(
+    /// Handle SessionSidebar events
+    fn on_project_sidebar_event(
         &mut self,
-        _chat_sidebar: &Entity<ChatSidebar>,
-        event: &ChatSidebarEvent,
+        _project_sidebar: &Entity<SessionSidebar>,
+        event: &SessionSidebarEvent,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if let ChatSidebarEvent::AddProjectRequested = event {
+        if let SessionSidebarEvent::AddProjectRequested = event {
             self.open_add_project_flow(window, cx);
             return;
         }
@@ -611,7 +618,7 @@ impl MainScreen {
         // Handle session deletion separately because it needs to update the
         // MessagesView entity (which requires &mut cx) before the immutable
         // borrow on the Gpui global for the backend sender.
-        if let ChatSidebarEvent::SessionDeleteRequested { session_id } = event {
+        if let SessionSidebarEvent::SessionDeleteRequested { session_id } = event {
             // If the deleted session is the one currently shown in the messages
             // view, disconnect the UI from it *before* telling the backend to
             // delete it.  This avoids a race where the messages view (or another
@@ -654,12 +661,12 @@ impl MainScreen {
             .expect("Failed to obtain Gpui global");
         if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
             match event {
-                ChatSidebarEvent::SessionSelected { session_id } => {
+                SessionSidebarEvent::SessionSelected { session_id } => {
                     let _ = sender.try_send(BackendEvent::LoadSession {
                         session_id: session_id.clone(),
                     });
                 }
-                ChatSidebarEvent::NewSessionRequested {
+                SessionSidebarEvent::NewSessionRequested {
                     name,
                     initial_project,
                 } => {
@@ -669,13 +676,13 @@ impl MainScreen {
                     });
                 }
 
-                ChatSidebarEvent::PersistProjectRequested { project_name } => {
+                SessionSidebarEvent::PersistProjectRequested { project_name } => {
                     let _ = sender.try_send(BackendEvent::PersistProject {
                         project_name: project_name.clone(),
                     });
                 }
-                ChatSidebarEvent::SessionDeleteRequested { .. }
-                | ChatSidebarEvent::AddProjectRequested => {
+                SessionSidebarEvent::SessionDeleteRequested { .. }
+                | SessionSidebarEvent::AddProjectRequested => {
                     // Handled above
                 }
             }
@@ -906,179 +913,7 @@ impl MainScreen {
 
     /// Render the floating status popover if needed (currently: errors only).
     fn render_status_popover(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        // Get current error from global Gpui
-        let current_error = if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.get_current_error()
-        } else {
-            None
-        };
-
-        // Check for error first (higher priority than activity states)
-        if let Some(error_message) = current_error {
-            let (bg_color, border_color, text_color) = if cx.theme().is_dark() {
-                (
-                    rgba(0x7F1D1D80), // Dark red background with transparency
-                    rgba(0xEF4444FF), // Red border
-                    rgba(0xFCA5A5FF), // Light red text
-                )
-            } else {
-                (
-                    rgba(0xFEF2F2FF), // Light red background
-                    rgba(0xF87171FF), // Red border
-                    rgba(0xDC2626FF), // Dark red text
-                )
-            };
-
-            // Return the error popover positioned at bottom of scroll area
-            return vec![div()
-                .absolute()
-                .bottom_2() // Small gap from the bottom of the scroll area
-                .left(px(0.))
-                .right(px(0.))
-                .flex()
-                .justify_center() // Center the content horizontally
-                .child(
-                    div()
-                        .px_4()
-                        .py_2()
-                        .bg(bg_color)
-                        .border_1()
-                        .border_color(border_color)
-                        .rounded_lg()
-                        .shadow_lg()
-                        .overflow_hidden()
-                        .flex()
-                        .items_start() // Align items to top for multi-line text
-                        .gap_2()
-                        .max_w(px(600.)) // Limit width for long error messages
-                        .min_w(px(200.)) // Ensure minimum width
-                        .child(
-                            div()
-                                .flex_none()
-                                .mt(px(1.)) // Slight top margin to align with first line of text
-                                .child(
-                                    svg()
-                                        .size(px(14.))
-                                        .path(SharedString::from("icons/circle_stop.svg"))
-                                        .text_color(text_color),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_color(text_color)
-                                .text_size(rems(0.6875))
-                                .font_weight(gpui::FontWeight(500.0))
-                                .flex_grow()
-                                .flex_shrink()
-                                .min_w_0() // Allow shrinking below content size for text wrapping
-                                .overflow_hidden() // Prevent text from overflowing
-                                .whitespace_normal() // Enable text wrapping
-                                .line_height(rems(0.875)) // Set line height for better readability
-                                .child(error_message),
-                        )
-                        .child(
-                            // Add a close button
-                            div()
-                                .id("error-close-btn")
-                                .flex_none()
-                                .size(px(20.))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
-                                .child(
-                                    svg()
-                                        .size(px(12.))
-                                        .path(SharedString::from("icons/close.svg"))
-                                        .text_color(text_color),
-                                )
-                                .on_click(|_, _, cx| {
-                                    if let Some(sender) = cx.try_global::<UiEventSender>() {
-                                        let _ = sender.0.try_send(UiEvent::ClearError);
-                                    }
-                                }),
-                        ),
-                )
-                .into_any_element()];
-        }
-
-        // Transient status notification (lower priority than errors)
-        let transient_status = if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.get_transient_status()
-        } else {
-            None
-        };
-
-        if let Some(status_message) = transient_status {
-            let (bg_color, border_color, text_color, icon_color) = if cx.theme().is_dark() {
-                (
-                    rgba(0x78350F80), // Dark amber background with transparency
-                    rgba(0xF59E0BFF), // Amber border
-                    rgba(0xFDE68AFF), // Light amber text
-                    rgba(0xFBBF24FF), // Amber icon
-                )
-            } else {
-                (
-                    rgba(0xFFFBEBFF), // Light amber background
-                    rgba(0xF59E0BFF), // Amber border
-                    rgba(0x92400EFF), // Dark amber text
-                    rgba(0xD97706FF), // Amber icon
-                )
-            };
-
-            return vec![div()
-                .absolute()
-                .bottom_2()
-                .left(px(0.))
-                .right(px(0.))
-                .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .px_4()
-                        .py_2()
-                        .bg(bg_color)
-                        .border_1()
-                        .border_color(border_color)
-                        .rounded_lg()
-                        .shadow_lg()
-                        .overflow_hidden()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .max_w(px(600.))
-                        .min_w(px(200.))
-                        .child(
-                            div().flex_none().child(
-                                svg()
-                                    .size(px(14.))
-                                    .path(SharedString::from("icons/arrow_circle.svg"))
-                                    .text_color(icon_color),
-                            ),
-                        )
-                        .child(
-                            div()
-                                .text_color(text_color)
-                                .text_size(rems(0.6875))
-                                .font_weight(gpui::FontWeight(500.0))
-                                .flex_grow()
-                                .flex_shrink()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_normal()
-                                .line_height(rems(0.875))
-                                .child(status_message),
-                        ),
-                )
-                .into_any_element()];
-        }
-
-        // Activity states (WaitingForResponse, RateLimited) are now shown
-        // inline at the bottom of the messages list — no floating popover.
-
-        vec![] // No popover to show
+        status_popover::render_status_popover(self, cx)
     }
 
     // Handle session change: load new draft (no need to save current - already saved on every change)
@@ -1097,7 +932,7 @@ impl MainScreen {
                 .get(session_id)
                 .copied()
                 .unwrap_or_else(|| {
-                    crate::ui::gpui::ui_state::UiStateStore::global()
+                    crate::ui::gpui::shared::ui_state::UiStateStore::global()
                         .lock()
                         .ok()
                         .map(|mut store| store.get_plan_collapsed(session_id))
@@ -1177,7 +1012,7 @@ impl Render for MainScreen {
         // Get current chat state from global Gpui
 
         let (
-            chat_sessions,
+            sessions,
             current_session_id,
             current_activity_state,
             current_model,
@@ -1200,19 +1035,19 @@ impl Render for MainScreen {
             (Vec::new(), None, None, None, None, None, None, None)
         };
 
-        // Update chat sidebar if needed
-        if self.chat_sessions != chat_sessions || self.current_session_id != current_session_id {
+        // Update project sidebar if needed
+        if self.sessions != sessions || self.current_session_id != current_session_id {
             let previous_session_id = self.current_session_id.clone();
-            self.chat_sessions = chat_sessions.clone();
+            self.sessions = sessions.clone();
             self.current_session_id = current_session_id.clone();
 
             let persisted_projects = cx
                 .try_global::<Gpui>()
                 .map(|g| g.persisted_projects.lock().unwrap().clone())
                 .unwrap_or_default();
-            self.chat_sidebar.update(cx, |sidebar, cx| {
+            self.project_sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_persisted_projects(persisted_projects);
-                sidebar.update_sessions(chat_sessions.clone(), cx);
+                sidebar.update_sessions(sessions.clone(), cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });
 
@@ -1327,7 +1162,7 @@ impl Render for MainScreen {
         };
 
         // Compute context usage ratio from the current session's last_usage
-        // (stored in Gpui global, immune to chat_sessions overwrites) + cached model limit
+        // (stored in Gpui global, immune to sessions overwrites) + cached model limit
         let context_usage_ratio = self
             .context_limit_cache
             .as_ref()
@@ -1399,7 +1234,7 @@ impl Render for MainScreen {
                             .flex()
                             .items_center()
                             .gap_1()
-                            // Chat sidebar toggle button
+                            // Project sidebar toggle button
                             .child(
                                 div()
                                     .id("toggle-sidebar-btn")
@@ -1412,7 +1247,7 @@ impl Render for MainScreen {
                                     .hover(|s| s.bg(cx.theme().muted))
                                     .child(
                                         Icon::default()
-                                            .path(SharedString::from(if self.chat_collapsed {
+                                            .path(SharedString::from(if self.sidebar_collapsed {
                                                 "icons/panel_left_open.svg"
                                             } else {
                                                 "icons/panel_left_close.svg"
@@ -1420,7 +1255,7 @@ impl Render for MainScreen {
                                             .with_size(Size::Small)
                                             .text_color(cx.theme().muted_foreground),
                                     )
-                                    .on_click(cx.listener(Self::on_toggle_chat_sidebar)),
+                                    .on_click(cx.listener(Self::on_toggle_project_sidebar)),
                             )
                             // Theme toggle button
                             .child(
@@ -1524,7 +1359,7 @@ impl Render for MainScreen {
                             .on_click(cx.listener(Self::on_open_settings)),
                     ),
             )
-            // Main content area with chat sidebar and messages+input (2-column layout)
+            // Main content area with project sidebar and messages+input (2-column layout)
             .child(
                 div()
                     .size_full()
@@ -1535,7 +1370,7 @@ impl Render for MainScreen {
                     .when(sidebar_scale > 0.0, {
                         let sidebar_content_width = self.sidebar_content_width.clone();
                         let width_for_render = sidebar_content_width.clone();
-                        let sidebar = self.chat_sidebar.clone();
+                        let sidebar = self.project_sidebar.clone();
                         move |el| {
                             el.child(
                                 div()

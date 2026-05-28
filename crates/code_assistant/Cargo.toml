@@ -110,5 +110,6 @@ tokio-util = { version = "0.7", features = ["compat"] }
 core-text = "=21.0.0"
 
 [dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }
 axum = "0.7"
 bytes = "1.10"

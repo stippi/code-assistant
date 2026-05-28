@@ -9,13 +9,11 @@
 //! `SpawnAgentInstructionsRenderer` (ParameterRenderer) with a unified
 //! `ToolBlockRenderer`.
 
+use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
-use crate::ui::gpui::context_indicator::ContextIndicator;
-use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
-use crate::ui::gpui::file_icons;
-use crate::ui::gpui::tool_block_renderers::{
-    animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle,
-};
+use crate::ui::gpui::blocks::{BlockView, ToolUseBlock};
+use crate::ui::gpui::shared::context_indicator::ContextIndicator;
+use crate::ui::gpui::shared::file_icons;
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{

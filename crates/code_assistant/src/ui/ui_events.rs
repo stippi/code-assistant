@@ -2,10 +2,18 @@ use crate::persistence::{BranchInfo, ChatMetadata, DraftAttachment, NodeId};
 use crate::session::instance::SessionActivityState;
 use crate::tools::core::ImageData;
 use crate::types::PlanState;
-use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
 use sandbox::SandboxPolicy;
 use std::path::PathBuf;
+
+/// Role of a message in the conversation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageRole {
+    User,
+    Assistant,
+    /// System-level messages (e.g. compaction dividers) that have no author header
+    System,
+}
 
 /// Data for a complete message with its display fragments
 #[derive(Debug, Clone)]
@@ -64,7 +72,6 @@ pub enum UiEvent {
         /// If true, replace the parameter value instead of appending.
         replace: bool,
     },
-
     /// Update a tool status
     UpdateToolStatus {
         tool_id: String,
@@ -79,7 +86,6 @@ pub enum UiEvent {
         #[allow(dead_code)]
         images: Vec<ImageData>,
     },
-
     /// End a tool invocation
     EndTool { id: String },
     /// A hidden tool completed - UI may need paragraph break before next text
@@ -178,14 +184,12 @@ pub enum UiEvent {
         /// The node ID of the message being edited
         node_id: NodeId,
     },
-
     /// Switch to a different branch at a branch point
     SwitchBranch {
         session_id: String,
         /// The node ID to switch to (a sibling of the current node at a branch point)
         new_node_id: NodeId,
     },
-
     /// Response: Message content loaded for editing
     /// Sent in response to StartMessageEdit
     MessageEditReady {
@@ -200,7 +204,6 @@ pub enum UiEvent {
         /// Tool results for the truncated path
         tool_results: Vec<ToolResultData>,
     },
-
     /// Response: Branch switch completed, new messages to display
     BranchSwitched {
         session_id: String,
@@ -211,7 +214,6 @@ pub enum UiEvent {
         /// Updated plan for the new path
         plan: PlanState,
     },
-
     /// Update the branch info for a specific message node
     /// Used when a new branch is created to update the UI for the parent message
     UpdateBranchInfo {
@@ -225,7 +227,6 @@ pub enum UiEvent {
     /// Another process modified the session file on disk for the currently
     /// viewed session.  The UI should reload messages from persistence.
     RefreshCurrentSession { session_id: String },
-
     /// Append new messages to the current session display (incremental update).
     /// Used by the file watcher when an external agent appends messages.
     AppendMessages {

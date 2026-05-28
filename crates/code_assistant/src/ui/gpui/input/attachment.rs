@@ -1,6 +1,6 @@
-use super::file_icons;
-use super::image;
 use crate::persistence::DraftAttachment;
+use crate::ui::gpui::shared::file_icons;
+use crate::ui::gpui::shared::image;
 
 use gpui::{
     div, img, prelude::*, px, ClickEvent, Context, FocusHandle, Focusable, ImageSource,

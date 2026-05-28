@@ -8,11 +8,9 @@
 //!
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
-use crate::ui::gpui::elements::{BlockView, ToolUseBlock};
-use crate::ui::gpui::file_icons;
-use crate::ui::gpui::tool_block_renderers::{
-    animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle,
-};
+use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
+use crate::ui::gpui::blocks::{BlockView, ToolUseBlock};
+use crate::ui::gpui::shared::file_icons;
 use crate::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -955,7 +953,7 @@ mod tests {
 
     #[test]
     fn test_extract_path() {
-        use crate::ui::gpui::elements::ParameterBlock;
+        use crate::ui::gpui::blocks::ParameterBlock;
         let tool = ToolUseBlock {
             name: "edit".to_string(),
             id: "test".to_string(),
@@ -974,7 +972,7 @@ mod tests {
             status_message: None,
             output: None,
             styled_output: None,
-            state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
+            state: crate::ui::gpui::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,
             images: Vec::new(),
         };
@@ -983,7 +981,7 @@ mod tests {
 
     #[test]
     fn test_extract_paths_json() {
-        use crate::ui::gpui::elements::ParameterBlock;
+        use crate::ui::gpui::blocks::ParameterBlock;
         let tool = ToolUseBlock {
             name: "delete_files".to_string(),
             id: "test".to_string(),
@@ -995,7 +993,7 @@ mod tests {
             status_message: None,
             output: None,
             styled_output: None,
-            state: crate::ui::gpui::elements::ToolBlockState::Collapsed,
+            state: crate::ui::gpui::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,
             images: Vec::new(),
         };

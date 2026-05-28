@@ -1,290 +1,21 @@
+mod session_item;
+
+pub use session_item::{SessionListItem, SessionListItemEvent};
+
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use gpui::{
-    div, percentage, prelude::*, px, rems, Animation, AnimationExt, AppContext, ClickEvent,
-    Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Transformation, Window,
+    div, prelude::*, px, rems, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription,
 };
 use gpui_component::scroll::ScrollableElement;
 
 use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::collections::HashMap;
-use std::time::SystemTime;
 use tracing::debug;
 
 /// Maximum number of sessions shown per project before "Show more" appears
 const DEFAULT_VISIBLE_LIMIT: usize = 5;
-
-// ─── ChatListItem ────────────────────────────────────────────────────────────
-
-/// Events emitted by individual ChatListItem components
-#[derive(Clone, Debug)]
-pub enum ChatListItemEvent {
-    /// User clicked to select this chat session
-    SessionClicked { session_id: String },
-    /// User clicked to delete this chat session
-    DeleteClicked { session_id: String },
-}
-
-/// Individual chat list item component — simplified to title + date.
-pub struct ChatListItem {
-    metadata: ChatMetadata,
-    is_selected: bool,
-    is_hovered: bool,
-    activity_state: SessionActivityState,
-    focus_handle: FocusHandle,
-}
-
-impl ChatListItem {
-    pub fn new(metadata: ChatMetadata, is_selected: bool, cx: &mut Context<Self>) -> Self {
-        Self {
-            metadata,
-            is_selected,
-            is_hovered: false,
-            activity_state: SessionActivityState::Idle,
-            focus_handle: cx.focus_handle(),
-        }
-    }
-
-    pub fn update_selection(&mut self, is_selected: bool, cx: &mut Context<Self>) {
-        if self.is_selected != is_selected {
-            self.is_selected = is_selected;
-            cx.notify();
-        }
-    }
-
-    pub fn update_metadata(&mut self, metadata: ChatMetadata, cx: &mut Context<Self>) {
-        if self.metadata != metadata {
-            self.metadata = metadata;
-            cx.notify();
-        }
-    }
-
-    pub fn update_activity_state(
-        &mut self,
-        activity_state: SessionActivityState,
-        cx: &mut Context<Self>,
-    ) {
-        if self.activity_state != activity_state {
-            self.activity_state = activity_state;
-            cx.notify();
-        }
-    }
-
-    fn format_relative_date(timestamp: SystemTime) -> String {
-        match timestamp.elapsed() {
-            Ok(duration) => {
-                let secs = duration.as_secs();
-                if secs < 60 {
-                    "Just now".to_string()
-                } else if secs < 3600 {
-                    format!("{}m", secs / 60)
-                } else if secs < 86400 {
-                    format!("{}h", secs / 3600)
-                } else if secs < 86400 * 30 {
-                    format!("{}d", secs / 86400)
-                } else if secs < 86400 * 365 {
-                    format!("{}mo", secs / (86400 * 30))
-                } else {
-                    format!("{}y", secs / (86400 * 365))
-                }
-            }
-            Err(_) => "?".to_string(),
-        }
-    }
-
-    fn on_hover(&mut self, hovered: &bool, _: &mut Window, cx: &mut Context<Self>) {
-        if *hovered != self.is_hovered {
-            self.is_hovered = *hovered;
-            cx.notify();
-        }
-    }
-
-    fn on_session_click(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(ChatListItemEvent::SessionClicked {
-            session_id: self.metadata.id.clone(),
-        });
-    }
-
-    fn on_session_delete(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        cx.stop_propagation();
-        cx.emit(ChatListItemEvent::DeleteClicked {
-            session_id: self.metadata.id.clone(),
-        });
-    }
-}
-
-impl EventEmitter<ChatListItemEvent> for ChatListItem {}
-
-impl Focusable for ChatListItem {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl Render for ChatListItem {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name = if self.metadata.name.is_empty() {
-            "Unnamed chat".to_string()
-        } else {
-            self.metadata.name.clone()
-        };
-        let date = Self::format_relative_date(self.metadata.updated_at);
-
-        let is_active = !matches!(self.activity_state, SessionActivityState::Idle);
-        let is_errored = matches!(self.activity_state, SessionActivityState::Errored { .. });
-        let is_externally_locked =
-            matches!(self.activity_state, SessionActivityState::RunningExternally);
-        let activity_color = match &self.activity_state {
-            SessionActivityState::AgentRunning => cx.theme().info,
-            SessionActivityState::RunningExternally => cx.theme().warning,
-            SessionActivityState::WaitingForResponse => cx.theme().primary,
-            SessionActivityState::RateLimited { .. } => cx.theme().warning,
-            SessionActivityState::Errored { .. } => cx.theme().danger,
-            SessionActivityState::Idle => cx.theme().muted,
-        };
-
-        // Left column width: folder icon area (aligned with project headers)
-        // px_2(8) + folder(14) + gap(4) = 26px, minus mx(2) = 24px internal
-        let left_col_width = px(24.);
-
-        // Fixed-width right column so trash + date don't shift around
-        let date_col_width = px(50.);
-
-        div()
-            .id(SharedString::from(format!(
-                "chat-item-{}",
-                self.metadata.id
-            )))
-            .mx(px(2.))
-            .pr_1()
-            .py(px(5.))
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .rounded_md()
-            .border_1()
-            .border_color(if self.is_selected {
-                cx.theme().primary.opacity(0.3)
-            } else {
-                cx.theme().transparent
-            })
-            .bg(if self.is_selected {
-                cx.theme().primary.opacity(0.1)
-            } else {
-                cx.theme().transparent
-            })
-            .on_hover(cx.listener(Self::on_hover))
-            .when(!self.is_selected, |el| {
-                el.hover(|s| s.bg(cx.theme().muted.opacity(0.4)))
-            })
-            .on_click(cx.listener(Self::on_session_click))
-            // Left column: fixed width, shows spinning icon when active or error icon when errored
-            .child(
-                div()
-                    .flex_none()
-                    .w(left_col_width)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(is_errored, |el| {
-                        el.child(
-                            gpui::svg()
-                                .size(px(12.))
-                                .path("icons/circle_stop.svg")
-                                .text_color(activity_color),
-                        )
-                    })
-                    .when(is_externally_locked, |el| {
-                        el.child(
-                            gpui::svg()
-                                .size(px(12.))
-                                .path("icons/lock.svg")
-                                .text_color(activity_color),
-                        )
-                    })
-                    .when(is_active && !is_errored && !is_externally_locked, |el| {
-                        el.child(
-                            gpui::svg()
-                                .size(px(12.))
-                                .path("icons/arrow_circle.svg")
-                                .text_color(activity_color)
-                                .with_animation(
-                                    SharedString::from(format!(
-                                        "activity-spin-{}",
-                                        self.metadata.id
-                                    )),
-                                    Animation::new(std::time::Duration::from_secs(2)).repeat(),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(percentage(
-                                            delta,
-                                        )))
-                                    },
-                                ),
-                        )
-                    }),
-            )
-            // Session name (truncated — shrinks when trash icon appears)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(if self.is_selected {
-                        cx.theme().foreground
-                    } else {
-                        cx.theme().muted_foreground
-                    })
-                    .font_medium()
-                    .child(SharedString::from(name)),
-            )
-            // Right column: fixed width, shows delete button on hover, date otherwise
-            .child(
-                div()
-                    .flex_none()
-                    .w(date_col_width)
-                    .ml_2()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .map(|el| {
-                        if self.is_hovered {
-                            // Trash icon replaces date on hover
-                            el.child(
-                                div()
-                                    .id(SharedString::from(format!("delete-{}", self.metadata.id)))
-                                    .flex_none()
-                                    .size(px(18.))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.15)))
-                                    .child(
-                                        gpui::svg()
-                                            .size(px(12.))
-                                            .path("icons/trash.svg")
-                                            .text_color(cx.theme().danger),
-                                    )
-                                    .on_click(cx.listener(Self::on_session_delete)),
-                            )
-                        } else {
-                            // Date shown when not hovered
-                            el.child(
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground.opacity(0.7))
-                                    .child(SharedString::from(date)),
-                            )
-                        }
-                    }),
-            )
-    }
-}
 
 // ─── ProjectGroup ────────────────────────────────────────────────────────────
 
@@ -293,7 +24,7 @@ struct ProjectGroup {
     /// Project name (derived from session metadata)
     name: String,
     /// Session entities in this group, sorted by updated_at desc
-    items: Vec<Entity<ChatListItem>>,
+    items: Vec<Entity<SessionListItem>>,
     /// Whether this group is expanded
     is_expanded: bool,
     /// Whether "Show more" has been clicked (show all items)
@@ -303,7 +34,7 @@ struct ProjectGroup {
 }
 
 impl ProjectGroup {
-    fn visible_items(&self) -> &[Entity<ChatListItem>] {
+    fn visible_items(&self) -> &[Entity<SessionListItem>] {
         if self.show_all || self.items.len() <= DEFAULT_VISIBLE_LIMIT {
             &self.items
         } else {
@@ -324,11 +55,11 @@ impl ProjectGroup {
     }
 }
 
-// ─── ChatSidebar ─────────────────────────────────────────────────────────────
+// ─── SessionSidebar ─────────────────────────────────────────────────────────────
 
-/// Events emitted by the ChatSidebar component
+/// Events emitted by the SessionSidebar component
 #[derive(Clone, Debug)]
-pub enum ChatSidebarEvent {
+pub enum SessionSidebarEvent {
     /// User selected a specific chat session
     SessionSelected { session_id: String },
     /// User requested deletion of a chat session
@@ -344,8 +75,8 @@ pub enum ChatSidebarEvent {
     PersistProjectRequested { project_name: String },
 }
 
-/// Main chat sidebar component — groups sessions by project.
-pub struct ChatSidebar {
+/// Main project sidebar component — groups sessions by project.
+pub struct SessionSidebar {
     /// Project groups, sorted by most-recently-updated session
     groups: Vec<ProjectGroup>,
     /// Preserved UI state per project: (is_expanded, show_all)
@@ -360,7 +91,7 @@ pub struct ChatSidebar {
     _item_subscriptions: Vec<Subscription>,
 }
 
-impl ChatSidebar {
+impl SessionSidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             groups: Vec::new(),
@@ -379,7 +110,7 @@ impl ChatSidebar {
         self._item_subscriptions.clear();
 
         // Collect existing item entities for reuse (keyed by session id)
-        let mut existing_items: HashMap<String, Entity<ChatListItem>> = HashMap::new();
+        let mut existing_items: HashMap<String, Entity<SessionListItem>> = HashMap::new();
         for group in self.groups.drain(..) {
             for item in group.items {
                 let id = cx.read_entity(&item, |item, _| item.metadata.id.clone());
@@ -416,7 +147,7 @@ impl ChatSidebar {
         let mut new_groups: Vec<ProjectGroup> = Vec::new();
 
         for (project_name, sessions) in project_order {
-            let mut items: Vec<Entity<ChatListItem>> = Vec::new();
+            let mut items: Vec<Entity<SessionListItem>> = Vec::new();
 
             for session in &sessions {
                 let entity = if let Some(existing) = existing_items.remove(&session.id) {
@@ -429,7 +160,8 @@ impl ChatSidebar {
                     existing
                 } else {
                     let is_selected = self.selected_session_id.as_deref() == Some(&session.id);
-                    let new_item = cx.new(|cx| ChatListItem::new(session.clone(), is_selected, cx));
+                    let new_item =
+                        cx.new(|cx| SessionListItem::new(session.clone(), is_selected, cx));
                     if let Some(state) = self.activity_states.get(&session.id) {
                         new_item.update(cx, |item, cx| {
                             item.update_activity_state(state.clone(), cx);
@@ -513,13 +245,13 @@ impl ChatSidebar {
         cx: &mut Context<Self>,
     ) {
         debug!("Add project button clicked");
-        cx.emit(ChatSidebarEvent::AddProjectRequested);
+        cx.emit(SessionSidebarEvent::AddProjectRequested);
     }
 
     #[allow(dead_code)]
     pub fn request_new_session(&mut self, cx: &mut Context<Self>) {
         debug!("Requesting new chat session");
-        cx.emit(ChatSidebarEvent::NewSessionRequested {
+        cx.emit(SessionSidebarEvent::NewSessionRequested {
             name: None,
             initial_project: None,
         });
@@ -527,18 +259,18 @@ impl ChatSidebar {
 
     fn on_chat_list_item_event(
         &mut self,
-        _item: Entity<ChatListItem>,
-        event: &ChatListItemEvent,
+        _item: Entity<SessionListItem>,
+        event: &SessionListItemEvent,
         cx: &mut Context<Self>,
     ) {
         match event {
-            ChatListItemEvent::SessionClicked { session_id } => {
-                cx.emit(ChatSidebarEvent::SessionSelected {
+            SessionListItemEvent::SessionClicked { session_id } => {
+                cx.emit(SessionSidebarEvent::SessionSelected {
                     session_id: session_id.clone(),
                 });
             }
-            ChatListItemEvent::DeleteClicked { session_id } => {
-                cx.emit(ChatSidebarEvent::SessionDeleteRequested {
+            SessionListItemEvent::DeleteClicked { session_id } => {
+                cx.emit(SessionSidebarEvent::SessionDeleteRequested {
                     session_id: session_id.clone(),
                 });
             }
@@ -650,7 +382,7 @@ impl ChatSidebar {
                         .on_click(cx.listener(move |_this, _, _, cx| {
                             cx.stop_propagation();
                             debug!("Persist project: {}", project_for_pin);
-                            cx.emit(ChatSidebarEvent::PersistProjectRequested {
+                            cx.emit(SessionSidebarEvent::PersistProjectRequested {
                                 project_name: project_for_pin.clone(),
                             });
                         })),
@@ -691,7 +423,7 @@ impl ChatSidebar {
                         cx.listener(move |_this, _, _, cx| {
                             cx.stop_propagation();
                             debug!("New session in project: {}", project);
-                            cx.emit(ChatSidebarEvent::NewSessionRequested {
+                            cx.emit(SessionSidebarEvent::NewSessionRequested {
                                 name: None,
                                 initial_project: Some(project.clone()),
                             });
@@ -732,15 +464,15 @@ impl ChatSidebar {
     }
 }
 
-impl EventEmitter<ChatSidebarEvent> for ChatSidebar {}
+impl EventEmitter<SessionSidebarEvent> for SessionSidebar {}
 
-impl Focusable for ChatSidebar {
+impl Focusable for SessionSidebar {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for ChatSidebar {
+impl Render for SessionSidebar {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Build the list of project groups with their items
         let mut children: Vec<gpui::AnyElement> = Vec::new();
