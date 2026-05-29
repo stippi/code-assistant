@@ -184,6 +184,19 @@ The code-assistant uses two JSON configuration files to manage LLM providers and
 **`~/.config/code-assistant/models.json`** - Define available models:
 ```json
 {
+  "Claude Opus 4.7 (Adaptive Thinking)": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-7",
+    "config": {
+      "max_tokens": 64000,
+      "thinking": {
+        "type": "adaptive"
+      },
+      "output_config": {
+        "effort": "high"
+      }
+    }
+  },
   "Claude Sonnet 4.5 (Thinking)": {
     "provider": "anthropic",
     "id": "claude-sonnet-4-5",
@@ -211,6 +224,16 @@ The code-assistant uses two JSON configuration files to manage LLM providers and
   }
 }
 ```
+
+**Note on Claude Opus 4.7+ extended thinking**: Starting with Claude Opus 4.7, Anthropic
+no longer accepts the manual `thinking: { type: "enabled", budget_tokens: N }` form
+(it returns a 400 error). These models require *adaptive* thinking, where depth is
+controlled via the `output_config.effort` parameter (`low`, `medium`, `high`, `xhigh`,
+`max`). code-assistant detects Opus 4.7+ model IDs (`claude-opus-4-7`,
+`claude-opus-4-8`, `claude-opus-latest`) and emits the correct request shape by default.
+You can override the effort level (or any other field) via the model's `config` block,
+as shown in the example above. See Anthropic's [extended thinking](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking)
+and [effort](https://docs.anthropic.com/en/docs/build-with-claude/effort) docs for details.
 
 **Environment Variable Substitution**: Use `${VAR_NAME}` in provider configs to reference environment variables for API keys.
 
