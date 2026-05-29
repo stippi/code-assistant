@@ -1,4 +1,19 @@
 {
+  "Claude Opus 4.7 (Adaptive Thinking)": {
+    "provider": "anthropic-main",
+    "id": "claude-opus-4-7",
+    "context_token_limit": 200000,
+    "config": {
+      "max_tokens": 64000,
+      "temperature": 1.0,
+      "thinking": {
+        "type": "adaptive"
+      },
+      "output_config": {
+        "effort": "high"
+      }
+    }
+  },
   "Claude Sonnet 4.6 (Thinking)": {
     "provider": "anthropic-main",
     "id": "claude-sonnet-4-6",
