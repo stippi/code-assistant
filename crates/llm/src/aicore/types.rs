@@ -11,6 +11,9 @@ pub enum AiCoreApiType {
     Anthropic,
     /// OpenAI Chat Completions API
     OpenAI,
+    /// OpenAI Responses API (modern format with encrypted reasoning support)
+    #[serde(rename = "openai-responses")]
+    OpenAIResponses,
     /// Google Vertex AI / Gemini API
     Vertex,
 }
@@ -20,6 +23,7 @@ impl std::fmt::Display for AiCoreApiType {
         match self {
             AiCoreApiType::Anthropic => write!(f, "anthropic"),
             AiCoreApiType::OpenAI => write!(f, "openai"),
+            AiCoreApiType::OpenAIResponses => write!(f, "openai-responses"),
             AiCoreApiType::Vertex => write!(f, "vertex"),
         }
     }
@@ -32,9 +36,10 @@ impl std::str::FromStr for AiCoreApiType {
         match s.to_lowercase().as_str() {
             "anthropic" => Ok(AiCoreApiType::Anthropic),
             "openai" => Ok(AiCoreApiType::OpenAI),
+            "openai-responses" => Ok(AiCoreApiType::OpenAIResponses),
             "vertex" => Ok(AiCoreApiType::Vertex),
             _ => Err(anyhow::anyhow!(
-                "Unknown AI Core API type: '{}'. Expected one of: anthropic, openai, vertex",
+                "Unknown AI Core API type: '{}'. Expected one of: anthropic, openai, openai-responses, vertex",
                 s
             )),
         }

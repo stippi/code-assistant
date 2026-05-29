@@ -1,4 +1,7 @@
-use crate::aicore::{AiCoreAnthropicClient, AiCoreApiType, AiCoreOpenAIClient, AiCoreVertexClient};
+use crate::aicore::{
+    AiCoreAnthropicClient, AiCoreApiType, AiCoreOpenAIClient, AiCoreOpenAIResponsesClient,
+    AiCoreVertexClient,
+};
 use crate::auth::TokenManager;
 use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
 use crate::{
@@ -144,6 +147,12 @@ impl WithCustomConfig for AiCoreOpenAIClient {
 }
 
 impl WithCustomConfig for AiCoreVertexClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for AiCoreOpenAIResponsesClient {
     fn with_custom_config(self, custom_config: Value) -> Self {
         self.with_custom_config(custom_config)
     }
@@ -483,6 +492,20 @@ async fn create_ai_core_client(
                 )
             } else {
                 AiCoreOpenAIClient::new(token_manager, api_url, model_config.id.clone())
+            };
+            let client = apply_custom_config(client, model_config);
+            Ok(Box::new(client))
+        }
+        AiCoreApiType::OpenAIResponses => {
+            let client = if let Some(path) = record_path {
+                AiCoreOpenAIResponsesClient::new_with_recorder(
+                    token_manager,
+                    api_url,
+                    model_config.id.clone(),
+                    path,
+                )
+            } else {
+                AiCoreOpenAIResponsesClient::new(token_manager, api_url, model_config.id.clone())
             };
             let client = apply_custom_config(client, model_config);
             Ok(Box::new(client))
