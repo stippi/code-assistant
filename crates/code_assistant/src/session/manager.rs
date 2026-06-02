@@ -1609,8 +1609,10 @@ mod tests {
             .save_chat_session(&persisted)
             .expect("save switched session");
 
-        let mut captured_config = SessionConfig::default();
-        captured_config.use_diff_blocks = false;
+        let captured_config = SessionConfig {
+            use_diff_blocks: false,
+            ..Default::default()
+        };
         let mut captured_state = SessionState::from_messages(
             session_id.clone(),
             "test".to_string(),

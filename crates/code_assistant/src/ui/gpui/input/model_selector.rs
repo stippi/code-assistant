@@ -161,7 +161,7 @@ impl ModelSelector {
                 .filter(|(model_name, _)| {
                     allowed_models
                         .as_ref()
-                        .map_or(true, |allowed| allowed.contains(*model_name))
+                        .is_none_or(|allowed| allowed.contains(*model_name))
                 })
                 .filter_map(|(model_name, model_config)| {
                     let provider_config = config.providers.get(&model_config.provider)?;
