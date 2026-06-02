@@ -82,9 +82,7 @@ impl Tool for WriteFileTool {
             "Creates or overwrites a file. Use for new files or when updating most content of a file.\n",
             "For smaller updates, prefer to use edit or replace_in_file.\n",
             "ALWAYS provide the contents of the COMPLETE file, especially when overwriting existing files!!\n",
-            "If the file to write is large, write it in chunks making use of the 'append' parameter.\n",
-            "Always end your turn after using this tool, especially when using 'append'.\n",
-            "This avoids hitting an output token limit when replying."
+            "If the file to write is large, write it in chunks making use of the 'append' parameter."
         );
         ToolSpec {
             name: "write_file",
