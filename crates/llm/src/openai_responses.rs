@@ -414,6 +414,19 @@ struct StreamEvent {
     response_id: Option<String>,
     #[serde(default)]
     item_id: Option<String>,
+    #[serde(default)]
+    error: Option<StreamErrorPayload>,
+}
+
+/// Error payload nested inside an "error" stream event
+#[derive(Debug, Deserialize)]
+struct StreamErrorPayload {
+    #[serde(default, rename = "type")]
+    error_type: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 /// Rate limit information from response headers
@@ -444,6 +457,75 @@ impl RateLimitHandler for ResponsesRateLimitInfo {
             debug!("Rate limit - retry after: {}s", retry_after.as_secs());
         }
     }
+}
+
+/// Convert an SSE `error` event payload into an `anyhow::Error` that flows through
+/// the standard retry pipeline (`handle_retryable_error`).
+///
+/// In particular, `too_many_requests` / `rate_limit_exceeded` errors are mapped
+/// to `ApiError::RateLimit` so the regular 429 backoff/retry logic kicks in.
+///
+/// Unlike HTTP 429 responses, stream-level error events do not carry a
+/// `retry-after` header. These errors typically originate from a frontend/edge
+/// throttling layer (note the `x-ms-fe-error` header observed in practice) and
+/// represent transient overload rather than a hard model-side rate limit.
+/// We therefore seed the retry context with a short base delay so the first
+/// retry happens quickly; the existing exponential backoff in
+/// `handle_retryable_error` will still spread subsequent attempts (5s → 10s →
+/// 20s → 40s ...).
+fn stream_error_to_api_error(payload: Option<StreamErrorPayload>) -> anyhow::Error {
+    /// Base retry delay used when an SSE error event is received. The first
+    /// retry happens after this delay; subsequent retries double it.
+    const STREAM_ERROR_BASE_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+    let payload = payload.unwrap_or(StreamErrorPayload {
+        error_type: None,
+        code: None,
+        message: None,
+    });
+
+    let error_type = payload.error_type.unwrap_or_default();
+    let code = payload.code.unwrap_or_default();
+    let message = payload
+        .message
+        .unwrap_or_else(|| "stream error".to_string());
+
+    let error_msg = if error_type.is_empty() && code.is_empty() {
+        message.clone()
+    } else if error_type == code || code.is_empty() {
+        format!("{error_type}: {message}")
+    } else if error_type.is_empty() {
+        format!("{code}: {message}")
+    } else {
+        format!("{error_type} ({code}): {message}")
+    };
+
+    let is_rate_limit = matches!(
+        error_type.as_str(),
+        "too_many_requests" | "rate_limit_exceeded" | "rate_limit_error"
+    ) || matches!(
+        code.as_str(),
+        "too_many_requests" | "rate_limit_exceeded" | "rate_limit_error"
+    );
+
+    let is_overloaded = matches!(error_type.as_str(), "overloaded_error" | "server_error")
+        || matches!(code.as_str(), "overloaded_error" | "server_error");
+
+    let api_error = if is_rate_limit {
+        ApiError::RateLimit(error_msg)
+    } else if is_overloaded {
+        ApiError::Overloaded(error_msg)
+    } else {
+        ApiError::ServiceError(error_msg)
+    };
+
+    ApiErrorContext {
+        error: api_error,
+        rate_limits: Some(ResponsesRateLimitInfo {
+            retry_after: Some(STREAM_ERROR_BASE_RETRY_DELAY),
+        }),
+    }
+    .into()
 }
 
 pub struct OpenAIResponsesClient {
@@ -1114,6 +1196,10 @@ impl<'a> StreamProcessor<'a> {
                 .map_err(|e| anyhow::anyhow!("Failed to parse SSE event: {e}"))?;
 
             match event.event_type.as_str() {
+                "error" => {
+                    warn!("Stream error event received: {data}");
+                    return Err(stream_error_to_api_error(event.error));
+                }
                 "response.output_item.added" => {
                     if let Some(item) = event.item {
                         self.on_output_item_added(item)?;
@@ -2083,5 +2169,124 @@ mod tests {
         };
         let json = serde_json::to_value(&text).unwrap();
         assert_eq!(json["verbosity"], "high");
+    }
+
+    #[test]
+    fn test_stream_error_too_many_requests_maps_to_rate_limit() {
+        // Reproduces the error event observed from the OpenAI Responses API:
+        // {"type":"error","error":{"type":"too_many_requests","code":"too_many_requests",...}}
+        let payload = StreamErrorPayload {
+            error_type: Some("too_many_requests".to_string()),
+            code: Some("too_many_requests".to_string()),
+            message: Some("Too Many Requests".to_string()),
+        };
+
+        let err = stream_error_to_api_error(Some(payload));
+        let ctx = err
+            .downcast_ref::<ApiErrorContext<ResponsesRateLimitInfo>>()
+            .expect("error should be wrapped in ApiErrorContext<ResponsesRateLimitInfo>");
+
+        match &ctx.error {
+            ApiError::RateLimit(msg) => {
+                assert!(msg.contains("Too Many Requests"));
+                assert!(msg.contains("too_many_requests"));
+            }
+            other => panic!("Expected ApiError::RateLimit, got {other:?}"),
+        }
+        assert!(ctx.rate_limits.is_some());
+    }
+
+    #[test]
+    fn test_stream_error_rate_limit_exceeded_maps_to_rate_limit() {
+        let payload = StreamErrorPayload {
+            error_type: Some("rate_limit_exceeded".to_string()),
+            code: None,
+            message: Some("rate limited".to_string()),
+        };
+
+        let err = stream_error_to_api_error(Some(payload));
+        let ctx = err
+            .downcast_ref::<ApiErrorContext<ResponsesRateLimitInfo>>()
+            .unwrap();
+        assert!(matches!(ctx.error, ApiError::RateLimit(_)));
+    }
+
+    #[test]
+    fn test_stream_error_unknown_maps_to_service_error() {
+        let payload = StreamErrorPayload {
+            error_type: Some("some_other_error".to_string()),
+            code: Some("oops".to_string()),
+            message: Some("something went wrong".to_string()),
+        };
+
+        let err = stream_error_to_api_error(Some(payload));
+        let ctx = err
+            .downcast_ref::<ApiErrorContext<ResponsesRateLimitInfo>>()
+            .unwrap();
+        match &ctx.error {
+            ApiError::ServiceError(msg) => {
+                assert!(msg.contains("some_other_error"));
+                assert!(msg.contains("oops"));
+                assert!(msg.contains("something went wrong"));
+            }
+            other => panic!("Expected ApiError::ServiceError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_stream_error_uses_short_base_retry_delay() {
+        // Stream-level errors don't carry a retry-after header. We seed the
+        // rate-limit info with a short base delay (5s) so the first retry
+        // happens quickly, instead of the 60s default that applies to HTTP 429
+        // responses without a retry-after header. Exponential backoff then
+        // takes over for subsequent retries.
+        let payload = StreamErrorPayload {
+            error_type: Some("too_many_requests".to_string()),
+            code: Some("too_many_requests".to_string()),
+            message: Some("Too Many Requests".to_string()),
+        };
+
+        let err = stream_error_to_api_error(Some(payload));
+        let ctx = err
+            .downcast_ref::<ApiErrorContext<ResponsesRateLimitInfo>>()
+            .unwrap();
+        let rate_limits = ctx.rate_limits.as_ref().unwrap();
+        assert_eq!(rate_limits.get_retry_delay(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_http_rate_limit_info_default_unchanged() {
+        // Sanity check: the HTTP 429 path still uses the 60s default when no
+        // retry-after header is present. Stream-level errors must not affect
+        // this behaviour.
+        let info = ResponsesRateLimitInfo::default();
+        assert_eq!(info.get_retry_delay(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_process_line_error_event_returns_rate_limit_error() {
+        // End-to-end: feed the SSE error event line through process_line and
+        // verify it produces the right typed error so handle_retryable_error
+        // will retry it.
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+        let mut content_blocks = Vec::new();
+        let mut usage = Usage::zero();
+        let callback: StreamingCallback = Box::new(|_chunk| Ok(()));
+
+        let mut processor =
+            StreamProcessor::new(&client, &mut content_blocks, &mut usage, &callback);
+
+        let line = r#"data: {"type":"error","error":{"type":"too_many_requests","code":"too_many_requests","headers":{"x-ms-fe-error":"true"},"message":"Too Many Requests","param":null},"sequence_number":2}"#;
+
+        let result = processor.process_line(line);
+        let err = result.expect_err("error event must produce an Err");
+        let ctx = err
+            .downcast_ref::<ApiErrorContext<ResponsesRateLimitInfo>>()
+            .expect("error should be retryable");
+        assert!(matches!(ctx.error, ApiError::RateLimit(_)));
     }
 }
