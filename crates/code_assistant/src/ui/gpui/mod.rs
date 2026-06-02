@@ -93,8 +93,9 @@ pub struct Gpui {
 
     // Current model selection
     current_model: Arc<Mutex<Option<String>>>,
+    allowed_models: Arc<Mutex<Option<Vec<String>>>>,
 
-    // Current sandbox selection
+    // Current sandbox selection.
     current_sandbox_policy: Arc<Mutex<Option<SandboxPolicy>>>,
 
     // Current worktree state (branches + worktrees listing from backend)
@@ -306,6 +307,7 @@ impl Gpui {
         *self.current_error.lock().unwrap() = None;
         *self.plan_state.lock().unwrap() = None;
         *self.current_model.lock().unwrap() = None;
+        *self.allowed_models.lock().unwrap() = None;
         *self.current_sandbox_policy.lock().unwrap() = None;
         *self.current_worktree_data.lock().unwrap() = None;
         *self.current_session_last_usage.lock().unwrap() = None;
@@ -388,7 +390,8 @@ impl Gpui {
 
             // Current model selection
             current_model: Arc::new(Mutex::new(None)),
-            // Current sandbox selection
+            allowed_models: Arc::new(Mutex::new(None)),
+            // Current sandbox selection.
             current_sandbox_policy: Arc::new(Mutex::new(None)),
 
             // Pending message edit state
@@ -711,6 +714,10 @@ impl Gpui {
 
     pub fn get_current_model(&self) -> Option<String> {
         self.current_model.lock().unwrap().clone()
+    }
+
+    pub fn get_allowed_models(&self) -> Option<Vec<String>> {
+        self.allowed_models.lock().unwrap().clone()
     }
 
     pub fn get_plan_state(&self) -> Option<PlanState> {

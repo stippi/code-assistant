@@ -115,6 +115,7 @@ impl Tool for WebSearchTool {
                 ToolScope::AgentWithDiffBlocks,
                 ToolScope::SubAgentReadOnly,
                 ToolScope::SubAgentDefault,
+                ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             // Note: can be disabled in read-only sub-agents if needed later.
             hidden: false,

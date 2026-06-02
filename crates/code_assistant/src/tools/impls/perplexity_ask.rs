@@ -116,6 +116,7 @@ impl Tool for PerplexityAskTool {
                 ToolScope::AgentWithDiffBlocks,
                 ToolScope::SubAgentReadOnly,
                 ToolScope::SubAgentDefault,
+                ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             // Note: can be disabled in read-only sub-agents if needed later.
             hidden: false,

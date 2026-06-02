@@ -164,6 +164,8 @@ pub enum UiEvent {
     CompleteReasoning,
     /// Update the current model selection in the UI
     UpdateCurrentModel { model_name: String },
+    /// Update the models that may be selected for the active session.
+    UpdateAllowedModels { models: Vec<String> },
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
 

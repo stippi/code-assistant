@@ -4,6 +4,7 @@ use gpui_component::{
     ActiveTheme, Icon, Sizable, Size,
 };
 use llm::provider_config::ConfigurationSystem;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -148,10 +149,20 @@ impl ModelSelector {
             }
         };
 
+        let allowed_models: Option<HashSet<String>> = cx
+            .try_global::<crate::ui::gpui::Gpui>()
+            .and_then(|gpui| gpui.get_allowed_models())
+            .map(|models| models.into_iter().collect());
+
         let model_items = if let Some(ref config) = config {
             let mut items: Vec<ModelItem> = config
                 .models
                 .iter()
+                .filter(|(model_name, _)| {
+                    allowed_models
+                        .as_ref()
+                        .map_or(true, |allowed| allowed.contains(*model_name))
+                })
                 .filter_map(|(model_name, model_config)| {
                     let provider_config = config.providers.get(&model_config.provider)?;
                     let icon_path =

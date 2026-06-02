@@ -551,6 +551,13 @@ impl FileSessionPersistence {
         Self { root_dir }
     }
 
+    /// Construct a persistence instance rooted at a custom directory.
+    /// Intended for tests that want to isolate state to a temp dir.
+    #[cfg(test)]
+    pub fn new_with_root_dir(root_dir: PathBuf) -> Self {
+        Self { root_dir }
+    }
+
     fn ensure_chats_dir(&self) -> Result<PathBuf> {
         let chats_dir = self.root_dir.join("sessions");
         if !chats_dir.exists() {

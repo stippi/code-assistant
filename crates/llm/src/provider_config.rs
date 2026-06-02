@@ -18,6 +18,78 @@ pub struct ProviderConfig {
 /// Configuration for all providers (provider_id -> ProviderConfig)
 pub type ProvidersConfig = HashMap<String, ProviderConfig>;
 
+/// The provider API/client family used to serialize conversation history.
+///
+/// A session can safely switch between models only when both models use the
+/// same API client family. Different families use different representations for
+/// tool calls and encrypted/redacted reasoning blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LlmApiClientKind {
+    Anthropic,
+    OpenAi,
+    OpenAiResponses,
+    OpenAiResponsesWs,
+    Vertex,
+    Ollama,
+    OpenRouter,
+    Cerebras,
+    Groq,
+    Minimax,
+    MistralAi,
+    Moonshot,
+    Zai,
+}
+
+impl std::fmt::Display for LlmApiClientKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Anthropic => write!(f, "Anthropic API"),
+            Self::OpenAi => write!(f, "OpenAI Chat Completions API"),
+            Self::OpenAiResponses => write!(f, "OpenAI Responses API"),
+            Self::OpenAiResponsesWs => write!(f, "OpenAI Responses WebSocket API"),
+            Self::Vertex => write!(f, "Vertex API"),
+            Self::Ollama => write!(f, "Ollama API"),
+            Self::OpenRouter => write!(f, "OpenRouter API"),
+            Self::Cerebras => write!(f, "Cerebras API"),
+            Self::Groq => write!(f, "Groq API"),
+            Self::Minimax => write!(f, "Minimax API"),
+            Self::MistralAi => write!(f, "Mistral AI API"),
+            Self::Moonshot => write!(f, "Moonshot API"),
+            Self::Zai => write!(f, "Z.ai API"),
+        }
+    }
+}
+
+/// Format used by a model for the file-editing tool.
+///
+/// Some models (notably GPT-5.x) occasionally produce malformed tool-call
+/// arguments where junk text leaks into a string parameter. The "simple"
+/// `edit` tool takes raw `old_text`/`new_text` strings, so corrupted output
+/// gets written verbatim to disk. The "diff" form (`replace_in_file`) wraps
+/// content in `<<<<<<< SEARCH ... >>>>>>> REPLACE` markers, which acts as a
+/// structural guard: malformed output usually fails diff parsing instead of
+/// silently corrupting source files.
+///
+/// The choice is locked into a session at creation time (the tool-call
+/// history would be inconsistent otherwise).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EditFormat {
+    /// `edit` tool with simple `old_text`/`new_text` string parameters.
+    #[default]
+    Simple,
+    /// `replace_in_file` tool with `<<<<<<< SEARCH ... >>>>>>> REPLACE` blocks.
+    Diff,
+}
+
+impl EditFormat {
+    /// Returns true if this format uses the diff-style `replace_in_file` tool.
+    pub fn is_diff(self) -> bool {
+        matches!(self, EditFormat::Diff)
+    }
+}
+
 /// Configuration for a single model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
@@ -29,6 +101,16 @@ pub struct ModelConfig {
     pub config: serde_json::Value,
     /// Maximum context window supported by the model (token count)
     pub context_token_limit: u32,
+    /// Preferred file-editing tool format for this model.
+    ///
+    /// Defaults to `EditFormat::Simple`. Set to `"diff"` in `models.json`
+    /// for models that benefit from the diff-format guard (e.g. GPT-5.x).
+    #[serde(default, skip_serializing_if = "edit_format_is_default")]
+    pub edit_format: EditFormat,
+}
+
+fn edit_format_is_default(format: &EditFormat) -> bool {
+    *format == EditFormat::default()
 }
 
 /// Configuration for all models (model_display_name -> ModelConfig)
@@ -185,6 +267,74 @@ impl ConfigurationSystem {
     /// List all available provider IDs
     pub fn list_providers(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
+    }
+
+    /// Resolve the API/client family used by a configured model.
+    pub fn model_api_client_kind(&self, model_name: &str) -> Result<LlmApiClientKind> {
+        let (model, provider) = self.get_model_with_provider(model_name)?;
+        Self::api_client_kind_for_configs(model, provider)
+    }
+
+    /// Resolve the API/client family used by a model/provider pair.
+    pub fn api_client_kind_for_configs(
+        model: &ModelConfig,
+        provider: &ProviderConfig,
+    ) -> Result<LlmApiClientKind> {
+        match provider.provider.as_str() {
+            "ai-core" => Self::aicore_api_client_kind(model, provider),
+            "anthropic" => Ok(LlmApiClientKind::Anthropic),
+            "openai" => Ok(LlmApiClientKind::OpenAi),
+            "openai-responses" => Ok(LlmApiClientKind::OpenAiResponses),
+            "openai-responses-ws" => Ok(LlmApiClientKind::OpenAiResponsesWs),
+            "vertex" => Ok(LlmApiClientKind::Vertex),
+            "ollama" => Ok(LlmApiClientKind::Ollama),
+            "openrouter" => Ok(LlmApiClientKind::OpenRouter),
+            "cerebras" => Ok(LlmApiClientKind::Cerebras),
+            "groq" => Ok(LlmApiClientKind::Groq),
+            "minimax" => Ok(LlmApiClientKind::Minimax),
+            "mistral-ai" => Ok(LlmApiClientKind::MistralAi),
+            "moonshot" => Ok(LlmApiClientKind::Moonshot),
+            "z-ai" => Ok(LlmApiClientKind::Zai),
+            other => Err(anyhow::anyhow!("Unknown provider type: {other}")),
+        }
+    }
+
+    fn aicore_api_client_kind(
+        model: &ModelConfig,
+        provider: &ProviderConfig,
+    ) -> Result<LlmApiClientKind> {
+        let deployment = provider
+            .config
+            .get("models")
+            .and_then(|v| v.as_object())
+            .and_then(|models| models.get(&model.id))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No deployment found for model '{}' in AI Core provider config",
+                    model.id
+                )
+            })?;
+
+        let api_type = if deployment.is_string() {
+            "anthropic"
+        } else {
+            deployment
+                .as_object()
+                .and_then(|obj| obj.get("api_type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("anthropic")
+        };
+
+        match api_type {
+            "anthropic" => Ok(LlmApiClientKind::Anthropic),
+            "openai" => Ok(LlmApiClientKind::OpenAi),
+            "openai-responses" => Ok(LlmApiClientKind::OpenAiResponses),
+            "vertex" => Ok(LlmApiClientKind::Vertex),
+            other => Err(anyhow::anyhow!(
+                "Unknown AI Core API type: '{}'. Expected one of: anthropic, openai, openai-responses, vertex",
+                other
+            )),
+        }
     }
 
     /// Save providers configuration back to disk.
@@ -422,6 +572,28 @@ impl ConfigurationSystem {
             }
         })
     }
+
+    /// Look up the edit-format preference for a given model display name.
+    ///
+    /// Returns `EditFormat::Simple` (the default) if the model is unknown or
+    /// has no explicit `edit_format` in `models.json`.
+    pub fn edit_format_for(&self, model_name: &str) -> EditFormat {
+        self.get_model(model_name)
+            .map(|m| m.edit_format)
+            .unwrap_or_default()
+    }
+}
+
+/// Resolve the `EditFormat` for a model display name, loading the
+/// configuration on demand. Returns `EditFormat::Simple` on any error
+/// (missing config file, unknown model, parse failure) — callers that
+/// require the model to exist should use `ConfigurationSystem::get_model`
+/// directly.
+pub fn edit_format_for_model(model_name: &str) -> EditFormat {
+    match ConfigurationSystem::load() {
+        Ok(config) => config.edit_format_for(model_name),
+        Err(_) => EditFormat::default(),
+    }
 }
 
 #[cfg(test)]
@@ -484,5 +656,45 @@ mod tests {
         // Clean up
         env::remove_var("TEST_API_KEY");
         env::remove_var("TEST_URL");
+    }
+
+    #[test]
+    fn test_model_config_edit_format_default() {
+        // Models without an explicit edit_format should default to Simple
+        // and round-trip without serializing the field.
+        let json = r#"{
+            "provider": "openai-main",
+            "id": "gpt-4.1",
+            "config": {},
+            "context_token_limit": 128000
+        }"#;
+        let model: ModelConfig = serde_json::from_str(json).expect("parse model config");
+        assert_eq!(model.edit_format, EditFormat::Simple);
+
+        let serialized = serde_json::to_value(&model).expect("serialize model config");
+        assert!(
+            serialized.get("edit_format").is_none(),
+            "default edit_format should be omitted when serializing, got {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_model_config_edit_format_diff() {
+        // Models can opt into the diff-format edit tool via models.json.
+        let json = r#"{
+            "provider": "openai-responses",
+            "id": "gpt-5-codex",
+            "config": {},
+            "context_token_limit": 128000,
+            "edit_format": "diff"
+        }"#;
+        let model: ModelConfig = serde_json::from_str(json).expect("parse model config");
+        assert_eq!(model.edit_format, EditFormat::Diff);
+        assert!(model.edit_format.is_diff());
+
+        // Round-trip preserves the value.
+        let serialized = serde_json::to_string(&model).expect("serialize");
+        let reparsed: ModelConfig = serde_json::from_str(&serialized).expect("reparse");
+        assert_eq!(reparsed.edit_format, EditFormat::Diff);
     }
 }

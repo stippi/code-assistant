@@ -392,3 +392,57 @@ fn test_can_run_in_parallel_logic() {
 
     assert!(request.name != "spawn_agent");
 }
+
+#[test]
+fn test_tool_scope_sub_agent_default_with_diff_blocks() {
+    use crate::tools::core::ToolRegistry;
+
+    let registry = ToolRegistry::global();
+    let get_tools_for_scope = |scope: ToolScope| -> Vec<String> {
+        registry
+            .get_tool_definitions_for_scope(scope)
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    };
+
+    let available = get_tools_for_scope(ToolScope::SubAgentDefaultWithDiffBlocks);
+
+    // Diff-format edit tool replaces the simple `edit` tool.
+    assert!(
+        available.contains(&"replace_in_file".to_string()),
+        "replace_in_file should be available in SubAgentDefaultWithDiffBlocks scope"
+    );
+    assert!(
+        !available.contains(&"edit".to_string()),
+        "edit should NOT be available in SubAgentDefaultWithDiffBlocks scope (mutually exclusive with replace_in_file)"
+    );
+
+    // Read-only tools should still be available.
+    assert!(available.contains(&"search_files".to_string()));
+    assert!(available.contains(&"read_files".to_string()));
+    assert!(available.contains(&"list_files".to_string()));
+    assert!(available.contains(&"glob_files".to_string()));
+    assert!(available.contains(&"web_fetch".to_string()));
+    assert!(available.contains(&"web_search".to_string()));
+
+    // Other write tools should still be available.
+    assert!(
+        available.contains(&"write_file".to_string()),
+        "write_file should be available in SubAgentDefaultWithDiffBlocks scope"
+    );
+    assert!(
+        available.contains(&"delete_files".to_string()),
+        "delete_files should be available in SubAgentDefaultWithDiffBlocks scope"
+    );
+    assert!(
+        available.contains(&"execute_command".to_string()),
+        "execute_command should be available in SubAgentDefaultWithDiffBlocks scope"
+    );
+
+    // spawn_agent must NOT be available (no nested sub-agents).
+    assert!(
+        !available.contains(&"spawn_agent".to_string()),
+        "spawn_agent should NOT be available in SubAgentDefaultWithDiffBlocks scope"
+    );
+}

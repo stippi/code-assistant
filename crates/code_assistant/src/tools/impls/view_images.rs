@@ -198,6 +198,7 @@ impl Tool for ViewImagesTool {
                 ToolScope::AgentWithDiffBlocks,
                 ToolScope::SubAgentReadOnly,
                 ToolScope::SubAgentDefault,
+                ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             hidden: false,
             title_template: Some("Viewing {paths}"),

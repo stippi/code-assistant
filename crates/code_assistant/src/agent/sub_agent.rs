@@ -229,6 +229,18 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         tool_scope: ToolScope,
         require_file_references: bool,
     ) -> Result<SubAgentResult> {
+        // Sub-agents inherit the parent session's edit-tool layout.
+        // If the parent uses the diff-format edit tool, upgrade the
+        // `SubAgentDefault` scope to `SubAgentDefaultWithDiffBlocks` so the
+        // sub-agent uses `replace_in_file` instead of `edit`.
+        let tool_scope = if matches!(tool_scope, ToolScope::SubAgentDefault)
+            && self.session_config.use_diff_blocks
+        {
+            ToolScope::SubAgentDefaultWithDiffBlocks
+        } else {
+            tool_scope
+        };
+
         let cancelled = self
             .cancellation_registry
             .register(parent_tool_id.to_string());

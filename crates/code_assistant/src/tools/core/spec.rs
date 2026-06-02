@@ -9,8 +9,14 @@ pub enum ToolScope {
     AgentWithDiffBlocks,
     /// Tool scope for sub-agents running in a restricted, read-only mode
     SubAgentReadOnly,
-    /// Tool scope for sub-agents running with broader permissions (reserved for future use)
+    /// Tool scope for sub-agents running with broader permissions
     SubAgentDefault,
+    /// Same as `SubAgentDefault` but with the diff-format edit tool
+    /// (`replace_in_file`) instead of the simple `edit` tool. Selected by
+    /// the sub-agent runner when the parent session has
+    /// `use_diff_blocks = true`, so sub-agents inherit their parent's
+    /// edit-tool layout.
+    SubAgentDefaultWithDiffBlocks,
 }
 
 /// Specification for a tool, including metadata

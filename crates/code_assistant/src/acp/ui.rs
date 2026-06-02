@@ -856,6 +856,9 @@ impl UserInterface for ACPUserUI {
             UiEvent::UpdateWorktreeData { .. } => {
                 // Worktree management not supported in ACP UI
             }
+            UiEvent::UpdateAllowedModels { .. } => {
+                // Model dropdown filtering is GPUI-specific.
+            }
             UiEvent::PersistUiState => {
                 // GPUI-specific, not applicable to ACP UI
             }

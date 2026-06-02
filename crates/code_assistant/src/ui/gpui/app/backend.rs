@@ -96,6 +96,8 @@ impl Gpui {
             BackendResponse::ModelSwitched {
                 session_id,
                 model_name,
+                warning,
+                allowed_models,
             } => {
                 let current_session_id = self.current_session_id.lock().unwrap().clone();
                 if current_session_id.as_deref() == Some(session_id.as_str()) {
@@ -106,6 +108,12 @@ impl Gpui {
                     self.push_event(UiEvent::UpdateCurrentModel {
                         model_name: model_name.clone(),
                     });
+                    self.push_event(UiEvent::UpdateAllowedModels {
+                        models: allowed_models,
+                    });
+                    if let Some(message) = warning {
+                        self.push_event(UiEvent::ShowTransientStatus { message });
+                    }
                 } else {
                     debug!(
                         "Ignoring BackendResponse::ModelSwitched for session {} (current: {:?})",

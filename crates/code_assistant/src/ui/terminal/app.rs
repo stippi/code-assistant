@@ -505,13 +505,17 @@ impl TerminalTuiApp {
                         BackendResponse::ModelSwitched {
                             session_id: _,
                             model_name,
+                            warning,
+                            allowed_models: _,
                         } => {
                             // Update current model in app state
                             let mut state = app_state_clone.lock().await;
                             state.update_current_model(Some(model_name.clone()));
-                            state.set_info_message(Some(format!(
-                                "Switched to model: {model_name}",
-                            )));
+                            let info = match warning {
+                                Some(w) => format!("Switched to model: {model_name} ({w})"),
+                                None => format!("Switched to model: {model_name}"),
+                            };
+                            state.set_info_message(Some(info));
                         }
 
                         BackendResponse::SandboxPolicyChanged {

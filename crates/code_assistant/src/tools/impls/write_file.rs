@@ -122,6 +122,7 @@ impl Tool for WriteFileTool {
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
                 ToolScope::SubAgentDefault,
+                ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             hidden: false,
             title_template: Some("Writing {path}"),

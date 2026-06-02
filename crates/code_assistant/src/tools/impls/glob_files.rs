@@ -96,6 +96,7 @@ impl Tool for GlobFilesTool {
                 ToolScope::AgentWithDiffBlocks,
                 ToolScope::SubAgentReadOnly,
                 ToolScope::SubAgentDefault,
+                ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             hidden: false,
             title_template: Some("Finding files matching '{pattern}'"),

@@ -152,6 +152,11 @@ pub enum BackendResponse {
     ModelSwitched {
         session_id: String,
         model_name: String,
+        /// Optional warning to surface to the user, e.g. when the switch will
+        /// only affect the next agent iteration.
+        warning: Option<String>,
+        /// Models that remain valid choices for this session after the switch.
+        allowed_models: Vec<String>,
     },
 
     SandboxPolicyChanged {
@@ -486,7 +491,23 @@ async fn handle_load_session(
                     error!("Failed to send UI event: {}", e);
                 }
             }
-            // No response needed - UI events already handled the update
+
+            let allowed_models = {
+                let manager = multi_session_manager.lock().await;
+                manager
+                    .allowed_models_for_session(session_id)
+                    .unwrap_or_default()
+            };
+            if let Err(e) = ui
+                .send_event(crate::ui::UiEvent::UpdateAllowedModels {
+                    models: allowed_models,
+                })
+                .await
+            {
+                error!("Failed to send allowed model update: {}", e);
+            }
+
+            // No response needed - UI events already handled the update.
             None
         }
         Err(e) => {
@@ -819,7 +840,18 @@ async fn handle_switch_model(
     };
 
     match result {
-        Ok(()) => {
+        Ok(outcome) => {
+            let warning = outcome.warning;
+            if let Some(warning) = &warning {
+                warn!("{}", warning);
+            }
+            let allowed_models = {
+                let manager = multi_session_manager.lock().await;
+                manager
+                    .allowed_models_for_session(session_id)
+                    .unwrap_or_default()
+            };
+
             info!(
                 "Successfully switched model for session {} to {}",
                 session_id, model_name
@@ -827,6 +859,8 @@ async fn handle_switch_model(
             BackendResponse::ModelSwitched {
                 session_id: session_id.to_string(),
                 model_name: model_name.to_string(),
+                warning,
+                allowed_models,
             }
         }
         Err(e) => {

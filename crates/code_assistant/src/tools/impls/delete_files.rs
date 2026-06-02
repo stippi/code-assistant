@@ -106,6 +106,7 @@ impl Tool for DeleteFilesTool {
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
                 ToolScope::SubAgentDefault,
+                ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             hidden: false,
             title_template: Some("Deleting {paths}"),

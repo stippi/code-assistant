@@ -992,19 +992,20 @@ impl acp::Agent for ACPAgentImpl {
                 }
             }
 
-            // Session is already persisted — update via SessionManager
-            {
+            // Session is already persisted — update via SessionManager.
+            let switch_warning = {
                 let mut manager = session_manager.lock().await;
-                if let Err(err) =
-                    manager.set_session_model_config(&session_id.0, Some(new_model_config))
-                {
-                    tracing::error!(
-                        error = ?err,
-                        "ACP: Failed to persist session model selection"
-                    );
-                    return Err(acp::Error::internal_error());
+                match manager.set_session_model_config(&session_id.0, Some(new_model_config)) {
+                    Ok(outcome) => outcome.warning,
+                    Err(err) => {
+                        tracing::error!(
+                            error = ?err,
+                            "ACP: Failed to persist session model selection"
+                        );
+                        return Err(to_acp_error(&err));
+                    }
                 }
-            }
+            };
 
             tracing::info!(
                 "ACP: Session {} switched to model {}",
@@ -1020,6 +1021,9 @@ impl acp::Agent for ACPAgentImpl {
                     "display_name": display_name,
                 }),
             );
+            if let Some(warning) = switch_warning {
+                response_meta.insert("warning".into(), json!(warning));
+            }
             Ok(acp::SetSessionModelResponse::new().meta(response_meta))
         })
     }

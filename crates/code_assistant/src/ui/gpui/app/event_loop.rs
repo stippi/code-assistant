@@ -794,11 +794,19 @@ impl Gpui {
                     message.complete_reasoning(cx);
                 });
             }
+
             UiEvent::UpdateCurrentModel { model_name } => {
                 debug!("UI: UpdateCurrentModel event with model: {}", model_name);
                 // Store the current model
                 *self.current_model.lock().unwrap() = Some(model_name);
                 // Refresh UI to update the model selector
+                cx.refresh();
+            }
+            UiEvent::UpdateAllowedModels { models } => {
+                debug!("UI: UpdateAllowedModels event with {} models", models.len());
+                *self.allowed_models.lock().unwrap() = Some(models);
+                self.config_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 cx.refresh();
             }
             UiEvent::UpdateSandboxPolicy { policy } => {

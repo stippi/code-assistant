@@ -156,7 +156,10 @@ impl Tool for ReplaceInFileTool {
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            supported_scopes: &[ToolScope::AgentWithDiffBlocks],
+            supported_scopes: &[
+                ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentDefaultWithDiffBlocks,
+            ],
             hidden: false,
             title_template: Some("Replacing in {path}"),
         }

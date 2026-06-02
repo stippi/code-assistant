@@ -31,6 +31,7 @@
     "provider": "openai-responses",
     "id": "gpt-5-codex",
     "context_token_limit": 128000,
+    "edit_format": "diff",
     "config": {
       "temperature": 0.7,
       "reasoning": {
@@ -43,6 +44,7 @@
     "provider": "openai-responses",
     "id": "gpt-5-codex",
     "context_token_limit": 128000,
+    "edit_format": "diff",
     "config": {
       "temperature": 0.7,
       "reasoning": {
@@ -64,6 +66,7 @@
     "provider": "openai-chatgpt",
     "id": "gpt-5.4",
     "context_token_limit": 128000,
+    "edit_format": "diff",
     "config": {
       "reasoning": {
         "effort": "medium",
