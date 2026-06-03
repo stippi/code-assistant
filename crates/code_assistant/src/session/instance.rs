@@ -360,6 +360,7 @@ impl SessionInstance {
             tool_syntax: self.session.config.tool_syntax,
             initial_project: self.session.config.initial_project.clone(),
             plan_collapsed: self.session.plan_collapsed,
+            is_resumable: self.session.is_resumable(),
         };
 
         events.push(UiEvent::UpdateSessionMetadata { metadata });

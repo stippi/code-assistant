@@ -1147,6 +1147,18 @@ impl Render for MainScreen {
             false
         };
 
+        // Determine whether the current session can be "resumed" (e.g. the
+        // last message is a user message or an assistant tool-call) AND no
+        // agent loop is currently running. This drives the floating Resume
+        // button overlay on top of the MessagesView.
+        let session_is_resumable = current_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|m| &m.id == id))
+            .map(|m| m.is_resumable)
+            .unwrap_or(false);
+        let show_resume = session_is_resumable && !agent_is_running && !externally_locked;
+        self.messages_view.read(cx).set_is_resumable(show_resume);
+
         let cancel_enabled = if agent_is_running && !externally_locked {
             if let (Some(gpui), Some(session_id)) = (cx.try_global::<Gpui>(), &current_session_id) {
                 !gpui

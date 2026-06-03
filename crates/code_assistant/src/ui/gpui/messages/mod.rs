@@ -4,6 +4,8 @@ mod message_item;
 mod scroll;
 
 use crate::session::instance::SessionActivityState;
+use crate::ui::backend::BackendEvent;
+use crate::ui::gpui::Gpui;
 
 use gpui::{
     div, list, prelude::*, px, rems, App, Context, Entity, FocusHandle, Focusable, ListAlignment,
@@ -45,6 +47,11 @@ pub struct MessagesView {
     current_session_id: Arc<Mutex<Option<String>>>,
     /// Current session activity state (shared with Gpui).
     activity_state: Arc<Mutex<Option<SessionActivityState>>>,
+    /// Whether the currently displayed session is "resumable" — i.e. its
+    /// last message is a user message or an assistant message with un-
+    /// answered tool calls. Written from MainScreen render based on the
+    /// cached ChatMetadata.
+    is_resumable: Cell<bool>,
     focus_handle: FocusHandle,
     /// The virtualized list state that tracks item count, scroll position,
     /// and cached item heights.
@@ -117,6 +124,7 @@ impl MessagesView {
             current_project: Arc::new(Mutex::new(String::new())),
             current_session_id: Arc::new(Mutex::new(None)),
             activity_state,
+            is_resumable: Cell::new(false),
             focus_handle: cx.focus_handle(),
             list_state,
             follow_tail: true,
@@ -413,6 +421,14 @@ impl MessagesView {
     pub fn set_current_project(&self, project: String) {
         *self.current_project.lock().unwrap() = project;
     }
+
+    /// Update whether the currently displayed session is "resumable" — i.e.
+    /// the agent ended in a state that suggests an unfinished iteration
+    /// (e.g. crashed mid-tool-call). When true and the session is idle, the
+    /// MessagesView shows a floating Resume button above the input area.
+    pub fn set_is_resumable(&self, is_resumable: bool) {
+        self.is_resumable.set(is_resumable);
+    }
 }
 
 impl Focusable for MessagesView {
@@ -535,6 +551,21 @@ impl Render for MessagesView {
 
         let show_scroll_button = !self.follow_tail && total_items > 0;
 
+        // Resume button: shown when the session ended in a "stuck" state
+        // (last message is a user message or an assistant message with
+        // un-answered tool calls) AND the agent is currently idle/errored
+        // and not running externally. Indicates that clicking will retry
+        // the agent against the existing message history.
+        let activity_state_snapshot = self.activity_state.lock().ok().and_then(|g| g.clone());
+        let agent_is_terminal = activity_state_snapshot
+            .as_ref()
+            .is_none_or(SessionActivityState::is_terminal);
+        let externally_locked = activity_state_snapshot
+            .as_ref()
+            .is_some_and(SessionActivityState::is_running_externally);
+        let show_resume_button =
+            self.is_resumable.get() && agent_is_terminal && !externally_locked && total_items > 0;
+
         div()
             .id("messages")
             .relative()
@@ -589,6 +620,67 @@ impl Render for MessagesView {
                                 )
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.activate_follow_tail();
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .when(show_resume_button, |el| {
+                // When the scroll-to-bottom button is also visible, lift the
+                // resume button so they don't overlap. Both are anchored to
+                // the bottom of the messages area.
+                let bottom_offset = if show_scroll_button { px(56.) } else { px(16.) };
+                let btn_bg = cx.theme().primary;
+                let btn_hover_bg = cx.theme().primary_hover;
+                let btn_fg = cx.theme().primary_foreground;
+                let session_id = self.current_session_id.lock().unwrap().clone();
+                el.child(
+                    // Full-width absolute wrapper to center the button horizontally
+                    div()
+                        .absolute()
+                        .bottom(bottom_offset)
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("resume-session")
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap_1p5()
+                                .h_8()
+                                .px_3()
+                                .rounded_full()
+                                .bg(btn_bg)
+                                .shadow_md()
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .hover(move |s| s.bg(btn_hover_bg))
+                                .child(
+                                    Icon::default()
+                                        .path(SharedString::from("icons/rotate_ccw.svg"))
+                                        .text_color(btn_fg)
+                                        .size(px(14.)),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(btn_fg)
+                                        .text_size(rems(0.875))
+                                        .child("Resume"),
+                                )
+                                .on_click(cx.listener(move |_this, _event, _window, cx| {
+                                    let Some(session_id) = session_id.clone() else {
+                                        return;
+                                    };
+                                    if let Some(gpui) = cx.try_global::<Gpui>() {
+                                        if let Some(sender) =
+                                            gpui.backend_event_sender.lock().unwrap().as_ref()
+                                        {
+                                            let _ = sender.try_send(BackendEvent::ResumeSession {
+                                                session_id,
+                                            });
+                                        }
+                                    }
                                     cx.notify();
                                 })),
                         ),

@@ -303,6 +303,15 @@ impl Agent {
             // Use default for tokens limit - will be updated by persistence layer
             let tokens_limit = None;
 
+            // Compute resumability from the current in-memory history.
+            // While the agent is running this is largely cosmetic — the UI
+            // only acts on it once the session is idle — but we still want
+            // it to reflect the truth as soon as `save_state` runs after
+            // the agent finishes.
+            let messages_ref: Vec<&llm::Message> = self.message_history.iter().collect();
+            let is_resumable =
+                crate::persistence::is_resumable_from_messages(messages_ref.as_slice());
+
             ChatMetadata {
                 id: session_id.clone(),
                 name: self.session_name.clone(), // Empty string if not named yet
@@ -319,6 +328,7 @@ impl Agent {
                     self.session_config.initial_project.clone()
                 },
                 plan_collapsed: false, // Agent doesn't track UI state
+                is_resumable,
             }
         })
     }

@@ -110,6 +110,14 @@ pub enum BackendEvent {
         session_id: String,
     },
 
+    /// Resume a session that ended in a state where the agent should run
+    /// against the existing message history (no new user message is added).
+    /// Used by the GPUI "Resume" button to recover sessions that crashed or
+    /// were killed mid-iteration.
+    ResumeSession {
+        session_id: String,
+    },
+
     /// Incremental session refresh triggered by the file watcher.
     /// Compares the on-disk state with the in-memory state and emits only
     /// the delta (new messages appended by an external process).
@@ -385,6 +393,16 @@ pub async fn handle_backend_events(
                     })
                     .await;
                 None // No backend response needed
+            }
+
+            BackendEvent::ResumeSession { session_id } => {
+                handle_resume_session(
+                    &multi_session_manager,
+                    &session_id,
+                    runtime_options.as_ref(),
+                    &ui,
+                )
+                .await
             }
 
             BackendEvent::RefreshSession { session_id } => {
@@ -716,6 +734,111 @@ async fn handle_send_user_message(
             error!("Failed to start agent for session {}: {}", session_id, e);
             Some(BackendResponse::Error {
                 message: format!("Failed to start agent: {e}"),
+            })
+        }
+    }
+}
+
+/// Resume a session by starting an agent against its existing message history.
+///
+/// Unlike [`handle_send_user_message`], this does **not** add a new user
+/// message — it re-runs the agent loop on whatever the session ended with.
+/// The agent's `normalize_loaded_message_history` will drop any dangling
+/// assistant tool requests, so resuming a session whose last assistant
+/// message has un-answered tool calls effectively retries the prior user/
+/// tool-result turn.
+async fn handle_resume_session(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    runtime_options: &BackendRuntimeOptions,
+    ui: &Arc<dyn UserInterface>,
+) -> Option<BackendResponse> {
+    debug!("ResumeSession requested for {}", session_id);
+
+    // Refuse to resume if an agent is already running for this session, or
+    // if it's locked by another instance.
+    {
+        let manager = multi_session_manager.lock().await;
+        if manager.is_agent_locked_externally(session_id) {
+            return Some(BackendResponse::Error {
+                message: "Cannot resume: another instance is running this session.".to_string(),
+            });
+        }
+        if let Some(instance) = manager.get_session(session_id) {
+            if !instance.get_activity_state().is_terminal() {
+                return Some(BackendResponse::Error {
+                    message: "Cannot resume: agent is already running for this session."
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    // Clear any prior Errored state so the UI doesn't keep the error banner.
+    {
+        let mut manager = multi_session_manager.lock().await;
+        if let Some(session) = manager.get_session_mut(session_id) {
+            if matches!(
+                session.get_activity_state(),
+                crate::session::instance::SessionActivityState::Errored { .. }
+            ) {
+                session.set_activity_state(crate::session::instance::SessionActivityState::Idle);
+            }
+        }
+    }
+
+    let project_manager = Box::new(DefaultProjectManager::new());
+    let command_executor = Box::new(GpuiTerminalCommandExecutor::new(session_id.to_string()));
+    let user_interface = ui.clone();
+
+    let session_config = {
+        let manager = multi_session_manager.lock().await;
+        manager.get_session_model_config(session_id).unwrap_or(None)
+    };
+
+    let llm_client = if let Some(ref session_config) = session_config {
+        create_llm_client_from_model(
+            &session_config.model_name,
+            runtime_options.playback_path.clone(),
+            runtime_options.fast_playback,
+            runtime_options.record_path.clone(),
+        )
+        .await
+    } else {
+        return Some(BackendResponse::Error {
+            message: "Session has no model configuration; cannot resume.".to_string(),
+        });
+    };
+
+    let result = match llm_client {
+        Ok(client) => {
+            let mut manager = multi_session_manager.lock().await;
+            manager
+                .start_agent_for_session(
+                    session_id,
+                    client,
+                    project_manager,
+                    command_executor,
+                    user_interface,
+                    None,
+                )
+                .await
+        }
+        Err(e) => {
+            error!("Failed to create LLM client for resume: {}", e);
+            Err(e)
+        }
+    };
+
+    match result {
+        Ok(_) => {
+            debug!("Resumed agent for session {}", session_id);
+            None
+        }
+        Err(e) => {
+            error!("Failed to resume agent for session {}: {}", session_id, e);
+            Some(BackendResponse::Error {
+                message: format!("Failed to resume agent: {e}"),
             })
         }
     }

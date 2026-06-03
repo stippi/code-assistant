@@ -154,6 +154,31 @@ fn default_next_node_id() -> NodeId {
     1
 }
 
+/// Determine whether a linear list of messages represents a session that
+/// should be marked as "resumable" — i.e. ends in a user message or in an
+/// assistant message with un-answered tool calls.
+///
+/// Used by both [`ChatSession::is_resumable`] and the agent runner (which
+/// only has the linear `message_history` available while running).
+pub fn is_resumable_from_messages(messages: &[&Message]) -> bool {
+    let Some(last) = messages.last() else {
+        return false;
+    };
+
+    match last.role {
+        llm::MessageRole::User => match &last.content {
+            llm::MessageContent::Text(text) => !text.trim().is_empty(),
+            llm::MessageContent::Structured(blocks) => !blocks.is_empty(),
+        },
+        llm::MessageRole::Assistant => match &last.content {
+            llm::MessageContent::Structured(blocks) => blocks
+                .iter()
+                .any(|b| matches!(b, llm::ContentBlock::ToolUse { .. })),
+            llm::MessageContent::Text(_) => false,
+        },
+    }
+}
+
 impl ChatSession {
     /// Merge any legacy top-level fields into the nested SessionConfig.
     pub fn ensure_config(&mut self) -> Result<()> {
@@ -456,6 +481,23 @@ impl ChatSession {
         self.message_nodes.len()
     }
 
+    /// Returns true if the session looks like it failed mid-flight and could
+    /// usefully be "resumed" by re-running the agent against the existing
+    /// message history.
+    ///
+    /// This is the case when the active conversation ends in either:
+    ///   - a user message that the agent never responded to, or
+    ///   - an assistant message that contains tool-use blocks but has no
+    ///     matching tool-result follow-up message (i.e. the agent crashed or
+    ///     was killed before executing / returning the tool result).
+    ///
+    /// A session that ends in a plain assistant text reply is considered
+    /// "complete" and is not resumable.
+    pub fn is_resumable(&self) -> bool {
+        let messages: Vec<&Message> = self.get_active_messages();
+        is_resumable_from_messages(messages.as_slice())
+    }
+
     /// Check if the session has any branches.
     #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
     pub fn has_branches(&self) -> bool {
@@ -535,6 +577,14 @@ pub struct ChatMetadata {
     /// Whether the plan UI is collapsed for this session
     #[serde(default)]
     pub plan_collapsed: bool,
+    /// Whether the session looks resumable (idle but ended in a user message
+    /// or in an assistant message with un-answered tool calls).
+    ///
+    /// This flag is recomputed every time the session is saved, so it is not
+    /// authoritative on disk — the UI should treat it as a hint and the
+    /// agent itself never relies on it.
+    #[serde(default)]
+    pub is_resumable: bool,
 }
 
 #[derive(Clone)]
@@ -625,6 +675,7 @@ impl FileSessionPersistence {
             tool_syntax: session.tool_syntax(),
             initial_project: session.initial_project().to_string(),
             plan_collapsed: session.plan_collapsed,
+            is_resumable: session.is_resumable(),
         };
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
@@ -836,6 +887,7 @@ impl FileSessionPersistence {
                         tool_syntax: session.tool_syntax(),
                         initial_project: session.initial_project().to_string(),
                         plan_collapsed: session.plan_collapsed,
+                        is_resumable: session.is_resumable(),
                     };
 
                     metadata_list.push(metadata);
