@@ -40,6 +40,30 @@ cargo build --release
 
 The binary will be available at `target/release/code-assistant`.
 
+### Building a macOS .app Bundle
+
+A self-contained `.app` bundle (with proper dock icon, Info.plist and ad-hoc
+code signature) can be built from any release binary:
+
+```bash
+# Build the binary first (per-target build, picks up the icon assets)
+cargo build --locked --release --target aarch64-apple-darwin   # Apple Silicon
+# or
+cargo build --locked --release --target x86_64-apple-darwin    # Intel
+
+# Wrap it into a .app bundle
+./scripts/bundle-macos.sh aarch64
+# Other options: x86_64, universal, --no-build (reuse the binary you just built)
+```
+
+The result lands in `target/macos-bundle/Code Assistant.app` plus a zipped copy
+ready for distribution. The script uses only stock macOS tools (`sips`,
+`iconutil`, `plutil`, `codesign`) so it requires no extra installs.
+
+The icon source is `crates/code_assistant/assets/app_icon.svg`. Re-run
+`./scripts/generate-app-icon.sh` after editing it to refresh the
+`AppIcon.icns` checked into the repo.
+
 ### Initial Setup
 
 After building, create your configuration files:

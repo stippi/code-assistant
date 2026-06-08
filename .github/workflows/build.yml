@@ -110,9 +110,33 @@ jobs:
             zip code-assistant-${{ matrix.name }}.zip "code-assistant${{ matrix.extension }}"
           fi
 
+      - name: Build macOS .app bundle
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) ARCH="aarch64" ;;
+            x86_64-apple-darwin)  ARCH="x86_64" ;;
+            *) echo "unknown macOS target: ${{ matrix.target }}"; exit 1 ;;
+          esac
+          ./scripts/bundle-macos.sh --no-build "$ARCH"
+          # Pick up the produced bundle zip without depending on the version
+          # in the filename (it can change between commits).
+          mkdir -p release
+          mv target/macos-bundle/Code-Assistant-*-"$ARCH".zip \
+             "release/Code-Assistant-${{ matrix.name }}.app.zip"
+
       - name: Upload Nightly Artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: code-assistant-${{ matrix.name }}
           path: release/code-assistant-${{ matrix.name }}.zip
+          retention-days: 30
+
+      - name: Upload Nightly App Bundle
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Code-Assistant-${{ matrix.name }}-app
+          path: release/Code-Assistant-${{ matrix.name }}.app.zip
           retention-days: 30

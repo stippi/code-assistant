@@ -3,6 +3,23 @@ name = "code-assistant"
 version = "0.2.10"
 edition = "2021"
 
+# macOS / Linux / Windows .app/.deb/.msi bundling via `cargo bundle`.
+# Install with:
+#   cargo install cargo-bundle
+# Then run from this crate's directory:
+#   cargo bundle --release
+[package.metadata.bundle]
+name = "Code Assistant"
+identifier = "dev.stippi.code-assistant"
+icon = ["assets/AppIcon.icns", "assets/app_icon.png"]
+category = "public.app-category.developer-tools"
+short_description = "AI-assisted coding agent."
+long_description = """
+Code Assistant is an AI-powered coding agent with a multi-session GUI,
+terminal UI and MCP server mode.
+"""
+osx_minimum_system_version = "10.15"
+
 [features]
 default = ["document-conversion"]
 document-conversion = ["transmutation", "fs_explorer/document-conversion"]

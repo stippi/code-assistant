@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Code Assistant app icon.
+    An abstract robot/agent face on a gradient background.
+    Original artwork released under the same license as the project.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E1B4B"/>
+      <stop offset="55%" stop-color="#3730A3"/>
+      <stop offset="100%" stop-color="#0E7490"/>
+    </linearGradient>
+
+    <linearGradient id="head" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#CBD5E1"/>
+    </linearGradient>
+
+    <linearGradient id="visor" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+
+    <radialGradient id="eyeGlow" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#A5F3FC"/>
+      <stop offset="55%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#0E7490"/>
+    </radialGradient>
+
+    <radialGradient id="antennaGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FDE68A"/>
+      <stop offset="60%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded square background (Big Sur style) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="225" ry="225" fill="url(#bg)"/>
+
+  <!-- Subtle code-like accents in the background -->
+  <g opacity="0.10" fill="none" stroke="#E0F2FE" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="120,150 80,200 120,250"/>
+    <polyline points="904,774 944,824 904,874"/>
+    <line x1="160" y1="900" x2="240" y2="900"/>
+    <line x1="784" y1="124" x2="864" y2="124"/>
+  </g>
+
+  <!-- Antenna -->
+  <line x1="512" y1="192" x2="512" y2="276" stroke="#E2E8F0" stroke-width="16" stroke-linecap="round"/>
+  <circle cx="512" cy="170" r="44" fill="url(#antennaGlow)"/>
+  <circle cx="512" cy="170" r="22" fill="#FFF7ED" opacity="0.85"/>
+
+  <!-- Side ears / sensors -->
+  <rect x="184" y="470" width="40" height="160" rx="20" fill="#94A3B8"/>
+  <rect x="800" y="470" width="40" height="160" rx="20" fill="#94A3B8"/>
+
+  <!-- Robot head (rounded rectangle) -->
+  <rect x="216" y="276" width="592" height="528" rx="96" ry="96" fill="url(#head)"/>
+
+  <!-- Soft inner shadow on the head (top highlight) -->
+  <rect x="216" y="276" width="592" height="528" rx="96" ry="96" fill="none"
+        stroke="#FFFFFF" stroke-opacity="0.6" stroke-width="6"/>
+
+  <!-- Visor / face screen -->
+  <rect x="276" y="356" width="472" height="248" rx="56" ry="56" fill="url(#visor)"/>
+
+  <!-- Eyes (glowing) -->
+  <circle cx="396" cy="480" r="58" fill="url(#eyeGlow)"/>
+  <circle cx="628" cy="480" r="58" fill="url(#eyeGlow)"/>
+  <!-- Eye highlights -->
+  <circle cx="382" cy="464" r="16" fill="#F0FDFF" opacity="0.95"/>
+  <circle cx="614" cy="464" r="16" fill="#F0FDFF" opacity="0.95"/>
+
+  <!-- Mouth: a stylized code prompt (chevron + cursor) -->
+  <g stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Chevron > -->
+    <polyline points="430,684 480,712 430,740"
+              stroke="#475569" stroke-width="18"/>
+    <!-- Cursor underline -->
+    <line x1="510" y1="744" x2="610" y2="744"
+          stroke="#475569" stroke-width="18"/>
+  </g>
+
+  <!-- Neck / chin shadow accent -->
+  <rect x="416" y="804" width="192" height="22" rx="11" fill="#94A3B8" opacity="0.8"/>
+</svg>
