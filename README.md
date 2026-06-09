@@ -125,21 +125,21 @@ See [docs/format-on-save-feature.md](docs/format-on-save-feature.md) for detaile
 ### GUI Mode (Recommended)
 
 ```bash
-# Start with graphical interface
-code-assistant --ui
+# Start with graphical interface (default)
+code-assistant
 
 # Start GUI with initial task
-code-assistant --ui --task "Analyze the authentication system"
+code-assistant --task "Analyze the authentication system"
 ```
 
 ### Terminal Mode
 
 ```bash
-# Basic usage
-code-assistant --task "Explain the purpose of this codebase"
+# Start with terminal interface
+code-assistant --tui --task "Explain the purpose of this codebase"
 
 # With specific model
-code-assistant --task "Add error handling" --model "GPT-5"
+code-assistant --tui --task "Add error handling" --model "GPT-5"
 ```
 
 ### Working Directory Matters
@@ -150,7 +150,7 @@ The directory from which you launch `code-assistant` determines the project cont
 
 ```bash
 cd ~/workspace/my-project
-code-assistant --ui
+code-assistant
 ```
 
 Chats are **grouped by directory**, so starting a new chat from the correct project directory ensures:
