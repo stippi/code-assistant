@@ -111,6 +111,11 @@ pub struct TerminalRenderer {
     needs_paragraph_break_after_hidden_tool: bool,
     /// Last known terminal width (updated in prepare(), used for history rendering).
     last_known_width: u16,
+    /// Filtered list of (name, description) pairs to show in the autocomplete popup.
+    /// Empty when the popup is hidden.
+    autocomplete_items: Vec<(&'static str, &'static str)>,
+    /// Index of the highlighted row in `autocomplete_items`.
+    autocomplete_selected: usize,
 }
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -144,6 +149,8 @@ impl TerminalRenderer {
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
             last_known_width: 80,
+            autocomplete_items: Vec::new(),
+            autocomplete_selected: 0,
         })
     }
 
@@ -296,6 +303,25 @@ impl TerminalRenderer {
     /// Toggle whether an overlay is active (drives deferred history behavior).
     pub fn set_overlay_active(&mut self, active: bool) {
         self.overlay_active = active;
+    }
+
+    /// Update the autocomplete popup contents.
+    ///
+    /// `items` is the pre-filtered list of (name, description) pairs to display.
+    /// `selected` is the index of the highlighted row.
+    pub fn set_autocomplete(
+        &mut self,
+        items: Vec<(&'static str, &'static str)>,
+        selected: usize,
+    ) {
+        self.autocomplete_items = items;
+        self.autocomplete_selected = selected;
+    }
+
+    /// Hide the autocomplete popup.
+    pub fn clear_autocomplete(&mut self) {
+        self.autocomplete_items.clear();
+        self.autocomplete_selected = 0;
     }
 
     /// Append text to the last block in the current message
@@ -933,6 +959,16 @@ impl TerminalRenderer {
 
         // Render input area (block + textarea)
         self.composer.render(f, input_area, textarea);
+
+        // Render autocomplete popup on top of the input area if items are present.
+        if !self.autocomplete_items.is_empty() {
+            Self::render_autocomplete_popup(
+                f,
+                input_area,
+                &self.autocomplete_items,
+                self.autocomplete_selected,
+            );
+        }
     }
 
     /// Render a message to the scratch buffer, updating cursor_y
@@ -1188,6 +1224,108 @@ impl TerminalRenderer {
 
     fn format_error_message(message: &str) -> String {
         format!("Error: {message} (Press Esc to dismiss)")
+    }
+
+    /// Render the slash-command autocomplete popup above the input area.
+    ///
+    /// The popup is a borderless list drawn over `input_area`.  Each row shows
+    /// `  /name  —  description  `; the highlighted row is drawn with a dark
+    /// background so it stands out without being distracting.
+    ///
+    /// Layout: the popup height is `min(items.len(), MAX_POPUP_ROWS)`.  It is
+    /// anchored to the top-left of `input_area` and extends upward (i.e. it
+    /// sits between the scroll-back content and the composer).  If `input_area`
+    /// is not tall enough to fit the popup it is clamped to the available space.
+    fn render_autocomplete_popup(
+        f: &mut custom_terminal::Frame,
+        input_area: Rect,
+        items: &[(&'static str, &'static str)],
+        selected: usize,
+    ) {
+        const MAX_POPUP_ROWS: u16 = 8;
+        const H_PADDING: u16 = 1; // spaces on each side of the text
+
+        if items.is_empty() || input_area.height == 0 {
+            return;
+        }
+
+        // How wide should each row be?
+        let max_text_width = items
+            .iter()
+            .map(|(name, desc)| {
+                // "  /name  —  description  "
+                2 + 1 + name.len() + 2 + 3 + 2 + desc.len() + 2
+            })
+            .max()
+            .unwrap_or(20) as u16;
+        let popup_width = max_text_width
+            .max(20)
+            .min(input_area.width.saturating_sub(H_PADDING * 2));
+
+        let popup_height = (items.len() as u16).min(MAX_POPUP_ROWS);
+
+        // Position the popup directly above the input area, left-aligned with
+        // a small horizontal indent so it visually aligns with the "› " prefix.
+        let popup_x = input_area.x + 2; // indent under the "› " prefix
+        let popup_y = input_area.y.saturating_sub(popup_height);
+
+        // Clamp to screen bounds.
+        let popup_x = popup_x.min(
+            f.area()
+                .width
+                .saturating_sub(popup_width),
+        );
+
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+
+        // Determine which items are visible (top `MAX_POPUP_ROWS` items starting
+        // from the window that keeps `selected` in view).
+        let window_start = if selected >= MAX_POPUP_ROWS as usize {
+            selected + 1 - MAX_POPUP_ROWS as usize
+        } else {
+            0
+        };
+        let visible: Vec<_> = items
+            .iter()
+            .enumerate()
+            .skip(window_start)
+            .take(MAX_POPUP_ROWS as usize)
+            .collect();
+
+        for (row_idx, (item_idx, (name, desc))) in visible.iter().enumerate() {
+            let row_area = Rect {
+                x: popup_area.x,
+                y: popup_area.y + row_idx as u16,
+                width: popup_area.width,
+                height: 1,
+            };
+
+            let is_selected = *item_idx == selected;
+            let (bg, fg, name_fg) = if is_selected {
+                (Color::DarkGray, Color::White, Color::Cyan)
+            } else {
+                (Color::Reset, Color::DarkGray, Color::Gray)
+            };
+
+            // Fill the whole row background first.
+            let bg_style = Style::default().bg(bg);
+            let fill = Line::raw(" ".repeat(popup_area.width as usize));
+            f.render_widget(Paragraph::new(fill).style(bg_style), row_area);
+
+            // Render "  /name  —  description" over the background.
+            let line = Line::from(vec![
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(format!("/{name}"), Style::default().fg(name_fg).bg(bg)),
+                Span::styled("  —  ", Style::default().fg(fg).bg(bg)),
+                Span::styled(*desc, Style::default().fg(fg).bg(bg)),
+            ]);
+            f.render_widget(Paragraph::new(line), row_area);
+        }
     }
 
     /// Set an error message to display
