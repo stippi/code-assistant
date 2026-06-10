@@ -1412,6 +1412,13 @@ impl Agent {
             return messages;
         }
 
+        // Skip the reminder when the `name_session` tool isn't available in the
+        // current tool scope (e.g. for sub-agents). Otherwise we'd nag the agent
+        // to call a tool it cannot use.
+        if !ToolRegistry::global().is_tool_in_scope("name_session", self.tool_scope) {
+            return messages;
+        }
+
         // Find the last actual user message (not tool results) and add system reminder
         // Iterate backwards through messages to find the last user message with actual content
         for msg in messages.iter_mut().rev() {
