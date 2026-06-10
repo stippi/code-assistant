@@ -270,6 +270,28 @@ async fn event_loop(
                                     renderer_guard.set_plan_expanded(expanded);
                                     renderer_guard.set_overlay_active(overlay_active);
                                 }
+                                KeyEventResult::ClearContext => {
+                                    let current_session_id = {
+                                        let state = app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
+                                    if let Some(session_id) = current_session_id {
+                                        let _ = backend_event_tx
+                                            .send(BackendEvent::ClearContext { session_id })
+                                            .await;
+                                    }
+                                }
+                                KeyEventResult::CompactContext => {
+                                    let current_session_id = {
+                                        let state = app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
+                                    if let Some(session_id) = current_session_id {
+                                        let _ = backend_event_tx
+                                            .send(BackendEvent::CompactContext { session_id })
+                                            .await;
+                                    }
+                                }
                             }
                             needs_redraw = true;
                         }

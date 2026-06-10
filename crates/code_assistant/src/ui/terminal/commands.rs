@@ -72,6 +72,10 @@ pub enum CommandResult {
     InvalidCommand(String),
     /// Toggle plan rendering mode
     TogglePlan,
+    /// Clear conversation context
+    ClearContext,
+    /// Compact (summarise) conversation context
+    CompactContext,
 }
 
 /// Process slash commands in terminal UI
@@ -104,6 +108,8 @@ impl CommandProcessor {
             "provider" | "p" => self.process_provider_command(&parts[1..]),
             "current" | "c" => CommandResult::ShowCurrentModel,
             "plan" => CommandResult::TogglePlan,
+            "clear" => CommandResult::ClearContext,
+            "compact" => CommandResult::CompactContext,
             _ => CommandResult::InvalidCommand(format!("Unknown command: /{}", parts[0])),
         }
     }
