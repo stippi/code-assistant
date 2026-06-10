@@ -1,4 +1,5 @@
 use crate::{
+    commands::all_commands,
     input::{InputManager, KeyEventResult},
     renderer::ProductionTerminalRenderer,
     state::AppState,
@@ -292,6 +293,92 @@ async fn event_loop(
                                             .await;
                                     }
                                 }
+                                KeyEventResult::UpdateAutocomplete { query } => {
+                                    match query {
+                                        None => {
+                                            // Current line no longer starts with '/'; close popup.
+                                            let mut state = app_state.lock().await;
+                                            state.close_autocomplete();
+                                            input_manager.autocomplete_active = false;
+                                        }
+                                        Some(q) => {
+                                            let filtered: Vec<_> = all_commands()
+                                                .iter()
+                                                .filter(|cmd| {
+                                                    cmd.name.starts_with(q.as_str())
+                                                        || cmd.aliases.iter().any(|a| a.starts_with(q.as_str()))
+                                                })
+                                                .collect();
+                                            let mut state = app_state.lock().await;
+                                            if filtered.is_empty() {
+                                                state.close_autocomplete();
+                                                input_manager.autocomplete_active = false;
+                                            } else {
+                                                // Clamp selected index to new list length.
+                                                let selected = state
+                                                    .autocomplete_selected
+                                                    .min(filtered.len().saturating_sub(1));
+                                                state.open_autocomplete(q);
+                                                state.autocomplete_selected = selected;
+                                                input_manager.autocomplete_active = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyEventResult::MoveAutocomplete(delta) => {
+                                    let item_count = {
+                                        let state = app_state.lock().await;
+                                        let q = &state.autocomplete_query.clone();
+                                        all_commands()
+                                            .iter()
+                                            .filter(|cmd| {
+                                                cmd.name.starts_with(q.as_str())
+                                                    || cmd.aliases.iter().any(|a| a.starts_with(q.as_str()))
+                                            })
+                                            .count()
+                                    };
+                                    let mut state = app_state.lock().await;
+                                    state.move_autocomplete_selection(delta, item_count);
+                                }
+                                KeyEventResult::SelectAutocomplete => {
+                                    // Find the selected command and expand its name into the textarea.
+                                    let (selected_name, query) = {
+                                        let state = app_state.lock().await;
+                                        let q = state.autocomplete_query.clone();
+                                        let filtered: Vec<_> = all_commands()
+                                            .iter()
+                                            .filter(|cmd| {
+                                                cmd.name.starts_with(q.as_str())
+                                                    || cmd.aliases.iter().any(|a| a.starts_with(q.as_str()))
+                                            })
+                                            .collect();
+                                        let name = filtered
+                                            .get(state.autocomplete_selected)
+                                            .map(|cmd| cmd.name.to_string());
+                                        (name, q)
+                                    };
+
+                                    if let Some(name) = selected_name {
+                                        // Replace "/<query>" on the current line with "/<name> ".
+                                        // Compute the byte range: from start-of-line up to cursor.
+                                        let cursor = input_manager.textarea.cursor();
+                                        let text = input_manager.textarea.text().to_string();
+                                        let line_start = text[..cursor]
+                                            .rfind('\n')
+                                            .map(|i| i + 1)
+                                            .unwrap_or(0);
+                                        // Replace exactly the portion "/<query>" the user typed.
+                                        let typed_end = line_start + 1 + query.len(); // '/' + query
+                                        let replace_end = typed_end.min(cursor);
+                                        input_manager.textarea.replace_range(
+                                            line_start..replace_end,
+                                            &format!("/{name} "),
+                                        );
+                                        let mut state = app_state.lock().await;
+                                        state.close_autocomplete();
+                                        input_manager.autocomplete_active = false;
+                                    }
+                                }
                             }
                             needs_redraw = true;
                         }
@@ -300,6 +387,28 @@ async fn event_loop(
                             // normalize before processing.
                             let pasted = pasted.replace('\r', "\n");
                             input_manager.handle_paste(pasted);
+                            // Update autocomplete: pasting may introduce or clear a slash prefix.
+                            match input_manager.slash_prefix() {
+                                None => {
+                                    let mut state = app_state.lock().await;
+                                    state.close_autocomplete();
+                                    input_manager.autocomplete_active = false;
+                                }
+                                Some(q) => {
+                                    let has_matches = all_commands().iter().any(|cmd| {
+                                        cmd.name.starts_with(q.as_str())
+                                            || cmd.aliases.iter().any(|a| a.starts_with(q.as_str()))
+                                    });
+                                    let mut state = app_state.lock().await;
+                                    if has_matches {
+                                        state.open_autocomplete(q);
+                                        input_manager.autocomplete_active = true;
+                                    } else {
+                                        state.close_autocomplete();
+                                        input_manager.autocomplete_active = false;
+                                    }
+                                }
+                            }
                             needs_redraw = true;
                         }
                         Event::Resize(_, _) => {
