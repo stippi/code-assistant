@@ -181,6 +181,20 @@ impl TextArea {
         Some((area.x + col, area.y + i as u16))
     }
 
+    /// Returns the text of the logical line the cursor is currently on.
+    ///
+    /// A "logical line" is the text between two `\n` characters (or the start/end
+    /// of the buffer).  This is the unprocessed content before word-wrap is applied,
+    /// so it may be longer than a single rendered row on screen.
+    ///
+    /// Used by the slash-command autocomplete to check whether the user is typing
+    /// a `/` command without having to re-parse the full textarea text.
+    pub fn current_line(&self) -> &str {
+        let bol = self.beginning_of_current_line();
+        let eol = self.end_of_current_line();
+        &self.text[bol..eol]
+    }
+
     pub fn input(&mut self, event: KeyEvent) {
         match event {
             // C0 control character fallbacks (terminals that don't report CONTROL modifier)
@@ -1138,5 +1152,35 @@ mod tests {
         ta.clear();
         assert_eq!(ta.elements.len(), 0);
         assert_eq!(ta.text(), "");
+    }
+
+    #[test]
+    fn test_current_line_single_line() {
+        let mut ta = TextArea::new();
+        ta.insert_str("hello world");
+        assert_eq!(ta.current_line(), "hello world");
+    }
+
+    #[test]
+    fn test_current_line_multiline_first() {
+        let mut ta = TextArea::new();
+        ta.insert_str("first\nsecond\nthird");
+        // Move cursor to the beginning of the first line
+        ta.set_cursor(0);
+        assert_eq!(ta.current_line(), "first");
+    }
+
+    #[test]
+    fn test_current_line_multiline_last() {
+        let mut ta = TextArea::new();
+        ta.insert_str("first\nsecond\nthird");
+        // Cursor is at the end (after "third")
+        assert_eq!(ta.current_line(), "third");
+    }
+
+    #[test]
+    fn test_current_line_empty() {
+        let ta = TextArea::new();
+        assert_eq!(ta.current_line(), "");
     }
 }
