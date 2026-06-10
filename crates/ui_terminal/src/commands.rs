@@ -1,6 +1,58 @@
 use anyhow::Result;
 use llm::provider_config::ConfigurationSystem;
 
+/// Static descriptor for a slash command, used for autocomplete and help display.
+pub struct SlashCommand {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub description: &'static str,
+}
+
+/// All registered slash commands.
+///
+/// This slice is the single source of truth for command discovery. Every entry here
+/// corresponds to a match arm in `CommandProcessor::process_command`. Keeping them
+/// in sync is intentional: adding a command requires updating both places.
+pub fn all_commands() -> &'static [SlashCommand] {
+    &[
+        SlashCommand {
+            name: "help",
+            aliases: &["h"],
+            description: "Show available commands",
+        },
+        SlashCommand {
+            name: "model",
+            aliases: &["m"],
+            description: "List available models or switch to one: /model <name>",
+        },
+        SlashCommand {
+            name: "provider",
+            aliases: &["p"],
+            description: "List available LLM providers",
+        },
+        SlashCommand {
+            name: "current",
+            aliases: &["c"],
+            description: "Show the currently active model",
+        },
+        SlashCommand {
+            name: "plan",
+            aliases: &[],
+            description: "Toggle the plan view panel",
+        },
+        SlashCommand {
+            name: "clear",
+            aliases: &[],
+            description: "Clear the conversation context",
+        },
+        SlashCommand {
+            name: "compact",
+            aliases: &[],
+            description: "Summarize and compact the conversation context",
+        },
+    ]
+}
+
 /// Result of processing a slash command
 #[derive(Debug, Clone)]
 pub enum CommandResult {
@@ -84,20 +136,25 @@ impl CommandProcessor {
     }
 
     fn get_help_text(&self) -> String {
-        concat!(
-            "Available commands:\n",
-            "/help, /h          - Show this help\n",
-            "/model, /m         - List available models\n",
-            "/model <name>      - Switch to model\n",
-            "/provider, /p      - List available providers\n",
-            "/current, /c       - Show current model\n",
-            "/plan              - Toggle plan view\n",
-            "\n",
-            "Examples:\n",
-            "/model Claude Sonnet 4.5\n",
-            "/model GPT-5",
-        )
-        .to_string()
+        let mut text = String::from("Available commands:\n");
+        for cmd in all_commands() {
+            if cmd.aliases.is_empty() {
+                text.push_str(&format!("  /{:<16} {}\n", cmd.name, cmd.description));
+            } else {
+                let alias_list = cmd
+                    .aliases
+                    .iter()
+                    .map(|a| format!("/{a}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                text.push_str(&format!(
+                    "  /{}, {:<12} {}\n",
+                    cmd.name, alias_list, cmd.description
+                ));
+            }
+        }
+        text.push_str("\nExamples:\n  /model Claude Sonnet 4.5\n  /model GPT-5");
+        text
     }
 
     /// Get formatted list of available models
