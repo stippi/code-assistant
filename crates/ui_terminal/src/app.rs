@@ -300,6 +300,8 @@ async fn event_loop(
                                             let mut state = app_state.lock().await;
                                             state.close_autocomplete();
                                             input_manager.autocomplete_active = false;
+                                            drop(state);
+                                            renderer.lock().await.clear_autocomplete();
                                         }
                                         Some(q) => {
                                             let filtered: Vec<_> = all_commands()
@@ -313,6 +315,8 @@ async fn event_loop(
                                             if filtered.is_empty() {
                                                 state.close_autocomplete();
                                                 input_manager.autocomplete_active = false;
+                                                drop(state);
+                                                renderer.lock().await.clear_autocomplete();
                                             } else {
                                                 // Clamp selected index to new list length.
                                                 let selected = state
@@ -321,24 +325,40 @@ async fn event_loop(
                                                 state.open_autocomplete(q);
                                                 state.autocomplete_selected = selected;
                                                 input_manager.autocomplete_active = true;
+                                                drop(state);
+                                                let items: Vec<_> = filtered
+                                                    .iter()
+                                                    .map(|cmd| (cmd.name, cmd.description))
+                                                    .collect();
+                                                renderer.lock().await.set_autocomplete(items, selected);
                                             }
                                         }
                                     }
                                 }
                                 KeyEventResult::MoveAutocomplete(delta) => {
-                                    let item_count = {
+                                    let (item_count, items) = {
                                         let state = app_state.lock().await;
-                                        let q = &state.autocomplete_query.clone();
-                                        all_commands()
+                                        let q = state.autocomplete_query.clone();
+                                        let filtered: Vec<_> = all_commands()
                                             .iter()
                                             .filter(|cmd| {
                                                 cmd.name.starts_with(q.as_str())
                                                     || cmd.aliases.iter().any(|a| a.starts_with(q.as_str()))
                                             })
-                                            .count()
+                                            .collect();
+                                        let count = filtered.len();
+                                        let items: Vec<_> = filtered
+                                            .iter()
+                                            .map(|cmd| (cmd.name, cmd.description))
+                                            .collect();
+                                        (count, items)
                                     };
-                                    let mut state = app_state.lock().await;
-                                    state.move_autocomplete_selection(delta, item_count);
+                                    let selected = {
+                                        let mut state = app_state.lock().await;
+                                        state.move_autocomplete_selection(delta, item_count);
+                                        state.autocomplete_selected
+                                    };
+                                    renderer.lock().await.set_autocomplete(items, selected);
                                 }
                                 KeyEventResult::SelectAutocomplete => {
                                     // Find the selected command and expand its name into the textarea.
@@ -377,6 +397,8 @@ async fn event_loop(
                                         let mut state = app_state.lock().await;
                                         state.close_autocomplete();
                                         input_manager.autocomplete_active = false;
+                                        drop(state);
+                                        renderer.lock().await.clear_autocomplete();
                                     }
                                 }
                             }
@@ -393,19 +415,36 @@ async fn event_loop(
                                     let mut state = app_state.lock().await;
                                     state.close_autocomplete();
                                     input_manager.autocomplete_active = false;
+                                    drop(state);
+                                    renderer.lock().await.clear_autocomplete();
                                 }
                                 Some(q) => {
-                                    let has_matches = all_commands().iter().any(|cmd| {
-                                        cmd.name.starts_with(q.as_str())
-                                            || cmd.aliases.iter().any(|a| a.starts_with(q.as_str()))
-                                    });
+                                    let filtered: Vec<_> = all_commands()
+                                        .iter()
+                                        .filter(|cmd| {
+                                            cmd.name.starts_with(q.as_str())
+                                                || cmd.aliases.iter().any(|a| a.starts_with(q.as_str()))
+                                        })
+                                        .collect();
                                     let mut state = app_state.lock().await;
-                                    if has_matches {
-                                        state.open_autocomplete(q);
-                                        input_manager.autocomplete_active = true;
-                                    } else {
+                                    if filtered.is_empty() {
                                         state.close_autocomplete();
                                         input_manager.autocomplete_active = false;
+                                        drop(state);
+                                        renderer.lock().await.clear_autocomplete();
+                                    } else {
+                                        let selected = state
+                                            .autocomplete_selected
+                                            .min(filtered.len().saturating_sub(1));
+                                        state.open_autocomplete(q);
+                                        state.autocomplete_selected = selected;
+                                        input_manager.autocomplete_active = true;
+                                        drop(state);
+                                        let items: Vec<_> = filtered
+                                            .iter()
+                                            .map(|cmd| (cmd.name, cmd.description))
+                                            .collect();
+                                        renderer.lock().await.set_autocomplete(items, selected);
                                     }
                                 }
                             }
