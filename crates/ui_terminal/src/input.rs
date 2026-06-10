@@ -34,6 +34,10 @@ pub enum KeyEventResult {
     ShowCurrentModel,
     /// Toggle plan rendering mode
     TogglePlan,
+    /// Clear conversation context
+    ClearContext,
+    /// Compact (summarise) conversation context
+    CompactContext,
 }
 
 /// Manages the input area using the custom TextArea widget
@@ -128,6 +132,8 @@ impl InputManager {
                             }
                             CommandResult::ShowCurrentModel => KeyEventResult::ShowCurrentModel,
                             CommandResult::TogglePlan => KeyEventResult::TogglePlan,
+                            CommandResult::ClearContext => KeyEventResult::ClearContext,
+                            CommandResult::CompactContext => KeyEventResult::CompactContext,
                             CommandResult::InvalidCommand(error) => {
                                 KeyEventResult::ShowInfo(format!("Error: {error}"))
                             }

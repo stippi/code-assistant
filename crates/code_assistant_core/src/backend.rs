@@ -118,6 +118,21 @@ pub enum BackendEvent {
         session_id: String,
     },
 
+    /// Clear the conversation context (messages) for a session.
+    ///
+    /// The session itself is kept alive; only the message history is wiped.
+    /// The UI transcript is cleared via `UiEvent::ClearMessages`.
+    ClearContext {
+        session_id: String,
+    },
+
+    /// Compact (summarise) conversation context for a session.
+    ///
+    /// Not yet implemented — emits an informational message instead.
+    CompactContext {
+        session_id: String,
+    },
+
     /// Incremental session refresh triggered by the file watcher.
     /// Compares the on-disk state with the in-memory state and emits only
     /// the delta (new messages appended by an external process).
@@ -414,6 +429,30 @@ pub async fn handle_backend_events(
 
             BackendEvent::RefreshSession { session_id } => {
                 handle_refresh_session(&multi_session_manager, &session_id, &ui).await
+            }
+
+            BackendEvent::ClearContext { session_id } => {
+                let mut manager = multi_session_manager.lock().await;
+                if let Some(session) = manager.get_session_mut(&session_id) {
+                    let chat = &mut session.session;
+                    chat.message_nodes.clear();
+                    chat.active_path.clear();
+                    chat.next_node_id = 1;
+                    chat.messages.clear();
+                    chat.plan = Default::default();
+                }
+                let _ = ui.send_event(crate::ui::UiEvent::ClearMessages).await;
+                None
+            }
+
+            BackendEvent::CompactContext { session_id: _ } => {
+                let _ = ui
+                    .send_event(crate::ui::UiEvent::DisplayError {
+                        message: "Compact is not yet implemented. Use /clear to reset context."
+                            .to_string(),
+                    })
+                    .await;
+                None
             }
 
             BackendEvent::UpdateDefaultModel { model_name } => {
