@@ -439,8 +439,14 @@ impl acp::Agent for ACPAgentImpl {
             ));
 
             // Create stream processor to extract fragments
-            let mut processor =
-                crate::ui::streaming::create_stream_processor(tool_syntax, ui.clone(), 0);
+            let hidden_tools = crate::tools::core::ToolRegistry::global()
+                .hidden_tools(crate::tools::core::ToolScope::Agent);
+            let mut processor = crate::ui::streaming::create_stream_processor(
+                tool_syntax,
+                ui.clone(),
+                0,
+                hidden_tools,
+            );
 
             // Process each message to extract and send fragments
             for message in messages {

@@ -1,6 +1,5 @@
 use super::DisplayFragment;
-use super::StreamProcessorTrait;
-use crate::tools::core::{ToolRegistry, ToolScope};
+use super::{HiddenTools, StreamProcessorTrait};
 use crate::ui::{UIError, UserInterface};
 use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
 use std::sync::Arc;
@@ -80,6 +79,7 @@ impl Default for JsonProcessorState {
 pub struct JsonStreamProcessor {
     state: JsonProcessorState,
     ui: Arc<dyn UserInterface>,
+    hidden_tools: HiddenTools,
 }
 
 impl JsonStreamProcessor {
@@ -109,10 +109,11 @@ impl JsonStreamProcessor {
 }
 
 impl StreamProcessorTrait for JsonStreamProcessor {
-    fn new(ui: Arc<dyn UserInterface>, _request_id: u64) -> Self {
+    fn new(ui: Arc<dyn UserInterface>, _request_id: u64, hidden_tools: HiddenTools) -> Self {
         Self {
             state: JsonProcessorState::default(),
             ui,
+            hidden_tools,
         }
     }
 
@@ -186,11 +187,8 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             // Ensure tool_name is valid before sending fragment
                             if !self.state.tool_name.is_empty() {
                                 // Check if tool is hidden and update state
-                                self.state.current_tool_hidden = ToolRegistry::global()
-                                    .is_tool_hidden(
-                                        &self.state.tool_name,
-                                        crate::tools::core::ToolScope::Agent,
-                                    );
+                                self.state.current_tool_hidden =
+                                    (self.hidden_tools)(&self.state.tool_name);
 
                                 // Emit fragment (will be filtered if tool is hidden)
                                 self.emit_fragment(DisplayFragment::tool_name(
@@ -277,8 +275,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             id, name, input, ..
                         } => {
                             // Check if tool is hidden
-                            let tool_hidden =
-                                ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
+                            let tool_hidden = (self.hidden_tools)(name);
 
                             if tool_hidden {
                                 // Emit HiddenToolCompleted so UI can handle paragraph breaks
@@ -1148,10 +1145,10 @@ mod tests {
 
     #[test]
     fn test_redacted_thinking_streaming_consistency() {
-        use crate::ui::streaming::test_utils::TestUI;
+        use crate::ui::streaming::test_utils::{hidden_tools, TestUI};
 
         let ui = Arc::new(TestUI::new());
-        let mut processor = JsonStreamProcessor::new(ui, 1);
+        let mut processor = JsonStreamProcessor::new(ui, 1, hidden_tools());
 
         // Create a RedactedThinking block with summary items (as would be stored in session)
         let redacted_thinking = ContentBlock::RedactedThinking {

@@ -1,5 +1,4 @@
-use super::{DisplayFragment, StreamProcessorTrait};
-use crate::tools::core::{ToolRegistry, ToolScope};
+use super::{DisplayFragment, HiddenTools, StreamProcessorTrait};
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
@@ -52,6 +51,7 @@ pub struct XmlStreamProcessor {
     state: ProcessorState,
     ui: Arc<dyn UserInterface>,
     request_id: u64,
+    hidden_tools: HiddenTools,
     filter: Box<dyn ToolUseFilter>,
     streaming_state: StreamingState,
 }
@@ -69,12 +69,12 @@ enum TagType {
 
 // Implement the common StreamProcessorTrait
 impl StreamProcessorTrait for XmlStreamProcessor {
-    fn new(ui: Arc<dyn UserInterface>, request_id: u64) -> Self {
+    fn new(ui: Arc<dyn UserInterface>, request_id: u64, hidden_tools: HiddenTools) -> Self {
         Self {
             state: ProcessorState::default(),
             ui,
             request_id,
-
+            hidden_tools,
             filter: Box::new(SmartToolFilter::new()),
             streaming_state: StreamingState::PreFirstTool,
         }
@@ -110,8 +110,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 if let (Some(name), Some(id)) = (tool_name, tool_id) {
                     if !name.is_empty() && !id.is_empty() {
                         // Check if tool is hidden and update state
-                        self.state.current_tool_hidden =
-                            ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
+                        self.state.current_tool_hidden = (self.hidden_tools)(name);
 
                         self.emit_fragment(DisplayFragment::tool_name(name.clone(), id.clone()))?;
                     }
@@ -207,8 +206,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                 id, name, input, ..
                             } => {
                                 // Check if tool is hidden
-                                let tool_hidden =
-                                    ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
+                                let tool_hidden = (self.hidden_tools)(name);
 
                                 if tool_hidden {
                                     // Emit HiddenToolCompleted so UI can handle paragraph breaks
@@ -422,8 +420,8 @@ impl XmlStreamProcessor {
                                 format!("tool-{}-{}", self.request_id, self.state.tool_counter);
 
                             // Check if tool is hidden and update state
-                            self.state.current_tool_hidden = ToolRegistry::global()
-                                .is_tool_hidden(&self.state.tool_name, ToolScope::Agent);
+                            self.state.current_tool_hidden =
+                                (self.hidden_tools)(&self.state.tool_name);
 
                             // Send fragment with tool name
                             self.emit_fragment(DisplayFragment::tool_name(

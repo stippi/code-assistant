@@ -16,8 +16,8 @@ const MAX_TITLE_LENGTH: usize = 50;
 pub fn generate_tool_title(
     tool_name: &str,
     parameters: &HashMap<String, String>,
+    registry: &ToolRegistry,
 ) -> Option<String> {
-    let registry = ToolRegistry::global();
     let tool = registry.get(tool_name)?;
     let spec = tool.spec();
     let template = spec.title_template?;

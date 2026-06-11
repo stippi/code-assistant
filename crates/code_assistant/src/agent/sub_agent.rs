@@ -604,9 +604,11 @@ impl SubAgentUiAdapter {
                 entry.push_str(value);
 
                 // Update title from template using collected parameters
-                if let Some(new_title) =
-                    crate::tools::core::generate_tool_title(&tool.name, &tool.parameters)
-                {
+                if let Some(new_title) = crate::tools::core::generate_tool_title(
+                    &tool.name,
+                    &tool.parameters,
+                    crate::tools::core::ToolRegistry::global(),
+                ) {
                     tool.title = Some(new_title);
                 }
             }

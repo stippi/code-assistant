@@ -1,5 +1,5 @@
 use crate::ui::streaming::test_utils::{
-    assert_fragments_match, chunk_str, print_fragments, TestUI,
+    assert_fragments_match, chunk_str, hidden_tools, print_fragments, TestUI,
 };
 use crate::ui::streaming::{JsonStreamProcessor, StreamProcessorTrait};
 use crate::ui::DisplayFragment;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 fn process_text_chunks(text: &str, chunk_size: usize) -> Vec<DisplayFragment> {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+    let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Split text into small chunks and process each one
     for chunk in chunk_str(text, chunk_size) {
@@ -24,7 +24,7 @@ fn process_text_chunks(text: &str, chunk_size: usize) -> Vec<DisplayFragment> {
 fn process_json_chunks(chunks: &[String], tool_name: &str, tool_id: &str) -> Vec<DisplayFragment> {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+    let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Process each chunk
     for (i, chunk) in chunks.iter().enumerate() {
@@ -321,7 +321,7 @@ mod tests {
         // This test ensures proper handling of partially complete tags
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         // First chunk ends with incomplete tag
         processor
@@ -356,7 +356,7 @@ mod tests {
     fn test_realistic_anthropic_chunks() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         // Realistic chunks from Anthropic API - simplified
         let chunks = vec![
@@ -588,7 +588,7 @@ mod tests {
     fn test_parameter_name_parsing() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         // Test the specific pattern that was causing "::" parameter names
         let chunks = vec![
@@ -665,7 +665,7 @@ mod tests {
     fn test_empty_string_value() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
         let tool_id_str = "test-empty-string-123";
 
         let chunks = vec![
@@ -729,7 +729,7 @@ mod tests {
     fn test_string_value_with_only_escaped_chars() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
         let tool_id_str = "test-escaped-only-123";
 
         // JSON: {"esc_key": "\"\\\t\n"}
@@ -883,7 +883,7 @@ mod tests {
     fn test_multiple_top_level_key_value_types_chunked() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
         let tool_id_str = "multi-type-003";
 
         let chunks = vec![
@@ -995,7 +995,7 @@ mod tests {
     fn test_thinking_to_tool_transition() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         let chunks = vec![
             StreamingChunk::Text("<thinking>\nStart of a ".to_string()),
@@ -1070,7 +1070,7 @@ mod tests {
     fn test_extract_fragments_from_text_message_with_thinking() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         // Create a message with text content containing thinking tags
         let message = llm::Message::new_assistant(
@@ -1093,7 +1093,7 @@ mod tests {
     fn test_extract_fragments_from_structured_message_with_tool_use() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         // Create a message with structured content including tool use
         let tool_input = serde_json::json!({
@@ -1138,7 +1138,7 @@ mod tests {
     fn test_extract_fragments_from_mixed_structured_message() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         // Create a message with mixed content blocks
         let message = llm::Message::new_assistant_content(vec![
@@ -1193,7 +1193,7 @@ mod tests {
     fn test_hidden_tool_emits_hidden_tool_completed() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         // First send some text
         processor
@@ -1254,7 +1254,7 @@ mod tests {
         // can insert paragraph breaks between surrounding text.
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = JsonStreamProcessor::new(ui_arc, 42);
+        let mut processor = JsonStreamProcessor::new(ui_arc, 42, hidden_tools());
 
         let tool_input = serde_json::json!({
             "entries": [{"content": "step 1"}]

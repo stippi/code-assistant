@@ -1,7 +1,6 @@
 //! Caret-style tool invocation processor for streaming responses
-use crate::tools::core::{ToolRegistry, ToolScope};
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
-use crate::ui::streaming::{DisplayFragment, StreamProcessorTrait};
+use crate::ui::streaming::{DisplayFragment, HiddenTools, StreamProcessorTrait};
 use crate::ui::{UIError, UserInterface};
 use llm::{Message, MessageContent, StreamingChunk};
 use regex::Regex;
@@ -65,12 +64,13 @@ pub struct CaretStreamProcessor {
     current_tool_id: String,
     current_tool_name: String,
     current_tool_hidden: bool,
+    hidden_tools: HiddenTools,
     filter: Box<dyn ToolUseFilter>,
     streaming_state: StreamingState,
 }
 
 impl StreamProcessorTrait for CaretStreamProcessor {
-    fn new(ui: Arc<dyn UserInterface>, request_id: u64) -> Self {
+    fn new(ui: Arc<dyn UserInterface>, request_id: u64, hidden_tools: HiddenTools) -> Self {
         Self {
             ui,
             request_id,
@@ -83,7 +83,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
             current_tool_id: String::new(),
             current_tool_name: String::new(),
             current_tool_hidden: false,
-
+            hidden_tools,
             filter: Box::new(SmartToolFilter::new()),
             streaming_state: StreamingState::PreFirstTool,
         }
@@ -180,8 +180,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                                 id, name, input, ..
                             } => {
                                 // Check if tool is hidden
-                                let tool_hidden =
-                                    ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
+                                let tool_hidden = (self.hidden_tools)(name);
 
                                 if tool_hidden {
                                     // Emit HiddenToolCompleted so UI can handle paragraph breaks
@@ -679,8 +678,7 @@ impl CaretStreamProcessor {
             self.current_tool_name = tool_name.to_string();
 
             // Check if tool is hidden and update state
-            self.current_tool_hidden =
-                ToolRegistry::global().is_tool_hidden(tool_name, ToolScope::Agent);
+            self.current_tool_hidden = (self.hidden_tools)(tool_name);
 
             let tool_id = self.current_tool_id.clone();
             self.send_tool_start(tool_name, &tool_id)?;

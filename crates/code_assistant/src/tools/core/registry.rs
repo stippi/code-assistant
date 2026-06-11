@@ -57,6 +57,15 @@ impl ToolRegistry {
             .unwrap_or(false)
     }
 
+    /// A shareable predicate over [`Self::is_tool_hidden`] for the given scope.
+    /// Lets UI-layer consumers check hidden-ness without referencing the registry.
+    pub fn hidden_tools(
+        &'static self,
+        scope: ToolScope,
+    ) -> std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync> {
+        std::sync::Arc::new(move |name| self.is_tool_hidden(name, scope))
+    }
+
     /// Check if a tool is hidden by consulting the tool definitions
     pub fn is_tool_hidden(&self, tool_name: &str, scope: ToolScope) -> bool {
         self.tools

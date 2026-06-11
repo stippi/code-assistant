@@ -85,10 +85,14 @@ impl DisplayFragment {
     }
 }
 
+/// Predicate deciding whether a tool's invocation is hidden from the UI.
+pub type HiddenTools = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Common trait for stream processors
 pub trait StreamProcessorTrait: Send + Sync {
-    /// Create a new stream processor with the given UI and request context
-    fn new(ui: Arc<dyn UserInterface>, request_id: u64) -> Self
+    /// Create a new stream processor with the given UI and request context.
+    /// `hidden_tools` decides which tool invocations are suppressed in the UI.
+    fn new(ui: Arc<dyn UserInterface>, request_id: u64, hidden_tools: HiddenTools) -> Self
     where
         Self: Sized;
 
@@ -113,10 +117,11 @@ pub fn create_stream_processor(
     tool_syntax: ToolSyntax,
     ui: Arc<dyn UserInterface>,
     request_id: u64,
+    hidden_tools: HiddenTools,
 ) -> Box<dyn StreamProcessorTrait> {
     match tool_syntax {
-        ToolSyntax::Xml => Box::new(XmlStreamProcessor::new(ui, request_id)),
-        ToolSyntax::Native => Box::new(JsonStreamProcessor::new(ui, request_id)),
-        ToolSyntax::Caret => Box::new(CaretStreamProcessor::new(ui, request_id)),
+        ToolSyntax::Xml => Box::new(XmlStreamProcessor::new(ui, request_id, hidden_tools)),
+        ToolSyntax::Native => Box::new(JsonStreamProcessor::new(ui, request_id, hidden_tools)),
+        ToolSyntax::Caret => Box::new(CaretStreamProcessor::new(ui, request_id, hidden_tools)),
     }
 }

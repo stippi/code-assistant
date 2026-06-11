@@ -47,7 +47,7 @@ impl ToolExecution {
     /// Attempt to clone via serialize/deserialize round-trip.
     pub fn try_clone(&self) -> Result<Self> {
         let serialized = self.serialize()?;
-        serialized.deserialize()
+        serialized.deserialize(ToolRegistry::global())
     }
 
     /// Create a ToolExecution for a parse error
@@ -95,7 +95,7 @@ impl ToolExecution {
 
 impl crate::persistence::SerializedToolExecution {
     /// Deserialize back to a ToolExecution
-    pub fn deserialize(&self) -> Result<ToolExecution> {
+    pub fn deserialize(&self, registry: &ToolRegistry) -> Result<ToolExecution> {
         // Special handling for parse errors
         if self.tool_name == "parse_error" {
             use crate::tools::ParseError;
@@ -109,7 +109,7 @@ impl crate::persistence::SerializedToolExecution {
             });
         }
 
-        let tool = ToolRegistry::global()
+        let tool = registry
             .get(&self.tool_name)
             .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", self.tool_name))?;
 

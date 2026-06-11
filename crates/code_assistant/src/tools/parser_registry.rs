@@ -1,11 +1,12 @@
 //! Parser registry for different tool invocation syntaxes
 
 use crate::agent::ToolSyntax;
+use crate::tools::core::ToolRegistry;
 use crate::tools::{
     parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SmartToolFilter,
     ToolRequest,
 };
-use crate::ui::streaming::StreamProcessorTrait;
+use crate::ui::streaming::{HiddenTools, StreamProcessorTrait};
 use crate::ui::UserInterface;
 use anyhow::Result;
 use llm::{ContentBlock, LLMResponse, Message, MessageContent};
@@ -25,10 +26,12 @@ pub trait ToolInvocationParser: Send + Sync {
     ) -> Result<(Vec<ToolRequest>, LLMResponse)>;
 
     /// A stream-processor that renders *this syntax* for the UI.
+    /// `hidden_tools` decides which tool invocations are suppressed in the UI.
     fn stream_processor(
         &self,
         ui: Arc<dyn UserInterface>,
         request_id: u64,
+        hidden_tools: HiddenTools,
     ) -> Box<dyn StreamProcessorTrait>;
 
     /// Generate tool documentation in this parser's syntax format.
@@ -71,8 +74,13 @@ fn parse_and_truncate_caret_response(
     for block in &response.content {
         if let ContentBlock::Text { text, .. } = block {
             // Parse Caret tool invocations and get truncation position
-            let (block_tool_requests, truncated_text) =
-                parse_caret_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
+            let (block_tool_requests, truncated_text) = parse_caret_tool_invocations(
+                text,
+                request_id,
+                tool_requests.len(),
+                Some(&filter),
+                ToolRegistry::global(),
+            )?;
 
             tool_requests.extend(block_tool_requests.clone());
 
@@ -118,8 +126,13 @@ fn parse_and_truncate_xml_response(
     for block in &response.content {
         if let ContentBlock::Text { text, .. } = block {
             // Parse XML tool invocations and get truncation position
-            let (block_tool_requests, truncated_text) =
-                parse_xml_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
+            let (block_tool_requests, truncated_text) = parse_xml_tool_invocations(
+                text,
+                request_id,
+                tool_requests.len(),
+                Some(&filter),
+                ToolRegistry::global(),
+            )?;
 
             tool_requests.extend(block_tool_requests.clone());
 
@@ -205,10 +218,10 @@ impl ToolInvocationParser for XmlParser {
         &self,
         ui: Arc<dyn UserInterface>,
         request_id: u64,
+        hidden_tools: HiddenTools,
     ) -> Box<dyn StreamProcessorTrait> {
-        use crate::ui::streaming::StreamProcessorTrait;
         use crate::ui::streaming::XmlStreamProcessor;
-        Box::new(XmlStreamProcessor::new(ui, request_id))
+        Box::new(XmlStreamProcessor::new(ui, request_id, hidden_tools))
     }
 
     fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String> {
@@ -226,7 +239,7 @@ impl ToolInvocationParser for XmlParser {
             if !text.contains("<tool:") {
                 continue;
             }
-            match parse_xml_tool_invocations(text, request_id, 0, None) {
+            match parse_xml_tool_invocations(text, request_id, 0, None, ToolRegistry::global()) {
                 Ok((requests, _)) => {
                     if !requests.is_empty() {
                         return true;
@@ -466,10 +479,10 @@ impl ToolInvocationParser for CaretParser {
         &self,
         ui: Arc<dyn UserInterface>,
         request_id: u64,
+        hidden_tools: HiddenTools,
     ) -> Box<dyn StreamProcessorTrait> {
         use crate::ui::streaming::CaretStreamProcessor;
-        use crate::ui::streaming::StreamProcessorTrait;
-        Box::new(CaretStreamProcessor::new(ui, request_id))
+        Box::new(CaretStreamProcessor::new(ui, request_id, hidden_tools))
     }
 
     fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String> {
@@ -487,7 +500,7 @@ impl ToolInvocationParser for CaretParser {
             if !text.contains("^^^") {
                 continue;
             }
-            match parse_caret_tool_invocations(text, request_id, 0, None) {
+            match parse_caret_tool_invocations(text, request_id, 0, None, ToolRegistry::global()) {
                 Ok((requests, _)) => {
                     if !requests.is_empty() {
                         return true;
@@ -727,10 +740,10 @@ impl ToolInvocationParser for JsonParser {
         &self,
         ui: Arc<dyn UserInterface>,
         request_id: u64,
+        hidden_tools: HiddenTools,
     ) -> Box<dyn StreamProcessorTrait> {
         use crate::ui::streaming::JsonStreamProcessor;
-        use crate::ui::streaming::StreamProcessorTrait;
-        Box::new(JsonStreamProcessor::new(ui, request_id))
+        Box::new(JsonStreamProcessor::new(ui, request_id, hidden_tools))
     }
 
     fn generate_tool_documentation(&self, _scope: crate::tools::core::ToolScope) -> Option<String> {

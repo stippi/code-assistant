@@ -10,14 +10,19 @@ use serde_json::Value;
 /// Trait for formatting tool requests into their string representation in different syntaxes
 pub trait ToolFormatter {
     /// Format a tool request as a string in the appropriate syntax
-    fn format_tool_request(&self, request: &ToolRequest) -> Result<String>;
+    fn format_tool_request(&self, request: &ToolRequest, registry: &ToolRegistry)
+        -> Result<String>;
 }
 
 /// Formatter for Native tool syntax (JSON-based)
 pub struct NativeFormatter;
 
 impl ToolFormatter for NativeFormatter {
-    fn format_tool_request(&self, request: &ToolRequest) -> Result<String> {
+    fn format_tool_request(
+        &self,
+        request: &ToolRequest,
+        _registry: &ToolRegistry,
+    ) -> Result<String> {
         // Native tools are represented as JSON function calls
         // Return the input serialized as JSON string
         Ok(serde_json::to_string(&request.input)?)
@@ -28,11 +33,14 @@ impl ToolFormatter for NativeFormatter {
 pub struct XmlFormatter;
 
 impl ToolFormatter for XmlFormatter {
-    fn format_tool_request(&self, request: &ToolRequest) -> Result<String> {
+    fn format_tool_request(
+        &self,
+        request: &ToolRequest,
+        registry: &ToolRegistry,
+    ) -> Result<String> {
         let mut formatted = format!("<tool:{}>\n", request.name);
 
         // Get tool spec to understand parameter types and defaults
-        let registry = ToolRegistry::global();
         let tool_spec = registry
             .get(&request.name)
             .map(|tool| tool.spec())
@@ -128,11 +136,14 @@ impl ToolFormatter for XmlFormatter {
 pub struct CaretFormatter;
 
 impl ToolFormatter for CaretFormatter {
-    fn format_tool_request(&self, request: &ToolRequest) -> Result<String> {
+    fn format_tool_request(
+        &self,
+        request: &ToolRequest,
+        registry: &ToolRegistry,
+    ) -> Result<String> {
         let mut formatted = format!("^^^{}\n", request.name);
 
         // Get tool spec to understand parameter types and defaults
-        let registry = ToolRegistry::global();
         let tool_spec = registry
             .get(&request.name)
             .map(|tool| tool.spec())
@@ -258,7 +269,9 @@ mod tests {
             "</tool:read_files>\n"
         );
 
-        let result = formatter.format_tool_request(&request).unwrap();
+        let result = formatter
+            .format_tool_request(&request, ToolRegistry::global())
+            .unwrap();
 
         assert_eq!(expected, result);
     }
@@ -290,7 +303,9 @@ mod tests {
             "</tool:write_file>\n",
         );
 
-        let result = formatter.format_tool_request(&request).unwrap();
+        let result = formatter
+            .format_tool_request(&request, ToolRegistry::global())
+            .unwrap();
 
         assert_eq!(expected, result);
     }
@@ -323,7 +338,9 @@ mod tests {
             "</tool:write_file>\n",
         );
 
-        let result = formatter.format_tool_request(&request).unwrap();
+        let result = formatter
+            .format_tool_request(&request, ToolRegistry::global())
+            .unwrap();
 
         assert_eq!(expected, result);
     }
@@ -352,7 +369,9 @@ mod tests {
             "^^^\n",
         );
 
-        let result = formatter.format_tool_request(&request).unwrap();
+        let result = formatter
+            .format_tool_request(&request, ToolRegistry::global())
+            .unwrap();
 
         assert_eq!(expected, result);
     }
@@ -373,7 +392,9 @@ mod tests {
             end_offset: None,
         };
 
-        let result = formatter.format_tool_request(&request).unwrap();
+        let result = formatter
+            .format_tool_request(&request, ToolRegistry::global())
+            .unwrap();
 
         // Should not contain the append parameter since it matches the default
         let expected = concat!(
@@ -405,7 +426,9 @@ mod tests {
             end_offset: None,
         };
 
-        let result = formatter.format_tool_request(&request).unwrap();
+        let result = formatter
+            .format_tool_request(&request, ToolRegistry::global())
+            .unwrap();
 
         // Should not contain the append parameter since it matches the default
         let expected = concat!(

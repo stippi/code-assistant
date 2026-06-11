@@ -1,4 +1,4 @@
-use super::test_utils::{assert_fragments_match, chunk_str, TestUI};
+use super::test_utils::{assert_fragments_match, chunk_str, hidden_tools, TestUI};
 use crate::ui::streaming::{CaretStreamProcessor, DisplayFragment, StreamProcessorTrait};
 use llm::{Message, StreamingChunk};
 use std::sync::Arc;
@@ -30,7 +30,7 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
 
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Split text into small chunks and process each one
     for chunk in chunk_str(text, chunk_size) {
@@ -49,7 +49,7 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
 async fn test_caret_simple_tool() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 123);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 123, hidden_tools());
 
     // Simulate streaming chunks of a simple caret tool
     processor
@@ -76,7 +76,7 @@ async fn test_caret_simple_tool() {
 async fn test_caret_multiline_tool() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 123);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 123, hidden_tools());
 
     // Simulate streaming chunks with multiline content
     let content = "^^^read_files\nproject: test\ncontent ---\nThis is multiline content\nwith several lines\n--- content\n^^^";
@@ -112,7 +112,7 @@ async fn test_caret_multiline_tool() {
 async fn test_extract_fragments_from_complete_message() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 123);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 123, hidden_tools());
 
     let message = Message::new_assistant("I'll create the file for you.\n\n^^^list_projects\n^^^");
 
@@ -447,7 +447,7 @@ fn test_caret_incomplete_tool_at_buffer_end() {
     // Test that incomplete tool syntax at the end of a buffer is not processed prematurely
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Send partial tool syntax
     processor
@@ -538,7 +538,7 @@ fn test_streaming_vs_buffering_behavior() {
 
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Send regular text that cannot be tool syntax
     // This should be emitted immediately, not buffered until complete line
@@ -676,7 +676,7 @@ fn test_newline_boundary_trimming() {
 fn test_caret_tool_blocking_with_whitespace() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Process a complete tool block followed by whitespace
     let input = "^^^read_files\nproject: test\n^^^\n\n  \t\n";
@@ -704,7 +704,7 @@ fn test_caret_tool_blocking_with_whitespace() {
 fn test_caret_tool_blocking_with_non_whitespace() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Process a complete write tool block followed by non-whitespace text
     // Write tools should block further content according to SmartToolFilter
@@ -757,7 +757,7 @@ fn test_caret_tool_blocking_with_non_whitespace() {
 fn test_smart_filter_allows_content_after_read_tools() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Process a complete read tool block followed by text
     // Read tools should allow content after them according to SmartToolFilter
@@ -802,7 +802,7 @@ fn test_smart_filter_allows_content_after_read_tools() {
 fn test_smart_filter_allows_chaining_read_tools() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Process first read tool
     let input1 = "^^^read_files\nproject: test\n^^^";
@@ -851,7 +851,7 @@ fn test_smart_filter_allows_chaining_read_tools() {
 fn test_smart_filter_blocks_write_tool_after_read_tool() {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // Process first read tool
     let input1 = "^^^read_files\nproject: test\n^^^";
@@ -898,7 +898,7 @@ fn test_hidden_tool_emits_hidden_tool_completed() {
 
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     // First send some text
     processor
@@ -952,7 +952,7 @@ fn test_extract_fragments_hidden_tool_emits_hidden_tool_completed() {
     // can insert paragraph breaks between surrounding text.
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42, hidden_tools());
 
     let tool_input = serde_json::json!({
         "entries": [{"content": "step 1"}]

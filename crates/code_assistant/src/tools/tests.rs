@@ -755,7 +755,7 @@ async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
 <param:project>qwen-"#;
 
     // Currently this fails completely, losing the valid first tool block
-    let result = parse_xml_tool_invocations(text, 123, 0, None);
+    let result = parse_xml_tool_invocations(text, 123, 0, None, ToolRegistry::global());
 
     // This assertion will currently fail because the function returns an error
     // instead of returning the valid first tool block
@@ -800,7 +800,7 @@ And finally modify the file:
     // With the new system, this should return only the first tool and truncate after it
     let filter = SingleToolFilter;
     let (result, _truncated_text) =
-        parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should only get the first tool
     assert_eq!(result.len(), 1);
@@ -830,7 +830,7 @@ async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
 <param:project>incomplete-"#;
 
     let filter = SingleToolFilter;
-    let result = parse_xml_tool_invocations(text, 123, 0, Some(&filter));
+    let result = parse_xml_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global());
 
     // Should succeed and return the valid first tool
     assert!(
@@ -893,7 +893,8 @@ But I shouldn't be able to write files yet:
 </tool:write_file>"#;
 
     let filter = SmartToolFilter::new();
-    let (tools, truncated_text) = parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+    let (tools, truncated_text) =
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should get the first three read tools but not the write tool
     assert_eq!(tools.len(), 3);
@@ -927,7 +928,8 @@ Now I want to modify it immediately:
 </tool:replace_in_file>"#;
 
     let filter = SmartToolFilter::new();
-    let (tools, truncated_text) = parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+    let (tools, truncated_text) =
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should only get the read tool, not the replace tool
     assert_eq!(tools.len(), 1);
@@ -962,7 +964,8 @@ async fn test_xml_parsing_with_unlimited_filter_allows_all_tools() {
 </tool:execute_command>"#;
 
     let filter = UnlimitedToolFilter;
-    let (tools, truncated_text) = parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+    let (tools, truncated_text) =
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should get all three tools
     assert_eq!(tools.len(), 3);
@@ -1000,7 +1003,7 @@ async fn test_caret_parsing_with_single_tool_filter() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should only get the first tool due to SingleToolFilter
     assert_eq!(tools.len(), 1);
@@ -1048,7 +1051,7 @@ async fn test_caret_parsing_with_smart_filter_allows_multiple_read_tools() {
 
     let filter = SmartToolFilter::new();
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should get the first three read tools but not the write tool
     assert_eq!(tools.len(), 3);
@@ -1086,7 +1089,7 @@ async fn test_caret_parsing_with_smart_filter_blocks_write_after_read() {
 
     let filter = SmartToolFilter::new();
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should only get the read tool, not the replace tool
     assert_eq!(tools.len(), 1);
@@ -1123,7 +1126,7 @@ async fn test_caret_parsing_with_unlimited_filter_allows_all_tools() {
 
     let filter = UnlimitedToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should get all three tools
     assert_eq!(tools.len(), 3);
@@ -1156,7 +1159,7 @@ async fn test_caret_parsing_with_truncation_preserves_valid_tool() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should succeed and return the valid first tool
     assert_eq!(tools.len(), 1);
@@ -1205,7 +1208,7 @@ async fn test_caret_parsing_multiline_parameters_with_filter() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should only get the first tool
     assert_eq!(tools.len(), 1);
@@ -1245,7 +1248,7 @@ async fn test_caret_parsing_edge_case_empty_arrays_with_filter() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), ToolRegistry::global()).unwrap();
 
     // Should only get the first tool
     assert_eq!(tools.len(), 1);
@@ -1281,7 +1284,14 @@ async fn test_mixed_syntax_scenarios_with_filters() {
 </tool:web_search>"#;
 
     let smart_filter = SmartToolFilter::new();
-    let (xml_tools, _) = parse_xml_tool_invocations(xml_text, 123, 0, Some(&smart_filter)).unwrap();
+    let (xml_tools, _) = parse_xml_tool_invocations(
+        xml_text,
+        123,
+        0,
+        Some(&smart_filter),
+        ToolRegistry::global(),
+    )
+    .unwrap();
 
     // Should get both web tools (they're read operations)
     assert_eq!(xml_tools.len(), 2);
@@ -1300,8 +1310,14 @@ async fn test_mixed_syntax_scenarios_with_filters() {
         "^^^"
     );
 
-    let (caret_tools, _) =
-        parse_caret_tool_invocations(caret_text, 123, 0, Some(&smart_filter)).unwrap();
+    let (caret_tools, _) = parse_caret_tool_invocations(
+        caret_text,
+        123,
+        0,
+        Some(&smart_filter),
+        ToolRegistry::global(),
+    )
+    .unwrap();
 
     // Should get both web tools (they're read operations)
     assert_eq!(caret_tools.len(), 2);
@@ -1311,13 +1327,25 @@ async fn test_mixed_syntax_scenarios_with_filters() {
     // Test with SingleToolFilter - should only get first tool in both cases
     let single_filter = SingleToolFilter;
 
-    let (xml_single, _) =
-        parse_xml_tool_invocations(xml_text, 123, 0, Some(&single_filter)).unwrap();
+    let (xml_single, _) = parse_xml_tool_invocations(
+        xml_text,
+        123,
+        0,
+        Some(&single_filter),
+        ToolRegistry::global(),
+    )
+    .unwrap();
     assert_eq!(xml_single.len(), 1);
     assert_eq!(xml_single[0].name, "web_fetch");
 
-    let (caret_single, _) =
-        parse_caret_tool_invocations(caret_text, 123, 0, Some(&single_filter)).unwrap();
+    let (caret_single, _) = parse_caret_tool_invocations(
+        caret_text,
+        123,
+        0,
+        Some(&single_filter),
+        ToolRegistry::global(),
+    )
+    .unwrap();
     assert_eq!(caret_single.len(), 1);
     assert_eq!(caret_single[0].name, "web_fetch");
 }

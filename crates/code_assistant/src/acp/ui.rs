@@ -122,7 +122,11 @@ impl ToolCallState {
             .map(|(k, v)| (k.clone(), v.value.clone()))
             .collect();
 
-        if let Some(new_title) = crate::tools::core::generate_tool_title(tool_name, &params) {
+        if let Some(new_title) = crate::tools::core::generate_tool_title(
+            tool_name,
+            &params,
+            crate::tools::core::ToolRegistry::global(),
+        ) {
             self.title = Some(new_title);
         }
     }

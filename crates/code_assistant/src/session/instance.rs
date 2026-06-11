@@ -420,7 +420,9 @@ impl SessionInstance {
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
-        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
+        let hidden_tools = crate::tools::core::ToolRegistry::global()
+            .hidden_tools(crate::tools::core::ToolScope::Agent);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0, hidden_tools);
 
         let mut messages_data = Vec::new();
 
@@ -545,7 +547,9 @@ impl SessionInstance {
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
-        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
+        let hidden_tools = crate::tools::core::ToolRegistry::global()
+            .hidden_tools(crate::tools::core::ToolScope::Agent);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0, hidden_tools);
 
         let mut messages_data = Vec::new();
 
@@ -632,7 +636,8 @@ impl SessionInstance {
 
         for serialized_execution in &self.session.tool_executions {
             // Deserialize the tool execution
-            let execution = serialized_execution.deserialize()?;
+            let execution =
+                serialized_execution.deserialize(crate::tools::core::ToolRegistry::global())?;
 
             // Generate status and output from result
             let success = execution.result.is_success();

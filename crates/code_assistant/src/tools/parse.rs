@@ -111,6 +111,7 @@ pub fn parse_caret_tool_invocations(
     request_id: u64,
     _start_tool_count: usize,
     filter: Option<&dyn ToolUseFilter>,
+    registry: &ToolRegistry,
 ) -> Result<(Vec<ToolRequest>, String)> {
     let mut tool_requests = Vec::new();
     let tool_regex = regex::Regex::new(r"(?m)^\^\^\^([a-zA-Z0-9_]+)$").unwrap();
@@ -143,7 +144,7 @@ pub fn parse_caret_tool_invocations(
         }
 
         // Check if the tool exists in the registry
-        if ToolRegistry::global().get(tool_name).is_none() {
+        if registry.get(tool_name).is_none() {
             return Err(ToolError::UnknownTool(tool_name.to_string()).into());
         }
 
@@ -171,13 +172,11 @@ pub fn parse_caret_tool_invocations(
         )?;
 
         // Convert parameters to JSON using schema-based approach if tool exists, otherwise use fallback
-        let tool_params = if ToolRegistry::global().get(tool_name).is_some() {
+        let tool_params = if registry.get(tool_name).is_some() {
             // Use schema-based conversion for registered tools
-            convert_xml_params_to_json(tool_name, &raw_params, ToolRegistry::global()).map_err(
-                |e| {
-                    ToolError::ParseError(format!("Error converting caret parameters to JSON: {e}"))
-                },
-            )?
+            convert_xml_params_to_json(tool_name, &raw_params, registry).map_err(|e| {
+                ToolError::ParseError(format!("Error converting caret parameters to JSON: {e}"))
+            })?
         } else {
             // Fallback to legacy conversion for unregistered tools (mainly for tests)
             convert_raw_params_to_json_fallback(&raw_params)
@@ -339,7 +338,7 @@ fn parse_simple_caret_parameter(line: &str) -> Option<(String, String)> {
     }
 }
 
-fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
+fn parse_tool_xml(xml: &str, registry: &ToolRegistry) -> Result<(String, Value), ToolError> {
     trace!("Parsing XML:\n{}", xml);
 
     let tool_name = xml
@@ -392,7 +391,7 @@ fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
     trace!("Final parameters: {:?}", params);
 
     // Convert parameters to JSON using the ToolRegistry
-    let json_params = convert_xml_params_to_json(&tool_name, &params, ToolRegistry::global())
+    let json_params = convert_xml_params_to_json(&tool_name, &params, registry)
         .map_err(|e| ToolError::ParseError(format!("Error converting parameters to JSON: {e}")))?;
 
     Ok((tool_name, json_params))
@@ -713,6 +712,7 @@ pub fn parse_xml_tool_invocations(
     request_id: u64,
     _start_tool_count: usize,
     filter: Option<&dyn ToolUseFilter>,
+    registry: &ToolRegistry,
 ) -> Result<(Vec<ToolRequest>, String)> {
     let mut tool_requests = Vec::new();
     let mut state = ParseState::SearchingForTool;
@@ -794,10 +794,11 @@ pub fn parse_xml_tool_invocations(
                             debug!("Found complete tool content:\n{}", tool_content);
 
                             // Parse the tool XML to get tool name and parameters
-                            let (parsed_tool_name, tool_params) = parse_tool_xml(tool_content)?;
+                            let (parsed_tool_name, tool_params) =
+                                parse_tool_xml(tool_content, registry)?;
 
                             // Check if the tool exists in the registry
-                            if ToolRegistry::global().get(&parsed_tool_name).is_none() {
+                            if registry.get(&parsed_tool_name).is_none() {
                                 return Err(ToolError::UnknownTool(parsed_tool_name).into());
                             }
 
@@ -1412,7 +1413,8 @@ mod tests {
     async fn test_parse_caret_tool_invocations_simple() {
         let text = concat!("^^^list_projects\n", "^^^");
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_projects");
     }
@@ -1430,7 +1432,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "write_file");
         assert_eq!(result[0].input["project"], "test");
@@ -1458,7 +1461,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
         assert_eq!(result[0].input["project"], "test");
@@ -1485,7 +1489,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "edit");
         assert_eq!(result[0].input["project"], "test");
@@ -1498,7 +1503,8 @@ mod tests {
     async fn test_parse_caret_tool_invocations_with_text_before() {
         let text = concat!("I'll help you with that.\n\n", "^^^list_projects\n", "^^^");
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_projects");
     }
@@ -1507,7 +1513,8 @@ mod tests {
     async fn test_parse_caret_tool_invocations_no_tools() {
         let text = "This is just plain text with no tools.";
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 0);
     }
 
@@ -1515,7 +1522,7 @@ mod tests {
     async fn test_parse_caret_tool_invocations_unknown_tool() {
         let text = concat!("^^^unknown_tool\n", "param: value\n", "^^^");
 
-        let result = parse_caret_tool_invocations(text, 123, 0, None);
+        let result = parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1554,7 +1561,9 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text_single, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text_single, 123, 0, None, ToolRegistry::global())
+                .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "write_file");
         assert_eq!(result[0].input["project"], "test");
@@ -1574,7 +1583,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text_array, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text_array, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
         assert_eq!(result[0].input["project"], "test");
@@ -1598,7 +1608,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text_empty, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text_empty, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
 
@@ -1619,7 +1630,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text_mixed, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text_mixed, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
 
@@ -1644,7 +1656,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_files");
 
@@ -1676,7 +1689,8 @@ mod tests {
             "^^^"
         );
 
-        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_files");
 
@@ -1708,7 +1722,7 @@ mod tests {
         );
 
         let (tool_requests, truncated_text) =
-            parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
 
         assert_eq!(tool_requests.len(), 1);
         let tool_request = &tool_requests[0];
@@ -1747,7 +1761,7 @@ mod tests {
         );
 
         let (tool_requests, truncated_text) =
-            parse_xml_tool_invocations(text, 456, 0, None).unwrap();
+            parse_xml_tool_invocations(text, 456, 0, None, ToolRegistry::global()).unwrap();
 
         assert_eq!(tool_requests.len(), 1);
         let tool_request = &tool_requests[0];
@@ -1788,8 +1802,14 @@ mod tests {
         let request_id = 456;
         let start_tool_count = 0; // Not used in new format
 
-        let (result, _) =
-            parse_caret_tool_invocations(text, request_id, start_tool_count, None).unwrap();
+        let (result, _) = parse_caret_tool_invocations(
+            text,
+            request_id,
+            start_tool_count,
+            None,
+            ToolRegistry::global(),
+        )
+        .unwrap();
         assert_eq!(result.len(), 1);
 
         // Tool ID should follow the format: "tool-<request_id>-<tool_index_in_request>"
@@ -1818,7 +1838,9 @@ mod tests {
         );
 
         let request_id = 789;
-        let (result, _) = parse_caret_tool_invocations(text, request_id, 0, None).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, request_id, 0, None, ToolRegistry::global())
+                .unwrap();
         assert_eq!(result.len(), 3);
 
         // First tool should get index 1

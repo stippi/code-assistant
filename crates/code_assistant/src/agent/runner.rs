@@ -824,7 +824,10 @@ impl Agent {
                 parallel_indices.len()
             );
             self.execute_tools_in_parallel(
-                parallel_indices.iter().map(|i| &tool_requests[*i]).collect(),
+                parallel_indices
+                    .iter()
+                    .map(|i| &tool_requests[*i])
+                    .collect(),
             )
             .await
         } else {
@@ -1475,9 +1478,12 @@ impl Agent {
 
         // Create a StreamProcessor with the UI and request ID
         let parser = ParserRegistry::get(self.tool_syntax());
-        let processor = Arc::new(Mutex::new(
-            parser.stream_processor(self.ui.clone(), request_id),
-        ));
+        let hidden_tools = ToolRegistry::global().hidden_tools(ToolScope::Agent);
+        let processor = Arc::new(Mutex::new(parser.stream_processor(
+            self.ui.clone(),
+            request_id,
+            hidden_tools,
+        )));
 
         let ui_for_callback = self.ui.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
@@ -1757,7 +1763,9 @@ impl Agent {
         warn!("Prompt too long error detected, replacing large tool results with error messages");
         let replaced = self.replace_large_tool_results();
         if replaced.is_empty() {
-            warn!("No large tool results to replace — dropping last exchange and forcing compaction");
+            warn!(
+                "No large tool results to replace — dropping last exchange and forcing compaction"
+            );
             self.drop_last_tool_exchange();
             return self.perform_compaction().await;
         }
@@ -2471,8 +2479,12 @@ impl Agent {
                 }
 
                 if input_modified {
-                    self.propagate_modified_tool_input(tool_request, &final_tool_request, is_hidden)
-                        .await?;
+                    self.propagate_modified_tool_input(
+                        tool_request,
+                        &final_tool_request,
+                        is_hidden,
+                    )
+                    .await?;
                 }
 
                 Ok(success)
@@ -2643,7 +2655,8 @@ impl Agent {
             {
                 // Generate the new formatted tool call
                 let formatter = get_formatter(tool_syntax);
-                let new_tool_call = formatter.format_tool_request(updated_request)?;
+                let new_tool_call =
+                    formatter.format_tool_request(updated_request, ToolRegistry::global())?;
 
                 // Replace the tool block at the exact location
                 let mut updated_text = String::new();
@@ -2669,7 +2682,8 @@ impl Agent {
 
         // Fallback: append the updated tool call as a comment (for Native mode or when offsets are missing)
         let formatter = get_formatter(tool_syntax);
-        let new_tool_call = formatter.format_tool_request(updated_request)?;
+        let new_tool_call =
+            formatter.format_tool_request(updated_request, ToolRegistry::global())?;
 
         let updated_text = format!(
             "{}\n\n<!-- Tool call {} was updated after auto-formatting -->\n{}",
