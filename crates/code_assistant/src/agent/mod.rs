@@ -7,6 +7,7 @@ pub mod persistence;
 pub mod runner;
 pub mod sub_agent;
 pub mod types;
+pub mod ui;
 
 pub use crate::types::ToolSyntax;
 pub use dialect::ToolDialect;

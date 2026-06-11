@@ -1,16 +1,16 @@
 use crate::agent::dialect::ToolDialect;
 use crate::agent::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction};
 use crate::agent::persistence::AgentStatePersistence;
+use crate::agent::ui::{AgentActivity, AgentUiEvent};
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::permissions::PermissionMediator;
 use crate::persistence::SessionModelConfig;
-use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolScope};
 use crate::tools::ToolRequest;
 use crate::types::*;
-use crate::ui::{DisplayFragment, UiEvent, UserInterface};
+use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 use anyhow::Result;
 use command_executor::CommandExecutor;
 use llm::{
@@ -257,16 +257,22 @@ impl Agent {
         }
     }
 
-    async fn update_activity_state(&self, new_state: SessionActivityState) -> Result<()> {
-        if let Some(session_id) = &self.session_id {
-            self.ui
-                .send_event(UiEvent::UpdateSessionActivityState {
-                    session_id: session_id.clone(),
-                    activity_state: new_state,
-                })
-                .await?;
+    /// Send a loop event to the UI, translated into the application's event
+    /// vocabulary. The loop itself only speaks [`AgentUiEvent`].
+    async fn send_ui(&self, event: AgentUiEvent) -> Result<(), UIError> {
+        Self::send_agent_event(self.ui.as_ref(), event, self.session_id.as_deref()).await
+    }
+
+    /// Like [`Self::send_ui`], for paths that run detached from the agent.
+    async fn send_agent_event(
+        ui: &dyn UserInterface,
+        event: AgentUiEvent,
+        session_id: Option<&str>,
+    ) -> Result<(), UIError> {
+        match UiEvent::from_agent(event, session_id) {
+            Some(event) => ui.send_event(event).await,
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Save the current state (message history and tool executions)
@@ -355,13 +361,11 @@ impl Agent {
                 self.append_message(Message::new_user_content(pending_blocks))?;
 
                 // Notify UI about the user message
-                self.ui
-                    .send_event(UiEvent::DisplayUserInput {
-                        content: text_summary,
-                        attachments: Vec::new(),
-                        node_id: None, // Pending messages don't have node_id yet
-                    })
-                    .await?;
+                self.send_ui(AgentUiEvent::UserInputAppended {
+                    content: text_summary,
+                    node_id: None, // Pending messages don't have node_id yet
+                })
+                .await?;
             }
 
             if self.should_trigger_compaction()? {
@@ -541,14 +545,13 @@ impl Agent {
         // Refresh project information from project manager (regenerates file trees and available_projects)
         self.init_projects()?;
 
-        let _ = self
-            .ui
-            .send_event(UiEvent::UpdatePlan {
-                plan: self.plan.clone(),
-            })
-            .await;
-
         Ok(())
+    }
+
+    /// The restored plan state, for the caller to announce to the UI after a
+    /// session load.
+    pub fn plan(&self) -> &PlanState {
+        &self.plan
     }
 
     fn normalize_loaded_message_history(&mut self) {
@@ -861,17 +864,19 @@ impl Agent {
 
         // Update UI to show running status (skip for hidden tools)
         if !is_hidden {
-            let _ = ui
-                .send_event(UiEvent::UpdateToolStatus {
+            let _ = Self::send_agent_event(
+                ui.as_ref(),
+                AgentUiEvent::UpdateToolStatus {
                     tool_id: tool_request.id.clone(),
                     status: crate::ui::ToolStatus::Running,
                     message: None,
                     output: None,
-                    styled_output: None,
                     duration_seconds: None,
                     images: vec![],
-                })
-                .await;
+                },
+                None,
+            )
+            .await;
         }
 
         let execution_start = std::time::Instant::now();
@@ -919,17 +924,19 @@ impl Agent {
                 let images = result.render_images();
 
                 if !is_hidden {
-                    let _ = ui
-                        .send_event(UiEvent::UpdateToolStatus {
+                    let _ = Self::send_agent_event(
+                        ui.as_ref(),
+                        AgentUiEvent::UpdateToolStatus {
                             tool_id: tool_request.id.clone(),
                             status,
                             message: Some(status_msg),
                             output: Some(ui_output),
-                            styled_output: None,
                             duration_seconds: execution_duration,
                             images,
-                        })
-                        .await;
+                        },
+                        None,
+                    )
+                    .await;
                 }
 
                 (
@@ -944,17 +951,19 @@ impl Agent {
                 let error_text = Self::format_error_for_user(&e);
 
                 if !is_hidden {
-                    let _ = ui
-                        .send_event(UiEvent::UpdateToolStatus {
+                    let _ = Self::send_agent_event(
+                        ui.as_ref(),
+                        AgentUiEvent::UpdateToolStatus {
                             tool_id: tool_request.id.clone(),
                             status: crate::ui::ToolStatus::Error,
                             message: Some(error_text.clone()),
                             output: Some(error_text.clone()),
-                            styled_output: None,
                             duration_seconds: execution_duration,
                             images: vec![],
-                        })
-                        .await;
+                        },
+                        None,
+                    )
+                    .await;
                 }
 
                 (
@@ -973,13 +982,11 @@ impl Agent {
         self.init_project_context()?;
 
         self.message_history.clear();
-        self.ui
-            .send_event(UiEvent::DisplayUserInput {
-                content: task.clone(),
-                attachments: Vec::new(),
-                node_id: None, // Initial task message
-            })
-            .await?;
+        self.send_ui(AgentUiEvent::UserInputAppended {
+            content: task.clone(),
+            node_id: None, // Initial task message
+        })
+        .await?;
 
         // Create the initial user message
         self.append_message(Message::new_user(task.clone()))?;
@@ -1128,12 +1135,11 @@ impl Agent {
         self.next_request_id += 1;
 
         // Inform UI that a new LLM request is starting
-        self.ui
-            .send_event(UiEvent::StreamingStarted {
-                request_id,
-                node_id,
-            })
-            .await?;
+        self.send_ui(AgentUiEvent::StreamingStarted {
+            request_id,
+            node_id,
+        })
+        .await?;
         debug!(
             "Starting LLM request with ID: {}, node_id: {}",
             request_id, node_id
@@ -1219,9 +1225,8 @@ impl Agent {
                     debug!("Streaming cancelled by user in LLM request {}", request_id);
                     // End LLM request with cancelled=true
                     let _ = self
-                        .ui
-                        .send_event(UiEvent::StreamingStopped {
-                            id: request_id,
+                        .send_ui(AgentUiEvent::StreamingStopped {
+                            request_id,
                             cancelled: true,
                             error: None,
                         })
@@ -1239,9 +1244,8 @@ impl Agent {
 
                 // For other errors, still end the request but not cancelled
                 let _ = self
-                    .ui
-                    .send_event(UiEvent::StreamingStopped {
-                        id: request_id,
+                    .send_ui(AgentUiEvent::StreamingStopped {
+                        request_id,
                         cancelled: false,
                         error: Some(e.to_string()),
                     })
@@ -1274,9 +1278,8 @@ impl Agent {
 
         // Inform UI that the LLM request has completed (normal completion)
         let _ = self
-            .ui
-            .send_event(UiEvent::StreamingStopped {
-                id: request_id,
+            .send_ui(AgentUiEvent::StreamingStopped {
+                request_id,
                 cancelled: false,
                 error: None,
             })
@@ -1450,13 +1453,11 @@ impl Agent {
         // Notify the UI that these tools switched from success → error
         for (tool_id, error_message) in &replaced {
             let _ = self
-                .ui
-                .send_event(UiEvent::UpdateToolStatus {
+                .send_ui(AgentUiEvent::UpdateToolStatus {
                     tool_id: tool_id.clone(),
                     status: crate::ui::ToolStatus::Error,
                     message: Some("Prompt Too Long".to_string()),
                     output: Some(error_message.clone()),
-                    styled_output: None,
                     duration_seconds: None,
                     images: vec![],
                 })
@@ -1483,15 +1484,13 @@ impl Agent {
         // the failed request, so the UI knows streaming ended. Now we tell it to
         // also remove whatever was already rendered.
         let _ = self
-            .ui
-            .send_event(UiEvent::RollbackStreaming {
-                id: self.next_request_id - 1,
+            .send_ui(AgentUiEvent::RollbackStreaming {
+                request_id: self.next_request_id - 1,
             })
             .await;
 
         let _ = self
-            .ui
-            .send_event(UiEvent::ShowTransientStatus {
+            .send_ui(AgentUiEvent::ShowTransientStatus {
                 message: format!(
                     "Stream interrupted — retrying ({}/{})\u{2026}",
                     attempt, max_attempts
@@ -1683,11 +1682,15 @@ impl Agent {
 
         let mut messages = self.render_tool_results_in_messages();
         messages.push(compaction_message);
-        self.update_activity_state(SessionActivityState::WaitingForResponse)
-            .await?;
+        self.send_ui(AgentUiEvent::ActivityChanged {
+            activity: AgentActivity::WaitingForResponse,
+        })
+        .await?;
         let response_result = self.get_non_streaming_response(messages).await;
-        self.update_activity_state(SessionActivityState::AgentRunning)
-            .await?;
+        self.send_ui(AgentUiEvent::ActivityChanged {
+            activity: AgentActivity::Running,
+        })
+        .await?;
         let (response, _) = response_result?;
 
         let summary_text = Self::extract_compaction_summary_text(&response.content);
@@ -1992,18 +1995,15 @@ impl Agent {
 
         // Update status to Running before execution (skip for hidden tools)
         if !is_hidden {
-            self.ui
-                .send_event(UiEvent::UpdateToolStatus {
-                    tool_id: tool_request.id.clone(),
-
-                    status: crate::ui::ToolStatus::Running,
-                    message: None,
-                    output: None,
-                    styled_output: None,
-                    duration_seconds: None,
-                    images: vec![],
-                })
-                .await?;
+            self.send_ui(AgentUiEvent::UpdateToolStatus {
+                tool_id: tool_request.id.clone(),
+                status: crate::ui::ToolStatus::Running,
+                message: None,
+                output: None,
+                duration_seconds: None,
+                images: vec![],
+            })
+            .await?;
         }
 
         // Get the tool - could fail with UnknownTool
@@ -2075,18 +2075,15 @@ impl Agent {
 
                 // Update tool status with result (skip for hidden tools)
                 if !is_hidden {
-                    self.ui
-                        .send_event(UiEvent::UpdateToolStatus {
-                            tool_id: tool_request.id.clone(),
-
-                            status,
-                            message: Some(short_output),
-                            output: Some(ui_output),
-                            styled_output: None,
-                            duration_seconds: execution_duration,
-                            images,
-                        })
-                        .await?;
+                    self.send_ui(AgentUiEvent::UpdateToolStatus {
+                        tool_id: tool_request.id.clone(),
+                        status,
+                        message: Some(short_output),
+                        output: Some(ui_output),
+                        duration_seconds: execution_duration,
+                        images,
+                    })
+                    .await?;
                 }
 
                 // Create the tool request with potentially updated input
@@ -2136,18 +2133,15 @@ impl Agent {
 
                 // Update UI status to error (skip for hidden tools)
                 if !is_hidden {
-                    self.ui
-                        .send_event(UiEvent::UpdateToolStatus {
-                            tool_id: tool_request.id.clone(),
-
-                            status: crate::ui::ToolStatus::Error,
-                            message: Some(error_text.clone()),
-                            output: Some(error_text.clone()),
-                            styled_output: None,
-                            duration_seconds: execution_duration,
-                            images: vec![],
-                        })
-                        .await?;
+                    self.send_ui(AgentUiEvent::UpdateToolStatus {
+                        tool_id: tool_request.id.clone(),
+                        status: crate::ui::ToolStatus::Error,
+                        message: Some(error_text.clone()),
+                        output: Some(error_text.clone()),
+                        duration_seconds: execution_duration,
+                        images: vec![],
+                    })
+                    .await?;
                 }
 
                 // Create a ToolExecution record for the error
@@ -2208,14 +2202,13 @@ impl Agent {
                 value_str.len()
             );
 
-            self.ui
-                .send_event(UiEvent::UpdateToolParameter {
-                    tool_id: tool_id.to_string(),
-                    name: key.clone(),
-                    value: value_str,
-                    replace: true,
-                })
-                .await?;
+            self.send_ui(AgentUiEvent::UpdateToolParameter {
+                tool_id: tool_id.to_string(),
+                name: key.clone(),
+                value: value_str,
+                replace: true,
+            })
+            .await?;
         }
 
         Ok(())

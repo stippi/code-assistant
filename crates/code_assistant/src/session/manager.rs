@@ -731,7 +731,7 @@ impl SessionManager {
             llm_provider,
             project_manager: sandboxed_project_manager,
             command_executor: Arc::from(command_executor),
-            ui: proxy_ui,
+            ui: proxy_ui.clone(),
             state_persistence: state_storage,
             permission_handler,
             sub_agent_runner: Some(sub_agent_runner),
@@ -744,6 +744,13 @@ impl SessionManager {
 
         // Load the session state into the agent
         agent.load_from_session_state(session_state).await?;
+
+        // Announce the restored plan to the UI
+        let _ = proxy_ui
+            .send_event(UiEvent::UpdatePlan {
+                plan: agent.plan().clone(),
+            })
+            .await;
 
         // Spawn the agent task.
         //

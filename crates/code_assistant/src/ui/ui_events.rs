@@ -41,6 +41,85 @@ pub struct ToolResultData {
     pub images: Vec<ImageData>,
 }
 
+impl UiEvent {
+    /// Translate an agent-loop event into the application's event vocabulary.
+    ///
+    /// `session_id` scopes the events that address a specific session; events
+    /// that need it are dropped (`None`) when it is absent, matching the
+    /// loop's previous behavior of skipping those updates for anonymous
+    /// agents (e.g. sub-agents).
+    pub fn from_agent(
+        event: crate::agent::ui::AgentUiEvent,
+        session_id: Option<&str>,
+    ) -> Option<UiEvent> {
+        use crate::agent::ui::{AgentActivity, AgentUiEvent};
+
+        Some(match event {
+            AgentUiEvent::UserInputAppended { content, node_id } => UiEvent::DisplayUserInput {
+                content,
+                attachments: Vec::new(),
+                node_id,
+            },
+            AgentUiEvent::StreamingStarted {
+                request_id,
+                node_id,
+            } => UiEvent::StreamingStarted {
+                request_id,
+                node_id,
+            },
+            AgentUiEvent::StreamingStopped {
+                request_id,
+                cancelled,
+                error,
+            } => UiEvent::StreamingStopped {
+                id: request_id,
+                cancelled,
+                error,
+            },
+            AgentUiEvent::RollbackStreaming { request_id } => {
+                UiEvent::RollbackStreaming { id: request_id }
+            }
+            AgentUiEvent::UpdateToolParameter {
+                tool_id,
+                name,
+                value,
+                replace,
+            } => UiEvent::UpdateToolParameter {
+                tool_id,
+                name,
+                value,
+                replace,
+            },
+            AgentUiEvent::UpdateToolStatus {
+                tool_id,
+                status,
+                message,
+                output,
+                duration_seconds,
+                images,
+            } => UiEvent::UpdateToolStatus {
+                tool_id,
+                status,
+                message,
+                output,
+                styled_output: None,
+                duration_seconds,
+                images,
+            },
+            AgentUiEvent::ShowTransientStatus { message } => {
+                UiEvent::ShowTransientStatus { message }
+            }
+            AgentUiEvent::ActivityChanged { activity } => UiEvent::UpdateSessionActivityState {
+                session_id: session_id?.to_string(),
+                activity_state: match activity {
+                    AgentActivity::Running => SessionActivityState::AgentRunning,
+                    AgentActivity::WaitingForResponse => SessionActivityState::WaitingForResponse,
+                },
+            },
+        })
+    }
+}
+
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
