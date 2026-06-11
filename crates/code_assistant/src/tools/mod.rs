@@ -14,6 +14,9 @@ pub mod tool_use_filter;
 // Tool formatter system
 pub mod formatter;
 
+// Tools configuration (tools.json)
+pub mod config;
+
 // New trait-based tools implementation
 pub mod core;
 pub mod impls;

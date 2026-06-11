@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Capability tags describing what a tool may do and where it is offered.
 /// Free-form strings; the constants below cover generic concepts. Consumers
-/// define their own additional tags (code-assistant adds its `scope:*` tags
-/// in `crate::tools::scope::capabilities`).
+/// define their own additional tags, e.g. scoping vocabulary saying where a
+/// tool is offered.
 pub mod capabilities {
     /// The tool does not modify any state. Read-only tools are safe to chain
     /// within a single assistant turn.

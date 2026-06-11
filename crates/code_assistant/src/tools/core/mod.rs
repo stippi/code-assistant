@@ -1,23 +1,18 @@
-// Core tools implementation
-pub mod config;
-pub mod dyn_tool;
-pub mod registry;
-pub mod render;
-pub mod result;
-pub mod spec;
-pub mod title;
-pub mod tool;
+//! Compatibility layer over the extracted `tools_core` crate.
+//!
+//! The generic tool infrastructure (Tool trait, registry, rendering, specs,
+//! title templating) lives in the `tools_core` crate now. This module keeps
+//! the historical `crate::tools::core::*` import paths working and adds the
+//! domain-side pieces (`ToolScope`, the `scope:*` capability tags, and the
+//! tools configuration).
 
-// Re-export all core components for easier imports
-pub use config::ToolsConfig;
-pub use dyn_tool::AnyOutput;
-pub use registry::ToolRegistry;
-pub use render::{ImageData, Render, ResourcesTracker};
-pub use result::{ToolError, ToolResult};
-pub use spec::{AnnotatedToolDefinition, ToolSpec};
-pub use title::generate_tool_title;
-pub use tool::{Tool, ToolContext};
+pub use tools_core::{render, tool};
 
-// Compatibility re-exports: the scope selection vocabulary is domain-side
-// (see `crate::tools::scope`), but callers historically import it from here.
+pub use tools_core::{
+    generate_tool_title, AnnotatedToolDefinition, AnyOutput, ImageData, Render, ResourcesTracker,
+    Tool, ToolContext, ToolError, ToolRegistry, ToolResult, ToolSpec,
+};
+
+// Domain-side pieces that historically lived here.
+pub use crate::tools::config::ToolsConfig;
 pub use crate::tools::scope::{capabilities, ToolScope};

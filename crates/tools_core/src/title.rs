@@ -3,7 +3,7 @@
 //! This module provides functions for generating human-readable tool titles
 //! from tool specs and their parameters. Used by ACP mode and sub-agent output rendering.
 
-use crate::tools::core::ToolRegistry;
+use crate::registry::ToolRegistry;
 use std::collections::HashMap;
 
 /// Maximum length for title parameter values before truncation

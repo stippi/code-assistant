@@ -47,7 +47,7 @@ impl ToolScope {
 /// code-assistant's capability tags: the generic ones from the tool core
 /// plus the `scope:*` tags saying where a tool is offered.
 pub mod capabilities {
-    pub use crate::tools::core::spec::capabilities::*;
+    pub use tools_core::spec::capabilities::*;
 
     /// Scope tags: where a tool is offered (see `ToolScope::tag`).
     pub const SCOPE_MCP: &str = "scope:mcp";

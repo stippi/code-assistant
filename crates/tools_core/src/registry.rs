@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 
-use crate::tools::core::dyn_tool::DynTool;
-use crate::tools::core::spec::AnnotatedToolDefinition;
+use crate::dyn_tool::DynTool;
+use crate::spec::AnnotatedToolDefinition;
 
 /// Registry holding a set of tools, keyed by name.
 ///
 /// Selection is expressed through capability tags (see
-/// [`crate::tools::core::ToolSpec::capabilities`]); the registry itself knows
-/// nothing about application-specific scopes. code-assistant's process-wide
-/// instance with the default tools lives in [`crate::tools::global_registry`].
+/// [`crate::spec::ToolSpec::capabilities`]); the registry itself knows
+/// nothing about application-specific scopes.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn DynTool>>,
 }

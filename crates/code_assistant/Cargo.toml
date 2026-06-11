@@ -9,6 +9,7 @@ document-conversion = ["transmutation", "fs_explorer/document-conversion"]
 
 [dependencies]
 command_executor = { path = "../command_executor" }
+tools_core = { path = "../tools_core" }
 fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
 llm = { path = "../llm" }
