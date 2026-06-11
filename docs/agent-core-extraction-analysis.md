@@ -1,130 +1,129 @@
-# Agent Core Extraction — Analyse & Vision
+# Agent Core Extraction — Analysis & Vision
 
-> Status: Analyse, kein Code. Ziel ist ein wiederverwendbarer Agent-Kern (vergleichbar mit dem
-> Claude Code Agent SDK), den der `code-assistant` als einen von mehreren Konsumenten nutzt.
+> Status: analysis, no code. The goal is a reusable agent core (comparable to the
+> Claude Code Agent SDK) that `code-assistant` uses as one of several consumers.
 
 ## 1. Vision
 
-Aus dem heutigen Crate `code_assistant` soll ein generischer Agent-Kern als eigenständiges
-Crate (oder kleine Crate-Familie) extrahiert werden. Andere Anwendungen können diesen Kern
-einbinden und über klar definierte Erweiterungspunkte:
+Extract a generic agent core from today's `code_assistant` crate into a standalone
+crate (or a small family of crates). Other applications can embed this core and, through
+clearly defined extension points:
 
-- **eigene Tools** registrieren,
-- **eigene Tool-Aufrufformate** (Native, XML, Caret, eigene) als Plugin einbringen,
-- **eigene Verhaltens-Plugins** an festgelegten Punkten der Agent-Schleife einklinken
-  (System-Prompt, Pre-/Post-LLM, Pre-/Post-Tool, Spezial-Tools, Compaction, …),
-- **eigene UI-/Persistenz-/Permission-Adapter** anbinden,
+- register **their own tools**,
+- bring in **their own tool invocation formats** (native, XML, Caret, custom) as plugins,
+- hook **their own behavior plugins** into fixed points of the agent loop
+  (system prompt, pre-/post-LLM, pre-/post-tool, special tools, compaction, …),
+- attach **their own UI / persistence / permission adapters**,
 
-ohne den Kern verändern zu müssen. Der `code-assistant` selbst wird zu einer „Reference
-Implementation": er konfiguriert den Kern mit seinen Tools, Plugins und Adaptern. Das Ziel-Bild
-in Crate-Form sieht so aus:
+all without modifying the core. `code-assistant` itself becomes a "reference
+implementation": it configures the core with its tools, plugins, and adapters. The target
+picture in crate form:
 
 ```
-agent_core            (neu, generisch)         <-- Agent-Schleife, Traits, Hooks
-agent_tools_core      (neu, generisch)         <-- Tool-Trait, Registry, Render, Spec
-agent_persistence     (neu, generisch)         <-- SessionState/Tree-Traits (optional)
-llm                   (bereits generisch)
-command_executor      (bereits generisch)
-fs_explorer           (bereits generisch)
-sandbox               (bereits generisch)
+agent_core            (new, generic)           <-- agent loop, traits, hooks
+agent_tools_core      (new, generic)           <-- tool trait, registry, render, spec
+agent_persistence     (new, generic)           <-- SessionState/tree traits (optional)
+llm                   (already generic)
+command_executor      (already generic)
+fs_explorer           (already generic)
+sandbox               (already generic)
 
-code_assistant        (existiert)              <-- konkrete Tools, Plugins, UI, CLI
-└── tool_dialects/    (XML, Caret, Native — code-assistant-intern)
+code_assistant        (exists)                 <-- concrete tools, plugins, UI, CLI
+└── tool_dialects/    (XML, Caret — code-assistant-internal)
 ```
 
-Andere Anwendungen können sich wahlweise nur an `agent_core` + `agent_tools_core` binden, oder
-zusätzlich `agent_persistence` mitnehmen.
+Other applications can choose to bind only to `agent_core` + `agent_tools_core`, or
+additionally pull in `agent_persistence`.
 
-> **Wichtig: Text-basierte Tool-Aufrufformate (XML / Caret) gehören NICHT in den Kern.**
-> Tools selbst sind heute schon syntax-agnostisch und das soll so bleiben. Was an einem
-> bestimmten Format hängt, ist allein die Übersetzung zwischen LLM-Response/Stream und
-> abstrakten `ToolRequest`s sowie die Darstellung der Tools im System-Prompt. Der Kern
-> definiert dafür ein minimales Trait (siehe §3.7) **und liefert genau eine
-> Default-Implementierung mit: natives Tool-Calling über die LLM-API.** „Native" ist
-> kein Text-Format, sondern der API-Mechanismus selbst — ein minimaler Konsument muss
-> sich daher mit dem Thema Syntax gar nicht befassen (siehe §3.11). Die konkreten
-> XML-/Caret-Implementierungen bleiben Bestandteil des `code_assistant`.
+> **Important: text-based tool invocation formats (XML / Caret) do NOT belong in the core.**
+> Tools themselves are already syntax-agnostic today and shall stay that way. What depends
+> on a specific format is solely the translation between LLM response/stream and abstract
+> `ToolRequest`s, plus the presentation of tools in the system prompt. The core defines a
+> minimal trait for this (see §3.7) **and ships exactly one default implementation:
+> native tool calling via the LLM API.** "Native" is not a text format but the API
+> mechanism itself — a minimal consumer therefore never has to deal with the syntax topic
+> at all (see §3.11). The concrete XML/Caret implementations remain part of
+> `code_assistant`.
 
 ---
 
-## 2. Status quo: Wo sitzt heute die Kopplung?
+## 2. Status quo: where does the coupling live today?
 
-Die folgende Aufstellung markiert die konkreten Stellen im `code-assistant`, die heute
-Anwendungs-spezifische Annahmen über den Agent treffen. Das ist die Liste der Punkte, die
-beim Refactoring entweder „nach oben" (in den Kern) oder „nach unten" (in den Konsumenten)
-verschoben werden müssen.
+The following list marks the concrete places in `code-assistant` that currently make
+application-specific assumptions about the agent. This is the list of points that the
+refactoring must move either "up" (into the core) or "down" (into the consumer).
 
-### 2.1 `Agent` Runner (`crates/code_assistant/src/agent/runner.rs`)
+### 2.1 `Agent` runner (`crates/code_assistant/src/agent/runner.rs`)
 
-`Agent::new` erwartet ein `AgentComponents`-Bündel mit lauter konkreten Typen:
+`Agent::new` expects an `AgentComponents` bundle full of concrete types:
 
-- `Box<dyn LLMProvider>` — generisch, kein Problem.
-- `Box<dyn ProjectManager>` — code-assistant-spezifisch (mehrere Projekte, file trees).
-- `Box<dyn CommandExecutor>` — generisch, kein Problem.
-- `Arc<dyn UserInterface>` — UI-Trait enthält viele code-assistant-spezifische Events.
-- `Box<dyn AgentStatePersistence>` — Trait existiert, aber `SessionState` ist konkret.
-- `Option<Arc<dyn PermissionMediator>>` — generisch genug.
-- `Option<Arc<dyn SubAgentRunner>>` — Sub-Agent-Konzept und dessen UI-Adapter sind
-  code-assistant-spezifisch.
+- `Box<dyn LLMProvider>` — generic, no problem.
+- `Box<dyn ProjectManager>` — code-assistant-specific (multiple projects, file trees).
+- `Box<dyn CommandExecutor>` — generic, no problem.
+- `Arc<dyn UserInterface>` — the UI trait contains many code-assistant-specific events.
+- `Box<dyn AgentStatePersistence>` — the trait exists, but `SessionState` is concrete.
+- `Option<Arc<dyn PermissionMediator>>` — generic enough.
+- `Option<Arc<dyn SubAgentRunner>>` — the sub-agent concept and its UI adapters are
+  code-assistant-specific.
 
-Der Agent selbst hält darüber hinaus zustandsbehaftete code-assistant-Konzepte:
+Beyond that, the agent itself holds stateful code-assistant concepts:
 
-- `plan: PlanState` — Plan-Tool ist eine Funktionalität von `update_plan`, kein
-  generischer Agent-Mechanismus.
-- `tool_scope: ToolScope` mit Varianten `Agent`, `AgentWithDiffBlocks`, `SubAgent…` —
-  bündelt mehrere Konzepte (Sub-Agent, Diff-Blocks).
-- `message_nodes / active_path / next_node_id` — Branching-Modell mit
+- `plan: PlanState` — the plan is functionality of the `update_plan` tool, not a
+  generic agent mechanism.
+- `tool_scope: ToolScope` with variants `Agent`, `AgentWithDiffBlocks`, `SubAgent…` —
+  bundles several concepts (sub-agent, diff blocks).
+- `message_nodes / active_path / next_node_id` — branching model based on
   `crate::persistence::MessageNode`.
-- `tool_executions: Vec<ToolExecution>` — generisch, aber an `AnyOutput` gebunden, das
-  wiederum die globale `ToolRegistry` zur (De-)Serialisierung referenziert.
+- `tool_executions: Vec<ToolExecution>` — generic, but bound to `AnyOutput`, which in
+  turn references the global `ToolRegistry` for (de-)serialization.
 - `cached_system_prompts`, `model_hint`, `session_model_config`, `context_limit_override`
-  — System-Prompt-Auswahl pro Modell, Compaction-Threshold, etc.
-- `file_trees`, `available_projects` — Multi-Projekt-Konzept.
-- `enable_naming_reminders`, `session_name`, `pending_message_ref` — Session-Level-Logik
-  die im Kern nicht generisch sein muss.
+  — per-model system prompt selection, compaction threshold, etc.
+- `file_trees`, `available_projects` — multi-project concept.
+- `enable_naming_reminders`, `session_name`, `pending_message_ref` — session-level logic
+  that does not need to be generic in the core.
 
-In der Loop-Implementierung selbst gibt es eine ganze Reihe **harter Spezial-Pfade**:
+In the loop implementation itself there is a whole series of **hard special-case paths**:
 
-- `if tool_requests.iter().any(|r| r.name == "complete_task")` → Loop bricht ab.
-  **Achtung: ein `complete_task`-Tool existiert nicht** (weder in `tools/impls/` noch in
-  `register_default_tools()`). In XML/Caret-Mode lehnt der Parser unbekannte Tools ab,
-  der Pfad ist dort unerreichbar. In Native-Mode validiert die Extraktion aber *nicht*
-  gegen die Registry (`parse_tool_use_blocks` übernimmt `ToolUse`-Blöcke ungefiltert) —
-  der Pfad feuert also, wenn das Modell `complete_task` halluziniert, und beendet den
-  Loop dann **stillschweigend mit einem dangling `ToolUse` ohne ToolResult** in der
-  History. Vor allem aber ist der Pfad **tragend für die Test-Infrastruktur**:
-  `MockLLMProvider::new` (`tests/mocks.rs`) fügt automatisch eine
-  `complete_task`-Response als Loop-Terminator ein (siehe §6, Test-Migration). Der Pfad
-  kann entfallen, aber erst nachdem die Mocks auf das natürliche Loop-Ende („keine
-  Tool-Requests → GetUserInput") umgestellt sind.
-- `if tool_request.name == "name_session"` → Title aus Input setzen, Tool als „hidden"
-  behandeln, `tool_executions` direkt aktualisieren, kein UI-Update.
+- `if tool_requests.iter().any(|r| r.name == "complete_task")` → loop breaks.
+  **Caution: a `complete_task` tool does not exist** (neither in `tools/impls/` nor in
+  `register_default_tools()`). In XML/Caret mode the parser rejects unknown tools, so the
+  path is unreachable there. In native mode, however, extraction does *not* validate
+  against the registry (`parse_tool_use_blocks` passes `ToolUse` blocks through
+  unfiltered) — so the path fires if the model hallucinates `complete_task`, and then
+  terminates the loop **silently with a dangling `ToolUse` without a ToolResult** in the
+  history. Above all, though, the path is **load-bearing for the test infrastructure**:
+  `MockLLMProvider::new` (`tests/mocks.rs`) automatically inserts a `complete_task`
+  response as the loop terminator (see §6, test migration). The path can be removed, but
+  only after the mocks have been switched to the natural loop ending ("no tool requests
+  → GetUserInput").
+- `if tool_request.name == "name_session"` → set title from the input, treat the tool as
+  "hidden", update `tool_executions` directly, no UI update.
 - `if tool_request.name == "update_plan" && success` → `save_plan_snapshot_to_last_…`.
-- `can_run_in_parallel` → hartcodiert auf `spawn_agent` mit `mode=read_only`.
-- `execute_spawn_agent_parallel` → eigene Code-Pfad mit konkretem `SpawnAgentTool`,
-  `SpawnAgentInput`, eigenem `ToolContext`-Build, eigener `ToolStatus`-Behandlung.
-- `inject_naming_reminder_if_needed` → fügt System-Reminder zum letzten User-Message,
-  weil das Konzept `session_name` im Kern hängt.
-- `is_prompt_too_long_error` und `replace_large_tool_results` → Pattern-Matching auf
-  Anbieter-Fehlertexte und ein Fallback-Mechanismus, der `PromptTooLongError` als
-  Tool-Output einsetzt; dieser Mechanismus ist generisch, aber die Kandidaten-Auswahl
-  („nur das letzte User-Message-Turn-Set") ist Policy.
-- `is_retryable_streaming_error` → Heuristiken auf Fehler-Strings. Generisch.
-- `should_trigger_compaction` / `perform_compaction` → harter `CONTEXT_USAGE_THRESHOLD`,
-  hartcodierter Compaction-Prompt aus `resources/compaction_prompt.md`.
+- `can_run_in_parallel` → hardcoded to `spawn_agent` with `mode=read_only`.
+- `execute_spawn_agent_parallel` → its own code path with concrete `SpawnAgentTool`,
+  `SpawnAgentInput`, its own `ToolContext` build, its own `ToolStatus` handling.
+- `inject_naming_reminder_if_needed` → appends a system reminder to the last user
+  message, because the `session_name` concept lives inside the core.
+- `is_prompt_too_long_error` and `replace_large_tool_results` → pattern matching on
+  provider error texts plus a fallback mechanism that substitutes `PromptTooLongError`
+  as tool output; the mechanism is generic, but the candidate selection ("only the last
+  user-message turn set") is policy.
+- `is_retryable_streaming_error` → heuristics on error strings. Generic.
+- `should_trigger_compaction` / `perform_compaction` → hard `CONTEXT_USAGE_THRESHOLD`,
+  hardcoded compaction prompt from `resources/compaction_prompt.md`.
 - `read_guidance_files` (`AGENTS.md`, `CLAUDE.md`, `~/.config/code-assistant/AGENTS.md`)
-  — code-assistant-spezifisches Verhalten.
-- System-Prompt-Aufbau: `generate_system_message(...)` + Multi-Projekt-File-Trees +
-  AGENTS.md-Guidance — das ist eine konkrete Prompt-Konstruktion.
-- **Format-on-save-Pfad** (in der ersten Fassung dieser Analyse übersehen): `execute_tool`
-  erkennt, ob ein Tool seinen Input während der Ausführung verändert hat (`input_modified`),
-  schickt dann `UpdateToolParameter`-Events und schreibt via
-  `update_message_history_with_formatted_tool` / `update_tool_call_in_text_static` den
-  Tool-Aufruf **im Message-History-Text um** — mit `get_formatter(tool_syntax)` und den
-  Byte-Offsets `ToolRequest::start_offset/end_offset`. Das ist eine harte Dialekt-Kopplung
-  mitten im Loop: der Kern braucht dafür eine Dialekt-Fähigkeit „formatiere einen
-  ToolRequest zurück in Text" (siehe §3.7). Die Offsets im `ToolRequest` existieren genau
-  für diesen Pfad.
+  — code-assistant-specific behavior.
+- System prompt construction: `generate_system_message(...)` + multi-project file trees +
+  AGENTS.md guidance — a concrete prompt construction.
+- **Format-on-save path** (overlooked in the first version of this analysis):
+  `execute_tool` detects whether a tool modified its input during execution
+  (`input_modified`), then sends `UpdateToolParameter` events and, via
+  `update_message_history_with_formatted_tool` / `update_tool_call_in_text_static`,
+  **rewrites the tool call inside the message-history text** — using
+  `get_formatter(tool_syntax)` and the byte offsets
+  `ToolRequest::start_offset/end_offset`. This is a hard dialect coupling in the middle
+  of the loop: the core needs a dialect capability "format a ToolRequest back into text"
+  for it (see §3.7). The offsets on `ToolRequest` exist precisely for this path.
 
 ### 2.2 `ToolContext` (`crates/code_assistant/src/tools/core/tool.rs`)
 
@@ -140,25 +139,25 @@ pub struct ToolContext<'a> {
 }
 ```
 
-Heute ist der Tool-Kontext ein „Schweizer Taschenmesser" mit allen Subsystemen, die der
-`code-assistant` braucht. Für ein generisches Crate ist das zu konkret: Tools von
-Drittanwendungen brauchen weder `ProjectManager` noch `PlanState` noch `SubAgentRunner`.
+Today the tool context is a "Swiss army knife" carrying all the subsystems that
+`code-assistant` needs. For a generic crate this is too concrete: tools from third-party
+applications need neither `ProjectManager` nor `PlanState` nor `SubAgentRunner`.
 
 ### 2.3 `ToolRegistry` (`crates/code_assistant/src/tools/core/registry.rs`)
 
-- `ToolRegistry::global()` ist ein Prozess-Singleton.
-- `register_default_tools()` registriert hartcodiert alle 18 code-assistant-Tools.
-- `is_tool_in_scope` filtert anhand der `ToolScope`-Enum, deren Varianten anwendungs-
-  spezifisch sind.
-- `ToolRegistry::register` konsultiert ein **weiteres Singleton**: `ToolsConfig::global()`
-  (`tools/core/config.rs`, lädt `tools.json` mit z. B. dem Perplexity-API-Key) für
-  `tool.is_available(config)`. Beim Entkoppeln muss die Verfügbarkeits-Konfiguration bei
-  der Registrierung injiziert werden.
-- Die Registry wird **nicht nur vom Agent-Loop** gelesen: auch die Stream-Prozessoren
-  (`ui/streaming/{xml,caret,json}_processor.rs`, jeweils
-  `ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent)` — Scope hartcodiert!),
-  `tools/core/title.rs` (Title-Templates) und der MCP-Handler (siehe §2.12) greifen auf
-  das Singleton zu. „Singleton entfernen" betrifft also auch die UI-Schicht.
+- `ToolRegistry::global()` is a process-wide singleton.
+- `register_default_tools()` hardcodes registration of all 18 code-assistant tools.
+- `is_tool_in_scope` filters based on the `ToolScope` enum, whose variants are
+  application-specific.
+- `ToolRegistry::register` consults **yet another singleton**: `ToolsConfig::global()`
+  (`tools/core/config.rs`, loads `tools.json` containing e.g. the Perplexity API key)
+  for `tool.is_available(config)`. When decoupling, the availability configuration must
+  be injected at registration time.
+- The registry is read **not only by the agent loop**: the stream processors
+  (`ui/streaming/{xml,caret,json}_processor.rs`, each calling
+  `ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent)` — scope hardcoded!),
+  `tools/core/title.rs` (title templates), and the MCP handler (see §2.12) all access
+  the singleton. "Removing the singleton" therefore also touches the UI layer.
 
 ### 2.4 `ToolSpec` / `ToolScope` (`crates/code_assistant/src/tools/core/spec.rs`)
 
@@ -172,46 +171,46 @@ pub enum ToolScope {
 }
 ```
 
-Diese Aufzählung mischt mehrere orthogonale Begriffe (MCP-Server-Modus, Sub-Agent-Modus,
-Diff-Blocks-Variante) zu einer einzigen Enum. Generisch wären Tags / Capabilities besser.
+This enumeration mixes several orthogonal concepts (MCP server mode, sub-agent mode,
+diff-blocks variant) into a single enum. Generically, tags / capabilities would be better.
 
-### 2.5 Tool-Filter (`crates/code_assistant/src/tools/tool_use_filter.rs`)
+### 2.5 Tool filters (`crates/code_assistant/src/tools/tool_use_filter.rs`)
 
-- `is_explore_tool`, `is_write_tool`, `SmartToolFilter::is_read_tool` enthalten
-  hartcodierte Listen von Tool-Namen aus dem `code-assistant`.
-  (`is_write_tool` ist aktuell `#[allow(dead_code)]`, also ohne Aufrufer.)
-- Trait `ToolUseFilter` selbst ist sauber — aber der `SmartToolFilter` wird an den
-  Verwendungsstellen **hartcodiert konstruiert** (in `parser_registry.rs` beim Parsen und
-  in den XML-/Caret-Stream-Prozessoren), nicht injiziert. Ein Konsument kann den Filter
-  heute also nicht austauschen, ohne diese Stellen zu patchen.
+- `is_explore_tool`, `is_write_tool`, `SmartToolFilter::is_read_tool` contain hardcoded
+  lists of tool names from `code-assistant`.
+  (`is_write_tool` is currently `#[allow(dead_code)]`, i.e. has no callers.)
+- The `ToolUseFilter` trait itself is clean — but the `SmartToolFilter` is
+  **constructed hardcoded** at its usage sites (in `parser_registry.rs` during parsing
+  and in the XML/Caret stream processors), not injected. A consumer therefore cannot
+  swap the filter today without patching those sites.
 
-### 2.6 Parser / Syntax (`crates/code_assistant/src/tools/parser_registry.rs`,
+### 2.6 Parser / syntax (`crates/code_assistant/src/tools/parser_registry.rs`,
 `tools/parse.rs`, `tools/formatter.rs`, `tools/system_message.rs`)
 
-- Tools selbst sind heute schon dialektfrei — sehr gut. Was an einer konkreten
-  Tool-Syntax hängt, ist nur die Übersetzung zwischen LLM-Stream/Response und
-  abstrakten `ToolRequest`s plus die Darstellung im System-Prompt.
-- Trait `ToolInvocationParser` ist sauber, registriert wird aber über die fixe Enum
-  `ToolSyntax { Native, Xml, Caret }`. Eine Drittanwendung kann kein eigenes Format
-  nachladen, ohne den Kern zu patchen.
-- Der Parser greift in mehreren Stellen direkt auf `ToolRegistry::global()` zu
-  (Schema-getriebene Konvertierung).
-- `is_multiline_param` enthält eine hartcodierte Allow-Liste konkreter Parameter-Namen
+- Tools themselves are already dialect-free today — very good. What depends on a
+  concrete tool syntax is only the translation between LLM stream/response and abstract
+  `ToolRequest`s, plus the presentation in the system prompt.
+- The `ToolInvocationParser` trait is clean, but registration goes through the fixed
+  enum `ToolSyntax { Native, Xml, Caret }`. A third-party application cannot plug in its
+  own format without patching the core.
+- The parser directly accesses `ToolRegistry::global()` in several places
+  (schema-driven conversion).
+- `is_multiline_param` contains a hardcoded allow-list of concrete parameter names
   (`content`, `command_line`, `diff`, `message`, `old_text`, `new_text`).
-- XML-/Caret-Doku-Generatoren erfinden Beispiel-Werte basierend auf Parameter-Namen
-  (`project`, `path`, `regex`, `command_line`, `working_dir`, `url`, …) — also ebenfalls
-  Code-Assistant-Vokabular.
-- `system_message::generate_system_message` lädt eingebettete Markdown-Templates und
-  Modell-Mapping aus `resources/`.
+- The XML/Caret documentation generators invent example values based on parameter names
+  (`project`, `path`, `regex`, `command_line`, `working_dir`, `url`, …) — again
+  code-assistant vocabulary.
+- `system_message::generate_system_message` loads embedded Markdown templates and the
+  model mapping from `resources/`.
 
-Im Zielbild verschwindet die ganze Datei-Gruppe aus dem Agent-Kern und wird ein
-internes Modul des `code_assistant` (siehe §3.7).
+In the target picture, this whole file group disappears from the agent core and becomes
+an internal module of `code_assistant` (see §3.7).
 
-### 2.7 UI-Trait (`crates/code_assistant/src/ui/mod.rs`,
+### 2.7 UI trait (`crates/code_assistant/src/ui/mod.rs`,
 `crates/code_assistant/src/ui/ui_events.rs`)
 
-Das `UserInterface`-Trait selbst ist klein, aber `UiEvent` ist riesig und enthält stark
-anwendungs-spezifische Varianten:
+The `UserInterface` trait itself is small, but `UiEvent` is huge and contains heavily
+application-specific variants:
 
 - `UpdateSessionMetadata`, `UpdateSessionActivityState`, `RefreshChatList`,
   `UpdateChatList`, `BranchSwitched`, `StartMessageEdit`, `MessageEditReady`,
@@ -219,76 +218,76 @@ anwendungs-spezifische Varianten:
   `PersistUiState`, `RefreshCurrentSession`, `AppendMessages`, `ResourceLoaded`,
   `ResourceWritten`, `DirectoryListed`, `ResourceDeleted`, `UpdatePlan`, …
 
-Die wirklich „Agent-Kern"-relevanten Events sind dagegen klein:
+The events that are genuinely relevant to the agent core are small in comparison:
 `StreamingStarted/Stopped`, `RollbackStreaming`, `UpdateToolStatus`, `UpdateToolParameter`,
 `AppendToTextBlock`, `AppendToThinkingBlock`, `StartTool`, `EndTool`, …
 
 ### 2.8 Persistence (`crates/code_assistant/src/persistence.rs`,
-`crates/code_assistant/src/agent/persistence.rs`; `SessionState` selbst liegt in
+`crates/code_assistant/src/agent/persistence.rs`; `SessionState` itself lives in
 `crates/code_assistant/src/session/mod.rs`)
 
-- `SessionState` enthält `message_nodes`, `active_path`, `tool_executions`, `plan`,
-  `config: SessionConfig`, `next_request_id`, `model_config: SessionModelConfig`. Die
-  Branch-Tree-Struktur ist konzeptuell allgemein, die Felder `plan` und `model_config`
-  jedoch nicht.
-- `AgentStatePersistence::save_agent_state(state: SessionState)` koppelt also den Trait
-  hart an die konkrete Struktur.
-- `SerializedToolExecution::deserialize` greift wieder auf `ToolRegistry::global()` zu.
+- `SessionState` contains `message_nodes`, `active_path`, `tool_executions`, `plan`,
+  `config: SessionConfig`, `next_request_id`, `model_config: SessionModelConfig`. The
+  branch-tree structure is conceptually general; the `plan` and `model_config` fields
+  are not.
+- `AgentStatePersistence::save_agent_state(state: SessionState)` therefore couples the
+  trait hard to the concrete structure.
+- `SerializedToolExecution::deserialize` again accesses `ToolRegistry::global()`.
 
-### 2.9 Sub-Agents (`crates/code_assistant/src/agent/sub_agent.rs`)
+### 2.9 Sub-agents (`crates/code_assistant/src/agent/sub_agent.rs`)
 
-- `SubAgentRunner` als Trait ist *fast* okay — aber die Signatur
+- `SubAgentRunner` as a trait is *almost* okay — but the signature
   `run(parent_tool_id, instructions, tool_scope: ToolScope, require_file_references)`
-  referenziert die `ToolScope`-Enum. Wenn `ToolScope` durch Capabilities ersetzt wird
-  (§3.6), muss diese Signatur mit angepasst werden; in der heutigen Form kann der Trait
-  nicht in den Kern wandern.
-- Der Default-Runner mischt darüber hinaus sehr viele konkrete Aspekte (Sandbox,
-  `DefaultProjectManager`, `SessionConfig`, eigene UI-Adapter,
-  `SubAgentToolCall`/`SubAgentOutput`-JSON-Form für Custom-Renderer).
-- Der `spawn_agent`-Tool-Output ist eng mit der UI-JSON-Form verknüpft.
+  references the `ToolScope` enum. If `ToolScope` is replaced by capabilities (§3.6),
+  this signature must be adapted along with it; in its current form the trait cannot
+  move into the core.
+- Beyond that, the default runner mixes a great many concrete aspects (sandbox,
+  `DefaultProjectManager`, `SessionConfig`, its own UI adapters, the
+  `SubAgentToolCall`/`SubAgentOutput` JSON shape for custom renderers).
+- The `spawn_agent` tool output is tightly tied to the UI JSON shape.
 
-### 2.10 Special-Tools mit fester Bedeutung im Loop
+### 2.10 Special tools with fixed meaning in the loop
 
-Folgende Tool-Namen sind *strings, die im Agent-Loop hartverdrahtet sind*:
+The following tool names are *strings hardwired into the agent loop*:
 
-| Tool             | Wo verdrahtet                                  | Effekt |
+| Tool             | Wired where                                   | Effect |
 |------------------|-----------------------------------------------|--------|
-| `complete_task`  | `manage_tool_execution`                        | bricht Schleife ab — **Tool existiert nicht; nur in Native-Mode erreichbar und von der Test-Infrastruktur als Loop-Terminator genutzt (siehe §2.1)** |
-| `name_session`   | `execute_tool` (vor Standard-Pfad)             | setzt `session_name`, kein UI-Update |
-| `update_plan`    | nach erfolgreichem `execute_tool`              | speichert Plan-Snapshot in MessageNode |
-| `spawn_agent`    | `can_run_in_parallel`, `execute_spawn_agent_parallel` | erlaubt parallele Ausführung & Spezial-UI (nur bei ≥2 read-only-Aufrufen im selben Turn; einzelne laufen sequenziell) |
-| `parse_error`    | `agent::types`, `persistence`                  | Pseudo-Tool für Parse-Fehler |
+| `complete_task`  | `manage_tool_execution`                        | breaks the loop — **tool does not exist; only reachable in native mode, and used by the test infrastructure as a loop terminator (see §2.1)** |
+| `name_session`   | `execute_tool` (before the standard path)      | sets `session_name`, no UI update |
+| `update_plan`    | after successful `execute_tool`                | stores a plan snapshot in the MessageNode |
+| `spawn_agent`    | `can_run_in_parallel`, `execute_spawn_agent_parallel` | enables parallel execution & special UI (only with ≥2 read-only calls in the same turn; single calls run sequentially) |
+| `parse_error`    | `agent::types`, `persistence`                  | pseudo-tool for parse errors |
 
-Plus implizit über den `SmartToolFilter`: `read_files`, `list_files`, `list_projects`,
+Plus implicitly via the `SmartToolFilter`: `read_files`, `list_files`, `list_projects`,
 `search_files`, `glob_files`, `web_fetch`, `web_search` (read), `write_file`,
 `replace_in_file`, `delete_files` (write), `execute_command` (write).
 
-### 2.11 Resources / Templates
+### 2.11 Resources / templates
 
-- `resources/compaction_prompt.md` — fester Compaction-Prompt
-- `resources/tool_use_intro.md` — Einleitung der System-Prompt-Tool-Beschreibung
-- `resources/system_prompts/{default, claude, codex}.md` + `mapping.json` — modell-
-  spezifische Basis-Prompts mit `{{syntax}}` und `{{tools}}` Platzhaltern.
+- `resources/compaction_prompt.md` — fixed compaction prompt
+- `resources/tool_use_intro.md` — introduction of the system-prompt tool description
+- `resources/system_prompts/{default, claude, codex}.md` + `mapping.json` —
+  model-specific base prompts with `{{syntax}}` and `{{tools}}` placeholders.
 
-### 2.12 MCP-Server als zweiter In-Prozess-Konsument (`crates/code_assistant/src/mcp/handler.rs`)
+### 2.12 MCP server as a second in-process consumer (`crates/code_assistant/src/mcp/handler.rs`)
 
-Der MCP-Handler ist heute schon ein zweiter Konsument der Tool-Infrastruktur — und damit
-ein guter Realitätstest für die Extraktion:
+The MCP handler is already a second consumer of the tool infrastructure today — and
+thus a good reality check for the extraction:
 
-- nutzt `ToolRegistry::global()` für `tools/list` und `tools/call`,
-- filtert über `ToolScope::McpServer`,
-- konstruiert `ToolContext` direkt (mit `plan: None`, `ui: None`, …) und ignoriert
-  `input_modified` bewusst.
+- uses `ToolRegistry::global()` for `tools/list` and `tools/call`,
+- filters via `ToolScope::McpServer`,
+- constructs `ToolContext` directly (with `plan: None`, `ui: None`, …) and deliberately
+  ignores `input_modified`.
 
-Jede Änderung an `ToolScope` (→ Capabilities), `ToolContext` (→ Extensions) und der
-Registry (→ Instanz) muss den MCP-Handler mit-migrieren. In den Phasen-Plan (§6) ist das
-eingearbeitet.
+Every change to `ToolScope` (→ capabilities), `ToolContext` (→ extensions), and the
+registry (→ instance) must migrate the MCP handler along with it. This is worked into
+the phase plan (§6).
 
 ---
 
-## 3. Ziel-Architektur
+## 3. Target architecture
 
-### 3.1 Crate-Aufteilung
+### 3.1 Crate split
 
 ```
 agent_core
@@ -300,166 +299,169 @@ agent_core
 │   └── error.rs
 ├── messages/
 │   └── tree.rs             (MessageTree, NodeId — optional feature)
-├── hooks/                  (siehe §3.5)
+├── hooks/                  (see §3.5)
 │   ├── prompt.rs
 │   ├── lifecycle.rs
 │   ├── tool_dispatch.rs
 │   ├── compaction.rs
 │   └── retry.rs
 ├── dialect/
-│   ├── mod.rs              (ToolDialect-Trait, StreamProcessor-Trait)
-│   └── native.rs           (Default: natives Tool-Calling; heutiger json_processor
-│                            als Stream-Prozessor — einzige Implementierung im Kern)
-├── persistence.rs          (StatePersistence-Trait, AgentSnapshot)
-├── ui.rs                   (AgentUi-Trait, AgentUiEvent — Minimal-Set)
-├── permissions.rs          (PermissionMediator-Trait)
+│   ├── mod.rs              (ToolDialect trait, StreamProcessor trait)
+│   └── native.rs           (default: native tool calling; today's json_processor
+│                            as the stream processor — the only implementation in
+│                            the core)
+├── persistence.rs          (StatePersistence trait, AgentSnapshot)
+├── ui.rs                   (AgentUi trait, AgentUiEvent — minimal set)
+├── permissions.rs          (PermissionMediator trait)
 └── test_utils/             (feature = "test-utils": ScriptedLLMProvider,
-                             RecordingUi, InMemoryPersistence — damit Konsumenten
-                             ihre Plugins/Hooks ohne eigene Mock-Schicht testen können;
-                             entsteht aus den heutigen `tests/mocks.rs`-Bausteinen)
+                             RecordingUi, InMemoryPersistence — so consumers can
+                             test their plugins/hooks without building their own
+                             mock layer; distilled from today's `tests/mocks.rs`
+                             building blocks)
 
 agent_tools_core
 ├── lib.rs
-├── tool.rs                 (Tool-Trait, ToolContext mit Extensions)
+├── tool.rs                 (Tool trait, ToolContext with extensions)
 ├── dyn_tool.rs             (DynTool, AnyOutput)
-├── registry.rs             (ToolRegistry — Instanz statt Singleton)
-├── spec.rs                 (ToolSpec, Capability-Tags)
+├── registry.rs             (ToolRegistry — instance instead of singleton)
+├── spec.rs                 (ToolSpec, capability tags)
 ├── render.rs               (Render, ResourcesTracker, ImageData)
 ├── result.rs               (ToolResult, ToolError)
-└── title.rs                (Title-Templating)
-   # Im Kern: nur ein abstraktes ToolDialect-Trait (siehe §3.7).
-   # Konkrete XML-/Caret-/Native-Implementierungen leben im code_assistant.
+└── title.rs                (title templating)
+   # The core only knows the abstract ToolDialect trait (see §3.7) plus the
+   # native default in agent_core. The XML/Caret implementations live in
+   # code_assistant.
 
-code_assistant            (existiert, nutzt obige Crates)
-├── tools/                  (impls, registriert in eigener Registry-Instanz)
-├── tool_dialects/          (NEU: ein Verzeichnis pro Dialekt als „vertikaler Schnitt")
-│   ├── mod.rs              (Auswahl-Helfer: ToolSyntax → Box<dyn ToolDialect>;
-│   │                        ToolSyntax::Native liefert die Kern-Default-Impl)
+code_assistant            (exists, uses the crates above)
+├── tools/                  (impls, registered in its own registry instance)
+├── tool_dialects/          (NEW: one directory per dialect as a "vertical slice")
+│   ├── mod.rs              (selection helper: ToolSyntax → Box<dyn ToolDialect>;
+│   │                        ToolSyntax::Native yields the core default impl)
 │   ├── xml/                (parser.rs, formatter.rs, stream.rs, prompt_docs.rs, tests.rs)
-│   └── caret/              (dito — Native lebt als Default im Kern, siehe agent_core)
-├── plugins/                (NEU: code-assistant-spezifische Hooks,
-│                            Tests jeweils als #[cfg(test)] mod im selben File)
-│   ├── plan.rs             (Plan-Tool-Hook)
-│   ├── name_session.rs     (Name-Reminder + Spezial-Tool)
-│   ├── projects.rs         (File-Trees + AGENTS.md im System-Prompt)
-│   ├── compaction.rs       (Threshold + Prompt)
-│   ├── prompt_too_long.rs  (Recovery-Strategie)
-│   └── sub_agent.rs        (Sub-Agent-Plugin)
-├── ui/                     (alle bisherigen UI-Events bleiben hier;
-│                            streaming/ ist nach dem Umzug der Prozessoren leer
-│                            bis auf generische Anteile wie DisplayFragment)
-├── session/                (Branching, SessionInstance, Manager)
+│   └── caret/              (same — Native lives as the default in the core, see agent_core)
+├── plugins/                (NEW: code-assistant-specific hooks,
+│                            tests as #[cfg(test)] mod in the same file)
+│   ├── plan.rs             (plan tool hook)
+│   ├── name_session.rs     (naming reminder + special tool)
+│   ├── projects.rs         (file trees + AGENTS.md in the system prompt)
+│   ├── compaction.rs       (threshold + prompt)
+│   ├── prompt_too_long.rs  (recovery strategy)
+│   └── sub_agent.rs        (sub-agent plugin)
+├── ui/                     (all existing UI events stay here;
+│                            streaming/ is empty after the processors move out,
+│                            except for generic parts like DisplayFragment)
+├── session/                (branching, SessionInstance, manager)
 └── ...
 ```
 
-Das genaue Aufteilen kann auch in einer einzigen Crate `agent_core` mit Sub-Modulen
-beginnen und später in mehrere Crates gesplittet werden.
+The exact split can also start as a single `agent_core` crate with submodules and be
+split into multiple crates later.
 
-**Layout-Prinzipien** (beheben die zwei Haupt-Navigationsprobleme des Ist-Zustands):
+**Layout principles** (they fix the two main navigation problems of the current state):
 
-1. **Dialekte als vertikale Schnitte statt horizontaler Schichten.** Heute ist ein
-   Dialekt über zwei Bäume verschmiert: Parsing/Formatting/Prompt-Doku unter `tools/`
-   (`parse.rs`, `formatter.rs`, `parser_registry.rs`, `system_message.rs`) und die
-   Stream-Prozessoren unter `ui/streaming/`. Wer „wie funktioniert Caret?" verstehen
-   will, muss heute vier Dateien in zwei Verzeichnissen lesen. Im Zielbild liegt alles
-   zu einem Dialekt in *einem* Verzeichnis, inklusive seiner Tests.
-2. **Tests wohnen beim Code, den sie testen.** Heute sammeln `agent/tests.rs`
-   (~2700 Zeilen, enthält auch Parser-Tests) und `tools/tests.rs` (~1300 Zeilen)
-   Querschnitts-Bestände; `tests/` enthält daneben Mocks und Integrationstests. Im
-   Zielbild: Dialekt-Tests bei den Dialekten, Plugin-Tests bei den Plugins,
-   Loop-Tests beim Runner, und `tests/` schrumpft auf echte Integrationstests plus
-   die (kleiner werdenden) code-assistant-spezifischen Mocks. Generische Mocks
-   (LLM-Provider, UI, Persistence) wandern als `test_utils` in den Kern.
+1. **Dialects as vertical slices instead of horizontal layers.** Today one dialect is
+   smeared across two trees: parsing/formatting/prompt docs under `tools/`
+   (`parse.rs`, `formatter.rs`, `parser_registry.rs`, `system_message.rs`) and the
+   stream processors under `ui/streaming/`. Anyone wanting to understand "how does
+   Caret work?" has to read four files in two directories today. In the target picture,
+   everything belonging to one dialect lives in *one* directory, including its tests.
+2. **Tests live with the code they test.** Today `agent/tests.rs` (~2,700 lines, also
+   containing parser tests) and `tools/tests.rs` (~1,300 lines) accumulate
+   cross-cutting content; `tests/` additionally holds mocks and integration tests. In
+   the target picture: dialect tests with the dialects, plugin tests with the plugins,
+   loop tests with the runner, and `tests/` shrinks to genuine integration tests plus
+   the (shrinking) code-assistant-specific mocks. Generic mocks (LLM provider, UI,
+   persistence) move into the core as `test_utils`.
 
-### 3.2 Generischer `Agent`-Kern
+### 3.2 Generic `Agent` core
 
-Der zentrale Typ wird vom Anwendungs-Zustand entkoppelt:
+The central type is decoupled from application state:
 
 ```rust
 // agent_core::agent::runtime
 pub struct AgentRuntime<E: AgentExtensions> {
     llm: Box<dyn LLMProvider>,
     tools: Arc<ToolRegistry<E::ToolExt>>,
-    dialect: Arc<dyn ToolDialect>,        // ersetzt parser + formatter (siehe §3.7)
+    dialect: Arc<dyn ToolDialect>,        // replaces parser + formatter (see §3.7)
     ui: Arc<dyn AgentUi>,
     state: Box<dyn StatePersistence<Snapshot = E::Snapshot>>,
     permissions: Option<Arc<dyn PermissionMediator>>,
     hooks: HookRegistry<E>,
     config: AgentConfig,
-    session: SessionContext,             // generischer, kleiner Container
-    extensions: E::State,                // app-spezifischer Zustand
+    session: SessionContext,             // generic, small container
+    extensions: E::State,                // app-specific state
 }
 ```
 
-`AgentExtensions` ist ein vom Konsumenten implementiertes Trait, das alle Variations-
-Punkte zusammenfasst:
+`AgentExtensions` is a trait implemented by the consumer that bundles all variation
+points:
 
 ```rust
 pub trait AgentExtensions: Send + Sync + 'static {
-    /// Anwendungs-spezifischer Zustand, den Hooks lesen/schreiben dürfen.
+    /// Application-specific state that hooks may read/write.
     type State: Send + Sync;
 
-    /// Anwendungs-spezifischer Tool-Kontext-Slice (siehe §3.4).
+    /// Application-specific tool context slice (see §3.4).
     type ToolExt: ToolContextExtension;
 
-    /// Persistierter Zustand (heutige `SessionState`-Felder, soweit benötigt).
+    /// Persisted state (today's `SessionState` fields, as needed).
     type Snapshot: Serialize + DeserializeOwned + Send + Sync;
 }
 ```
 
-### 3.3 Generischer Agent-Loop
+### 3.3 Generic agent loop
 
-Heute werkelt `Agent::run_single_iteration` mit ~100 Zeilen Spezialfällen. Das Ziel ist,
-diese Schleife auf ein simples, deterministisches Skelett zu reduzieren, an dem Plugins
-einklinken. Pseudocode:
+Today `Agent::run_single_iteration` grinds through ~100 lines of special cases. The goal
+is to reduce this loop to a simple, deterministic skeleton that plugins hook into.
+Pseudocode:
 
 ```rust
 loop {
     hooks.before_iteration(ctx).await?;
 
-    // 1. Pending-User-Message ggf. anhängen
+    // 1. Append pending user message, if any
     hooks.collect_pending_user_input(ctx).await?;
 
-    // 2. Compaction-Politik fragen
+    // 2. Ask the compaction policy
     if hooks.compaction_policy(ctx)?.should_compact() {
         hooks.run_compaction(ctx).await?;
         continue;
     }
 
-    // 3. Render-Phase: TooLResults dynamisch ersetzen, Reminder injizieren ...
+    // 3. Render phase: dynamically replace tool results, inject reminders ...
     let mut request = ctx.build_llm_request();
     hooks.shape_request(&mut request, ctx).await?;
 
-    // 4. LLM-Call (mit Retry-Hook)
+    // 4. LLM call (with retry hook)
     let response = ctx.send_request(request, hooks.retry_policy()).await?;
     hooks.observe_response(&response, ctx).await?;
 
-    // 5. Tool-Extraktion (delegiert an Parser)
+    // 5. Tool extraction (delegated to the parser)
     let (tool_requests, flow) = hooks.extract_tools(&response, ctx)?;
 
-    // 6. Spezial-Tool-Dispatch
+    // 6. Special-tool dispatch
     if let Some(decision) = hooks.intercept_tools(&tool_requests, ctx).await? {
         match decision { Break => return, GetUserInput => return, Continue => continue, ... }
     }
 
-    // 7. Tool-Ausführung (parallel oder sequenziell, vom Hook entschieden)
+    // 7. Tool execution (parallel or sequential, decided by the hook)
     let results = hooks.execute_tools(tool_requests, ctx).await?;
 
-    // 8. Ergebnisse zurück in den State
+    // 8. Results back into the state
     hooks.record_tool_results(results, ctx).await?;
 
     hooks.after_iteration(ctx).await?;
 }
 ```
 
-Die genannten `hooks.*`-Aufrufe bilden den **stabilen Vertrag** zwischen Kern und
-Konsument. Defaults im Kern verhalten sich „neutral" (kein Spezial-Verhalten), so dass
-ein minimaler Konsument keinerlei Plugin schreiben muss.
+The `hooks.*` calls above form the **stable contract** between core and consumer.
+Defaults in the core behave "neutrally" (no special behavior), so a minimal consumer
+does not have to write any plugin at all.
 
-### 3.4 Generischer `ToolContext`
+### 3.4 Generic `ToolContext`
 
-Statt eines monolithischen Structs wird der Tool-Kontext ein „Service Locator" mit
-typsicheren Extensions:
+Instead of a monolithic struct, the tool context becomes a "service locator" with
+type-safe extensions:
 
 ```rust
 // agent_tools_core::tool
@@ -469,17 +471,17 @@ pub struct ToolContext<'a, Ext: ToolContextExtension = ()> {
     pub tool_id: Option<&'a str>,
     pub permissions: Option<&'a dyn PermissionMediator>,
     pub cancel: &'a CancellationToken,
-    pub ext: &'a mut Ext,                 // anwendungs-spezifisch
+    pub ext: &'a mut Ext,                 // application-specific
 }
 
 pub trait ToolContextExtension: Send {
-    /// Optional: Lookup spezifischer Sub-Services nach TypeId.
+    /// Optional: lookup of specific sub-services by TypeId.
     fn get<T: 'static>(&self) -> Option<&T> { None }
     fn get_mut<T: 'static>(&mut self) -> Option<&mut T> { None }
 }
 ```
 
-Der `code-assistant` definiert dann einmalig:
+`code-assistant` then defines, once:
 
 ```rust
 struct CaExt {
@@ -492,36 +494,35 @@ struct CaExt {
 impl ToolContextExtension for CaExt { ... }
 ```
 
-und seine Tools erwarten `ToolContext<'_, CaExt>`. Tools fremder Anwendungen sehen ihre
-eigene Extension. `CommandExecutor` und `PermissionMediator` bleiben im Kern, weil sie
-schon generisch sind.
+and its tools expect `ToolContext<'_, CaExt>`. Tools of other applications see their own
+extension. `CommandExecutor` and `PermissionMediator` stay in the core because they are
+already generic.
 
-Alternativ-Design: ein heterogener Service-Locator über `AnyMap`/`TypeMap`. Der typisierte
-Ansatz ist sicherer, der `AnyMap`-Ansatz öffnet die Plugin-Architektur stärker.
+Alternative design: a heterogeneous service locator via `AnyMap`/`TypeMap`. The typed
+approach is safer; the `AnyMap` approach opens the plugin architecture up further.
 
-> **Hinweis:** Das Feld `cancel: &CancellationToken` in der Skizze ist *neue*
-> Funktionalität, keine Extraktion. Heute läuft Abbruch über
-> `ui.should_streaming_continue()` und (für Sub-Agents) die
-> `SubAgentCancellationRegistry`. Für die Extraktion zunächst weglassen und das
-> bestehende Verhalten beibehalten; ein Token kann später ergänzt werden.
+> **Note:** The `cancel: &CancellationToken` field in the sketch is *new*
+> functionality, not extraction. Today, cancellation runs through
+> `ui.should_streaming_continue()` and (for sub-agents) the
+> `SubAgentCancellationRegistry`. Leave it out for the extraction initially and keep
+> the existing behavior; a token can be added later.
 
-### 3.5 Hooks / Plugins (das Herzstück)
+### 3.5 Hooks / plugins (the heart of it)
 
-Die wichtigsten Erweiterungspunkte als kleine Traits, die die Default-Implementation
-„passthrough" macht.
+The most important extension points as small traits whose default implementations are
+"passthrough".
 
-> **Typisierungs-Entscheidung:** Die Hook-Traits müssen entweder (a) generisch über
-> `E: AgentExtensions` sein (`trait ToolInterceptor<E>`, gespeichert als
-> `Box<dyn ToolInterceptor<E>>` in der `HookRegistry<E>`), damit Hooks typsicher auf
-> `ctx.extensions: &mut E::State` zugreifen können, oder (b) der `LoopCtx` exponiert den
-> App-Zustand nur als `&mut dyn Any`. Die untenstehenden Skizzen lassen den Parameter der
-> Lesbarkeit halber weg — Variante (a) ist die Empfehlung; sie infiziert zwar Registry,
-> Builder und alle Hook-Definitionen mit dem Generic, bleibt aber objekt-sicher und
-> kompiliert ohne Downcasts. (Beispiel §5.3 implementiert bereits gegen
-> `LoopCtx<'_, CaExt>`.)
+> **Typing decision:** The hook traits must either (a) be generic over
+> `E: AgentExtensions` (`trait ToolInterceptor<E>`, stored as
+> `Box<dyn ToolInterceptor<E>>` in the `HookRegistry<E>`) so hooks can access
+> `ctx.extensions: &mut E::State` in a type-safe way, or (b) the `LoopCtx` exposes the
+> app state only as `&mut dyn Any`. The sketches below omit the parameter for
+> readability — option (a) is the recommendation; it does infect the registry, builder,
+> and all hook definitions with the generic, but it stays object-safe and compiles
+> without downcasts. (Example §5.3 already implements against `LoopCtx<'_, CaExt>`.)
 
 ```rust
-/// Greift in den Aufbau des System-Prompts ein.
+/// Participates in building the system prompt.
 #[async_trait]
 pub trait SystemPromptProvider: Send + Sync {
     async fn build(
@@ -530,7 +531,7 @@ pub trait SystemPromptProvider: Send + Sync {
     ) -> Result<String>;
 }
 
-/// Pre-/Post-Hooks der Iteration (Logging, Reminder injizieren, ...).
+/// Pre-/post-iteration hooks (logging, injecting reminders, ...).
 #[async_trait]
 pub trait IterationHook: Send + Sync {
     async fn before_iteration(&self, ctx: &mut LoopCtx<'_>) -> Result<()> { Ok(()) }
@@ -547,11 +548,11 @@ pub trait IterationHook: Send + Sync {
     async fn after_iteration(&self, ctx: &mut LoopCtx<'_>) -> Result<()> { Ok(()) }
 }
 
-/// Spezielle Tool-Namen abfangen (complete_task, name_session, …).
+/// Intercept special tool names (complete_task, name_session, …).
 #[async_trait]
 pub trait ToolInterceptor: Send + Sync {
-    /// Wird vor der Standard-Ausführung aufgerufen.
-    /// Rückgabe `Some(_)` ersetzt die Standard-Ausführung.
+    /// Called before the standard execution.
+    /// Returning `Some(_)` replaces the standard execution.
     async fn try_handle(
         &self,
         tool: &ToolRequest,
@@ -560,44 +561,44 @@ pub trait ToolInterceptor: Send + Sync {
 }
 
 pub enum InterceptOutcome {
-    /// Tool wurde abgehandelt; ToolResult ist optional.
+    /// Tool has been handled; the ToolResult is optional.
     Handled { result: Option<Box<dyn AnyOutput>>, hidden_in_ui: bool },
-    /// Tool soll Loop beenden.
+    /// Tool should end the loop.
     BreakLoop,
-    /// Tool soll Loop pausieren und auf User warten.
+    /// Tool should pause the loop and wait for the user.
     AwaitUser,
 }
 
-/// Strategie für parallele Ausführung (heute hartkodiert auf spawn_agent).
+/// Strategy for parallel execution (today hardcoded to spawn_agent).
 pub trait ToolDispatchPolicy: Send + Sync {
     fn partition<'r>(&self, requests: &'r [ToolRequest]) -> ToolBatchPlan<'r>;
 }
 
-/// Compaction-Policy.
+/// Compaction policy.
 pub trait CompactionPolicy: Send + Sync {
     fn should_compact(&self, snapshot: &ContextSnapshot) -> bool;
     fn compaction_prompt(&self) -> &str;
 }
 
-/// Retry-/Recovery-Politik (PromptTooLong, Streaming-Errors, ...).
+/// Retry/recovery policy (PromptTooLong, streaming errors, ...).
 pub trait RecoveryPolicy: Send + Sync {
     fn classify(&self, err: &anyhow::Error) -> RecoveryAction;
 }
 
 pub enum RecoveryAction {
-    Fail,                      // Fehler weiterreichen
+    Fail,                      // propagate the error
     RetryStream { delay: Duration },
-    ReduceContext,             // delegiert an `ContextReducer`
+    ReduceContext,             // delegates to `ContextReducer`
 }
 
 pub trait ContextReducer: Send + Sync {
     fn try_reduce(&self, ctx: &mut LoopCtx<'_>) -> Result<bool>;
 }
 
-/// Filter, der bestimmt, welche Tool-Folgen im Stream erlaubt sind.
-pub trait ToolUseFilter: Send + Sync { ... }   // Trait existiert bereits
+/// Filter that decides which tool sequences are allowed in the stream.
+pub trait ToolUseFilter: Send + Sync { ... }   // trait already exists
 
-/// Persistenter Zustand abstrahiert.
+/// Persistent state, abstracted.
 pub trait StatePersistence: Send + Sync {
     type Snapshot: Send + Sync;
     fn save(&mut self, snapshot: &Self::Snapshot) -> Result<()>;
@@ -605,8 +606,8 @@ pub trait StatePersistence: Send + Sync {
 }
 ```
 
-Hooks werden in einer `HookRegistry<E>` zusammengefasst und am Anfang der `AgentRuntime`-
-Konstruktion vom Konsumenten gesetzt, z. B. via Builder:
+Hooks are collected in a `HookRegistry<E>` and set by the consumer at the start of
+`AgentRuntime` construction, e.g. via a builder:
 
 ```rust
 let runtime = AgentRuntimeBuilder::<CaExt>::new(llm, ui)
@@ -625,10 +626,10 @@ let runtime = AgentRuntimeBuilder::<CaExt>::new(llm, ui)
     .build();
 ```
 
-### 3.6 Generischer `ToolRegistry` und `ToolSpec`
+### 3.6 Generic `ToolRegistry` and `ToolSpec`
 
-Statt eines globalen Singletons wird `ToolRegistry<Ext>` instantiierbar und Generic über
-die Tool-Context-Extension:
+Instead of a global singleton, `ToolRegistry<Ext>` becomes instantiable and generic over
+the tool context extension:
 
 ```rust
 pub struct ToolRegistry<Ext: ToolContextExtension> {
@@ -636,7 +637,7 @@ pub struct ToolRegistry<Ext: ToolContextExtension> {
 }
 ```
 
-`ToolScope` wird zu freien **Capability-Tags**:
+`ToolScope` becomes free-form **capability tags**:
 
 ```rust
 pub struct ToolSpec {
@@ -644,43 +645,44 @@ pub struct ToolSpec {
     pub description: &'static str,
     pub parameters_schema: serde_json::Value,
     pub annotations: Option<serde_json::Value>,
-    pub capabilities: &'static [&'static str], // z. B. "read_only", "edits_files"
+    pub capabilities: &'static [&'static str], // e.g. "read_only", "edits_files"
     pub hidden: bool,
     pub title_template: Option<&'static str>,
 }
 ```
 
-Selektion erfolgt über frei kombinierbare Filter-Funktionen, z. B.
-`registry.iter().filter(|t| t.has_capability("read_only"))`. Damit verschwindet die
-hartkodierte `ToolScope`-Enum aus dem Kern.
+Selection happens through freely combinable filter functions, e.g.
+`registry.iter().filter(|t| t.has_capability("read_only"))`. This removes the hardcoded
+`ToolScope` enum from the core.
 
-`is_explore_tool` / `is_write_tool` / `SmartToolFilter` werden zu reinen Konsumenten-
-Helfer, die die Capability-Tags der jeweiligen Tools auswerten — ohne Tool-Namen zu kennen.
+`is_explore_tool` / `is_write_tool` / `SmartToolFilter` become pure consumer helpers
+that evaluate the capability tags of the respective tools — without knowing tool names.
 
-### 3.7 Tool-Aufrufformat als Plugin (kein Kern-Bestandteil)
+### 3.7 Tool invocation format as a plugin (text formats outside the core)
 
-Der Agent-Kern darf **keine** XML-, Caret- oder Native-Spezifik enthalten. Er kennt nur
-abstrakte `ToolRequest`s, abstrakte LLM-Antworten und einen abstrakten Stream-Prozessor
-für die UI. Die Übersetzung zwischen einem konkreten Aufrufformat („Tool-Dialekt") und
-diesen abstrakten Begriffen wird über *ein* kleines Plugin-Trait gekapselt:
+The agent core must not contain any XML or Caret specifics. It knows only abstract
+`ToolRequest`s, abstract LLM responses, and an abstract stream processor for the UI —
+plus one trivial built-in default for native tool calling (see below). The translation
+between a concrete invocation format ("tool dialect") and these abstract concepts is
+encapsulated in *one* small plugin trait:
 
 ```rust
 // agent_core::tool_dialect
 
-/// Wie ein Tool-Aufruf zwischen LLM und Agent reist.
-/// Implementierungen leben im Konsumenten (z. B. `code_assistant::tool_dialects::xml`).
+/// How a tool call travels between LLM and agent.
+/// Implementations live in the consumer (e.g. `code_assistant::tool_dialects::xml`).
 ///
-/// Objekt-Sicherheit: Der Trait nimmt bewusst nirgends `&ToolRegistry<...>` entgegen
-/// (das wäre eine generische Methode → `Box<dyn ToolDialect>` unmöglich). Stattdessen
-/// reicht der Aufrufer vor-gefilterte `ToolSpec`/`ToolDefinition`-Slices durch. Das
-/// entkoppelt den Dialekt zugleich vom Registry-Typ.
+/// Object safety: the trait deliberately never takes `&ToolRegistry<...>` anywhere
+/// (that would be a generic method → `Box<dyn ToolDialect>` impossible). Instead, the
+/// caller passes pre-filtered `ToolSpec`/`ToolDefinition` slices. This also decouples
+/// the dialect from the registry type.
 pub trait ToolDialect: Send + Sync {
-    /// Aus einer fertigen LLM-Antwort `ToolRequest`s extrahieren.
-    /// `order_offset` zählt bereits extrahierte Tools des Requests weiter (heutige
-    /// Parser-Signatur), damit generierte Tool-IDs eindeutig bleiben.
-    /// Liefert zusätzlich eine ggf. an der ersten Tool-Stelle abgeschnittene Variante
-    /// der Response zurück, damit Folge-Text nach einem Tool-Block nicht ins Transkript
-    /// gelangt.
+    /// Extract `ToolRequest`s from a completed LLM response.
+    /// `order_offset` continues counting tools already extracted for this request
+    /// (today's parser signature), so generated tool IDs stay unique.
+    /// Additionally returns a variant of the response possibly truncated at the first
+    /// tool position, so trailing text after a tool block does not end up in the
+    /// transcript.
     fn extract_requests(
         &self,
         response: &LLMResponse,
@@ -688,24 +690,24 @@ pub trait ToolDialect: Send + Sync {
         order_offset: usize,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)>;
 
-    /// Einen `ToolRequest` zurück in die Text-Repräsentation dieses Dialekts
-    /// formatieren. Der Kern braucht das für den Format-on-save-Pfad (§2.1): wenn ein
-    /// Tool seinen Input während der Ausführung ändert, wird der Aufruf im
-    /// Message-History-Text (per `start_offset`/`end_offset`) ersetzt.
+    /// Format a `ToolRequest` back into this dialect's text representation. The core
+    /// needs this for the format-on-save path (§2.1): when a tool changes its input
+    /// during execution, the call is replaced in the message-history text (via
+    /// `start_offset`/`end_offset`).
     fn format_tool_request(&self, request: &ToolRequest) -> Result<String>;
 
-    /// Ob Tool-Ergebnisse als native `ToolResult`-Blöcke zur API reisen (Native)
-    /// oder vor dem Request in Text umgewandelt werden müssen (XML/Caret —
-    /// heutiges `convert_tool_results_to_text`). Die Umwandlung selbst kann der Kern
-    /// übernehmen, da er die gerenderten Tool-Outputs kennt; der Dialekt liefert nur
-    /// die Entscheidung.
+    /// Whether tool results travel to the API as native `ToolResult` blocks (native)
+    /// or must be converted to text before the request (XML/Caret — today's
+    /// `convert_tool_results_to_text`). The core can perform the conversion itself,
+    /// since it knows the rendered tool outputs; the dialect only provides the
+    /// decision.
     fn uses_native_tool_results(&self) -> bool;
 
-    /// Ein Stream-Prozessor, der `StreamingChunk`s in `DisplayFragment`s übersetzt.
-    /// `hidden_tools` ersetzt den heutigen Singleton-Zugriff der Prozessoren
-    /// (`ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent)` — Scope dort
-    /// heute sogar hartcodiert): der Aufrufer reicht ein Prädikat oder eine
-    /// Namens-Menge der versteckten Tools herein.
+    /// A stream processor that translates `StreamingChunk`s into `DisplayFragment`s.
+    /// `hidden_tools` replaces the processors' current singleton access
+    /// (`ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent)` — the scope is
+    /// even hardcoded there today): the caller passes in a predicate or a name set of
+    /// the hidden tools.
     fn stream_processor(
         &self,
         ui: Arc<dyn AgentUi>,
@@ -713,76 +715,76 @@ pub trait ToolDialect: Send + Sync {
         hidden_tools: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     ) -> Box<dyn StreamProcessor>;
 
-    /// Wie der Dialekt die LLM-Tool-Liste in den `LLMRequest` einspeist:
-    /// - Native: `Some(tool_definitions)` — die LLM-API kennt die Tools nativ.
-    /// - XML / Caret: `None` — die Tools werden im System-Prompt beschrieben.
+    /// How the dialect feeds the LLM tool list into the `LLMRequest`:
+    /// - Native: `Some(tool_definitions)` — the LLM API knows the tools natively.
+    /// - XML / Caret: `None` — the tools are described in the system prompt.
     fn populate_request_tools(&self, tools: &[ToolDefinition]) -> Option<Vec<ToolDefinition>>;
 
-    /// Optional: Block für die Tool-Doku im System-Prompt. `None` für Native.
+    /// Optional: block for the tool docs in the system prompt. `None` for native.
     fn render_tool_section_for_prompt(&self, tools: &[ToolDefinition]) -> Option<String>;
 
-    /// Optional: Format-Beschreibung („So rufst du Tools auf …"). `None` für Native.
+    /// Optional: format description ("this is how you call tools …"). `None` for native.
     fn render_format_section_for_prompt(&self) -> Option<String>;
 
-    /// Erkennt, ob eine bereits gespeicherte Nachricht einen Tool-Aufruf in *diesem*
-    /// Dialekt enthält (für Normalisierung beim Laden des Verlaufs).
+    /// Detects whether an already stored message contains a tool invocation in *this*
+    /// dialect (for normalization when loading the history).
     fn message_contains_invocation(&self, message: &Message) -> bool;
 }
 ```
 
-Damit liegt die heutige `parser_registry` / `formatter` / `system_message`-Maschinerie
-für die Text-Formate im Konsumenten. Der `code_assistant` liefert `XmlDialect` und
-`CaretDialect` als interne Implementierungen und wählt zur Laufzeit anhand der
-Session-Konfiguration (`ToolSyntax`) eine aus — `ToolSyntax::Native` mappt auf die
-Default-Implementierung des Kerns.
+With this, today's `parser_registry` / `formatter` / `system_message` machinery for the
+text formats lives in the consumer. `code_assistant` ships `XmlDialect` and
+`CaretDialect` as internal implementations and picks one at runtime based on the session
+configuration (`ToolSyntax`) — `ToolSyntax::Native` maps to the core's default
+implementation.
 
-Was der Kern liefert:
+What the core ships:
 
-- Trait `ToolDialect` und Trait `StreamProcessor` (klein, syntaxneutral).
-- **Genau eine Default-Implementierung: natives Tool-Calling** (`dialect/native.rs`).
-  Sie ist trivial — `ToolUse`-Blöcke durchreichen, `populate_request_tools` liefert die
-  Tool-Definitionen, keine Prompt-Doku, Stream-Prozessor ist der heutige
-  `json_processor` — und sie ist das, was praktisch jeder Drittkonsument will.
-- Der `AgentRuntimeBuilder` akzeptiert optional einen `Box<dyn ToolDialect>`;
-  ohne Angabe gilt der Native-Default.
-- Der `SystemPromptProvider` (siehe §3.5) bekommt den Dialekt durchgereicht und kann
-  ihn nach `render_format_section_for_prompt` und `render_tool_section_for_prompt`
-  fragen, wenn er den System-Prompt aufbaut.
+- The `ToolDialect` trait and the `StreamProcessor` trait (small, syntax-neutral).
+- **Exactly one default implementation: native tool calling** (`dialect/native.rs`).
+  It is trivial — pass `ToolUse` blocks through, `populate_request_tools` returns the
+  tool definitions, no prompt docs, the stream processor is today's `json_processor` —
+  and it is what practically every third-party consumer wants.
+- The `AgentRuntimeBuilder` optionally accepts a `Box<dyn ToolDialect>`; without one,
+  the native default applies.
+- The `SystemPromptProvider` (see §3.5) receives the dialect and can ask it for
+  `render_format_section_for_prompt` and `render_tool_section_for_prompt` when building
+  the system prompt.
 
-Damit gilt:
+Consequently:
 
-- **Keine `ToolSyntax`-Enum im Kern.** Sie bleibt als Auswahl-Helfer (CLI-Argument,
-  Session-Konfiguration, Persistenz) im `code_assistant` — dort ist der Name etabliert
-  und serialisiert, er wird **nicht umbenannt**.
-- **Keine globale `ParserRegistry`** mehr. Es gibt einfach immer genau einen Dialekt,
-  der pro Agent-Instanz gesetzt wird.
-- **Kein `agent_tools_syntax`-Crate.** Die heutigen XML-/Caret-Implementierungen
-  wandern als interne Module in den `code_assistant` (unter `tool_dialects/`).
-  Wenn jemand sie wirklich teilen will, kann das später ein optionales Helfer-Crate
-  werden — aber das ist ausdrücklich kein Pflichtteil.
-- **Tools selbst bleiben dialektfrei.** Sie kennen weiterhin nur ihr JSON-Schema und
-  ihren `Render`-Output. `multiline_params`, Schema-`examples` etc. sind reine
-  Zusatz-Metadaten für Text-Dialekte — ein Konsument, der beim Native-Default bleibt,
-  kann sie vollständig ignorieren.
+- **No `ToolSyntax` enum in the core.** It stays in `code_assistant` as the selection
+  helper (CLI argument, session configuration, persistence) — the name is established
+  and serialized there, and it is **not renamed**.
+- **No global `ParserRegistry`** anymore. There is simply always exactly one dialect,
+  set per agent instance.
+- **No `agent_tools_syntax` crate.** Today's XML/Caret implementations move as internal
+  modules into `code_assistant` (under `tool_dialects/`). If someone really wants to
+  share them, that can become an optional helper crate later — but it is explicitly not
+  a mandatory part.
+- **Tools themselves remain dialect-free.** They continue to know only their JSON schema
+  and their `Render` output. `multiline_params`, schema `examples`, etc. are pure
+  extra metadata for text dialects — a consumer staying on the native default can
+  ignore them completely.
 
-Die Folgen für ein paar konkrete heutige Aufräumarbeiten:
+Implications for a few concrete cleanup items:
 
-- `is_multiline_param` (heute hartcodierte Allow-Liste) ist ein Detail des XML-/Caret-
-  Dialekts, nicht des Kerns. Es darf weiterhin im `code_assistant` leben — und dort
-  am besten datengetrieben (z. B. ein `multiline: true` im JSON-Schema-Feld oder über
-  eine Helper-Methode am `Tool`-Trait wie `multiline_params() -> &'static [&'static str]`,
-  damit die Liste neben dem Tool steht und nicht zentral.).
-- Die XML-/Caret-Doku-Generatoren mit ihren „magic placeholder names" (`project`, `path`,
-  `regex`, …) sind ebenfalls reines Dialekt-Detail. Mittelfristig sollten sie ihre
-  Beispiel-Werte aus `examples` im JSON-Schema beziehen, damit die Liste nicht mehr
-  Tool-Namen kennt — aber auch das passiert im `code_assistant`, nicht im Kern.
-- `SerializedToolExecution::deserialize` greift heute auf `ToolRegistry::global()` zu;
-  beim Crate-Split bekommt es die `ToolRegistry<Ext>` als Argument (siehe §3.10). Das
-  ist unabhängig vom Dialekt-Thema.
+- `is_multiline_param` (today a hardcoded allow-list) is a detail of the XML/Caret
+  dialect, not of the core. It may keep living in `code_assistant` — ideally
+  data-driven there (e.g. a `multiline: true` field in the JSON schema, or a helper
+  method on the `Tool` trait like `multiline_params() -> &'static [&'static str]`, so
+  the list sits next to the tool instead of in a central place).
+- The XML/Caret doc generators with their "magic placeholder names" (`project`, `path`,
+  `regex`, …) are likewise pure dialect detail. Medium-term they should take their
+  example values from `examples` in the JSON schema so the list no longer knows tool
+  names — but that too happens in `code_assistant`, not in the core.
+- `SerializedToolExecution::deserialize` accesses `ToolRegistry::global()` today; with
+  the crate split it receives the `ToolRegistry<Ext>` as an argument (see §3.10). That
+  is independent of the dialect topic.
 
-### 3.8 Generisches UI-Event-Set
+### 3.8 Generic UI event set
 
-Im Kern existiert nur ein **kleines, agent-zentrisches** Event-Set:
+The core contains only a **small, agent-centric** event set:
 
 ```rust
 pub enum AgentUiEvent {
@@ -807,20 +809,20 @@ pub enum AgentUiEvent {
     ShowTransientStatus(String),
     ClearTransientStatus,
 
-    /// Anwendungs-spezifische Events.
+    /// Application-specific events.
     Custom(Box<dyn Any + Send + Sync>),
 }
 ```
 
-Die heutigen `UiEvent`-Varianten zu Sessions, Branching, Worktrees, Sandbox, Drafts etc.
-gehören in den `code_assistant`-Layer und reisen über `AgentUiEvent::Custom`. Damit ist
-das `UserInterface`-Trait für Drittanwendungen klein und überschaubar.
+Today's `UiEvent` variants for sessions, branching, worktrees, sandbox, drafts etc.
+belong in the `code_assistant` layer and travel via `AgentUiEvent::Custom`. This keeps
+the `UserInterface` trait small and manageable for third-party applications.
 
-### 3.9 Generische Persistenz
+### 3.9 Generic persistence
 
-`StatePersistence` wird über den Snapshot-Typ generisch. Der Kern erlaubt einen
-„Standard-Snapshot" mit MessageTree + ToolExecutions, ergänzbar mit anwendungs-
-spezifischen Feldern:
+`StatePersistence` becomes generic over the snapshot type. The core provides a
+"standard snapshot" with MessageTree + tool executions, extensible with
+application-specific fields:
 
 ```rust
 pub trait StatePersistence: Send + Sync {
@@ -831,120 +833,119 @@ pub trait StatePersistence: Send + Sync {
 
 pub struct CoreSnapshot {
     pub session_id: String,
-    pub message_tree: MessageTree,        // wie heute MessageNodes/active_path
+    pub message_tree: MessageTree,        // like today's MessageNodes/active_path
     pub tool_executions: Vec<ToolExecutionRecord>,
     pub next_request_id: u64,
     pub next_node_id: u64,
 }
 ```
 
-`code-assistant` setzt seinen Snapshot-Typ z. B. auf
-`(CoreSnapshot, CodeAssistantSessionExt)`, und die Serialisierung passiert in einem
-Wrapper-Persistence-Adapter.
+`code-assistant` sets its snapshot type to e.g.
+`(CoreSnapshot, CodeAssistantSessionExt)`, and serialization happens in a wrapper
+persistence adapter.
 
-`ToolExecution::deserialize` wird per Registry-Argument (statt Singleton) entkoppelt.
+`ToolExecution::deserialize` is decoupled via a registry argument (instead of the
+singleton).
 
-### 3.10 Persistenz von Tool-Outputs ohne Singleton
+### 3.10 Persisting tool outputs without the singleton
 
-Heute verlässt sich `SerializedToolExecution::deserialize` auf
-`ToolRegistry::global()`. In der Zielarchitektur muss der Lader die Registry kennen.
-Mehrere Optionen:
+Today `SerializedToolExecution::deserialize` relies on `ToolRegistry::global()`. In the
+target architecture, the loader must know the registry. Several options:
 
-1. **Registry als Argument**: `deserialize(&self, registry: &ToolRegistry<Ext>) -> ...`.
-2. **Selbst-beschreibende Outputs**: `ToolOutput` enthält genug Typ-Tag, um per
-   Deserializer-Map (von Output-Tag → `Box<dyn AnyOutput>`-Konstruktor) zu rekonstruieren.
+1. **Registry as argument**: `deserialize(&self, registry: &ToolRegistry<Ext>) -> ...`.
+2. **Self-describing outputs**: `ToolOutput` carries enough type tagging to reconstruct
+   via a deserializer map (output tag → `Box<dyn AnyOutput>` constructor).
 
-Variante 1 ist am einfachsten und passt zur generellen Linie „weg vom Singleton".
+Option 1 is the simplest and fits the general "away from singletons" direction.
 
-### 3.11 Konsumenten-Sicht: Was ein minimaler Einbau braucht
+### 3.11 Consumer view: what a minimal integration needs
 
-Der Lackmustest für die Architektur: Wie fühlt sich der Kern in einem *fremden* Projekt
-an, das nur eigene Tools einhängen will? Zielbild — drei Dinge sind Pflicht, alles
-andere hat Defaults:
+The litmus test for the architecture: how does the core feel in a *foreign* project
+that just wants to plug in its own tools? Target picture — three things are mandatory,
+everything else has defaults:
 
 ```rust
-// 1. Tool implementieren — kein Syntax-/Dialekt-Wissen nötig.
-//    Pflicht: Input (Deserialize), Output (Serialize + Render + ToolResult), spec(), execute().
+// 1. Implement a tool — no syntax/dialect knowledge needed.
+//    Required: Input (Deserialize), Output (Serialize + Render + ToolResult), spec(), execute().
 struct QueryDatabaseTool;
 
 #[async_trait]
 impl Tool for QueryDatabaseTool {
-    type Input = QueryInput;          // serde-Struct, beschreibt das JSON-Schema
-    type Output = QueryOutput;        // Render::render() = was das LLM als Ergebnis sieht
+    type Input = QueryInput;          // serde struct, describes the JSON schema
+    type Output = QueryOutput;        // Render::render() = what the LLM sees as the result
     fn spec(&self) -> ToolSpec { /* name, description, parameters_schema, capabilities */ }
     async fn execute(&self, ctx: &mut ToolContext<'_, MyExt>, input: &mut QueryInput)
         -> Result<QueryOutput> { ... }
 }
 
-// 2. Registry-Instanz befüllen (kein Singleton, keine Default-Tools).
+// 2. Fill a registry instance (no singleton, no default tools).
 let mut tools = ToolRegistry::new();
 tools.register(Box::new(QueryDatabaseTool));
 
-// 3. Runtime bauen — kein Dialekt, keine Hooks, keine Interceptors nötig.
+// 3. Build the runtime — no dialect, no hooks, no interceptors needed.
 let runtime = AgentRuntimeBuilder::new(llm_provider)
     .with_tools(tools)
     .with_system_prompt_text("You are a database assistant ...")
-    .with_ui(my_ui)                   // oder Default: No-op-UI für Headless-Betrieb
+    .with_ui(my_ui)                   // or default: no-op UI for headless operation
     .build();
 ```
 
-Dabei gilt:
+Notes:
 
-- **Syntax ist komplett ignorierbar.** Ohne `with_dialect(...)` läuft natives
-  Tool-Calling über die LLM-API (§3.7). Tool-Implementierungen berühren das Thema nie —
-  Dialekte konsumieren ausschließlich die `ToolSpec`-Daten. Dieselbe Registry läuft
-  unverändert unter XML/Caret, wenn der Konsument später doch einen Text-Dialekt setzt.
-  Syntax und Tools sind also auch in der Konfiguration vollständig orthogonal
-  (getrennte Builder-Aufrufe).
-- **`ToolContext`-Extension nur bei Bedarf.** Tools, die keine App-Dienste brauchen,
-  verwenden `Ext = ()`. Wer eigene Dienste (DB-Pool, eigene Config) braucht, definiert
-  einen Ext-Typ — das ist die einzige Stelle, an der der Konsument mit den Generics
-  des Kerns in Kontakt kommt, solange er keine Hooks schreibt.
-- **Alle übrigen Bausteine haben neutrale Defaults:** Hooks = passthrough,
-  Persistence = In-Memory, Compaction = aus, Recovery = generische
-  Streaming-Retry-Heuristik, `PermissionMediator` = None.
-- **Konsequenz für den Kern-`ToolContext`:** `command_executor` sollte dort `Option`
-  sein (oder in die Extension wandern) — ein Konsument ohne Shell-Tools soll keinen
-  `CommandExecutor` stellen und die Crate-Abhängigkeit nicht ziehen müssen. Die
-  Skizze in §3.4 ist entsprechend zu lesen.
+- **Syntax is completely ignorable.** Without `with_dialect(...)`, native tool calling
+  via the LLM API applies (§3.7). Tool implementations never touch the topic — dialects
+  consume only the `ToolSpec` data. The same registry runs unchanged under XML/Caret if
+  the consumer later sets a text dialect after all. Syntax and tools are therefore fully
+  orthogonal in configuration too (separate builder calls).
+- **`ToolContext` extension only when needed.** Tools that need no app services use
+  `Ext = ()`. Anyone needing their own services (DB pool, custom config) defines an Ext
+  type — that is the only place where the consumer touches the core's generics, as long
+  as they write no hooks.
+- **All remaining building blocks have neutral defaults:** hooks = passthrough,
+  persistence = in-memory, compaction = off, recovery = generic streaming-retry
+  heuristic, `PermissionMediator` = None.
+- **Consequence for the core `ToolContext`:** `command_executor` should be `Option`
+  there (or move into the extension) — a consumer without shell tools should not have
+  to provide a `CommandExecutor` or pull in the crate dependency. Read the sketch in
+  §3.4 accordingly.
 
-Was der Konsument bewusst *nicht* sieht: `ToolSyntax`, Parser, Formatter,
-Stream-Prozessoren für Text-Formate, Multiline-/Beispiel-Metadaten, Capability-Scoping
-(solange er alle Tools immer anbietet) und sämtliche code-assistant-Plugins.
+What the consumer deliberately does *not* see: `ToolSyntax`, parsers, formatters,
+stream processors for text formats, multiline/example metadata, capability scoping (as
+long as they always offer all tools), and all code-assistant plugins.
 
 ---
 
-## 4. Zuordnung der heutigen Spezial-Pfade auf Hooks
+## 4. Mapping today's special-case paths onto hooks
 
-| Heute (im `Agent`)                                   | Ziel                                       |
+| Today (in `Agent`)                                   | Target                                       |
 |------------------------------------------------------|---------------------------------------------|
-| `complete_task`-Spezial im `manage_tool_execution`   | **löschen, nachdem die Test-Mocks umgestellt sind** (siehe §2.1 und §6 Phase 1); `InterceptOutcome::BreakLoop` bleibt als Hook-Möglichkeit erhalten |
-| `name_session`-Spezial in `execute_tool`             | `ToolInterceptor::Handled { hidden_in_ui: true }` + `IterationHook::shape_request` für Reminder |
-| `update_plan` → Plan-Snapshot                        | `ToolInterceptor::after_success` Variante / `IterationHook::after_iteration` |
-| `spawn_agent` parallel mit `mode=read_only`          | `ToolDispatchPolicy::partition` im Plugin   |
-| `inject_naming_reminder_if_needed`                   | `IterationHook::shape_request`              |
-| `convert_tool_results_to_text` (XML/Caret)           | Kern-Funktion, gesteuert über `ToolDialect::uses_native_tool_results()` (§3.7) |
-| Format-on-save (`update_message_history_with_formatted_tool`, `notify_tool_parameter_updates`) | Kern-Funktion; nutzt `ToolDialect::format_tool_request` (§3.7) |
-| `render_tool_results_in_messages` (synthetic cancellations) | Kern-Funktion; bleibt generisch         |
-| `is_prompt_too_long_error` + `replace_large_tool_results` | `RecoveryPolicy` + `ContextReducer`     |
-| `is_retryable_streaming_error`                       | `RecoveryPolicy::classify`                  |
+| `complete_task` special case in `manage_tool_execution` | **delete after the test mocks are migrated** (see §2.1 and §6 Phase 1); `InterceptOutcome::BreakLoop` remains available as a hook option |
+| `name_session` special case in `execute_tool`        | `ToolInterceptor::Handled { hidden_in_ui: true }` + `IterationHook::shape_request` for the reminder |
+| `update_plan` → plan snapshot                        | `ToolInterceptor::after_success` variant / `IterationHook::after_iteration` |
+| `spawn_agent` parallel with `mode=read_only`         | `ToolDispatchPolicy::partition` in a plugin  |
+| `inject_naming_reminder_if_needed`                   | `IterationHook::shape_request`               |
+| `convert_tool_results_to_text` (XML/Caret)           | core function, controlled via `ToolDialect::uses_native_tool_results()` (§3.7) |
+| Format-on-save (`update_message_history_with_formatted_tool`, `notify_tool_parameter_updates`) | core function; uses `ToolDialect::format_tool_request` (§3.7) |
+| `render_tool_results_in_messages` (synthetic cancellations) | core function; stays generic             |
+| `is_prompt_too_long_error` + `replace_large_tool_results` | `RecoveryPolicy` + `ContextReducer`      |
+| `is_retryable_streaming_error`                       | `RecoveryPolicy::classify`                   |
 | `should_trigger_compaction` + `perform_compaction`   | `CompactionPolicy` + `ContextReducer::compact` |
-| `read_guidance_files` (AGENTS.md/CLAUDE.md)          | `SystemPromptProvider`-Plugin               |
-| `init_projects` / `file_trees` / `available_projects`| `SystemPromptProvider`-Plugin               |
-| `cached_system_prompts` / Modell-Mapping             | `SystemPromptProvider`-Implementierung      |
-| `tool_scope` / Diff-Blocks-Variante                  | `Capability`-Tags + Konfigurations-Flag     |
+| `read_guidance_files` (AGENTS.md/CLAUDE.md)          | `SystemPromptProvider` plugin                |
+| `init_projects` / `file_trees` / `available_projects`| `SystemPromptProvider` plugin                |
+| `cached_system_prompts` / model mapping              | `SystemPromptProvider` implementation        |
+| `tool_scope` / diff-blocks variant                   | capability tags + configuration flag         |
 | `pending_message_ref`, `update_activity_state`,
   `build_current_metadata`, `save_state` →
-  `ChatMetadata`-Update                               | bleibt im `code_assistant` (über `IterationHook::after_iteration` und ein `SessionExtension`); Kern hält nur `MessageTree`-Snapshot |
-| Sub-Agent-Output-JSON-Format (`SubAgentOutput`)      | bleibt im `code_assistant` als Tool-Output  |
-| Branching (`MessageNode`, `active_path`, …)          | optional als Feature `branching` im Kern    |
+  `ChatMetadata` update                               | stays in `code_assistant` (via `IterationHook::after_iteration` and a `SessionExtension`); the core only holds the `MessageTree` snapshot |
+| Sub-agent output JSON format (`SubAgentOutput`)      | stays in `code_assistant` as tool output     |
+| Branching (`MessageNode`, `active_path`, …)          | optionally as a `branching` feature in the core |
 
 ---
 
-## 5. Konkrete Typ-Skizzen
+## 5. Concrete type sketches
 
-> Diese Skizzen sind absichtlich grob gehalten. Sie sollen zeigen, wie sich die heutigen
-> Strukturen in die generischen Bausteine übersetzen.
+> These sketches are intentionally rough. They are meant to show how today's structures
+> translate into the generic building blocks.
 
 ### 5.1 `AgentConfig`
 
@@ -953,9 +954,9 @@ pub struct AgentConfig {
     pub max_streaming_retries: u32,
     pub streaming_retry_base_delay: Duration,
     pub default_tool_syntax: SyntaxId,
-    pub max_iterations: Option<u32>,         // Optional; None = unbegrenzt
-    // KEIN model_hint, KEIN sandbox_policy, KEIN init_path, KEIN initial_project — das
-    // sind code-assistant-Konzepte und gehören in dessen Extension.
+    pub max_iterations: Option<u32>,         // optional; None = unlimited
+    // NO model_hint, NO sandbox_policy, NO init_path, NO initial_project — those
+    // are code-assistant concepts and belong in its extension.
 }
 ```
 
@@ -976,7 +977,7 @@ pub struct LoopCtx<'a, E: AgentExtensions> {
 }
 ```
 
-### 5.3 Beispiel: `NameSessionInterceptor`
+### 5.3 Example: `NameSessionInterceptor`
 
 ```rust
 struct NameSessionInterceptor;
@@ -1005,7 +1006,7 @@ impl ToolInterceptor for NameSessionInterceptor {
 }
 ```
 
-### 5.4 Beispiel: `CodeAssistantSystemPrompt`
+### 5.4 Example: `CodeAssistantSystemPrompt`
 
 ```rust
 struct CodeAssistantSystemPrompt {
@@ -1018,15 +1019,15 @@ struct CodeAssistantSystemPrompt {
 #[async_trait]
 impl SystemPromptProvider for CodeAssistantSystemPrompt {
     async fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
-        // 1) Modell-spezifischen Basis-Prompt wählen
-        // 2) Syntax-Doc + Tool-Doc vom Parser holen
-        // 3) Projekt-File-Trees & AGENTS.md anhängen
-        // ... wie heute, aber kapselt den gesamten code-assistant-Anteil.
+        // 1) Select the model-specific base prompt
+        // 2) Get syntax doc + tool doc from the parser
+        // 3) Append project file trees & AGENTS.md
+        // ... like today, but encapsulates the entire code-assistant part.
     }
 }
 ```
 
-### 5.5 Beispiel: `SpawnAgentParallelPolicy`
+### 5.5 Example: `SpawnAgentParallelPolicy`
 
 ```rust
 struct SpawnAgentParallelPolicy;
@@ -1042,7 +1043,7 @@ impl ToolDispatchPolicy for SpawnAgentParallelPolicy {
 }
 ```
 
-### 5.6 Beispiel: `TokenRatioCompaction`
+### 5.6 Example: `TokenRatioCompaction`
 
 ```rust
 struct TokenRatioCompaction {
@@ -1056,229 +1057,231 @@ impl CompactionPolicy for TokenRatioCompaction { ... }
 
 ---
 
-## 6. Migrations-Plan in Phasen
+## 6. Migration plan in phases
 
-Die Umstellung lässt sich in mehreren Schritten durchführen, ohne dass die Anwendung
-zwischenzeitlich kaputt ist:
+The conversion can be carried out in several steps without the application being broken
+in between:
 
-### Phase 1 — Hook-Punkte einführen, ohne Crate-Split
+### Phase 1 — Introduce hook points, without a crate split
 
-0. `complete_task`-Pfad entfernen (siehe §2.1) — als Vorab-Commit. Eine Analyse von
-   `agent/tests.rs` zeigt, dass die Tests bereits in zwei Gruppen zerfallen:
-   - **Tests, die schon heute über eine Text-Response enden** (Compaction-Tests,
-     Prompt-too-long-Test, `test_write_file_outside_root_…` mit expliziter
-     `completion_response`): bei ihnen wird die auto-eingefügte `complete_task`-Response
-     **nie konsumiert** — sie liegt als totes Gewicht unten im Response-Stack. Diese
-     Tests beweisen, dass das natürliche Loop-Ende („Antwort ohne Tools →
-     GetUserInput") als Test-Terminator funktioniert. Keine Änderung nötig.
-   - **Tests, die nach einer Tool-Ausführung enden** (`test_unknown_tool_…`,
-     `test_invalid_xml_…`, `test_parse_error_…`, …): hier dient die auto-eingefügte
-     Response tatsächlich als Loop-Terminator. Diese Tests bekommen eine explizite
-     finale Text-Response (`create_test_response_text("…")`) in ihre Response-Liste.
+0. Remove the `complete_task` path (see §2.1) — as an upfront commit. An analysis of
+   `agent/tests.rs` shows the tests already fall into two groups:
+   - **Tests that already end on a text response today** (the compaction tests, the
+     prompt-too-long test, `test_write_file_outside_root_…` with its explicit
+     `completion_response`): for these, the auto-inserted `complete_task` response is
+     **never consumed** — it sits as dead weight at the bottom of the response stack.
+     These tests prove that the natural loop ending ("response without tools →
+     GetUserInput") works as a test terminator. No change needed.
+   - **Tests that end after a tool execution** (`test_unknown_tool_…`,
+     `test_invalid_xml_…`, `test_parse_error_…`, …): here the auto-inserted response
+     actually serves as the loop terminator. These tests get an explicit final text
+     response (`create_test_response_text("…")`) appended to their response list.
 
-   Empfehlung daher: das **Auto-Insert in `MockLLMProvider::new` ersatzlos streichen**
-   statt es auf eine Text-Response umzubauen — jeder Test deklariert seine vollständige
-   Response-Sequenz selbst. Das Magic-Insert kostet heute Verständnis (Kommentare wie
-   „popped last before complete_task" in den Tests belegen das), und der Mock schlägt
-   bei erschöpften Responses ohnehin laut fehl („No more mock responses"), so dass ein
-   vergessener Terminator sofort auffällt. Assertions auf `requests.len()` bleiben
-   unverändert gültig (gleiche Anzahl LLM-Aufrufe); nur die letzte Assistant-Message
-   in der History ist dann Text statt eines dangling `ToolUse`.
+   Recommendation therefore: **remove the auto-insert in `MockLLMProvider::new`
+   entirely** rather than converting it to a text response — every test declares its
+   complete response sequence itself. The magic insert costs comprehension today
+   (comments like "popped last before complete_task" in the tests prove it), and the
+   mock already fails loudly on exhausted responses ("No more mock responses"), so a
+   forgotten terminator is immediately visible. Assertions on `requests.len()` remain
+   valid unchanged (same number of LLM calls); only the last assistant message in the
+   history is then text instead of a dangling `ToolUse`.
 
-   Danach den Pfad in `manage_tool_execution` löschen (plus den
-   `complete_task`-Eintrag in `ui/gpui/shared/file_icons.rs`).
-1. Spezial-Pfade aus `Agent::run_single_iteration` in private Methoden extrahieren:
-   `intercept_special_tool`, `apply_naming_reminder`, `partition_parallel_tools`,
-   `compaction_policy`, `recovery_policy` — und den Format-on-save-Pfad
-   (`update_message_history_with_formatted_tool` + `notify_tool_parameter_updates`)
-   als eigene Einheit isolieren. Verhalten bleibt gleich.
-2. Globale `ToolRegistry::global()`-Aufrufe in Parser/Persistence durch ein injizierbares
-   Argument ersetzen (Compatibility-Wrapper, der weiter `global()` nutzt, bleibt vorerst).
-   Gleiches gilt für die Aufrufe in den Stream-Prozessoren und `title.rs` (§2.3) — dort
-   genügt zunächst ein injiziertes „is hidden"-Prädikat statt der ganzen Registry.
-3. `ToolContext` um eine `extensions: &mut dyn Any`-Backdoor erweitern, damit Tools, die
-   schon generischer sein könnten (`read_files`, `web_search`, …), keine `ProjectManager`-
-   Referenz mehr brauchen.
+   Afterwards, delete the path in `manage_tool_execution` (plus the `complete_task`
+   entry in `ui/gpui/shared/file_icons.rs`).
+1. Extract the special-case paths from `Agent::run_single_iteration` into private
+   methods: `intercept_special_tool`, `apply_naming_reminder`,
+   `partition_parallel_tools`, `compaction_policy`, `recovery_policy` — and isolate the
+   format-on-save path (`update_message_history_with_formatted_tool` +
+   `notify_tool_parameter_updates`) as its own unit. Behavior stays the same.
+2. Replace global `ToolRegistry::global()` calls in parser/persistence with an
+   injectable argument (a compatibility wrapper that keeps using `global()` remains for
+   now). The same applies to the calls in the stream processors and `title.rs` (§2.3) —
+   there, an injected "is hidden" predicate suffices initially instead of the whole
+   registry.
+3. Extend `ToolContext` with an `extensions: &mut dyn Any` backdoor so tools that could
+   already be more generic (`read_files`, `web_search`, …) no longer need a
+   `ProjectManager` reference.
 
-### Phase 2 — Plugin-Traits einführen
+### Phase 2 — Introduce plugin traits
 
-1. Traits `IterationHook`, `ToolInterceptor`, `ToolDispatchPolicy`, `CompactionPolicy`,
-   `RecoveryPolicy`, `ContextReducer`, `SystemPromptProvider`, `StatePersistence` als
-   Module unter `crates/code_assistant/src/agent/hooks/` anlegen.
-2. Existierende Spezial-Pfade als Plugin-Implementierungen umziehen (`PlanSnapshotHook`,
-   `NameSessionInterceptor`, `CodeAssistantSystemPrompt`, …).
-3. `Agent::run_single_iteration` ruft nur noch über die Hook-Registry. Tests bleiben
-   dieselben.
+1. Create the traits `IterationHook`, `ToolInterceptor`, `ToolDispatchPolicy`,
+   `CompactionPolicy`, `RecoveryPolicy`, `ContextReducer`, `SystemPromptProvider`,
+   `StatePersistence` as modules under `crates/code_assistant/src/agent/hooks/`.
+2. Move the existing special-case paths into plugin implementations
+   (`PlanSnapshotHook`, `NameSessionInterceptor`, `CodeAssistantSystemPrompt`, …).
+3. `Agent::run_single_iteration` only calls through the hook registry. Tests stay the
+   same.
 
-### Phase 3 — `ToolScope` → Capabilities, `is_multiline_param` → schema-driven
+### Phase 3 — `ToolScope` → capabilities, `is_multiline_param` → schema-driven
 
-1. `ToolSpec` um `capabilities: &'static [&'static str]` erweitern (parallel zu `supported_scopes`).
-2. `SmartToolFilter` und Sub-Agent-Logik auf Capabilities umstellen. Dabei auch die
-   `SubAgentRunner::run`-Signatur anpassen (sie nimmt heute `tool_scope: ToolScope`,
-   siehe §2.9) sowie die hartcodierte `ToolScope::Agent`-Annahme in den
-   Stream-Prozessoren auflösen.
-3. Multiline-Parameter und Doku-Beispiele aus dem JSON-Schema ableiten; `is_multiline_param`
-   und „magic placeholder names" entfernen.
-4. `ToolScope`-Enum entfernen oder zu `enum ToolScope(&'static str)` (just-a-tag) reduzieren.
-   Das schließt den MCP-Handler ein (`ToolScope::McpServer` → Capability-Filter, §2.12).
+1. Extend `ToolSpec` with `capabilities: &'static [&'static str]` (parallel to
+   `supported_scopes`).
+2. Switch `SmartToolFilter` and the sub-agent logic to capabilities. While at it, adapt
+   the `SubAgentRunner::run` signature (it takes `tool_scope: ToolScope` today, see
+   §2.9) and dissolve the hardcoded `ToolScope::Agent` assumption in the stream
+   processors.
+3. Derive multiline parameters and doc examples from the JSON schema; remove
+   `is_multiline_param` and the "magic placeholder names".
+4. Remove the `ToolScope` enum or reduce it to `enum ToolScope(&'static str)`
+   (just-a-tag). This includes the MCP handler (`ToolScope::McpServer` → capability
+   filter, §2.12).
 
-### Phase 4 — Crate-Split
+### Phase 4 — Crate split
 
-1. Neues Crate `agent_tools_core` anlegen, dorthin verschieben:
+1. Create the new crate `agent_tools_core`, moving there:
    `tools/core/{tool, dyn_tool, registry, render, result, spec, title}.rs`.
-2. Neues Crate `agent_core`: `agent/runner.rs`, neue Hook-Module, `MessageTree`,
-   `AgentUiEvent`-Minimum, `StatePersistence`-Trait, abstraktes `ToolDialect`-Trait
-   und `StreamProcessor`-Trait, dazu die **Native-Default-Implementierung** (inkl.
-   heutigem `json_processor` als Stream-Prozessor) — *aber keine XML-/Caret-
-   Implementierungen*.
+2. New crate `agent_core`: `agent/runner.rs`, the new hook modules, `MessageTree`, the
+   `AgentUiEvent` minimum, the `StatePersistence` trait, the abstract `ToolDialect`
+   trait and `StreamProcessor` trait, plus the **native default implementation**
+   (including today's `json_processor` as its stream processor) — *but no XML/Caret
+   implementations*.
 3. `code_assistant`:
-   - Verschiebt `tools/{parse, formatter, parser_registry, system_message}.rs` und
-     `ui/streaming/{xml,caret}_processor.rs` in ein internes Modul
-     `tool_dialects/` — organisiert **pro Dialekt** (`xml/`, `caret/`, siehe
-     Layout-Prinzipien in §3.1) — und implementiert dort `ToolDialect` +
-     `StreamProcessor` für XML und Caret. (`json_processor.rs` wandert als Teil der
-     Native-Default-Implementierung in den Kern, siehe Schritt 2.) Die zugehörigen
-     Tests (`*_processor_tests.rs`, `tools/tests.rs`-Anteile, Parser-Tests aus
-     `agent/tests.rs`) ziehen mit um. Diese Implementierungen bleiben Anwendungs-intern.
-   - `tool_use_filter.rs` (`SmartToolFilter`) bleibt im `code_assistant` — wertet
-     nach dem Refactoring Capability-Tags statt Tool-Namen aus (vgl. Phase 3).
-   - Implementiert `AgentExtensions` (`CaExt`, Snapshot, ToolExt).
-   - Stellt den MCP-Handler auf die Registry-Instanz und den neuen `ToolContext`
-     (mit `CaExt`) um — er ist der zweite In-Prozess-Konsument (§2.12).
-   - Verschiebt `UiEvent` in eine `code_assistant_ui`-Lib oder belässt sie und packt sie
-     als `AgentUiEvent::Custom`.
-   - Behält Branching, Sub-Agents, Sessions, Persistence-Files.
-4. Optional: `agent_persistence` mit JSON-File-Adapter herausziehen.
+   - Moves `tools/{parse, formatter, parser_registry, system_message}.rs` and
+     `ui/streaming/{xml,caret}_processor.rs` into an internal module `tool_dialects/` —
+     organized **per dialect** (`xml/`, `caret/`, see layout principles in §3.1) — and
+     implements `ToolDialect` + `StreamProcessor` for XML and Caret there.
+     (`json_processor.rs` moves into the core as part of the native default
+     implementation, see step 2.) The associated tests (`*_processor_tests.rs`, the
+     `tools/tests.rs` portions, parser tests from `agent/tests.rs`) move along. These
+     implementations stay application-internal.
+   - `tool_use_filter.rs` (`SmartToolFilter`) stays in `code_assistant` — after the
+     refactoring it evaluates capability tags instead of tool names (cf. Phase 3).
+   - Implements `AgentExtensions` (`CaExt`, snapshot, ToolExt).
+   - Switches the MCP handler to the registry instance and the new `ToolContext`
+     (with `CaExt`) — it is the second in-process consumer (§2.12).
+   - Moves `UiEvent` into a `code_assistant_ui` lib, or keeps it and wraps it as
+     `AgentUiEvent::Custom`.
+   - Keeps branching, sub-agents, sessions, persistence files.
+4. Optional: extract `agent_persistence` with a JSON file adapter.
 
-### Phase 5 — Aufräumen
+### Phase 5 — Cleanup
 
-1. `ToolRegistry::global()` entfernen; alle Aufrufer bekommen die Registry per Argument
-   oder über den `ToolContext`/`LoopCtx`. Aufruferliste umfasst neben Agent-Loop und
-   Parser auch: Stream-Prozessoren, `title.rs`, `formatter.rs`, MCP-Handler und
-   `SerializedToolExecution::deserialize`. Ebenso `ToolsConfig::global()` auflösen —
-   die Verfügbarkeits-Konfiguration wird beim Befüllen der Registry-Instanz übergeben.
-2. `ParserRegistry`-Singleton ersatzlos streichen — pro Agent existiert genau ein
-   `Box<dyn ToolDialect>`, das beim Bauen gesetzt wird. Die `ToolSyntax`-Enum entfällt
-   im Kern; im `code_assistant` darf sie als interner Auswahl-Helfer für die mitgelieferten
-   Dialekte bestehen bleiben.
-3. Sub-Agent-spezifische UI-Adapter ins `code_assistant` verschieben; im Kern bleibt
-   nur `SubAgentRunner`-Trait — und auch der ist optional.
-4. Resources (`compaction_prompt.md`, `tool_use_intro.md`, `system_prompts/*.md`) in
-   den `code_assistant` verschieben (keine Default-Prompts im Kern).
+1. Remove `ToolRegistry::global()`; all callers receive the registry by argument or via
+   the `ToolContext`/`LoopCtx`. Besides the agent loop and the parser, the caller list
+   includes: the stream processors, `title.rs`, `formatter.rs`, the MCP handler, and
+   `SerializedToolExecution::deserialize`. Likewise dissolve `ToolsConfig::global()` —
+   the availability configuration is passed when filling the registry instance.
+2. Drop the `ParserRegistry` singleton without replacement — per agent there is exactly
+   one `Box<dyn ToolDialect>`, set at build time. The `ToolSyntax` enum disappears from
+   the core; in `code_assistant` it may remain as the internal selection helper for the
+   bundled dialects.
+3. Move the sub-agent-specific UI adapters into `code_assistant`; only the
+   `SubAgentRunner` trait remains in the core — and even that is optional.
+4. Move the resources (`compaction_prompt.md`, `tool_use_intro.md`,
+   `system_prompts/*.md`) into `code_assistant` (no default prompts in the core).
 
-### Test-Migration (Querschnittsthema über alle Phasen)
+### Test migration (cross-cutting concern across all phases)
 
-Die bestehenden Tests sind das wichtigste Sicherheitsnetz des Refactorings — sie müssen
-pro Phase mitgedacht werden, nicht am Ende:
+The existing tests are the refactoring's most important safety net — they must be
+considered per phase, not at the end:
 
-- **`agent/tests.rs` (~2700 Zeilen) ist ein Mischbestand** und sollte beim Refactoring
-  entflochten werden:
-  - Die ersten ~365 Zeilen (`test_flexible_xml_parsing`, `test_replacement_xml_parsing`,
-    `test_mixed_tool_start_end`, `test_ignore_non_tool_tags`, …) sind **reine
-    XML-Parser-Tests**, die gar keinen `Agent` konstruieren — sie gehören zu den
-    Dialekt-Tests und ziehen mit nach `tool_dialects/` um (Phase 4, oder schon früher
-    als kostenloser Aufräum-Commit).
-  - Der Rest treibt den Loop über die öffentliche `Agent`-API mit `MockLLMProvider`,
-    `MockStatePersistence` und Mock-UI (überwiegend `ToolSyntax::Native`, einzelne
-    XML-/Caret-Fälle). Phase 1+2 lassen diese API unverändert — diese Tests bleiben als
-    Regressionsnetz bestehen. Einzige Vorab-Änderung: der `complete_task`-Terminator
-    bzw. das Auto-Insert in `MockLLMProvider::new` (siehe Phase 1, Schritt 0).
-- **`ui/streaming/{xml,caret,json}_processor_tests.rs` + `test_utils.rs`** sind bereits
-  sauber pro Prozessor getrennt — sie wandern in Phase 4 unverändert mit den Prozessoren
-  nach `tool_dialects/`.
-- **Direkte `ToolContext`-Konstruktion** gibt es an genau zwei Test-Stellen: dem
-  `#[cfg(test)]`-Konstruktor `ToolContext::new` und `tests/format_on_save_tests.rs`.
-  Jede `ToolContext`-Änderung (Phase 1.3 `dyn Any`-Backdoor, Phase 4 generisches `Ext`)
-  betrifft genau diese beiden Stellen; den Test-Konstruktor als einzigen Einstiegspunkt
-  beibehalten und mitziehen.
-- **Unit-Tests in den Tool-Impls** (`read_files.rs`, `view_images.rs`,
-  `view_documents.rs`, …) holen sich `ToolRegistry::global()`. Beim Umstieg auf
-  Registry-Instanzen (Phase 4/5) bauen sie sich stattdessen eine lokale Registry mit nur
-  den benötigten Tools — mechanische Änderung und zugleich ein Gewinn an Test-Isolation
-  (heute teilen alle Tests den `OnceLock`-Zustand inkl. `ToolsConfig`).
-- **`tools/tests.rs` (Parser-/Formatter-Tests, ~1300 Zeilen)** sind faktisch
-  Dialekt-Tests: sie wandern in Phase 4 zusammen mit dem Code nach
-  `code_assistant::tool_dialects/` (kein Umschreiben, nur Verschieben + Pfade).
-- **`system_message.rs`-Tests** referenzieren `ToolScope::Agent` und die
-  `ParserRegistry` — sie werden in Phase 3 (Capabilities) bzw. Phase 4 (Dialekt statt
-  Registry) angepasst.
-- **`MockStatePersistence`** implementiert `AgentStatePersistence` gegen das konkrete
-  `SessionState`; beim Umstieg auf den snapshot-generischen `StatePersistence`-Trait
-  (Phase 4) wird er zum generischen In-Memory-Adapter — gehört dann sinnvollerweise als
-  Test-Helfer in den Kern (`agent_core`), damit Drittkonsumenten ihn mitnutzen können.
-- **Neu hinzukommend:** isolierte Unit-Tests pro Plugin/Hook (Phase 2) — das ist ein
-  Teil des in §8 versprochenen Testbarkeits-Gewinns und sollte direkt beim Umzug der
-  Spezial-Pfade entstehen, solange das alte Verhalten als Referenz danebenliegt.
-
----
-
-## 7. Offene Fragen / Designentscheidungen
-
-1. **Branching im Kern oder im Konsumenten?** Das `MessageTree`-Modell ist nicht
-   trivial, aber auch nicht universal. Vorschlag: Im Kern hinter Feature-Flag
-   `branching` anbieten, mit linearer Default-Variante.
-2. **`SubAgentRunner` im Kern?** Sub-Agenten sind ein Re-Entry des Agent-Loops mit
-   eigenem State; die Funktionalität ist im Kern denkbar, aber das konkrete UI-Adapter-
-   und Output-Format ist `code_assistant`-spezifisch. Vorschlag: Im Kern nur ein
-   abstraktes Trait, alles weitere im Konsumenten.
-3. **Statische vs. dynamische Tool-Capabilities.** Statische `&'static [&'static str]`
-   sind billig und reichen vermutlich; alternativ ein Bitset / typsichere Capabilities.
-4. **Persistenz von `Box<dyn AnyOutput>`.** Heute gelöst über Tool-Name + Registry.
-   Beim Crate-Split muss die Persistenz entweder die Konsumenten-Registry kennen
-   (übergebbar) oder Tool-Outputs bringen ihre Tags selbst mit.
-5. **Streaming-UI-Events vs. Plugin-Events.** Manche heute existierenden UI-Events
-   („Worktree Update", „Update Plan") werden vom Agent-Loop ausgelöst. Sie müssen über
-   `AgentUiEvent::Custom` reisen. Das vereinheitlicht UI-Strom, kostet aber etwas
-   Type-Safety.
-6. **Synchrone vs. asynchrone Hooks.** Manche Hooks (z. B. `ToolDispatchPolicy::partition`)
-   laufen sehr häufig und sollten synchron bleiben. Andere (`CompactionPolicy::run`)
-   müssen async sein. Aktuelle Skizze trifft diese Trennung bereits.
-7. **Mehrere Hooks gleichen Typs.** Praktisch nützlich (Composition!). Reihenfolge muss
-   deterministisch sein; Vorschlag: `IterationHook`s laufen in Registrierungsreihenfolge,
-   `ToolInterceptor`s im First-Match-Wins-Stil.
-8. **Naming — entschieden.** Die `ToolSyntax`-Enum behält ihren Namen und bleibt im
-   `code_assistant` (CLI-Argument, Session-Konfiguration, serialisierte Felder — ein
-   Rename hätte nur Migrations-Kosten). Das neue Kern-Trait heißt `ToolDialect`, weil
-   es mehr als Syntax bündelt (Parsing, Rück-Formatierung, Streaming, Prompt-Doku,
-   Request-Bestückung) und „Native" gar keine Text-Syntax hat. Die beiden Namen
-   koexistieren an der Grenze: `ToolSyntax` ist Konfigurations-Vokabular des
-   Konsumenten, `ToolDialect` die Kern-Abstraktion.
-9. **Generics-Budget.** `AgentExtensions` mit drei Associated Types macht
-   `AgentRuntime<E>`, `HookRegistry<E>`, `ToolRegistry<E::ToolExt>` und alle Hook-Traits
-   generisch (vgl. Hinweis in §3.5). Das ist typsicher, aber der teuerste Teil des
-   Designs. Vor Phase 4 bewusst entscheiden, ob alle drei Typ-Parameter nötig sind —
-   z. B. könnte der Kern immer einen festen `CoreSnapshot` persistieren (§3.9) und
-   App-Felder dem Persistence-Adapter des Konsumenten überlassen; dann entfällt
-   `E::Snapshot`. Phase 1–3 erzwingen noch keine dieser Entscheidungen.
+- **`agent/tests.rs` (~2,700 lines) is a mixed inventory** and should be disentangled
+  during the refactoring:
+  - The first ~365 lines (`test_flexible_xml_parsing`, `test_replacement_xml_parsing`,
+    `test_mixed_tool_start_end`, `test_ignore_non_tool_tags`, …) are **pure XML parser
+    tests** that don't construct an `Agent` at all — they belong with the dialect tests
+    and move to `tool_dialects/` (Phase 4, or earlier as a free cleanup commit).
+  - The rest drives the loop through the public `Agent` API with `MockLLMProvider`,
+    `MockStatePersistence`, and a mock UI (predominantly `ToolSyntax::Native`, a few
+    XML/Caret cases). Phases 1+2 leave this API unchanged — these tests remain as the
+    regression net. The only upfront change: the `complete_task` terminator / the
+    auto-insert in `MockLLMProvider::new` (see Phase 1, step 0).
+- **`ui/streaming/{xml,caret,json}_processor_tests.rs` + `test_utils.rs`** are already
+  cleanly separated per processor — in Phase 4 they move unchanged along with the
+  processors to `tool_dialects/`.
+- **Direct `ToolContext` construction** exists at exactly two test sites: the
+  `#[cfg(test)]` constructor `ToolContext::new` and `tests/format_on_save_tests.rs`.
+  Every `ToolContext` change (Phase 1.3 `dyn Any` backdoor, Phase 4 generic `Ext`)
+  affects exactly these two places; keep the test constructor as the single entry point
+  and evolve it along.
+- **Unit tests inside the tool impls** (`read_files.rs`, `view_images.rs`,
+  `view_documents.rs`, …) fetch `ToolRegistry::global()`. When switching to registry
+  instances (Phase 4/5), they instead build a local registry with only the tools they
+  need — a mechanical change and at the same time a win in test isolation (today all
+  tests share the `OnceLock` state including `ToolsConfig`).
+- **`tools/tests.rs` (parser/formatter tests, ~1,300 lines)** are effectively dialect
+  tests: in Phase 4 they move together with the code to
+  `code_assistant::tool_dialects/` (no rewriting, just moving + paths).
+- **The `system_message.rs` tests** reference `ToolScope::Agent` and the
+  `ParserRegistry` — they are adapted in Phase 3 (capabilities) and Phase 4 (dialect
+  instead of registry) respectively.
+- **`MockStatePersistence`** implements `AgentStatePersistence` against the concrete
+  `SessionState`; when switching to the snapshot-generic `StatePersistence` trait
+  (Phase 4) it becomes a generic in-memory adapter — at that point it sensibly belongs
+  in the core (`agent_core`) as a test helper so third-party consumers can use it too.
+- **Newly added:** isolated unit tests per plugin/hook (Phase 2) — this is part of the
+  testability gain promised in §8 and should be written right when the special-case
+  paths move, while the old behavior is still sitting next to it as a reference.
 
 ---
 
-## 8. Was die Refactoring-Investition liefert
+## 7. Open questions / design decisions
 
-- **Wiederverwendbarer Kern:** Andere Anwendungen (z. B. domänenspezifische Assistenten,
-  Test-Harnesse, MCP-Wrapper) können den Agent-Loop ohne Fork nutzen.
-- **Klarere Verantwortlichkeiten:** Spezialfälle (Plan, Compaction, Sub-Agent, Naming,
-  Recovery) leben in eigenen Modulen statt im 2000-Zeiler `runner.rs`.
-- **Bessere Testbarkeit:** Jeder Hook ist isoliert testbar; der Kern-Loop hat keine
-  Anwendungs-Tools-Tests mehr.
-- **Saubere Erweiterung der Tool-Syntaxen:** Drittanbieter können ein Format hinzufügen,
-  ohne den Kern zu patchen.
-- **Wegfall der globalen Registries:** Mehrere Agenten unterschiedlicher Tool-Sets
-  innerhalb eines Prozesses werden möglich (heute teilen alle eine `OnceLock`).
-- **Vorbereitung auf SDK-Auslieferung:** Der Kern lässt sich als externes Crate (oder
-  als `cargo install agent-core`-Binary für ein „Headless Agent SDK") publishen.
+1. **Branching in the core or in the consumer?** The `MessageTree` model is not
+   trivial, but not universal either. Proposal: offer it in the core behind a
+   `branching` feature flag, with a linear default variant.
+2. **`SubAgentRunner` in the core?** Sub-agents are a re-entry of the agent loop with
+   their own state; the functionality is conceivable in the core, but the concrete UI
+   adapter and output format are `code_assistant`-specific. Proposal: only an abstract
+   trait in the core, everything else in the consumer.
+3. **Static vs. dynamic tool capabilities.** Static `&'static [&'static str]` are cheap
+   and probably sufficient; alternatively a bitset / type-safe capabilities.
+4. **Persistence of `Box<dyn AnyOutput>`.** Today solved via tool name + registry. With
+   the crate split, persistence must either know the consumer registry (passable) or
+   tool outputs must carry their own tags.
+5. **Streaming UI events vs. plugin events.** Some of today's UI events ("worktree
+   update", "update plan") are triggered by the agent loop. They must travel via
+   `AgentUiEvent::Custom`. That unifies the UI stream but costs some type safety.
+6. **Synchronous vs. asynchronous hooks.** Some hooks (e.g.
+   `ToolDispatchPolicy::partition`) run very frequently and should stay synchronous.
+   Others (`CompactionPolicy::run`) must be async. The current sketch already makes
+   this distinction.
+7. **Multiple hooks of the same type.** Practically useful (composition!). Order must
+   be deterministic; proposal: `IterationHook`s run in registration order,
+   `ToolInterceptor`s in first-match-wins style.
+8. **Naming — decided.** The `ToolSyntax` enum keeps its name and stays in
+   `code_assistant` (CLI argument, session configuration, serialized fields — a rename
+   would bring only migration costs). The new core trait is named `ToolDialect`,
+   because it bundles more than syntax (parsing, back-formatting, streaming, prompt
+   docs, request population) and "Native" has no text syntax at all. The two names
+   coexist at the boundary: `ToolSyntax` is the consumer's configuration vocabulary,
+   `ToolDialect` the core abstraction.
+9. **Generics budget.** `AgentExtensions` with three associated types makes
+   `AgentRuntime<E>`, `HookRegistry<E>`, `ToolRegistry<E::ToolExt>` and all hook traits
+   generic (cf. the note in §3.5). That is type-safe, but the most expensive part of
+   the design. Before Phase 4, consciously decide whether all three type parameters are
+   needed — e.g. the core could always persist a fixed `CoreSnapshot` (§3.9) and leave
+   app fields to the consumer's persistence adapter; then `E::Snapshot` disappears.
+   Phases 1–3 do not force any of these decisions yet.
 
 ---
 
-## 9. Empfohlene Reihenfolge
+## 8. What the refactoring investment delivers
 
-1. Phase 1 + 2 (refactoren, ohne Crate-Split): hoher Mehrwert, geringe Risiken, bringt
-   die Architektur in eine plug-bare Form.
-2. Phase 3 (ToolScope → Capabilities, schema-driven Defaults): mittlerer Aufwand, beendet
-   die hartkodierten Tool-Namen-Listen.
-3. Phase 4 (Crate-Split): hauptsächlich Verschiebearbeit; danach kann der Kern getrennt
-   versioniert werden.
-4. Phase 5 (Aufräumen): Singleton-Entfernung, Resource-Files-Move, Sub-Agent-Trennung.
+- **Reusable core:** other applications (e.g. domain-specific assistants, test
+  harnesses, MCP wrappers) can use the agent loop without a fork.
+- **Clearer responsibilities:** special cases (plan, compaction, sub-agent, naming,
+  recovery) live in their own modules instead of the 2,000-line `runner.rs`.
+- **Better testability:** every hook is testable in isolation; the core loop no longer
+  carries application-tool tests.
+- **Clean extension of tool syntaxes:** third parties can add a format without patching
+  the core.
+- **Removal of the global registries:** multiple agents with different tool sets within
+  one process become possible (today they all share one `OnceLock`).
+- **Preparation for SDK delivery:** the core can be published as an external crate (or
+  as a `cargo install agent-core` binary for a "headless agent SDK").
 
-Jede Phase ist intern kompilierbar, testbar und releasebar. Ein Big-Bang-Refactoring
-ist nicht nötig.
+---
+
+## 9. Recommended order
+
+1. Phases 1 + 2 (refactor, without crate split): high value, low risk, brings the
+   architecture into a pluggable shape.
+2. Phase 3 (ToolScope → capabilities, schema-driven defaults): medium effort, ends the
+   hardcoded tool-name lists.
+3. Phase 4 (crate split): mostly moving work; afterwards the core can be versioned
+   separately.
+4. Phase 5 (cleanup): singleton removal, resource file moves, sub-agent separation.
+
+Each phase is internally compilable, testable, and releasable. A big-bang refactoring
+is not necessary.
