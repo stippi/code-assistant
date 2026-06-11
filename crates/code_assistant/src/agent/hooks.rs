@@ -55,6 +55,22 @@ pub trait ToolDispatchPolicy: Send + Sync {
     fn parallel_indices(&self, requests: &[ToolRequest]) -> Vec<usize>;
 }
 
+/// Builds the application extension carried by `ToolContext` for each tool
+/// invocation, and takes it back afterwards (state such as the plan may move
+/// in for the duration of an invocation).
+pub trait ToolServicesProvider: Send + Sync {
+    /// Per-invocation services for the sequential path. `loop_ext` is the
+    /// agent's extension state (see [`LoopCtx::extensions`]).
+    fn begin(&self, loop_ext: &mut (dyn Any + Send), tool_id: &str) -> Box<dyn Any + Send>;
+
+    /// Returns the services after the invocation completed.
+    fn end(&self, loop_ext: &mut (dyn Any + Send), services: Box<dyn Any + Send>);
+
+    /// Services for a detached invocation (parallel tool execution), which
+    /// runs without access to the loop state.
+    fn detached(&self, tool_id: &str) -> Box<dyn Any + Send>;
+}
+
 /// Conversation measurements a [`CompactionPolicy`] bases its decision on.
 pub struct ContextSnapshot {
     /// Tokens used by the last assistant turn relative to the model's context
@@ -64,6 +80,9 @@ pub struct ContextSnapshot {
 
 /// Decides when the conversation is compacted and with which prompt.
 pub trait CompactionPolicy: Send + Sync {
+    /// The model's context window size, when known. The loop divides the
+    /// last turn's token usage by this to build the [`ContextSnapshot`].
+    fn context_limit(&self, extensions: &(dyn Any + Send)) -> Result<Option<u32>>;
     fn should_compact(&self, snapshot: &ContextSnapshot) -> bool;
     fn compaction_prompt(&self) -> &str;
 }

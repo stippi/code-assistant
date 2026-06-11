@@ -1,6 +1,10 @@
 use crate::agent::dialect::ToolDialect;
-use crate::agent::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction};
-use crate::agent::persistence::AgentStatePersistence;
+use crate::agent::hooks::{
+    ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction, ToolServicesProvider,
+};
+use crate::agent::persistence::{
+    AgentSnapshot, AgentStatePersistence, SessionStateAdapter, SnapshotPersistence,
+};
 use crate::agent::ui::{AgentActivity, AgentUiEvent};
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
@@ -57,10 +61,11 @@ pub struct Agent {
     project_manager: Arc<dyn ProjectManager>,
     command_executor: Arc<dyn CommandExecutor>,
     ui: Arc<dyn UserInterface>,
-    state_persistence: Box<dyn AgentStatePersistence>,
+    state_persistence: Box<dyn SnapshotPersistence>,
+    /// Builds the application services handed to each tool invocation.
+    services_provider: Arc<dyn ToolServicesProvider>,
 
     permission_handler: Option<Arc<dyn PermissionMediator>>,
-    sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
 
     // ========================================================================
     // Branching: Tree-based message storage
@@ -122,6 +127,12 @@ impl Agent {
             sub_agent_runner,
         } = components;
 
+        let services_provider = Arc::new(crate::plugins::CodeAssistantToolServices {
+            project_manager: project_manager.clone(),
+            ui: ui.clone(),
+            sub_agent_runner,
+        });
+
         Self {
             hooks: crate::plugins::default_hooks(),
             app_state: crate::plugins::AgentAppState::new(session_config.clone()),
@@ -130,9 +141,9 @@ impl Agent {
             project_manager,
             ui,
             command_executor,
-            state_persistence,
+            state_persistence: Box::new(SessionStateAdapter::new(state_persistence)),
+            services_provider,
             permission_handler,
-            sub_agent_runner,
             // Branching tree structure
             message_nodes: std::collections::BTreeMap::new(),
             active_path: Vec::new(),
@@ -259,24 +270,16 @@ impl Agent {
             self.message_nodes.len()
         );
 
-        if let Some(session_id) = &self.session_id {
-            let session_state = crate::session::SessionState {
-                session_id: session_id.clone(),
-                name: self.app_state.session_name.clone(),
-                message_nodes: self.message_nodes.clone(),
-                active_path: self.active_path.clone(),
-                next_node_id: self.next_node_id,
-                messages: self.message_history.clone(),
-                tool_executions: self.tool_executions.clone(),
-                plan: self.app_state.plan.clone(),
-                config: self.app_state.session_config.clone(),
-                next_request_id: Some(self.next_request_id),
-                model_config: self.app_state.model_config.clone(),
-            };
-            self.state_persistence.save_agent_state(session_state)?;
-        }
-
-        Ok(())
+        let snapshot = AgentSnapshot {
+            session_id: self.session_id.clone(),
+            message_nodes: self.message_nodes.clone(),
+            active_path: self.active_path.clone(),
+            next_node_id: self.next_node_id,
+            messages: self.message_history.clone(),
+            tool_executions: self.tool_executions.clone(),
+            next_request_id: self.next_request_id,
+        };
+        self.state_persistence.save(snapshot, &self.app_state)
     }
 
     /// Pre-allocate the next node_id without creating a node.
@@ -770,10 +773,9 @@ impl Agent {
             .map(|tool_request| {
                 let request = (*tool_request).clone();
                 let ui = self.ui.clone();
-                let project_manager = self.project_manager.clone();
                 let command_executor = self.command_executor.clone();
                 let permission_handler = self.permission_handler.clone();
-                let sub_agent_runner = self.sub_agent_runner.clone();
+                let services_provider = self.services_provider.clone();
                 let scope_tag = self.app_state.tool_scope.tag();
 
                 async move {
@@ -782,10 +784,9 @@ impl Agent {
                     let (is_success, tool_execution) = Self::execute_tool_request_detached(
                         request,
                         ui,
-                        project_manager,
                         command_executor,
                         permission_handler,
-                        sub_agent_runner,
+                        services_provider,
                         scope_tag,
                     )
                     .await;
@@ -829,10 +830,9 @@ impl Agent {
     async fn execute_tool_request_detached(
         tool_request: ToolRequest,
         ui: Arc<dyn UserInterface>,
-        project_manager: Arc<dyn ProjectManager>,
         command_executor: Arc<dyn CommandExecutor>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
-        sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
+        services_provider: Arc<dyn ToolServicesProvider>,
         scope_tag: &'static str,
     ) -> (bool, ToolExecution) {
         let registry = crate::tools::global_registry();
@@ -866,17 +866,12 @@ impl Agent {
                 ),
             ),
             Some(tool) => {
-                let mut services = crate::tools::ToolServices {
-                    project_manager,
-                    plan: None, // No plan access in parallel execution
-                    ui: Some(ui.clone()),
-                    sub_agent_runner,
-                };
+                let mut services = services_provider.detached(&tool_request.id);
                 let mut context = ToolContext {
                     command_executor: command_executor.as_ref(),
                     tool_id: Some(tool_request.id.clone()),
                     permission_handler: permission_handler.as_deref(),
-                    extensions: Some(&mut services),
+                    extensions: Some(services.as_mut()),
                 };
                 let mut input = tool_request.input.clone();
                 tool.invoke(&mut context, &mut input).await
@@ -1360,24 +1355,9 @@ impl Agent {
     }
 
     fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
-        let model_name = match self.app_state.model_config.as_ref() {
-            Some(config) => config.model_name.clone(),
-            None => return Ok(None),
-        };
-
-        let limit = if let Some(limit) = self.app_state.context_limit_override {
-            limit
-        } else {
-            let config_system = llm::provider_config::ConfigurationSystem::load()?;
-            config_system
-                .get_model(&model_name)
-                .map(|model| model.context_token_limit)
-                .ok_or_else(|| anyhow::anyhow!("Model not found in models.json: {model_name}"))?
-        };
-
-        if limit == 0 {
+        let Some(limit) = self.hooks.compaction.context_limit(&self.app_state)? else {
             return Ok(None);
-        }
+        };
 
         for message in self.active_messages().iter().rev() {
             if !matches!(message.role, MessageRole::Assistant) {
@@ -1983,19 +1963,17 @@ impl Agent {
             ));
         }
 
-        // Create a tool context. The plan state moves into the services for
-        // the duration of the invocation and is taken back afterwards.
-        let mut services = crate::tools::ToolServices {
-            project_manager: self.project_manager.clone(),
-            plan: Some(std::mem::take(&mut self.app_state.plan)),
-            ui: Some(self.ui.clone()),
-            sub_agent_runner: self.sub_agent_runner.clone(),
-        };
+        // Create a tool context. The services provider builds the application
+        // extension for this invocation (state such as the plan may move in
+        // for the duration) and takes it back afterwards.
+        let mut services = self
+            .services_provider
+            .begin(&mut self.app_state, &tool_request.id);
         let mut context = ToolContext {
             command_executor: self.command_executor.as_ref(),
             tool_id: Some(tool_request.id.clone()),
             permission_handler: self.permission_handler.as_deref(),
-            extensions: Some(&mut services),
+            extensions: Some(services.as_mut()),
         };
 
         // Execute the tool - could fail with ParseError or other errors
@@ -2004,7 +1982,7 @@ impl Agent {
 
         let invoke_result = tool.invoke(&mut context, &mut input).await;
         drop(context);
-        self.app_state.plan = services.plan.take().unwrap_or_default();
+        self.services_provider.end(&mut self.app_state, services);
 
         let result = match invoke_result {
             Ok(result) => {

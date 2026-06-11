@@ -15,11 +15,75 @@ use llm::Message;
 use crate::persistence::{ChatSession, SerializedToolExecution};
 use crate::session::{SessionManager, SessionState};
 
+/// What the agent loop itself knows about and persists: the conversation
+/// tree, the linearized history, the tool executions, and the id counters.
+/// Application-level fields (plan, session config, model config, name)
+/// travel separately through the extension state.
+pub struct AgentSnapshot {
+    pub session_id: Option<String>,
+    pub message_nodes:
+        std::collections::BTreeMap<crate::persistence::NodeId, crate::persistence::MessageNode>,
+    pub active_path: crate::persistence::ConversationPath,
+    pub next_node_id: crate::persistence::NodeId,
+    /// Linearized message history (derived from `active_path`).
+    pub messages: Vec<llm::Message>,
+    pub tool_executions: Vec<crate::agent::ToolExecution>,
+    pub next_request_id: u64,
+}
+
+/// Core-shaped persistence used by the agent loop: it saves the loop's
+/// snapshot, with the application fields supplied by the extension state.
+pub trait SnapshotPersistence: Send + Sync {
+    fn save(&mut self, snapshot: AgentSnapshot, extensions: &(dyn std::any::Any + Send))
+        -> Result<()>;
+}
+
 /// Trait for persisting agent state
 /// This abstracts away the storage mechanism from the Agent implementation
 pub trait AgentStatePersistence: Send + Sync {
     /// Save the current agent state
     fn save_agent_state(&mut self, state: SessionState) -> Result<()>;
+}
+
+/// Assembles code-assistant's [`SessionState`] from the loop snapshot plus
+/// [`crate::plugins::AgentAppState`], and forwards it to an
+/// [`AgentStatePersistence`] backend. Snapshots without a session id are not
+/// persisted (matching the loop's previous behavior for anonymous agents).
+pub struct SessionStateAdapter {
+    inner: Box<dyn AgentStatePersistence>,
+}
+
+impl SessionStateAdapter {
+    pub fn new(inner: Box<dyn AgentStatePersistence>) -> Self {
+        Self { inner }
+    }
+}
+
+impl SnapshotPersistence for SessionStateAdapter {
+    fn save(
+        &mut self,
+        snapshot: AgentSnapshot,
+        extensions: &(dyn std::any::Any + Send),
+    ) -> Result<()> {
+        let Some(session_id) = snapshot.session_id else {
+            return Ok(());
+        };
+        let state = crate::plugins::AgentAppState::of_ref(extensions);
+
+        self.inner.save_agent_state(SessionState {
+            session_id,
+            name: state.session_name.clone(),
+            message_nodes: snapshot.message_nodes,
+            active_path: snapshot.active_path,
+            next_node_id: snapshot.next_node_id,
+            messages: snapshot.messages,
+            tool_executions: snapshot.tool_executions,
+            plan: state.plan.clone(),
+            config: state.session_config.clone(),
+            next_request_id: Some(snapshot.next_request_id),
+            model_config: state.model_config.clone(),
+        })
+    }
 }
 
 /// Mock implementation for testing

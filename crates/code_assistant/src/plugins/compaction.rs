@@ -2,6 +2,9 @@
 //! fixed threshold.
 
 use crate::agent::hooks::{CompactionPolicy, ContextSnapshot};
+use crate::plugins::AgentAppState;
+use anyhow::Result;
+use std::any::Any;
 use tracing::debug;
 
 pub struct TokenRatioCompaction {
@@ -19,6 +22,27 @@ impl TokenRatioCompaction {
 }
 
 impl CompactionPolicy for TokenRatioCompaction {
+    fn context_limit(&self, extensions: &(dyn Any + Send)) -> Result<Option<u32>> {
+        let state = AgentAppState::of_ref(extensions);
+
+        let model_name = match state.model_config.as_ref() {
+            Some(config) => config.model_name.clone(),
+            None => return Ok(None),
+        };
+
+        let limit = if let Some(limit) = state.context_limit_override {
+            limit
+        } else {
+            let config_system = llm::provider_config::ConfigurationSystem::load()?;
+            config_system
+                .get_model(&model_name)
+                .map(|model| model.context_token_limit)
+                .ok_or_else(|| anyhow::anyhow!("Model not found in models.json: {model_name}"))?
+        };
+
+        Ok(if limit == 0 { None } else { Some(limit) })
+    }
+
     fn should_compact(&self, snapshot: &ContextSnapshot) -> bool {
         if let Some(ratio) = snapshot.usage_ratio {
             if ratio >= self.threshold {

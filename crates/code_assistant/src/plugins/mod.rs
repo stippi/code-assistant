@@ -8,6 +8,7 @@ mod plan;
 mod recovery;
 mod sub_agent;
 mod system_prompt;
+mod tool_services;
 
 pub use app_state::AgentAppState;
 pub use compaction::TokenRatioCompaction;
@@ -16,6 +17,7 @@ pub use plan::PlanSnapshotHook;
 pub use recovery::DefaultRecovery;
 pub use sub_agent::SpawnAgentParallelPolicy;
 pub use system_prompt::CodeAssistantSystemPrompt;
+pub use tool_services::CodeAssistantToolServices;
 
 use crate::agent::hooks::HookRegistry;
 
