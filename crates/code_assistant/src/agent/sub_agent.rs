@@ -199,7 +199,7 @@ impl DefaultSubAgentRunner {
         let components = AgentComponents {
             llm_provider,
             project_manager,
-            command_executor,
+            command_executor: Arc::from(command_executor),
             ui,
             state_persistence: Box::new(NoOpStatePersistence),
             permission_handler,

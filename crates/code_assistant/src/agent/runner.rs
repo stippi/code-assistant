@@ -7,7 +7,7 @@ use crate::permissions::PermissionMediator;
 use crate::persistence::{ChatMetadata, SessionModelConfig};
 use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
-use crate::tools::core::{Render, ResourcesTracker, ToolContext, ToolScope};
+use crate::tools::core::{ResourcesTracker, ToolContext, ToolScope};
 use crate::tools::ToolRequest;
 use crate::types::*;
 use crate::ui::{DisplayFragment, UiEvent, UserInterface};
@@ -26,7 +26,7 @@ use tracing::{debug, trace, warn};
 pub struct AgentComponents {
     pub llm_provider: Box<dyn LLMProvider>,
     pub project_manager: Arc<dyn ProjectManager>,
-    pub command_executor: Box<dyn CommandExecutor>,
+    pub command_executor: Arc<dyn CommandExecutor>,
     pub ui: Arc<dyn UserInterface>,
     pub state_persistence: Box<dyn AgentStatePersistence>,
     pub permission_handler: Option<Arc<dyn PermissionMediator>>,
@@ -57,7 +57,7 @@ pub struct Agent {
     dialect: Arc<dyn ToolDialect>,
     tool_scope: ToolScope,
     project_manager: Arc<dyn ProjectManager>,
-    command_executor: Box<dyn CommandExecutor>,
+    command_executor: Arc<dyn CommandExecutor>,
     ui: Arc<dyn UserInterface>,
     state_persistence: Box<dyn AgentStatePersistence>,
 
@@ -779,16 +779,13 @@ impl Agent {
     }
 
     /// Executes a list of tool requests and appends tool results to message history.
-    /// Multiple `spawn_agent` read-only calls are executed concurrently for efficiency.
+    /// Requests selected by the dispatch policy are executed concurrently.
     async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
         let parallel_indices = self.hooks.dispatch.parallel_indices(tool_requests);
 
-        // Execute parallel spawn_agent tools concurrently if we have multiple
+        // Execute the policy-selected tools concurrently if we have multiple
         let parallel_results = if parallel_indices.len() > 1 {
-            debug!(
-                "Running {} spawn_agent tools in parallel",
-                parallel_indices.len()
-            );
+            debug!("Running {} tools in parallel", parallel_indices.len());
             self.execute_tools_in_parallel(
                 parallel_indices
                     .iter()
@@ -807,7 +804,7 @@ impl Agent {
         // Process results in original order
         for (idx, tool_request) in tool_requests.iter().enumerate() {
             let result_block = if parallel_indices.len() > 1 && parallel_indices.contains(&idx) {
-                // This was a parallel spawn_agent - get result from parallel execution
+                // This request ran in parallel - get result from parallel execution
 
                 parallel_result_iter.next().unwrap_or_else(|| {
                     let start_time = Some(SystemTime::now());
@@ -854,7 +851,7 @@ impl Agent {
         Ok(LoopFlow::Continue)
     }
 
-    /// Execute multiple spawn_agent tools in parallel.
+    /// Execute multiple tool requests in parallel.
     /// Returns ContentBlocks in the same order as input.
     async fn execute_tools_in_parallel(
         &mut self,
@@ -862,41 +859,42 @@ impl Agent {
     ) -> Vec<ContentBlock> {
         use futures::future::join_all;
 
-        // Prepare context components that can be shared across parallel executions
-        let sub_agent_runner = self.sub_agent_runner.clone();
-        let ui = self.ui.clone();
-
-        // Create futures for each spawn_agent tool
+        // Create futures for each tool request
         let futures: Vec<_> = tool_requests
             .iter()
             .map(|tool_request| {
-                let tool_id = tool_request.id.clone();
-                let input = tool_request.input.clone();
-                let runner = sub_agent_runner.clone();
-                let ui_clone = ui.clone();
+                let request = (*tool_request).clone();
+                let ui = self.ui.clone();
+                let project_manager = self.project_manager.clone();
+                let command_executor = self.command_executor.clone();
+                let permission_handler = self.permission_handler.clone();
+                let sub_agent_runner = self.sub_agent_runner.clone();
+                let scope_tag = self.tool_scope.tag();
 
                 async move {
                     let start_time = Some(SystemTime::now());
 
-                    // Execute spawn_agent directly without going through execute_tool
-                    let result =
-                        Self::execute_spawn_agent_parallel(runner, &tool_id, input, ui_clone)
-                            .await;
+                    let (is_success, tool_execution) = Self::execute_tool_request_detached(
+                        request,
+                        ui,
+                        project_manager,
+                        command_executor,
+                        permission_handler,
+                        sub_agent_runner,
+                        scope_tag,
+                    )
+                    .await;
 
-                    let (is_success, tool_execution) = result;
                     let end_time = Some(SystemTime::now());
 
-                    (
-                        tool_id.clone(),
-                        ContentBlock::ToolResult {
-                            tool_use_id: tool_id,
-                            content: ToolResultContent::text(""),
-                            is_error: if is_success { None } else { Some(true) },
-                            start_time,
-                            end_time,
-                        },
-                        tool_execution,
-                    )
+                    let content_block = ContentBlock::ToolResult {
+                        tool_use_id: tool_execution.tool_request.id.clone(),
+                        content: ToolResultContent::text(""),
+                        is_error: if is_success { None } else { Some(true) },
+                        start_time,
+                        end_time,
+                    };
+                    (content_block, tool_execution)
                 }
             })
             .collect();
@@ -906,8 +904,11 @@ impl Agent {
 
         // Collect results and tool executions
         let mut content_blocks = Vec::new();
-        for (tool_id, content_block, tool_execution) in results {
-            debug!("Parallel spawn_agent {} completed", tool_id);
+        for (content_block, tool_execution) in results {
+            debug!(
+                "Parallel tool {} ({}) completed",
+                tool_execution.tool_request.name, tool_execution.tool_request.id
+            );
             self.tool_executions.push(tool_execution);
             content_blocks.push(content_block);
         }
@@ -915,133 +916,124 @@ impl Agent {
         content_blocks
     }
 
-    /// Execute a spawn_agent tool in parallel without requiring &mut self.
-    async fn execute_spawn_agent_parallel(
-        sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
-        tool_id: &str,
-        input: serde_json::Value,
+    /// Execute a single tool request without exclusive access to the agent
+    /// state, for the parallel branch decided by the dispatch policy.
+    /// Compared to the sequential path, interceptors do not run, the plan is
+    /// unavailable, and input modifications are not propagated back into the
+    /// message history.
+    async fn execute_tool_request_detached(
+        tool_request: ToolRequest,
         ui: Arc<dyn UserInterface>,
+        project_manager: Arc<dyn ProjectManager>,
+        command_executor: Arc<dyn CommandExecutor>,
+        permission_handler: Option<Arc<dyn PermissionMediator>>,
+        sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
+        scope_tag: &'static str,
     ) -> (bool, ToolExecution) {
-        use crate::tools::core::Tool;
+        let registry = crate::tools::global_registry();
+        let is_hidden = registry.is_tool_hidden(&tool_request.name, scope_tag);
 
-        use crate::tools::core::ToolResult;
-        use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentTool};
+        // Update UI to show running status (skip for hidden tools)
+        if !is_hidden {
+            let _ = ui
+                .send_event(UiEvent::UpdateToolStatus {
+                    tool_id: tool_request.id.clone(),
+                    status: crate::ui::ToolStatus::Running,
+                    message: None,
+                    output: None,
+                    styled_output: None,
+                    duration_seconds: None,
+                    images: vec![],
+                })
+                .await;
+        }
 
-        // Update UI to show running status
-        let _ = ui
-            .send_event(UiEvent::UpdateToolStatus {
-                tool_id: tool_id.to_string(),
+        let execution_start = std::time::Instant::now();
 
-                status: crate::ui::ToolStatus::Running,
-                message: None,
-                output: None,
-                styled_output: None,
-                duration_seconds: None,
-                images: vec![],
-            })
-            .await;
-
-        // Parse input
-        let parsed_input: Result<SpawnAgentInput, _> = serde_json::from_value(input.clone());
-        let mut parsed_input = match parsed_input {
-            Ok(input) => input,
-            Err(e) => {
-                let error_msg = format!("Failed to parse spawn_agent input: {e}");
-                let _ = ui
-                    .send_event(UiEvent::UpdateToolStatus {
-                        tool_id: tool_id.to_string(),
-
-                        status: crate::ui::ToolStatus::Error,
-                        message: Some(error_msg.clone()),
-                        output: Some(error_msg.clone()),
-                        styled_output: None,
-                        duration_seconds: None,
-                        images: vec![],
-                    })
-                    .await;
-                return (
-                    false,
-                    ToolExecution::create_parse_error(tool_id.to_string(), error_msg),
-                );
+        let invoke_result = match registry.get(&tool_request.name) {
+            None => Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
+            Some(_) if !registry.tool_has_capability(&tool_request.name, scope_tag) => Err(
+                anyhow::anyhow!(
+                    "Tool '{}' is not available in the current scope",
+                    tool_request.name
+                ),
+            ),
+            Some(tool) => {
+                let mut services = crate::tools::ToolServices {
+                    project_manager,
+                    plan: None, // No plan access in parallel execution
+                    ui: Some(ui.clone()),
+                    sub_agent_runner,
+                };
+                let mut context = ToolContext {
+                    command_executor: command_executor.as_ref(),
+                    tool_id: Some(tool_request.id.clone()),
+                    permission_handler: permission_handler.as_deref(),
+                    extensions: Some(&mut services),
+                };
+                let mut input = tool_request.input.clone();
+                tool.invoke(&mut context, &mut input).await
             }
         };
 
-        // Create a minimal context for spawn_agent (it only needs sub_agent_runner and tool_id)
-        // We use a dummy project manager and command executor since spawn_agent doesn't use them
-        let dummy_command_executor = command_executor::DefaultCommandExecutor;
+        let execution_duration = Some(execution_start.elapsed().as_secs_f64());
 
-        let mut services = crate::tools::ToolServices {
-            project_manager: Arc::new(crate::config::DefaultProjectManager::new()),
-            plan: None, // spawn_agent doesn't use plan
-            ui: Some(ui.clone()),
-            sub_agent_runner,
-        };
-        let mut context = ToolContext {
-            command_executor: &dummy_command_executor,
-            tool_id: Some(tool_id.to_string()),
-            permission_handler: None, // Will be handled by sub-agent runner
-            extensions: Some(&mut services),
-        };
-
-        let tool = SpawnAgentTool;
-        match tool.execute(&mut context, &mut parsed_input).await {
-            Ok(output) => {
-                let success = output.is_success();
+        match invoke_result {
+            Ok(result) => {
+                let success = result.is_success();
                 let status = if success {
                     crate::ui::ToolStatus::Success
                 } else {
                     crate::ui::ToolStatus::Error
                 };
 
-                let status_msg = output.status();
+                let status_msg = result.as_render().status();
                 let mut resources_tracker = ResourcesTracker::new();
-                // Use render_for_ui() which returns JSON for spawn_agent (for custom renderer)
-                let ui_output = output.render_for_ui(&mut resources_tracker);
+                let ui_output = result.as_render().render_for_ui(&mut resources_tracker);
+                let images = result.render_images();
 
-                let _ = ui
-                    .send_event(UiEvent::UpdateToolStatus {
-                        tool_id: tool_id.to_string(),
+                if !is_hidden {
+                    let _ = ui
+                        .send_event(UiEvent::UpdateToolStatus {
+                            tool_id: tool_request.id.clone(),
+                            status,
+                            message: Some(status_msg),
+                            output: Some(ui_output),
+                            styled_output: None,
+                            duration_seconds: execution_duration,
+                            images,
+                        })
+                        .await;
+                }
 
-                        status,
-                        message: Some(status_msg),
-                        output: Some(ui_output),
-                        styled_output: None,
-                        duration_seconds: None,
-                        images: vec![],
-                    })
-                    .await;
-
-                let tool_execution = ToolExecution {
-                    tool_request: ToolRequest {
-                        id: tool_id.to_string(),
-                        name: "spawn_agent".to_string(),
-                        input,
-                        start_offset: None,
-                        end_offset: None,
+                (
+                    success,
+                    ToolExecution {
+                        tool_request,
+                        result,
                     },
-                    result: Box::new(output),
-                };
-
-                (success, tool_execution)
+                )
             }
             Err(e) => {
-                let error_msg = format!("spawn_agent failed: {e}");
-                let _ = ui
-                    .send_event(UiEvent::UpdateToolStatus {
-                        tool_id: tool_id.to_string(),
+                let error_text = Self::format_error_for_user(&e);
 
-                        status: crate::ui::ToolStatus::Error,
-                        message: Some(error_msg.clone()),
-                        output: Some(error_msg.clone()),
-                        styled_output: None,
-                        duration_seconds: None,
-                        images: vec![],
-                    })
-                    .await;
+                if !is_hidden {
+                    let _ = ui
+                        .send_event(UiEvent::UpdateToolStatus {
+                            tool_id: tool_request.id.clone(),
+                            status: crate::ui::ToolStatus::Error,
+                            message: Some(error_text.clone()),
+                            output: Some(error_text.clone()),
+                            styled_output: None,
+                            duration_seconds: execution_duration,
+                            images: vec![],
+                        })
+                        .await;
+                }
 
                 (
                     false,
-                    ToolExecution::create_parse_error(tool_id.to_string(), error_msg),
+                    ToolExecution::create_parse_error(tool_request.id, error_text),
                 )
             }
         }

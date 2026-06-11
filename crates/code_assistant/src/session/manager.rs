@@ -725,7 +725,7 @@ impl SessionManager {
         let components = AgentComponents {
             llm_provider,
             project_manager: sandboxed_project_manager,
-            command_executor,
+            command_executor: Arc::from(command_executor),
             ui: proxy_ui,
             state_persistence: state_storage,
             permission_handler,
