@@ -138,10 +138,12 @@ impl Tool for ReplaceInFileTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project containing the file"
                     },
                     "path": {
+                        "examples": ["File path here"],
                         "type": "string",
                         "description": "Path to the file to modify (relative to project root)"
                     },
@@ -161,6 +163,7 @@ impl Tool for ReplaceInFileTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::EDITS_FILES],
+            multiline_params: &["diff"],
             hidden: false,
             title_template: Some("Replacing in {path}"),
         }

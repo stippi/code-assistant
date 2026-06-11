@@ -76,6 +76,7 @@ impl Tool for ListProjectsTool {
             // The regular code-assistant will insert known projects into the system message.
             supported_scopes: &[ToolScope::McpServer],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: None, // Uses default tool name
         }

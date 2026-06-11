@@ -174,10 +174,12 @@ impl Tool for ViewDocumentsTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project containing the document files"
                     },
                     "paths": {
+                        "examples": ["File path here"],
                         "type": "array",
                         "description": "Paths to document files relative to the project root directory",
                         "items": {
@@ -200,6 +202,7 @@ impl Tool for ViewDocumentsTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Viewing documents {paths}"),
         }

@@ -135,6 +135,7 @@ impl Tool for ExecuteCommandTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project context for the command/script"
                     },
@@ -143,6 +144,7 @@ impl Tool for ExecuteCommandTool {
                         "description": "The complete command or shell script to execute"
                     },
                     "working_dir": {
+                        "examples": ["Working directory here (optional)"],
                         "type": "string",
                         "description": "Optional: working directory (relative to project root)"
                     },
@@ -166,6 +168,7 @@ impl Tool for ExecuteCommandTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[],
+            multiline_params: &["command_line"],
             hidden: false,
             title_template: Some("Running: {command_line}"),
         }

@@ -176,10 +176,12 @@ impl Tool for ViewImagesTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project containing the image files"
                     },
                     "paths": {
+                        "examples": ["File path here"],
                         "type": "array",
                         "description": "Paths to image files relative to the project root directory",
                         "items": {
@@ -202,6 +204,7 @@ impl Tool for ViewImagesTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Viewing {paths}"),
         }

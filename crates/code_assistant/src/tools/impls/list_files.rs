@@ -89,10 +89,12 @@ impl Tool for ListFilesTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project context"
                     },
                     "paths": {
+                        "examples": ["File path here"],
                         "type": "array",
                         "description": "Directory paths relative to project root",
                         "items": {
@@ -100,6 +102,7 @@ impl Tool for ListFilesTool {
                         }
                     },
                     "max_depth": {
+                        "examples": [2],
                         "type": "integer",
                         "description": "Optional: Maximum directory depth"
                     }
@@ -118,6 +121,7 @@ impl Tool for ListFilesTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Listing files in {paths}"),
         }

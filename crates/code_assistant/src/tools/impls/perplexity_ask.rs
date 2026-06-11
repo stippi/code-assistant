@@ -121,6 +121,7 @@ impl Tool for PerplexityAskTool {
             ],
             // Note: can be disabled in read-only sub-agents if needed later.
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: None, // Uses default tool name
         }

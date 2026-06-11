@@ -125,6 +125,7 @@ impl Tool for SpawnAgentTool {
             // Exclude sub-agent scopes to prevent nesting
             supported_scopes: &[ToolScope::Agent, ToolScope::AgentWithDiffBlocks],
             capabilities: &[],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Running sub-agent"),
         }

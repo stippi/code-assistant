@@ -76,6 +76,7 @@ impl Tool for GlobFilesTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project to search within"
                     },
@@ -99,6 +100,7 @@ impl Tool for GlobFilesTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Finding files matching '{pattern}'"),
         }

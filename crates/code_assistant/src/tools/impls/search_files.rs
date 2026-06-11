@@ -399,14 +399,17 @@ impl Tool for SearchFilesTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project to search within"
                     },
                     "regex": {
+                        "examples": ["Your regex pattern here"],
                         "type": "string",
                         "description": "The regex pattern to search for. Supports Rust regex syntax including character classes, quantifiers, etc."
                     },
                     "paths": {
+                        "examples": ["File path here"],
                         "type": "array",
                         "items": {
                             "type": "string"
@@ -429,6 +432,7 @@ impl Tool for SearchFilesTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Searching for '{regex}'"),
         }

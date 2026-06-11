@@ -192,13 +192,26 @@ fn parse_json_response(
     Ok((tool_requests, response.clone()))
 }
 
-pub fn is_multiline_param(name: &str) -> bool {
-    name == "content"
-        || name == "command_line"
-        || name == "diff"
-        || name == "message"
-        || name == "old_text"
-        || name == "new_text"
+/// Whether the named parameter of the given tool typically spans multiple
+/// lines (block syntax in the text dialects).
+fn is_multiline_param(tool_name: &str, param_name: &str) -> bool {
+    ToolRegistry::global()
+        .get(tool_name)
+        .map(|tool| tool.spec().is_multiline_param(param_name))
+        .unwrap_or(false)
+}
+
+/// Example value for a parameter in the prompt docs, taken from the JSON
+/// schema's `examples` annotation when present.
+fn example_placeholder(name: &str, prop: &serde_json::Value) -> String {
+    prop.get("examples")
+        .and_then(|e| e.as_array())
+        .and_then(|a| a.first())
+        .map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_else(|| format!("{name} here"))
 }
 
 /// XML-based tool invocation parser
@@ -360,7 +373,7 @@ impl XmlParser {
                 .iter()
                 .filter(|(name, _)| required_fields.contains(&name.as_str()))
             {
-                self.generate_xml_parameter_example(&mut example, name, prop);
+                self.generate_xml_parameter_example(&mut example, tool_name, name, prop);
             }
 
             // Then add optional parameters
@@ -368,7 +381,7 @@ impl XmlParser {
                 .iter()
                 .filter(|(name, _)| !required_fields.contains(&name.as_str()))
             {
-                self.generate_xml_parameter_example(&mut example, name, prop);
+                self.generate_xml_parameter_example(&mut example, tool_name, name, prop);
             }
         }
 
@@ -379,6 +392,7 @@ impl XmlParser {
     fn generate_xml_parameter_example(
         &self,
         example: &mut String,
+        tool_name: &str,
         name: &str,
         prop: &serde_json::Value,
     ) {
@@ -393,32 +407,11 @@ impl XmlParser {
             name
         };
 
-        // Check if this is a multiline content parameter
-        let is_multiline = is_multiline_param(name);
-
         // Generate appropriate placeholder text
-        let placeholder = if is_multiline {
+        let placeholder = if is_multiline_param(tool_name, name) {
             format!("\nYour {name} here\n")
-        } else if name == "project" {
-            "project-name".to_string()
-        } else if name == "path" || name == "paths" {
-            "File path here".to_string()
-        } else if name == "regex" {
-            "Your regex pattern here".to_string()
-        } else if name == "command_line" {
-            "Your command here".to_string()
-        } else if name == "working_dir" {
-            "Working directory here (optional)".to_string()
-        } else if name == "url" {
-            "https://example.com/docs".to_string()
-        } else if name == "query" {
-            "Your search query here".to_string()
-        } else if name == "hits_page_number" {
-            "1".to_string()
-        } else if name == "max_depth" {
-            "level (optional)".to_string()
         } else {
-            format!("{name} here")
+            example_placeholder(name, prop)
         };
 
         // Add the parameter to the example
@@ -623,7 +616,7 @@ impl CaretParser {
                 .iter()
                 .filter(|(name, _)| required_fields.contains(&name.as_str()))
             {
-                self.generate_caret_parameter_example(&mut example, name, prop);
+                self.generate_caret_parameter_example(&mut example, tool_name, name, prop);
             }
 
             // Then add optional parameters
@@ -631,7 +624,7 @@ impl CaretParser {
                 .iter()
                 .filter(|(name, _)| !required_fields.contains(&name.as_str()))
             {
-                self.generate_caret_parameter_example(&mut example, name, prop);
+                self.generate_caret_parameter_example(&mut example, tool_name, name, prop);
             }
         }
 
@@ -642,37 +635,15 @@ impl CaretParser {
     fn generate_caret_parameter_example(
         &self,
         example: &mut String,
+        tool_name: &str,
         name: &str,
         prop: &serde_json::Value,
     ) {
         // Determine if this parameter is an array
         let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
 
-        // Check if this is a multiline content parameter
-        let is_multiline = is_multiline_param(name);
-
-        // Generate appropriate placeholder text
-        let placeholder = if name == "project" {
-            "project-name".to_string()
-        } else if name == "path" || name == "paths" {
-            "File path here".to_string()
-        } else if name == "regex" {
-            "Your regex pattern here".to_string()
-        } else if name == "command_line" {
-            "Your command here".to_string()
-        } else if name == "working_dir" {
-            "Working directory here (optional)".to_string()
-        } else if name == "url" {
-            "https://example.com/docs".to_string()
-        } else if name == "query" {
-            "Your search query here".to_string()
-        } else if name == "hits_page_number" {
-            "1".to_string()
-        } else if name == "max_depth" {
-            "level (optional)".to_string()
-        } else {
-            format!("{name} here")
-        };
+        let is_multiline = is_multiline_param(tool_name, name);
+        let placeholder = example_placeholder(name, prop);
 
         if is_array {
             // Array parameter

@@ -73,6 +73,7 @@ impl Tool for WebFetchTool {
                 "type": "object",
                 "properties": {
                     "url": {
+                        "examples": ["https://example.com/docs"],
                         "type": "string",
                         "description": "URL of the web page to fetch"
                     },
@@ -102,6 +103,7 @@ impl Tool for WebFetchTool {
             ],
             // Note: can be disabled in read-only sub-agents if needed later.
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Fetching {url}"),
         }

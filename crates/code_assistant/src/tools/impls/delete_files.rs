@@ -83,10 +83,12 @@ impl Tool for DeleteFilesTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project containing the files"
                     },
                     "paths": {
+                        "examples": ["File path here"],
                         "type": "array",
                         "description": "Paths to the files relative to the project root directory",
                         "items": {
@@ -109,6 +111,7 @@ impl Tool for DeleteFilesTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::EDITS_FILES],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Deleting {paths}"),
         }

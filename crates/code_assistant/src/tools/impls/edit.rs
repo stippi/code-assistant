@@ -106,10 +106,12 @@ impl Tool for EditTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project containing the file"
                     },
                     "path": {
+                        "examples": ["File path here"],
                         "type": "string",
                         "description": "Path to the file to modify (relative to project root)"
                     },
@@ -139,6 +141,7 @@ impl Tool for EditTool {
                 ToolScope::SubAgentDefault,
             ],
             capabilities: &[capabilities::EDITS_FILES],
+            multiline_params: &["old_text", "new_text"],
             hidden: false,
             title_template: Some("Editing {path}"),
         }

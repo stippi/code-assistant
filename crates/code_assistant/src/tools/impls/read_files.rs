@@ -266,10 +266,12 @@ impl Tool for ReadFilesTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project containing the files"
                     },
                     "paths": {
+                        "examples": ["File path here"],
                         "type": "array",
                         "description": "Paths to the files relative to the project root directory. Can include line ranges using 'file.txt:10-20' syntax.",
                         "items": {
@@ -302,6 +304,7 @@ impl Tool for ReadFilesTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Reading {paths}"),
         }

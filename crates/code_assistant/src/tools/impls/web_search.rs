@@ -91,10 +91,12 @@ impl Tool for WebSearchTool {
                 "type": "object",
                 "properties": {
                     "query": {
+                        "examples": ["Your search query here"],
                         "type": "string",
                         "description": "Search query"
                     },
                     "hits_page_number": {
+                        "examples": [1],
                         "type": "integer",
                         "description": "Page number for pagination (1-based)",
                         "minimum": 1,
@@ -119,6 +121,7 @@ impl Tool for WebSearchTool {
             ],
             // Note: can be disabled in read-only sub-agents if needed later.
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: false,
             title_template: Some("Searching web for '{query}'"),
         }

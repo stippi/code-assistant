@@ -44,6 +44,10 @@ pub struct ToolSpec {
     pub supported_scopes: &'static [ToolScope],
     /// Capability tags (see [`capabilities`]) consumers select tools by
     pub capabilities: &'static [&'static str],
+    /// Parameters whose values typically span multiple lines. Text dialects
+    /// (XML, Caret) render these with block syntax; native tool calling
+    /// ignores this.
+    pub multiline_params: &'static [&'static str],
     /// Whether this tool should be hidden from UI display
     pub hidden: bool,
     /// Optional template for generating dynamic titles from parameters
@@ -54,5 +58,9 @@ pub struct ToolSpec {
 impl ToolSpec {
     pub fn has_capability(&self, capability: &str) -> bool {
         self.capabilities.contains(&capability)
+    }
+
+    pub fn is_multiline_param(&self, name: &str) -> bool {
+        self.multiline_params.contains(&name)
     }
 }

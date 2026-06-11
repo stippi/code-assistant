@@ -2,7 +2,6 @@
 
 use crate::agent::ToolSyntax;
 use crate::tools::core::ToolRegistry;
-use crate::tools::parser_registry::is_multiline_param;
 use crate::tools::ToolRequest;
 use anyhow::Result;
 use serde_json::Value;
@@ -97,7 +96,7 @@ impl ToolFormatter for XmlFormatter {
                                         key
                                     };
 
-                                    if is_multiline_param(key) {
+                                    if tool_spec.is_multiline_param(key) {
                                         formatted.push_str(&format!(
                                             "<param:{singular_name}>\n{item_str}\n</param:{singular_name}>\n"
                                         ));
@@ -119,7 +118,7 @@ impl ToolFormatter for XmlFormatter {
                     _ => serde_json::to_string(value)?,
                 };
 
-                if is_multiline_param(key) {
+                if tool_spec.is_multiline_param(key) {
                     formatted.push_str(&format!("<param:{key}>\n{param_value}\n</param:{key}>\n"));
                 } else {
                     formatted.push_str(&format!("<param:{key}>{param_value}</param:{key}>\n"));
@@ -184,7 +183,7 @@ impl ToolFormatter for CaretFormatter {
                 // Format the parameter value based on its type
                 let param_value = format_parameter_value_for_caret(key, value, properties)?;
 
-                if is_multiline_param(key) {
+                if tool_spec.is_multiline_param(key) {
                     formatted.push_str(&format!("{key} ---\n{param_value}\n--- {key}\n"));
                 } else {
                     formatted.push_str(&format!("{key}: {param_value}\n"));

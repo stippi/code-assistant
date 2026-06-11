@@ -154,6 +154,7 @@ impl Tool for UpdatePlanTool {
             annotations: None,
             supported_scopes: &[ToolScope::Agent, ToolScope::AgentWithDiffBlocks],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: true,
             title_template: Some("Updating plan ({entries} items)"),
         }

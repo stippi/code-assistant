@@ -64,6 +64,7 @@ impl Tool for NameSessionTool {
             annotations: None,
             supported_scopes: &[ToolScope::Agent, ToolScope::AgentWithDiffBlocks],
             capabilities: &[capabilities::READ_ONLY],
+            multiline_params: &[],
             hidden: true, // This tool should be hidden from UI
             title_template: Some("Setting session title to '{title}'"),
         }

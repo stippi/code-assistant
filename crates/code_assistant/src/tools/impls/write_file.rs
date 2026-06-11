@@ -91,10 +91,12 @@ impl Tool for WriteFileTool {
                 "type": "object",
                 "properties": {
                     "project": {
+                        "examples": ["project-name"],
                         "type": "string",
                         "description": "Name of the project context"
                     },
                     "path": {
+                        "examples": ["File path here"],
                         "type": "string",
                         "description": "Path to create or overwrite (relative to project root)"
                     },
@@ -123,6 +125,7 @@ impl Tool for WriteFileTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             capabilities: &[capabilities::EDITS_FILES],
+            multiline_params: &["content"],
             hidden: false,
             title_template: Some("Writing {path}"),
         }
