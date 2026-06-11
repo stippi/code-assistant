@@ -60,10 +60,7 @@ impl ToolRegistry {
 
     /// Check if a tool is allowed in the given scope
     pub fn is_tool_in_scope(&self, tool_name: &str, scope: ToolScope) -> bool {
-        self.tools
-            .get(tool_name)
-            .map(|tool| tool.spec().supported_scopes.contains(&scope))
-            .unwrap_or(false)
+        self.tool_has_capability(tool_name, scope.tag())
     }
 
     /// A shareable predicate over [`Self::is_tool_hidden`] for the given scope.
@@ -79,7 +76,7 @@ impl ToolRegistry {
     pub fn is_tool_hidden(&self, tool_name: &str, scope: ToolScope) -> bool {
         self.tools
             .values()
-            .filter(|tool| tool.spec().supported_scopes.contains(&scope))
+            .filter(|tool| tool.spec().has_capability(scope.tag()))
             .find(|tool| tool.spec().name == tool_name)
             .map(|tool| tool.spec().hidden)
             .unwrap_or(false)
@@ -89,7 +86,7 @@ impl ToolRegistry {
     pub fn get_tool_definitions_for_scope(&self, mode: ToolScope) -> Vec<AnnotatedToolDefinition> {
         self.tools
             .values()
-            .filter(|tool| tool.spec().supported_scopes.contains(&mode))
+            .filter(|tool| tool.spec().has_capability(mode.tag()))
             .map(|tool| {
                 let spec = tool.spec();
                 AnnotatedToolDefinition {

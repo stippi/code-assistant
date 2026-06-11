@@ -1,6 +1,6 @@
 use crate::agent::SubAgentMode;
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -123,8 +123,7 @@ impl Tool for SpawnAgentTool {
             }),
             annotations: None,
             // Exclude sub-agent scopes to prevent nesting
-            supported_scopes: &[ToolScope::Agent, ToolScope::AgentWithDiffBlocks],
-            capabilities: &[],
+            capabilities: &[capabilities::SCOPE_AGENT, capabilities::SCOPE_AGENT_DIFF],
             multiline_params: &[],
             hidden: false,
             title_template: Some("Running sub-agent"),

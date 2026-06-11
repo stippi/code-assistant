@@ -1,6 +1,6 @@
 use crate::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use crate::ui::streaming::DisplayFragment;
 use crate::ui::UserInterface;
@@ -160,14 +160,13 @@ impl Tool for ExecuteCommandTool {
                 "readOnlyHint": false,
                 "idempotentHint": false
             })),
-            supported_scopes: &[
-                ToolScope::McpServer,
-                ToolScope::Agent,
-                ToolScope::AgentWithDiffBlocks,
-                ToolScope::SubAgentDefault,
-                ToolScope::SubAgentDefaultWithDiffBlocks,
+            capabilities: &[
+                capabilities::SCOPE_MCP,
+                capabilities::SCOPE_AGENT,
+                capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_DEFAULT,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ],
-            capabilities: &[],
             multiline_params: &["command_line"],
             hidden: false,
             title_template: Some("Running: {command_line}"),

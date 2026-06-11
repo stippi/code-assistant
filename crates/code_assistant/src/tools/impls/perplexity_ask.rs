@@ -1,6 +1,5 @@
 use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
-    ToolsConfig,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, ToolsConfig,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -110,17 +109,16 @@ impl Tool for PerplexityAskTool {
                 "idempotentHint": false,
                 "openWorldHint": true
             })),
-
-            supported_scopes: &[
-                ToolScope::McpServer,
-                ToolScope::Agent,
-                ToolScope::AgentWithDiffBlocks,
-                ToolScope::SubAgentReadOnly,
-                ToolScope::SubAgentDefault,
-                ToolScope::SubAgentDefaultWithDiffBlocks,
-            ],
             // Note: can be disabled in read-only sub-agents if needed later.
-            capabilities: &[capabilities::READ_ONLY],
+            capabilities: &[
+                capabilities::READ_ONLY,
+                capabilities::SCOPE_MCP,
+                capabilities::SCOPE_AGENT,
+                capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_READ_ONLY,
+                capabilities::SCOPE_SUBAGENT_DEFAULT,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
+            ],
             multiline_params: &[],
             hidden: false,
             title_template: None, // Uses default tool name

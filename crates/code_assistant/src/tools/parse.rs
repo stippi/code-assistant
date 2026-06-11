@@ -960,6 +960,7 @@ pub fn parse_xml_tool_invocations(
 mod tests {
     use super::super::parse::parse_search_replace_blocks;
     use super::*;
+    use crate::tools::core::capabilities;
     use crate::tools::core::ResourcesTracker;
     use crate::tools::core::{Tool, ToolContext, ToolScope, ToolSpec};
     use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
@@ -1007,8 +1008,7 @@ mod tests {
                     "required": ["string_param"]
                 }),
                 annotations: None,
-                supported_scopes: &[ToolScope::McpServer],
-                capabilities: &[],
+                capabilities: &[capabilities::SCOPE_MCP],
                 multiline_params: &[],
                 hidden: false,
                 title_template: None,

@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use anyhow::Result;
 use command_executor::SandboxCommandRequest;
@@ -117,14 +117,14 @@ impl Tool for WriteFileTool {
                 "destructiveHint": true,
                 "idempotentHint": false
             })),
-            supported_scopes: &[
-                ToolScope::McpServer,
-                ToolScope::Agent,
-                ToolScope::AgentWithDiffBlocks,
-                ToolScope::SubAgentDefault,
-                ToolScope::SubAgentDefaultWithDiffBlocks,
+            capabilities: &[
+                capabilities::EDITS_FILES,
+                capabilities::SCOPE_MCP,
+                capabilities::SCOPE_AGENT,
+                capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_DEFAULT,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ],
-            capabilities: &[capabilities::EDITS_FILES],
             multiline_params: &["content"],
             hidden: false,
             title_template: Some("Writing {path}"),

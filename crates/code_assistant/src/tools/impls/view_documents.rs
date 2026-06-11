@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -193,15 +193,15 @@ impl Tool for ViewDocumentsTool {
                 "readOnlyHint": true,
                 "idempotentHint": true
             })),
-            supported_scopes: &[
-                ToolScope::McpServer,
-                ToolScope::Agent,
-                ToolScope::AgentWithDiffBlocks,
-                ToolScope::SubAgentReadOnly,
-                ToolScope::SubAgentDefault,
-                ToolScope::SubAgentDefaultWithDiffBlocks,
+            capabilities: &[
+                capabilities::READ_ONLY,
+                capabilities::SCOPE_MCP,
+                capabilities::SCOPE_AGENT,
+                capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_READ_ONLY,
+                capabilities::SCOPE_SUBAGENT_DEFAULT,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ],
-            capabilities: &[capabilities::READ_ONLY],
             multiline_params: &[],
             hidden: false,
             title_template: Some("Viewing documents {paths}"),

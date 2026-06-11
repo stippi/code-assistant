@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use crate::tools::parse::parse_search_replace_blocks;
 use anyhow::{anyhow, Result};
@@ -158,11 +158,11 @@ impl Tool for ReplaceInFileTool {
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            supported_scopes: &[
-                ToolScope::AgentWithDiffBlocks,
-                ToolScope::SubAgentDefaultWithDiffBlocks,
+            capabilities: &[
+                capabilities::EDITS_FILES,
+                capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ],
-            capabilities: &[capabilities::EDITS_FILES],
             multiline_params: &["diff"],
             hidden: false,
             title_template: Some("Replacing in {path}"),
