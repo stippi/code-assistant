@@ -1,10 +1,22 @@
 # Agent Core Extraction — Analysis & Vision
 
-> Status: analysis, no code. The goal is twofold: (a) a reusable agent core (comparable
+> Status: Phases 1–3 implemented (hooks + plugins in place, registries injectable,
+> capabilities replace scope data). Next up: Phase 4, the generic crate split.
+> The goal is twofold: (a) a reusable agent core (comparable
 > to the Claude Code Agent SDK) that `code-assistant` uses as one of several consumers,
 > and (b) breaking up the monolithic `code_assistant` crate into independent, layered
 > crates — including the UIs — so that the `code_assistant` crate itself shrinks to a
 > thin wiring binary.
+>
+> Implementation notes so far:
+> - `perplexity_ask`, `view_images`, and `view_documents` are now tagged `read_only`
+>   and therefore chainable (previous exclusion was an oversight; confirmed for
+>   `perplexity_ask`, applied consistently to the other two).
+> - Hook traits live in `agent/hooks.rs` against a concrete `LoopCtx` (no generics,
+>   per §7.9); plugins in `src/plugins/`.
+> - `ToolSpec.supported_scopes` is gone; scope membership is expressed as
+>   `scope:*` capability tags, with `ToolScope` reduced to selection vocabulary
+>   (`ToolScope::tag()`).
 
 ## 1. Vision
 
