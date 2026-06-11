@@ -46,7 +46,7 @@ tui-markdown = "=0.3.6"
 derive_more = { version = "2", features = ["is_variant"] }
 
 # GPUI related — only needed when the "gpui" feature is enabled
-gpui = { version = "0.2.2", optional = true }
+gpui = { version = "0.2.2", features = ["test-support"], optional = true }
 gpui_platform = { version = "0.1", features = ["font-kit"], optional = true }
 gpui-component = { version = "0.5.2", optional = true }
 smallvec = "1.15"
