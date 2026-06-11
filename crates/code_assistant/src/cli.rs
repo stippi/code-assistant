@@ -179,11 +179,14 @@ impl Args {
             );
         }
 
-        // Check persisted default model from settings
-        let settings = crate::ui::gpui::shared::settings::UiSettings::load();
-        if let Some(ref default_model) = settings.default_model {
-            if config.get_model(default_model).is_some() {
-                return Ok(default_model.clone());
+        // Check persisted default model from settings (only available in GPUI builds)
+        #[cfg(feature = "gpui-ui")]
+        {
+            let settings = crate::ui::gpui::shared::settings::UiSettings::load();
+            if let Some(ref default_model) = settings.default_model {
+                if config.get_model(default_model).is_some() {
+                    return Ok(default_model.clone());
+                }
             }
         }
 

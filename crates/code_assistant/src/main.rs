@@ -82,6 +82,12 @@ async fn main() -> Result<()> {
         None => {
             if args.ui {
                 // GPUI mode - use stderr to keep stdout clean
+                #[cfg(not(feature = "gpui-ui"))]
+                anyhow::bail!(
+                    "This binary was compiled without the 'gpui' feature. \
+                     Rebuild with `cargo build --features gpui` to enable the desktop UI."
+                );
+                #[cfg(feature = "gpui-ui")]
                 setup_logging(args.verbose, false);
             } else {
                 // Terminal UI mode - log to file to prevent UI interference
@@ -96,6 +102,9 @@ async fn main() -> Result<()> {
             // In GUI mode, allow starting without a valid model config
             // (the settings screen will guide the user through setup).
             let model_name = if args.ui {
+                #[cfg(not(feature = "gpui-ui"))]
+                unreachable!("--ui requires the gpui feature");
+                #[cfg(feature = "gpui-ui")]
                 args.get_model_name().unwrap_or_default()
             } else {
                 args.get_model_name()?
@@ -116,6 +125,9 @@ async fn main() -> Result<()> {
             };
 
             if args.ui {
+                #[cfg(not(feature = "gpui-ui"))]
+                unreachable!("--ui requires the gpui feature");
+                #[cfg(feature = "gpui-ui")]
                 app::gpui::run(config)
             } else {
                 app::terminal::run(config).await
