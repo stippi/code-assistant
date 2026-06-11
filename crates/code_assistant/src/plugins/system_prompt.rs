@@ -2,6 +2,7 @@
 //! trees, and repository guidance (AGENTS.md / CLAUDE.md).
 
 use crate::agent::hooks::{PromptCtx, SystemPromptProvider};
+use crate::plugins::AgentAppState;
 use crate::tools::generate_system_message;
 use std::fs;
 use std::path::Path;
@@ -11,29 +12,32 @@ pub struct CodeAssistantSystemPrompt;
 
 impl SystemPromptProvider for CodeAssistantSystemPrompt {
     fn build(&self, ctx: &PromptCtx) -> String {
+        let state = AgentAppState::of_ref(ctx.extensions);
+        let initial_project = state.session_config.initial_project.as_str();
+
         // Generate the system message using the tools module
         let mut system_message =
-            generate_system_message(ctx.dialect, ctx.tool_scope, ctx.model_hint);
+            generate_system_message(ctx.dialect, state.tool_scope, ctx.model_hint);
 
         // Add project information
         let mut project_info = String::new();
 
         // Add information about the initial project if available
-        if !ctx.initial_project.is_empty() {
+        if !initial_project.is_empty() {
             project_info.push_str("\n\n# Project Information\n\n");
-            project_info.push_str(&format!("## Initial Project: {}\n\n", ctx.initial_project));
+            project_info.push_str(&format!("## Initial Project: {initial_project}\n\n"));
 
             // Add file tree for the initial project if available
-            if let Some(tree) = ctx.file_trees.get(ctx.initial_project) {
+            if let Some(tree) = state.file_trees.get(initial_project) {
                 project_info.push_str("### File Structure:\n");
                 project_info.push_str(&format!("```\n{tree}\n```\n\n"));
             }
         }
 
         // Add information about available projects
-        if !ctx.available_projects.is_empty() {
+        if !state.available_projects.is_empty() {
             project_info.push_str("## Available Projects:\n");
-            for project in ctx.available_projects {
+            for project in &state.available_projects {
                 project_info.push_str(&format!("- {project}\n"));
             }
         }
@@ -45,7 +49,12 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
 
         // Append guidance files if present. Global AGENTS.md is loaded first so
         // project-specific guidance can refine or override it in the prompt.
-        let guidance_files = read_guidance_files(ctx.project_root);
+        let guidance_files = read_guidance_files(
+            state
+                .session_config
+                .effective_project_path()
+                .map(|p| p.as_path()),
+        );
         if !guidance_files.is_empty() {
             let mut guidance_section = String::new();
             guidance_section.push_str("\n\n# Repository Guidance\n");

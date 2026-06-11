@@ -47,13 +47,13 @@ enum LoopFlow {
 
 pub struct Agent {
     hooks: HookRegistry,
-    plan: PlanState,
+    /// Application-specific loop state, exposed to the hooks type-erased via
+    /// `LoopCtx::extensions` / `PromptCtx::extensions`.
+    app_state: crate::plugins::AgentAppState,
     llm_provider: Box<dyn LLMProvider>,
-    session_config: SessionConfig,
     /// How tool calls travel between the LLM and the loop; selected from the
     /// session's `ToolSyntax` at construction and on session load.
     dialect: Arc<dyn ToolDialect>,
-    tool_scope: ToolScope,
     project_manager: Arc<dyn ProjectManager>,
     command_executor: Arc<dyn CommandExecutor>,
     ui: Arc<dyn UserInterface>,
@@ -85,24 +85,12 @@ pub struct Agent {
     cached_system_prompts: HashMap<String, String>,
     // Optional model identifier used for prompt selection
     model_hint: Option<String>,
-    // Model configuration associated with this session
-    session_model_config: Option<SessionModelConfig>,
-    // Optional override for the model's context window (primarily used in tests)
-    context_limit_override: Option<u32>,
     // Counter for generating unique request IDs
     next_request_id: u64,
     // Session ID for this agent instance
     session_id: Option<String>,
-    // The actual session name (empty if not named yet)
-    session_name: String,
-    // Whether to inject naming reminders (disabled for tests)
-    enable_naming_reminders: bool,
     // Shared pending message with SessionInstance (structured content blocks)
     pending_message_ref: Option<Arc<Mutex<Option<Vec<llm::ContentBlock>>>>>,
-    // File trees for projects (used in system prompt)
-    file_trees: HashMap<String, String>,
-    // Available project names (used in system prompt)
-    available_projects: Vec<String>,
 }
 
 impl Agent {
@@ -134,13 +122,11 @@ impl Agent {
             sub_agent_runner,
         } = components;
 
-        let mut this = Self {
+        Self {
             hooks: crate::plugins::default_hooks(),
-            plan: PlanState::default(),
+            app_state: crate::plugins::AgentAppState::new(session_config.clone()),
             llm_provider,
             dialect: crate::tools::ParserRegistry::get(session_config.tool_syntax),
-            session_config,
-            tool_scope: ToolScope::Agent, // Default to Agent scope
             project_manager,
             ui,
             command_executor,
@@ -155,27 +141,17 @@ impl Agent {
             message_history: Vec::new(),
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
-            session_model_config: None,
-            context_limit_override: None,
             next_request_id: 1, // Start from 1
             session_id: None,
-            session_name: String::new(),
-            enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
             model_hint: None,
-            file_trees: HashMap::new(),
-            available_projects: Vec::new(),
-        };
-        if this.session_config.use_diff_blocks {
-            this.tool_scope = ToolScope::AgentWithDiffBlocks;
         }
-        this
     }
 
     /// Enable diff blocks format for file editing (uses replace_in_file tool instead of edit)
     pub fn enable_diff_blocks(&mut self) {
-        self.tool_scope = ToolScope::AgentWithDiffBlocks;
-        self.session_config.use_diff_blocks = true;
+        self.app_state.tool_scope = ToolScope::AgentWithDiffBlocks;
+        self.app_state.session_config.use_diff_blocks = true;
         // Clear cached system message so it gets regenerated with the new scope
         self.invalidate_system_message_cache();
     }
@@ -207,18 +183,18 @@ impl Agent {
 
     /// Set the tool scope for this agent
     pub fn set_tool_scope(&mut self, scope: ToolScope) {
-        self.tool_scope = scope;
+        self.app_state.tool_scope = scope;
     }
 
     /// Set the session model configuration
     pub fn set_session_model_config(&mut self, config: SessionModelConfig) {
-        self.session_model_config = Some(config);
+        self.app_state.model_config = Some(config);
     }
 
     /// Set the session identity (id and name) for this agent
     pub fn set_session_identity(&mut self, session_id: String, session_name: String) {
         self.session_id = Some(session_id);
-        self.session_name = session_name;
+        self.app_state.session_name = session_name;
     }
 
     /// Get a reference to the message history
@@ -229,13 +205,13 @@ impl Agent {
     /// Disable naming reminders (used for tests)
     #[cfg(test)]
     pub fn disable_naming_reminders(&mut self) {
-        self.enable_naming_reminders = false;
+        self.app_state.naming_reminders_enabled = false;
     }
 
     /// Set session name (used for tests)
     #[cfg(test)]
     pub(crate) fn set_session_name(&mut self, name: String) {
-        self.session_name = name;
+        self.app_state.session_name = name;
     }
 
     /// Get and clear the pending message from shared state
@@ -286,16 +262,16 @@ impl Agent {
         if let Some(session_id) = &self.session_id {
             let session_state = crate::session::SessionState {
                 session_id: session_id.clone(),
-                name: self.session_name.clone(),
+                name: self.app_state.session_name.clone(),
                 message_nodes: self.message_nodes.clone(),
                 active_path: self.active_path.clone(),
                 next_node_id: self.next_node_id,
                 messages: self.message_history.clone(),
                 tool_executions: self.tool_executions.clone(),
-                plan: self.plan.clone(),
-                config: self.session_config.clone(),
+                plan: self.app_state.plan.clone(),
+                config: self.app_state.session_config.clone(),
                 next_request_id: Some(self.next_request_id),
-                model_config: self.session_model_config.clone(),
+                model_config: self.app_state.model_config.clone(),
             };
             self.state_persistence.save_agent_state(session_state)?;
         }
@@ -509,21 +485,21 @@ impl Agent {
             self.message_nodes.len()
         );
         self.tool_executions = session_state.tool_executions;
-        self.plan = session_state.plan.clone();
-        self.session_config = session_state.config;
-        self.dialect = crate::tools::ParserRegistry::get(self.session_config.tool_syntax);
-        if self.session_config.use_diff_blocks {
+        self.app_state.plan = session_state.plan.clone();
+        self.app_state.session_config = session_state.config;
+        self.dialect = crate::tools::ParserRegistry::get(self.app_state.session_config.tool_syntax);
+        if self.app_state.session_config.use_diff_blocks {
             self.enable_diff_blocks();
         } else {
-            self.session_config.use_diff_blocks = false;
-            self.tool_scope = ToolScope::Agent;
+            self.app_state.session_config.use_diff_blocks = false;
+            self.app_state.tool_scope = ToolScope::Agent;
             self.invalidate_system_message_cache();
         }
         self.normalize_loaded_message_history();
-        self.session_name = session_state.name;
-        self.session_model_config = session_state.model_config;
-        self.context_limit_override = None;
-        if let Some(model_config) = self.session_model_config.as_ref() {
+        self.app_state.session_name = session_state.name;
+        self.app_state.model_config = session_state.model_config;
+        self.app_state.context_limit_override = None;
+        if let Some(model_config) = self.app_state.model_config.as_ref() {
             // Resolve the model identifier (provider/id) from the display name
             // This is used for system prompt selection based on model ID matching
             let model_hint = llm::provider_config::ConfigurationSystem::load()
@@ -551,7 +527,7 @@ impl Agent {
     /// The restored plan state, for the caller to announce to the UI after a
     /// session load.
     pub fn plan(&self) -> &PlanState {
-        &self.plan
+        &self.app_state.plan
     }
 
     fn normalize_loaded_message_history(&mut self) {
@@ -612,26 +588,26 @@ impl Agent {
     #[allow(dead_code)]
     pub fn init_project_context(&mut self) -> Result<()> {
         // Initialize empty structures for multi-project support
-        self.file_trees = HashMap::new();
-        self.available_projects = Vec::new();
+        self.app_state.file_trees = HashMap::new();
+        self.app_state.available_projects = Vec::new();
 
         // Reset the initial project
-        self.session_config.initial_project = String::new();
+        self.app_state.session_config.initial_project = String::new();
 
         self.init_projects()
     }
 
     fn init_projects(&mut self) -> Result<()> {
         // Use effective_project_path: worktree path takes priority over init_path
-        if let Some(path) = self.session_config.effective_project_path().cloned() {
+        if let Some(path) = self.app_state.session_config.effective_project_path().cloned() {
             // Add as temporary project and get its name
             let project_name = self.project_manager.add_temporary_project(path)?;
 
             // Only set initial_project if not already set (first init).
             // When switching worktrees the project registration changes but
             // the sidebar grouping (initial_project) must stay stable.
-            if self.session_config.initial_project.is_empty() {
-                self.session_config.initial_project = project_name.clone();
+            if self.app_state.session_config.initial_project.is_empty() {
+                self.app_state.session_config.initial_project = project_name.clone();
             }
 
             // Create initial file tree for this project
@@ -641,15 +617,15 @@ impl Agent {
             let tree = explorer.create_initial_tree(2)?; // Limited depth for initial tree
 
             // Store file tree as string for system prompt
-            self.file_trees
+            self.app_state.file_trees
                 .insert(project_name.clone(), tree.to_string());
         }
 
         // Load all available projects
         let all_projects = self.project_manager.get_projects()?;
         for project_name in all_projects.keys() {
-            if !self.available_projects.contains(project_name) {
-                self.available_projects.push(project_name.clone());
+            if !self.app_state.available_projects.contains(project_name) {
+                self.app_state.available_projects.push(project_name.clone());
             }
         }
 
@@ -798,7 +774,7 @@ impl Agent {
                 let command_executor = self.command_executor.clone();
                 let permission_handler = self.permission_handler.clone();
                 let sub_agent_runner = self.sub_agent_runner.clone();
-                let scope_tag = self.tool_scope.tag();
+                let scope_tag = self.app_state.tool_scope.tag();
 
                 async move {
                     let start_time = Some(SystemTime::now());
@@ -1008,15 +984,8 @@ impl Agent {
 
         let ctx = crate::agent::hooks::PromptCtx {
             dialect: self.dialect.as_ref(),
-            tool_scope: self.tool_scope,
             model_hint: self.model_hint.as_deref(),
-            initial_project: &self.session_config.initial_project,
-            project_root: self
-                .session_config
-                .effective_project_path()
-                .map(|p| p.as_path()),
-            file_trees: &self.file_trees,
-            available_projects: &self.available_projects,
+            extensions: &self.app_state,
         };
         let system_message = self.hooks.system_prompt.build(&ctx);
 
@@ -1106,13 +1075,10 @@ impl Agent {
     /// are sent to the LLM (e.g. to inject system reminders).
     pub(crate) fn shape_request_messages(&mut self, mut messages: Vec<Message>) -> Vec<Message> {
         let ctx = LoopCtx {
-            session_name: &mut self.session_name,
-            naming_reminders_enabled: self.enable_naming_reminders,
-            tool_scope: self.tool_scope,
             tool_executions: &mut self.tool_executions,
-            plan: &self.plan,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            extensions: &mut self.app_state,
         };
         for hook in &self.hooks.iteration_hooks {
             if let Err(e) = hook.shape_request(&mut messages, &ctx) {
@@ -1161,7 +1127,7 @@ impl Agent {
             tools: if self.dialect.uses_native_tools() {
                 Some(crate::tools::to_tool_definitions(
                     crate::tools::global_registry()
-                        .get_tool_definitions_with_capability(self.tool_scope.tag()),
+                        .get_tool_definitions_with_capability(self.app_state.tool_scope.tag()),
                 ))
             } else {
                 None
@@ -1310,7 +1276,7 @@ impl Agent {
             tools: if self.dialect.uses_native_tools() {
                 Some(crate::tools::to_tool_definitions(
                     crate::tools::global_registry()
-                        .get_tool_definitions_with_capability(self.tool_scope.tag()),
+                        .get_tool_definitions_with_capability(self.app_state.tool_scope.tag()),
                 ))
             } else {
                 None
@@ -1380,12 +1346,12 @@ impl Agent {
         model_config: SessionModelConfig,
     ) {
         self.session_id = Some(session_id);
-        self.session_model_config = Some(model_config);
+        self.app_state.model_config = Some(model_config);
     }
 
     #[cfg(test)]
     pub fn set_test_context_limit(&mut self, limit: u32) {
-        self.context_limit_override = Some(limit);
+        self.app_state.context_limit_override = Some(limit);
     }
 
     #[cfg(test)]
@@ -1394,12 +1360,12 @@ impl Agent {
     }
 
     fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
-        let model_name = match self.session_model_config.as_ref() {
+        let model_name = match self.app_state.model_config.as_ref() {
             Some(config) => config.model_name.clone(),
             None => return Ok(None),
         };
 
-        let limit = if let Some(limit) = self.context_limit_override {
+        let limit = if let Some(limit) = self.app_state.context_limit_override {
             limit
         } else {
             let config_system = llm::provider_config::ConfigurationSystem::load()?;
@@ -1921,13 +1887,10 @@ impl Agent {
     /// before the standard dispatch. Returns `Some(result)` when one did.
     fn intercept_tool(&mut self, tool_request: &ToolRequest) -> Option<Result<bool>> {
         let mut ctx = LoopCtx {
-            session_name: &mut self.session_name,
-            naming_reminders_enabled: self.enable_naming_reminders,
-            tool_scope: self.tool_scope,
             tool_executions: &mut self.tool_executions,
-            plan: &self.plan,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            extensions: &mut self.app_state,
         };
         for interceptor in &self.hooks.interceptors {
             if let Some(result) = interceptor.try_intercept(tool_request, &mut ctx) {
@@ -1940,13 +1903,10 @@ impl Agent {
     /// Notifies the registered interceptors that a tool executed successfully.
     fn after_tool_success(&mut self, tool_request: &ToolRequest) {
         let mut ctx = LoopCtx {
-            session_name: &mut self.session_name,
-            naming_reminders_enabled: self.enable_naming_reminders,
-            tool_scope: self.tool_scope,
             tool_executions: &mut self.tool_executions,
-            plan: &self.plan,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            extensions: &mut self.app_state,
         };
         for interceptor in &self.hooks.interceptors {
             interceptor.after_tool_success(tool_request, &mut ctx);
@@ -1991,7 +1951,7 @@ impl Agent {
         }
 
         // Check if this is a hidden tool
-        let is_hidden = crate::tools::global_registry().is_tool_hidden(&tool_request.name, self.tool_scope.tag());
+        let is_hidden = crate::tools::global_registry().is_tool_hidden(&tool_request.name, self.app_state.tool_scope.tag());
 
         // Update status to Running before execution (skip for hidden tools)
         if !is_hidden {
@@ -2016,7 +1976,7 @@ impl Agent {
         // The scope filtering on the tool list offered to the LLM is not sufficient on its own,
         // because models may hallucinate tool calls they know from training even when the tool
         // is not in the provided tool list (e.g. a sub-agent calling write_file).
-        if !crate::tools::global_registry().tool_has_capability(&tool_request.name, self.tool_scope.tag()) {
+        if !crate::tools::global_registry().tool_has_capability(&tool_request.name, self.app_state.tool_scope.tag()) {
             return Err(anyhow::anyhow!(
                 "Tool '{}' is not available in the current scope",
                 tool_request.name
@@ -2027,7 +1987,7 @@ impl Agent {
         // the duration of the invocation and is taken back afterwards.
         let mut services = crate::tools::ToolServices {
             project_manager: self.project_manager.clone(),
-            plan: Some(std::mem::take(&mut self.plan)),
+            plan: Some(std::mem::take(&mut self.app_state.plan)),
             ui: Some(self.ui.clone()),
             sub_agent_runner: self.sub_agent_runner.clone(),
         };
@@ -2044,7 +2004,7 @@ impl Agent {
 
         let invoke_result = tool.invoke(&mut context, &mut input).await;
         drop(context);
-        self.plan = services.plan.take().unwrap_or_default();
+        self.app_state.plan = services.plan.take().unwrap_or_default();
 
         let result = match invoke_result {
             Ok(result) => {

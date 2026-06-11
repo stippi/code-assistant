@@ -9,24 +9,22 @@
 use crate::agent::dialect::ToolDialect;
 use crate::agent::types::ToolExecution;
 use crate::persistence::{ConversationPath, MessageNode, NodeId};
-use crate::tools::core::ToolScope;
 use crate::tools::ToolRequest;
-use crate::types::PlanState;
 use anyhow::Result;
 use llm::Message;
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::any::Any;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// View of the agent state that hooks may read and act on.
 pub struct LoopCtx<'a> {
-    pub session_name: &'a mut String,
-    pub naming_reminders_enabled: bool,
-    pub tool_scope: ToolScope,
     pub tool_executions: &'a mut Vec<ToolExecution>,
-    pub plan: &'a PlanState,
     pub message_nodes: &'a mut BTreeMap<NodeId, MessageNode>,
     pub active_path: &'a ConversationPath,
+    /// Application-specific loop state. Hooks downcast this to the concrete
+    /// type their application installed (the dyn-Any lean of §7.9; for
+    /// code-assistant that is `crate::plugins::AgentAppState`).
+    pub extensions: &'a mut (dyn Any + Send),
 }
 
 /// Intercepts tool requests that the application handles itself instead of
@@ -97,13 +95,10 @@ pub struct PromptCtx<'a> {
     /// The dialect the agent speaks; providers ask it for the format and
     /// tool documentation sections.
     pub dialect: &'a dyn ToolDialect,
-    pub tool_scope: ToolScope,
     pub model_hint: Option<&'a str>,
-    pub initial_project: &'a str,
-    /// Effective project root (worktree or init path), when configured.
-    pub project_root: Option<&'a Path>,
-    pub file_trees: &'a HashMap<String, String>,
-    pub available_projects: &'a [String],
+    /// Application-specific state (projects, scope, …); see
+    /// [`LoopCtx::extensions`].
+    pub extensions: &'a (dyn Any + Send),
 }
 
 /// Builds the system prompt.

@@ -3,6 +3,7 @@
 
 use crate::agent::hooks::{IterationHook, LoopCtx, ToolInterceptor};
 use crate::agent::types::ToolExecution;
+use crate::plugins::AgentAppState;
 use crate::tools::ToolRequest;
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, MessageRole};
@@ -26,7 +27,7 @@ fn apply_session_name(request: &ToolRequest, ctx: &mut LoopCtx) -> Result<bool> 
         let title = title.trim();
         if !title.is_empty() {
             trace!("Obtained session title from LLM: {}", title);
-            *ctx.session_name = title.to_string();
+            AgentAppState::of(ctx.extensions).session_name = title.to_string();
 
             ctx.tool_executions.push(ToolExecution {
                 tool_request: request.clone(),
@@ -50,15 +51,20 @@ pub struct NameSessionReminderHook;
 
 impl IterationHook for NameSessionReminderHook {
     fn shape_request(&self, messages: &mut Vec<Message>, ctx: &LoopCtx) -> Result<()> {
+        let state = AgentAppState::of_ref(&*ctx.extensions);
+
         // Only inject if enabled, session is not named yet, and we have messages
-        if !ctx.naming_reminders_enabled || !ctx.session_name.is_empty() || messages.is_empty() {
+        if !state.naming_reminders_enabled || !state.session_name.is_empty() || messages.is_empty()
+        {
             return Ok(());
         }
 
         // Skip the reminder when the `name_session` tool isn't available in the
         // current tool scope (e.g. for sub-agents). Otherwise we'd nag the agent
         // to call a tool it cannot use.
-        if !crate::tools::global_registry().tool_has_capability("name_session", ctx.tool_scope.tag()) {
+        if !crate::tools::global_registry()
+            .tool_has_capability("name_session", state.tool_scope.tag())
+        {
             return Ok(());
         }
 

@@ -1,6 +1,7 @@
 //! Code-assistant-specific behavior, plugged into the agent loop through the
 //! hook traits in `crate::agent::hooks`.
 
+mod app_state;
 mod compaction;
 mod name_session;
 mod plan;
@@ -8,6 +9,7 @@ mod recovery;
 mod sub_agent;
 mod system_prompt;
 
+pub use app_state::AgentAppState;
 pub use compaction::TokenRatioCompaction;
 pub use name_session::{NameSessionInterceptor, NameSessionReminderHook};
 pub use plan::PlanSnapshotHook;
