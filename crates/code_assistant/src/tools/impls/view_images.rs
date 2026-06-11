@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -215,7 +216,7 @@ impl Tool for ViewImagesTool {
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
         let explorer = context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project(&input.project)
             .map_err(|e| {
                 anyhow!(

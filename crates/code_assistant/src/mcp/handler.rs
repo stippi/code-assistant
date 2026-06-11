@@ -9,7 +9,7 @@ use tokio::io::Stdout;
 use tracing::{debug, error, trace};
 
 pub struct MessageHandler {
-    project_manager: Box<dyn ProjectManager>,
+    project_manager: std::sync::Arc<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
     message_writer: Box<dyn MessageWriter>,
@@ -18,7 +18,7 @@ pub struct MessageHandler {
 impl MessageHandler {
     pub fn new(stdout: Stdout) -> Result<Self> {
         Ok(Self {
-            project_manager: Box::new(DefaultProjectManager::new()),
+            project_manager: std::sync::Arc::new(DefaultProjectManager::new()),
             command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
             message_writer: Box::new(StdoutWriter::new(stdout)),
@@ -27,7 +27,7 @@ impl MessageHandler {
 
     #[cfg(test)]
     pub fn with_dependencies(
-        project_manager: Box<dyn ProjectManager>,
+        project_manager: std::sync::Arc<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         message_writer: Box<dyn MessageWriter>,
     ) -> Self {
@@ -261,16 +261,13 @@ impl MessageHandler {
                 .get(&params.name)
                 .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;
 
-            // Create a tool context with references (no UI for MCP)
+            // Create a tool context (no UI, no plan for MCP)
+            let mut services = crate::tools::ToolServices::new(self.project_manager.clone());
             let mut context = crate::tools::core::ToolContext {
-                project_manager: self.project_manager.as_ref(),
                 command_executor: self.command_executor.as_ref(),
-                plan: None,
-                ui: None,
                 tool_id: None,
                 permission_handler: None,
-                sub_agent_runner: None,
-                extensions: None,
+                extensions: Some(&mut services),
             };
 
             // Invoke the tool

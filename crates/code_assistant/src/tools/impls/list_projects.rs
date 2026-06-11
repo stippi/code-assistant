@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -87,7 +88,7 @@ impl Tool for ListProjectsTool {
         _input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Load projects using the ProjectManager from the context
-        let projects = context.project_manager.get_projects()?;
+        let projects = context.project_manager().get_projects()?;
 
         Ok(ListProjectsOutput { projects })
     }

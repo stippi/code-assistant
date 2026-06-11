@@ -185,13 +185,19 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         format_on_save: Some(format_on_save),
     };
 
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project(
         "test-project",
         project,
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
+    let mut services = crate::tools::ToolServices::new(project_manager);
+    let mut context = ToolContext {
+        command_executor: &command_executor,
+        tool_id: None,
+        permission_handler: None,
+        extensions: Some(&mut services),
+    };
 
     // Test editing: search is formatted (matches file), replacement is unformatted
     let mut input = EditInput {
@@ -251,13 +257,19 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
         format_on_save: Some(format_on_save),
     };
 
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project(
         "test-project",
         project,
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
+    let mut services = crate::tools::ToolServices::new(project_manager);
+    let mut context = ToolContext {
+        command_executor: &command_executor,
+        tool_id: None,
+        permission_handler: None,
+        extensions: Some(&mut services),
+    };
 
     // Test writing a Rust file
     let mut input = WriteFileInput {
@@ -316,13 +328,19 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
         format_on_save: Some(format_on_save),
     };
 
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project(
         "test-project",
         project,
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
+    let mut services = crate::tools::ToolServices::new(project_manager);
+    let mut context = ToolContext {
+        command_executor: &command_executor,
+        tool_id: None,
+        permission_handler: None,
+        extensions: Some(&mut services),
+    };
 
     // Diff has two SEARCH/REPLACE blocks; replacements are unformatted (missing spaces around '=')
     let mut input = ReplaceInFileInput {
@@ -383,13 +401,19 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
         format_on_save: Some(format_on_save),
     };
 
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project(
         "test-project",
         project,
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
+    let mut services = crate::tools::ToolServices::new(project_manager);
+    let mut context = ToolContext {
+        command_executor: &command_executor,
+        tool_id: None,
+        permission_handler: None,
+        extensions: Some(&mut services),
+    };
 
     // Test editing a .txt file (should not be formatted)
     let mut input = EditInput {
@@ -452,13 +476,19 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         format_on_save: Some(format_on_save),
     };
 
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project(
         "test-project",
         project,
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
+    let mut services = crate::tools::ToolServices::new(project_manager);
+    let mut context = ToolContext {
+        command_executor: &command_executor,
+        tool_id: None,
+        permission_handler: None,
+        extensions: Some(&mut services),
+    };
 
     // Test editing JS file
     let mut js_input = EditInput {
@@ -541,13 +571,19 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         format_on_save: Some(format_on_save),
     };
 
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project(
         "test-project",
         project,
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
+    let mut services = crate::tools::ToolServices::new(project_manager);
+    let mut context = ToolContext {
+        command_executor: &command_executor,
+        tool_id: None,
+        permission_handler: None,
+        extensions: Some(&mut services),
+    };
 
     let tool = EditTool;
 
@@ -623,13 +659,19 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
         format_on_save: Some(format_on_save),
     };
 
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project(
         "test-project",
         project,
         Box::new(explorer),
     ));
 
-    let mut context = ToolContext::new(project_manager.as_ref(), &command_executor);
+    let mut services = crate::tools::ToolServices::new(project_manager);
+    let mut context = ToolContext {
+        command_executor: &command_executor,
+        tool_id: None,
+        permission_handler: None,
+        extensions: Some(&mut services),
+    };
 
     // Test that the tool handles potential conflicts gracefully
     let mut input = EditInput {

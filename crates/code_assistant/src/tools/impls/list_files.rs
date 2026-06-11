@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -134,7 +135,7 @@ impl Tool for ListFilesTool {
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let mut explorer = match context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project(&input.project)
         {
             Ok(explorer) => explorer,
@@ -182,7 +183,7 @@ impl Tool for ListFilesTool {
         }
 
         // Emit directory listed events for each successful path
-        if let Some(ui) = context.ui {
+        if let Some(ui) = context.ui() {
             for (path, _) in &expanded_paths {
                 let _ = ui
                     .send_event(crate::ui::UiEvent::DirectoryListed {

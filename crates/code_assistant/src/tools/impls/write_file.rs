@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -138,7 +139,7 @@ impl Tool for WriteFileTool {
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = match context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project(&input.project)
         {
             Ok(explorer) => explorer,
@@ -157,7 +158,7 @@ impl Tool for WriteFileTool {
 
         // Load project configuration
         let project_config = context
-            .project_manager
+            .project_manager()
             .get_project(&input.project)?
             .ok_or_else(|| anyhow::anyhow!("Project not found: {}", input.project))?;
 
@@ -208,7 +209,7 @@ impl Tool for WriteFileTool {
                 }
 
                 // Emit resource event
-                if let Some(ui) = context.ui {
+                if let Some(ui) = context.ui() {
                     let _ = ui
                         .send_event(crate::ui::UiEvent::ResourceWritten {
                             project: input.project.clone(),

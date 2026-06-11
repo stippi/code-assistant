@@ -51,7 +51,7 @@ async fn setup_test_environment() -> Result<(TempDir, Arc<Mutex<Vec<String>>>, M
     let explorer = Explorer::new(temp_path.to_path_buf());
 
     // Create the MockProjectManager that uses the real Explorer
-    let project_manager = Box::new(MockProjectManager::default().with_project_path(
+    let project_manager = std::sync::Arc::new(MockProjectManager::default().with_project_path(
         "test-project",
         temp_path.to_path_buf(),
         Box::new(explorer),
@@ -73,7 +73,7 @@ async fn setup_test_environment() -> Result<(TempDir, Arc<Mutex<Vec<String>>>, M
 #[tokio::test]
 async fn test_message_handler_with_mock_writer() {
     // Create mock components
-    let project_manager: Box<dyn ProjectManager> = Box::new(DefaultProjectManager::new());
+    let project_manager: std::sync::Arc<dyn ProjectManager> = std::sync::Arc::new(DefaultProjectManager::new());
     let command_executor: Box<dyn CommandExecutor> = Box::new(DefaultCommandExecutor);
     let mock_writer = MockWriter::new();
     let writer_messages = mock_writer.messages.clone();
@@ -105,7 +105,7 @@ async fn test_message_handler_with_mock_writer() {
 #[tokio::test]
 async fn test_tools_list() {
     // Create mock components
-    let project_manager: Box<dyn ProjectManager> = Box::new(DefaultProjectManager::new());
+    let project_manager: std::sync::Arc<dyn ProjectManager> = std::sync::Arc::new(DefaultProjectManager::new());
     let command_executor: Box<dyn CommandExecutor> = Box::new(DefaultCommandExecutor);
     let mock_writer = MockWriter::new();
     let writer_messages = mock_writer.messages.clone();

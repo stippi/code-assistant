@@ -1,4 +1,5 @@
 use crate::tests::mocks::ToolTestFixture;
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{ResourcesTracker, ToolRegistry};
 use crate::tools::impls::{ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};
 
@@ -181,7 +182,7 @@ async fn test_write_file_tool() -> Result<()> {
 
         // Get the updated content from the explorer to verify it was appended
         let explorer = context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project("test-project")?;
         let updated_content = explorer
             .read_file(&PathBuf::from("./root/existing.txt"))
@@ -260,7 +261,7 @@ async fn test_replace_in_file_tool() -> Result<()> {
 
         // Verify the content was actually replaced by reading the file
         let explorer = context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project("test-project")?;
         let updated_content = explorer
             .read_file(&PathBuf::from("./root/source.txt"))

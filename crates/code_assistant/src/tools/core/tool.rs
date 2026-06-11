@@ -3,29 +3,23 @@ use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::permissions::PermissionMediator;
-use crate::types::PlanState;
 use anyhow::{anyhow, Result};
 use command_executor::CommandExecutor;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-/// Context provided to tools during execution
+/// Context provided to tools during execution.
+///
+/// The context itself is application-agnostic: it carries only generic
+/// services. Application-specific services (project manager, UI, plan state,
+/// sub-agent runner, …) travel in `extensions` as owned handles; tools
+/// downcast them to the concrete type their application registered.
 pub struct ToolContext<'a> {
-    /// Project manager for accessing files
-    pub project_manager: &'a dyn crate::config::ProjectManager,
     /// Command executor for running shell commands
     pub command_executor: &'a dyn CommandExecutor,
-    /// Optional plan state reference for plan-related tools
-    pub plan: Option<&'a mut PlanState>,
-    /// Optional UI instance for streaming output
-    pub ui: Option<&'a dyn crate::ui::UserInterface>,
     /// Optional current tool ID for streaming output
     pub tool_id: Option<String>,
     /// Optional permission handler for potentially sensitive operations
     pub permission_handler: Option<&'a dyn PermissionMediator>,
-
-    /// Optional sub-agent runner used by the `spawn_agent` tool.
-    pub sub_agent_runner: Option<&'a dyn crate::agent::SubAgentRunner>,
-
     /// Application-specific services for tools that need more than the fields
     /// above. Tools downcast this to the concrete type they were registered
     /// with, keeping the context itself application-agnostic.
@@ -45,25 +39,6 @@ impl<'a> ToolContext<'a> {
         self.extensions
             .as_deref_mut()
             .and_then(|ext| ext.downcast_mut::<T>())
-    }
-}
-
-#[cfg(test)]
-impl<'a> ToolContext<'a> {
-    pub fn new(
-        project_manager: &'a dyn crate::config::ProjectManager,
-        command_executor: &'a dyn CommandExecutor,
-    ) -> Self {
-        ToolContext {
-            project_manager,
-            command_executor,
-            plan: None,
-            ui: None,
-            tool_id: None,
-            permission_handler: None,
-            sub_agent_runner: None,
-            extensions: None,
-        }
     }
 }
 

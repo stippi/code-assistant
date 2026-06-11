@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -317,7 +318,7 @@ impl Tool for ReadFilesTool {
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project(&input.project)
             .map_err(|e| {
                 anyhow!(
@@ -411,7 +412,7 @@ impl Tool for ReadFilesTool {
         }
 
         // Emit resource events for loaded files
-        if let Some(ui) = context.ui {
+        if let Some(ui) = context.ui() {
             for path in loaded_files.keys() {
                 // Get the base path without any line range information
                 let base_path =

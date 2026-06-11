@@ -694,7 +694,7 @@ impl SessionManager {
                 command_executor
             };
 
-        let sandboxed_project_manager = Box::new(crate::config::SandboxAwareProjectManager::new(
+        let sandboxed_project_manager = Arc::new(crate::config::SandboxAwareProjectManager::new(
             project_manager,
             sandbox_context_clone.clone(),
         ));

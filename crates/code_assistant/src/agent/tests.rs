@@ -392,7 +392,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -515,7 +515,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -642,7 +642,7 @@ async fn test_parse_error_handling() -> Result<()> {
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -782,7 +782,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(project_manager),
+        project_manager: Arc::new(project_manager),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -884,7 +884,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -1003,7 +1003,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -1131,7 +1131,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -1596,7 +1596,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     // 3. Structured messages get the reminder added as an additional ContentBlock
     // Create a mock agent for testing
     let llm_provider = Box::new(MockLLMProvider::new(vec![]));
-    let project_manager = Box::new(MockProjectManager::default());
+    let project_manager = Arc::new(MockProjectManager::default());
     let command_executor = Box::new(create_command_executor_mock());
     let ui = Arc::new(MockUI::default());
     let state_persistence = Box::new(MockStatePersistence::new());
@@ -1957,7 +1957,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2008,7 +2008,7 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2073,7 +2073,7 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2122,7 +2122,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2175,7 +2175,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2278,7 +2278,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2362,7 +2362,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(MockProjectManager::new()),
+        project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2516,7 +2516,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(project_manager),
+        project_manager: Arc::new(project_manager),
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
@@ -2644,7 +2644,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
-        project_manager: Box::new(mock_project_manager),
+        project_manager: Arc::new(mock_project_manager),
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),

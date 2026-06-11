@@ -203,27 +203,6 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
     })])
 }
 
-// Helper to create a test ToolContext with all required fields
-#[allow(dead_code)]
-pub fn create_test_tool_context<'a>(
-    project_manager: &'a dyn crate::config::ProjectManager,
-    command_executor: &'a dyn CommandExecutor,
-    plan: Option<&'a mut crate::types::PlanState>,
-    ui: Option<&'a dyn crate::ui::UserInterface>,
-    tool_id: Option<String>,
-) -> crate::tools::core::ToolContext<'a> {
-    crate::tools::core::ToolContext {
-        project_manager,
-        command_executor,
-        plan,
-        ui,
-        tool_id,
-        permission_handler: None,
-        sub_agent_runner: None,
-        extensions: None,
-    }
-}
-
 // Mock UI
 #[derive(Default, Clone)]
 pub struct MockUI {
@@ -892,15 +871,15 @@ pub fn create_explorer_mock() -> MockExplorer {
 
 #[derive(Default)]
 pub struct MockProjectManager {
-    explorers: HashMap<String, Box<dyn CodeExplorer>>,
-    projects: HashMap<String, Project>,
+    explorers: Mutex<HashMap<String, Box<dyn CodeExplorer>>>,
+    projects: Mutex<HashMap<String, Project>>,
 }
 
 impl MockProjectManager {
     pub fn new() -> Self {
         let empty = Self {
-            explorers: HashMap::new(),
-            projects: HashMap::new(),
+            explorers: Mutex::new(HashMap::new()),
+            projects: Mutex::new(HashMap::new()),
         };
         // Add default project
         empty.with_project_path(
@@ -929,24 +908,24 @@ impl MockProjectManager {
 
     // Helper to add a custom project and explorer
     pub fn with_project(
-        mut self,
+        self,
         name: &str,
         project: Project,
         explorer: Box<dyn CodeExplorer>,
     ) -> Self {
-        self.projects.insert(name.to_string(), project);
-        self.explorers.insert(name.to_string(), explorer);
+        self.projects.lock().unwrap().insert(name.to_string(), project);
+        self.explorers.lock().unwrap().insert(name.to_string(), explorer);
         self
     }
 }
 
 impl ProjectManager for MockProjectManager {
-    fn add_temporary_project(&mut self, path: PathBuf) -> Result<String> {
+    fn add_temporary_project(&self, path: PathBuf) -> Result<String> {
         // Use a fixed name for testing
         let project_name = "temp_project".to_string();
 
         // Add the project
-        self.projects.insert(
+        self.projects.lock().unwrap().insert(
             project_name.clone(),
             Project {
                 path: path.clone(),
@@ -956,21 +935,23 @@ impl ProjectManager for MockProjectManager {
 
         // Add a default explorer for it
         self.explorers
+            .lock()
+            .unwrap()
             .insert(project_name.clone(), Box::new(create_explorer_mock()));
 
         Ok(project_name)
     }
 
     fn get_projects(&self) -> Result<HashMap<String, Project>> {
-        Ok(self.projects.clone())
+        Ok(self.projects.lock().unwrap().clone())
     }
 
     fn get_project(&self, name: &str) -> Result<Option<Project>> {
-        Ok(self.projects.get(name).cloned())
+        Ok(self.projects.lock().unwrap().get(name).cloned())
     }
 
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
-        match self.explorers.get(name) {
+        match self.explorers.lock().unwrap().get(name) {
             Some(explorer) => Ok(explorer.clone_box()),
             None => Err(anyhow::anyhow!("Project {name} not found")),
         }
@@ -980,25 +961,31 @@ impl ProjectManager for MockProjectManager {
 /// Test fixture that provides a convenient way to create ToolContext instances for tests
 /// while maintaining access to the underlying mocks for assertions
 pub struct ToolTestFixture {
-    project_manager: MockProjectManager,
+    project_manager: Arc<MockProjectManager>,
     command_executor: MockCommandExecutor,
-    plan: Option<PlanState>,
-    ui: Option<MockUI>,
+    ui: Option<Arc<MockUI>>,
     tool_id: Option<String>,
     permission_handler: Option<Arc<dyn PermissionMediator>>,
+    services: crate::tools::ToolServices,
 }
 
 impl ToolTestFixture {
-    /// Create a new test fixture with default mocks
-    pub fn new() -> Self {
+    fn from_parts(project_manager: MockProjectManager, command_executor: MockCommandExecutor) -> Self {
+        let project_manager = Arc::new(project_manager);
+        let services = crate::tools::ToolServices::new(project_manager.clone());
         Self {
-            project_manager: MockProjectManager::new(),
-            command_executor: MockCommandExecutor::new(vec![]),
-            plan: None,
+            project_manager,
+            command_executor,
             ui: None,
             tool_id: None,
             permission_handler: None,
+            services,
         }
+    }
+
+    /// Create a new test fixture with default mocks
+    pub fn new() -> Self {
+        Self::from_parts(MockProjectManager::new(), MockCommandExecutor::new(vec![]))
     }
 
     /// Create a test fixture with specific files in the default project
@@ -1056,26 +1043,12 @@ impl ToolTestFixture {
             Box::new(explorer),
         );
 
-        Self {
-            project_manager,
-            command_executor: MockCommandExecutor::new(vec![]),
-            plan: None,
-            ui: None,
-            tool_id: None,
-            permission_handler: None,
-        }
+        Self::from_parts(project_manager, MockCommandExecutor::new(vec![]))
     }
 
     /// Create a test fixture with specific command responses
     pub fn with_command_responses(responses: Vec<Result<CommandOutput, anyhow::Error>>) -> Self {
-        Self {
-            project_manager: MockProjectManager::new(),
-            command_executor: MockCommandExecutor::new(responses),
-            plan: None,
-            ui: None,
-            tool_id: None,
-            permission_handler: None,
-        }
+        Self::from_parts(MockProjectManager::new(), MockCommandExecutor::new(responses))
     }
 
     /// Create a test fixture with both files and command responses
@@ -1091,13 +1064,15 @@ impl ToolTestFixture {
 
     /// Enable plan state for this fixture
     pub fn with_plan(mut self) -> Self {
-        self.plan = Some(PlanState::default());
+        self.services.plan = Some(PlanState::default());
         self
     }
 
     /// Add a UI mock to this fixture
     pub fn with_ui(mut self) -> Self {
-        self.ui = Some(MockUI::default());
+        let ui = Arc::new(MockUI::default());
+        self.services.ui = Some(ui.clone());
+        self.ui = Some(ui);
         self
     }
 
@@ -1119,14 +1094,10 @@ impl ToolTestFixture {
     /// Create a ToolContext from this fixture
     pub fn context(&mut self) -> ToolContext<'_> {
         ToolContext {
-            project_manager: &self.project_manager,
             command_executor: &self.command_executor,
-            plan: self.plan.as_mut(),
-            ui: self.ui.as_ref().map(|ui| ui as &dyn UserInterface),
             tool_id: self.tool_id.clone(),
             permission_handler: self.permission_handler.as_deref(),
-            sub_agent_runner: None,
-            extensions: None,
+            extensions: Some(&mut self.services),
         }
     }
 
@@ -1143,11 +1114,11 @@ impl ToolTestFixture {
 
     /// Get a reference to the plan state for assertions
     pub fn plan(&self) -> Option<&PlanState> {
-        self.plan.as_ref()
+        self.services.plan.as_ref()
     }
 
     /// Get a reference to the UI mock for assertions
     pub fn ui(&self) -> Option<&MockUI> {
-        self.ui.as_ref()
+        self.ui.as_deref()
     }
 }

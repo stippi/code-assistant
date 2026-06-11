@@ -18,11 +18,15 @@ pub mod formatter;
 pub mod core;
 pub mod impls;
 
+// Application services handed to tools through ToolContext::extensions
+pub mod services;
+
 #[cfg(test)]
 mod tests;
 
 pub(crate) use parse::parse_search_replace_blocks;
 pub use parse::{parse_caret_tool_invocations, parse_xml_tool_invocations};
 pub use parser_registry::ParserRegistry;
+pub use services::{ToolServices, ToolServicesAccess};
 pub use system_message::generate_system_message;
 pub use types::{AnnotatedToolDefinition, ParseError, PromptTooLongError, ToolRequest};

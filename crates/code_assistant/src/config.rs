@@ -15,8 +15,10 @@ pub fn get_config_path() -> Result<PathBuf> {
 
 // The main trait for project management
 pub trait ProjectManager: Send + Sync {
-    // Add a temporary project, returns the project name
-    fn add_temporary_project(&mut self, path: PathBuf) -> Result<String>;
+    // Add a temporary project, returns the project name.
+    // Takes &self so managers can be shared (e.g. Arc); implementations use
+    // interior mutability for their temporary-project state.
+    fn add_temporary_project(&self, path: PathBuf) -> Result<String>;
     // Get all projects (both configured and temporary)
     fn get_projects(&self) -> Result<HashMap<String, Project>>;
     fn get_project(&self, name: &str) -> Result<Option<Project>>;
@@ -48,7 +50,7 @@ impl SandboxAwareProjectManager {
 }
 
 impl ProjectManager for SandboxAwareProjectManager {
-    fn add_temporary_project(&mut self, path: PathBuf) -> Result<String> {
+    fn add_temporary_project(&self, path: PathBuf) -> Result<String> {
         let name = self.inner.add_temporary_project(path.clone())?;
         if let Some(project) = self.inner.get_project(&name)? {
             self.register_project_root(&project);
@@ -84,19 +86,19 @@ impl ProjectManager for SandboxAwareProjectManager {
 
 // Default implementation of ProjectManager that loads from config file
 pub struct DefaultProjectManager {
-    temp_projects: HashMap<String, Project>,
+    temp_projects: std::sync::Mutex<HashMap<String, Project>>,
 }
 
 impl DefaultProjectManager {
     pub fn new() -> Self {
         Self {
-            temp_projects: HashMap::new(),
+            temp_projects: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
 
 impl ProjectManager for DefaultProjectManager {
-    fn add_temporary_project(&mut self, path: PathBuf) -> Result<String> {
+    fn add_temporary_project(&self, path: PathBuf) -> Result<String> {
         // Canonicalize path
         let path = path.canonicalize()?;
 
@@ -124,7 +126,7 @@ impl ProjectManager for DefaultProjectManager {
         }
 
         // Add to temporary projects
-        self.temp_projects.insert(
+        self.temp_projects.lock().unwrap().insert(
             name.clone(),
             Project {
                 path,
@@ -137,7 +139,7 @@ impl ProjectManager for DefaultProjectManager {
 
     fn get_projects(&self) -> Result<HashMap<String, Project>> {
         let mut all_projects = load_projects()?;
-        all_projects.extend(self.temp_projects.clone());
+        all_projects.extend(self.temp_projects.lock().unwrap().clone());
         Ok(all_projects)
     }
 

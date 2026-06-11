@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -172,8 +173,9 @@ impl Tool for UpdatePlanTool {
 
         let (counts, plan_snapshot) = {
             let plan_ref = context
+                .services_mut()
                 .plan
-                .as_deref_mut()
+                .as_mut()
                 .ok_or_else(|| anyhow!("Plan state is unavailable in this context"))?;
             *plan_ref = new_plan;
 
@@ -188,7 +190,7 @@ impl Tool for UpdatePlanTool {
             format!("Plan updated with {} item(s)", plan_snapshot.entries.len())
         };
 
-        if let Some(ui) = context.ui {
+        if let Some(ui) = context.ui() {
             ui.send_event(UiEvent::UpdatePlan {
                 plan: plan_snapshot.clone(),
             })

@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -124,7 +125,7 @@ impl Tool for DeleteFilesTool {
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project(&input.project)
             .map_err(|e| {
                 anyhow!(
@@ -156,7 +157,7 @@ impl Tool for DeleteFilesTool {
                     deleted.push(path.clone());
 
                     // Emit resource event
-                    if let Some(ui) = context.ui {
+                    if let Some(ui) = context.ui() {
                         let _ = ui
                             .send_event(crate::ui::UiEvent::ResourceDeleted {
                                 project: input.project.clone(),

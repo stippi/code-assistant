@@ -24,7 +24,7 @@ use tracing::{debug, trace, warn};
 /// Runtime components required to construct an `Agent`.
 pub struct AgentComponents {
     pub llm_provider: Box<dyn LLMProvider>,
-    pub project_manager: Box<dyn ProjectManager>,
+    pub project_manager: Arc<dyn ProjectManager>,
     pub command_executor: Box<dyn CommandExecutor>,
     pub ui: Arc<dyn UserInterface>,
     pub state_persistence: Box<dyn AgentStatePersistence>,
@@ -52,7 +52,7 @@ pub struct Agent {
     llm_provider: Box<dyn LLMProvider>,
     session_config: SessionConfig,
     tool_scope: ToolScope,
-    project_manager: Box<dyn ProjectManager>,
+    project_manager: Arc<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<dyn UserInterface>,
     state_persistence: Box<dyn AgentStatePersistence>,
@@ -878,13 +878,9 @@ impl Agent {
                     let start_time = Some(SystemTime::now());
 
                     // Execute spawn_agent directly without going through execute_tool
-                    let result = Self::execute_spawn_agent_parallel(
-                        runner.as_deref(),
-                        &tool_id,
-                        input,
-                        ui_clone.as_ref(),
-                    )
-                    .await;
+                    let result =
+                        Self::execute_spawn_agent_parallel(runner, &tool_id, input, ui_clone)
+                            .await;
 
                     let (is_success, tool_execution) = result;
                     let end_time = Some(SystemTime::now());
@@ -920,10 +916,10 @@ impl Agent {
 
     /// Execute a spawn_agent tool in parallel without requiring &mut self.
     async fn execute_spawn_agent_parallel(
-        sub_agent_runner: Option<&dyn crate::agent::SubAgentRunner>,
+        sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
         tool_id: &str,
         input: serde_json::Value,
-        ui: &dyn UserInterface,
+        ui: Arc<dyn UserInterface>,
     ) -> (bool, ToolExecution) {
         use crate::tools::core::Tool;
 
@@ -971,18 +967,19 @@ impl Agent {
 
         // Create a minimal context for spawn_agent (it only needs sub_agent_runner and tool_id)
         // We use a dummy project manager and command executor since spawn_agent doesn't use them
-        let dummy_project_manager = crate::config::DefaultProjectManager::new();
         let dummy_command_executor = command_executor::DefaultCommandExecutor;
 
-        let mut context = ToolContext {
-            project_manager: &dummy_project_manager,
-            command_executor: &dummy_command_executor,
+        let mut services = crate::tools::ToolServices {
+            project_manager: Arc::new(crate::config::DefaultProjectManager::new()),
             plan: None, // spawn_agent doesn't use plan
-            ui: Some(ui),
+            ui: Some(ui.clone()),
+            sub_agent_runner,
+        };
+        let mut context = ToolContext {
+            command_executor: &dummy_command_executor,
             tool_id: Some(tool_id.to_string()),
             permission_handler: None, // Will be handled by sub-agent runner
-            sub_agent_runner,
-            extensions: None,
+            extensions: Some(&mut services),
         };
 
         let tool = SpawnAgentTool;
@@ -2108,24 +2105,30 @@ impl Agent {
             ));
         }
 
-        // Create a tool context
+        // Create a tool context. The plan state moves into the services for
+        // the duration of the invocation and is taken back afterwards.
+        let mut services = crate::tools::ToolServices {
+            project_manager: self.project_manager.clone(),
+            plan: Some(std::mem::take(&mut self.plan)),
+            ui: Some(self.ui.clone()),
+            sub_agent_runner: self.sub_agent_runner.clone(),
+        };
         let mut context = ToolContext {
-            project_manager: self.project_manager.as_ref(),
             command_executor: self.command_executor.as_ref(),
-            plan: Some(&mut self.plan),
-            ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),
-
             permission_handler: self.permission_handler.as_deref(),
-            sub_agent_runner: self.sub_agent_runner.as_deref(),
-            extensions: None,
+            extensions: Some(&mut services),
         };
 
         // Execute the tool - could fail with ParseError or other errors
         let mut input = tool_request.input.clone();
         let execution_start = std::time::Instant::now();
 
-        let result = match tool.invoke(&mut context, &mut input).await {
+        let invoke_result = tool.invoke(&mut context, &mut input).await;
+        drop(context);
+        self.plan = services.plan.take().unwrap_or_default();
+
+        let result = match invoke_result {
             Ok(result) => {
                 let execution_duration = Some(execution_start.elapsed().as_secs_f64());
 

@@ -176,8 +176,8 @@ impl DefaultSubAgentRunner {
             llm::factory::create_llm_client_from_model(&self.model_name, None, false, None).await?;
 
         // Create a fresh project manager, copying init_path if set.
-        let mut project_manager: Box<dyn crate::config::ProjectManager> =
-            Box::new(DefaultProjectManager::new());
+        let project_manager: Arc<dyn crate::config::ProjectManager> =
+            Arc::new(DefaultProjectManager::new());
         if let Some(path) = self.session_config.effective_project_path().cloned() {
             let _ = project_manager.add_temporary_project(path);
         }

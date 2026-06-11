@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::agent::SubAgentMode;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
@@ -136,7 +137,7 @@ impl Tool for SpawnAgentTool {
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get the sub-agent runner from context
-        let sub_agent_runner = context.sub_agent_runner.ok_or_else(|| {
+        let sub_agent_runner = context.sub_agent_runner().ok_or_else(|| {
             anyhow!("Sub-agent runner not available. This tool requires the agent to be configured with sub-agent support.")
         })?;
         // Get tool_id for progress streaming

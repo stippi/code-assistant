@@ -1,3 +1,4 @@
+use crate::tools::ToolServicesAccess;
 use crate::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
@@ -180,7 +181,7 @@ impl Tool for ExecuteCommandTool {
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
-            .project_manager
+            .project_manager()
             .get_explorer_for_project(&input.project)
             .map_err(|e| {
                 anyhow!(
@@ -246,7 +247,7 @@ impl Tool for ExecuteCommandTool {
         sandbox_request.bypass_sandbox = bypass_sandbox;
 
         // Execute the command using streaming
-        let result = match (context.ui, &context.tool_id) {
+        let result = match (context.ui(), &context.tool_id) {
             (Some(ui), Some(tool_id)) => {
                 // Create streaming callback for UI output
                 let callback = ToolOutputStreamer {
