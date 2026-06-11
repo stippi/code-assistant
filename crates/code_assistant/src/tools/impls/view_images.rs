@@ -1,5 +1,6 @@
 use crate::tools::core::{
-    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope,
+    ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
@@ -200,6 +201,7 @@ impl Tool for ViewImagesTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: Some("Viewing {paths}"),
         }

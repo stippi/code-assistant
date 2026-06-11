@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,7 @@ impl Tool for NameSessionTool {
             }),
             annotations: None,
             supported_scopes: &[ToolScope::Agent, ToolScope::AgentWithDiffBlocks],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: true, // This tool should be hidden from UI
             title_template: Some("Setting session title to '{title}'"),
         }

@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
 use command_executor::SandboxCommandRequest;
@@ -122,6 +122,7 @@ impl Tool for WriteFileTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[capabilities::EDITS_FILES],
             hidden: false,
             title_template: Some("Writing {path}"),
         }

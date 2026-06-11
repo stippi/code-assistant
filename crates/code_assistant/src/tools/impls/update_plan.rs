@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus, PlanState};
 use crate::ui::UiEvent;
@@ -153,6 +153,7 @@ impl Tool for UpdatePlanTool {
             }),
             annotations: None,
             supported_scopes: &[ToolScope::Agent, ToolScope::AgentWithDiffBlocks],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: true,
             title_template: Some("Updating plan ({entries} items)"),
         }

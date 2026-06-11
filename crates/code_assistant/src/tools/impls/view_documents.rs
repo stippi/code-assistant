@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,7 @@ impl Tool for ViewDocumentsTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: Some("Viewing documents {paths}"),
         }

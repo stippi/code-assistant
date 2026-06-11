@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,7 @@ impl Tool for DeleteFilesTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[capabilities::EDITS_FILES],
             hidden: false,
             title_template: Some("Deleting {paths}"),
         }

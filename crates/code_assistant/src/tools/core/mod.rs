@@ -14,6 +14,6 @@ pub use dyn_tool::AnyOutput;
 pub use registry::ToolRegistry;
 pub use render::{ImageData, Render, ResourcesTracker};
 pub use result::ToolResult;
-pub use spec::{ToolScope, ToolSpec};
+pub use spec::{capabilities, ToolScope, ToolSpec};
 pub use title::generate_tool_title;
 pub use tool::{Tool, ToolContext};

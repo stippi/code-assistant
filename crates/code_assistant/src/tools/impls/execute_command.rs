@@ -165,6 +165,7 @@ impl Tool for ExecuteCommandTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[],
             hidden: false,
             title_template: Some("Running: {command_line}"),
         }

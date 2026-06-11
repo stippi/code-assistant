@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use fs_explorer::{DocumentMatchResult, SearchMode, SearchOptions, SearchResult};
@@ -428,6 +428,7 @@ impl Tool for SearchFilesTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: Some("Searching for '{regex}'"),
         }

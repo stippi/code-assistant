@@ -1008,6 +1008,7 @@ mod tests {
                 }),
                 annotations: None,
                 supported_scopes: &[ToolScope::McpServer],
+                capabilities: &[],
                 hidden: false,
                 title_template: None,
             }

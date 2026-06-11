@@ -49,6 +49,15 @@ impl ToolRegistry {
         self.tools.get(name).map(|boxed| boxed.as_ref())
     }
 
+    /// Check if the named tool carries the given capability tag.
+    /// Unknown tools have no capabilities.
+    pub fn tool_has_capability(&self, tool_name: &str, capability: &str) -> bool {
+        self.tools
+            .get(tool_name)
+            .map(|tool| tool.spec().has_capability(capability))
+            .unwrap_or(false)
+    }
+
     /// Check if a tool is allowed in the given scope
     pub fn is_tool_in_scope(&self, tool_name: &str, scope: ToolScope) -> bool {
         self.tools

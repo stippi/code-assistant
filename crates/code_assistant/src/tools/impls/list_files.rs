@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
 use fs_explorer::FileTreeEntry;
@@ -117,6 +117,7 @@ impl Tool for ListFilesTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: Some("Listing files in {paths}"),
         }

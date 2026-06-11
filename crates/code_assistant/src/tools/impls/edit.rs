@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use fs_explorer::{find_match_start_lines, FileReplacement, FileUpdaterError};
@@ -138,6 +138,7 @@ impl Tool for EditTool {
                 ToolScope::Agent,
                 ToolScope::SubAgentDefault,
             ],
+            capabilities: &[capabilities::EDITS_FILES],
             hidden: false,
             title_template: Some("Editing {path}"),
         }

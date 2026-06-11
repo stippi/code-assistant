@@ -1,5 +1,6 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec, ToolsConfig,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    ToolsConfig,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,7 @@ impl Tool for PerplexityAskTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             // Note: can be disabled in read-only sub-agents if needed later.
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: None, // Uses default tool name
         }

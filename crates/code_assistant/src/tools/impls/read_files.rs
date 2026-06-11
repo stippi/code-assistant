@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::tools::parse::PathWithLineRange;
 use anyhow::{anyhow, Result};
@@ -301,6 +301,7 @@ impl Tool for ReadFilesTool {
                 ToolScope::SubAgentDefault,
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: Some("Reading {paths}"),
         }

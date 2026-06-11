@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -101,6 +101,7 @@ impl Tool for WebFetchTool {
                 ToolScope::SubAgentDefaultWithDiffBlocks,
             ],
             // Note: can be disabled in read-only sub-agents if needed later.
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: Some("Fetching {url}"),
         }

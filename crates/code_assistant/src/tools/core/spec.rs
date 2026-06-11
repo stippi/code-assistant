@@ -19,6 +19,16 @@ pub enum ToolScope {
     SubAgentDefaultWithDiffBlocks,
 }
 
+/// Capability tags describing what a tool may do. Free-form strings; the
+/// constants below cover the tags code-assistant itself evaluates.
+pub mod capabilities {
+    /// The tool does not modify any state. Read-only tools are safe to chain
+    /// within a single assistant turn.
+    pub const READ_ONLY: &str = "read_only";
+    /// The tool modifies files in a project.
+    pub const EDITS_FILES: &str = "edits_files";
+}
+
 /// Specification for a tool, including metadata
 #[derive(Clone)]
 pub struct ToolSpec {
@@ -32,9 +42,17 @@ pub struct ToolSpec {
     pub annotations: Option<serde_json::Value>,
     /// Which execution modes this tool supports
     pub supported_scopes: &'static [ToolScope],
+    /// Capability tags (see [`capabilities`]) consumers select tools by
+    pub capabilities: &'static [&'static str],
     /// Whether this tool should be hidden from UI display
     pub hidden: bool,
     /// Optional template for generating dynamic titles from parameters
     /// Use {parameter_name} placeholders, e.g. "Reading {paths}" or "Searching for '{regex}'"
     pub title_template: Option<&'static str>,
+}
+
+impl ToolSpec {
+    pub fn has_capability(&self, capability: &str) -> bool {
+        self.capabilities.contains(&capability)
+    }
 }

@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
+    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::types::Project;
 use anyhow::Result;
@@ -75,6 +75,7 @@ impl Tool for ListProjectsTool {
             // This tool is only needed in MCP mode where we don't control the system message.
             // The regular code-assistant will insert known projects into the system message.
             supported_scopes: &[ToolScope::McpServer],
+            capabilities: &[capabilities::READ_ONLY],
             hidden: false,
             title_template: None, // Uses default tool name
         }
