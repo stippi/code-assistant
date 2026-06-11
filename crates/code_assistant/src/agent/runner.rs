@@ -47,6 +47,16 @@ enum LoopFlow {
     GetUserInput,
 }
 
+/// How the agent recovers from a failed LLM request.
+enum RecoveryAction {
+    /// Shrink the conversation (oversized prompt) and retry.
+    ReduceContext,
+    /// Transient streaming failure; retry the request after a delay.
+    RetryStream { delay: std::time::Duration },
+    /// Not recoverable; propagate the error.
+    Fail,
+}
+
 pub struct Agent {
     plan: PlanState,
     llm_provider: Box<dyn LLMProvider>,
@@ -485,81 +495,23 @@ impl Agent {
                     streaming_retry_count = 0;
                     result
                 }
-                Err(e) if Self::is_prompt_too_long_error(&e) => {
-                    warn!("Prompt too long error detected, replacing large tool results with error messages");
-                    let replaced = self.replace_large_tool_results();
-                    if !replaced.is_empty() {
-                        // Notify the UI that these tools switched from success → error
-                        for (tool_id, error_message) in &replaced {
-                            let _ = self
-                                .ui
-                                .send_event(UiEvent::UpdateToolStatus {
-                                    tool_id: tool_id.clone(),
-                                    status: crate::ui::ToolStatus::Error,
-                                    message: Some("Prompt Too Long".to_string()),
-                                    output: Some(error_message.clone()),
-                                    styled_output: None,
-                                    duration_seconds: None,
-                                    images: vec![],
-                                })
-                                .await;
-                        }
-                        // `continue` restarts the loop which will call
-                        // render_tool_results_in_messages() again — this time the replaced
-                        // PromptTooLongError placeholders produce a much smaller prompt —
-                        // and then get_next_assistant_message() is retried automatically.
-                        // (StreamingStopped was already sent by get_next_assistant_message
-                        // in its error path, so we don't need to send it again.)
+                // `continue` restarts the loop, which re-renders the messages and
+                // retries get_next_assistant_message. (StreamingStopped was already
+                // sent by get_next_assistant_message in its error path.)
+                Err(e) => match self.classify_llm_error(&e, streaming_retry_count) {
+                    RecoveryAction::ReduceContext => {
+                        self.recover_from_oversized_prompt().await?;
                         continue;
                     }
-                    // Nothing large enough to replace in the current turn.
-                    // Last resort: drop the last assistant+tool-result exchange and
-                    // force context compaction so we have a chance to continue.
-                    warn!("No large tool results to replace — dropping last exchange and forcing compaction");
-                    self.drop_last_tool_exchange();
-                    self.perform_compaction().await?;
-                    continue;
-                }
-                Err(e)
-                    if Self::is_retryable_streaming_error(&e)
-                        && streaming_retry_count < MAX_STREAMING_RETRIES =>
-                {
-                    streaming_retry_count += 1;
-                    let delay =
-                        STREAMING_RETRY_BASE_DELAY * 2u32.saturating_pow(streaming_retry_count - 1);
-                    warn!(
-                        "Transient streaming error (attempt {}/{}), retrying in {:?}: {}",
-                        streaming_retry_count, MAX_STREAMING_RETRIES, delay, e
-                    );
-
-                    // Tell the UI to discard all partial content from the failed request.
-                    // get_next_assistant_message already sent StreamingStopped{error: ...}
-                    // for the failed request, so the UI knows streaming ended. Now we tell
-                    // it to also remove whatever was already rendered.
-                    let _ = self
-                        .ui
-                        .send_event(UiEvent::RollbackStreaming {
-                            id: self.next_request_id - 1,
-                        })
-                        .await;
-
-                    // Show a transient notification so the user knows what's happening
-                    let _ = self
-                        .ui
-                        .send_event(UiEvent::ShowTransientStatus {
-                            message: format!(
-                                "Stream interrupted — retrying ({}/{})\u{2026}",
-                                streaming_retry_count, MAX_STREAMING_RETRIES
-                            ),
-                        })
-                        .await;
-
-                    tokio::time::sleep(delay).await;
-
-                    // `continue` re-renders messages and retries get_next_assistant_message
-                    continue;
-                }
-                Err(e) => return Err(e),
+                    RecoveryAction::RetryStream { delay } => {
+                        streaming_retry_count += 1;
+                        self.prepare_streaming_retry(&e, streaming_retry_count, delay)
+                            .await;
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    RecoveryAction::Fail => return Err(e),
+                },
             };
 
             // 2. Add original LLM response to message history using the pre-allocated node_id
@@ -863,12 +815,7 @@ impl Agent {
     /// Executes a list of tool requests and appends tool results to message history.
     /// Multiple `spawn_agent` read-only calls are executed concurrently for efficiency.
     async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
-        // Partition into spawn_agent (read_only) and other tools, preserving indices
-
-        let (parallel_indices, _sequential_indices): (Vec<_>, Vec<_>) = tool_requests
-            .iter()
-            .enumerate()
-            .partition(|(_, req)| self.can_run_in_parallel(req));
+        let parallel_indices = self.partition_parallel_tools(tool_requests);
 
         // Execute parallel spawn_agent tools concurrently if we have multiple
         let parallel_results = if parallel_indices.len() > 1 {
@@ -877,10 +824,7 @@ impl Agent {
                 parallel_indices.len()
             );
             self.execute_tools_in_parallel(
-                parallel_indices
-                    .iter()
-                    .map(|(i, _)| &tool_requests[*i])
-                    .collect(),
+                parallel_indices.iter().map(|i| &tool_requests[*i]).collect(),
             )
             .await
         } else {
@@ -893,9 +837,7 @@ impl Agent {
 
         // Process results in original order
         for (idx, tool_request) in tool_requests.iter().enumerate() {
-            let result_block = if parallel_indices.len() > 1
-                && parallel_indices.iter().any(|(i, _)| *i == idx)
-            {
+            let result_block = if parallel_indices.len() > 1 && parallel_indices.contains(&idx) {
                 // This was a parallel spawn_agent - get result from parallel execution
 
                 parallel_result_iter.next().unwrap_or_else(|| {
@@ -941,6 +883,16 @@ impl Agent {
             self.append_message(result_message)?;
         }
         Ok(LoopFlow::Continue)
+    }
+
+    /// Indices of the tool requests that may execute concurrently with each other.
+    fn partition_parallel_tools(&self, tool_requests: &[ToolRequest]) -> Vec<usize> {
+        tool_requests
+            .iter()
+            .enumerate()
+            .filter(|(_, req)| self.can_run_in_parallel(req))
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Check if a tool request can be run in parallel with others.
@@ -1778,6 +1730,89 @@ impl Agent {
 
     /// Check if an error from the LLM provider indicates the prompt exceeded the
     /// model's context limit.
+    /// Decides how to recover from a failed LLM request.
+    fn classify_llm_error(
+        &self,
+        error: &anyhow::Error,
+        streaming_retry_count: u32,
+    ) -> RecoveryAction {
+        if Self::is_prompt_too_long_error(error) {
+            return RecoveryAction::ReduceContext;
+        }
+        if Self::is_retryable_streaming_error(error)
+            && streaming_retry_count < MAX_STREAMING_RETRIES
+        {
+            let delay = STREAMING_RETRY_BASE_DELAY * 2u32.saturating_pow(streaming_retry_count);
+            return RecoveryAction::RetryStream { delay };
+        }
+        RecoveryAction::Fail
+    }
+
+    /// Shrinks the conversation after the provider rejected the prompt as too long.
+    /// Replaces large tool results with error placeholders when possible — the next
+    /// render of the message history then produces a much smaller prompt. If nothing
+    /// is large enough to replace, drops the last assistant+tool-result exchange and
+    /// forces context compaction as a last resort.
+    async fn recover_from_oversized_prompt(&mut self) -> Result<()> {
+        warn!("Prompt too long error detected, replacing large tool results with error messages");
+        let replaced = self.replace_large_tool_results();
+        if replaced.is_empty() {
+            warn!("No large tool results to replace — dropping last exchange and forcing compaction");
+            self.drop_last_tool_exchange();
+            return self.perform_compaction().await;
+        }
+        // Notify the UI that these tools switched from success → error
+        for (tool_id, error_message) in &replaced {
+            let _ = self
+                .ui
+                .send_event(UiEvent::UpdateToolStatus {
+                    tool_id: tool_id.clone(),
+                    status: crate::ui::ToolStatus::Error,
+                    message: Some("Prompt Too Long".to_string()),
+                    output: Some(error_message.clone()),
+                    styled_output: None,
+                    duration_seconds: None,
+                    images: vec![],
+                })
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Informs the user that a transient streaming failure is being retried and
+    /// tells the UI to discard all partial content from the failed request.
+    async fn prepare_streaming_retry(
+        &self,
+        error: &anyhow::Error,
+        attempt: u32,
+        delay: std::time::Duration,
+    ) {
+        warn!(
+            "Transient streaming error (attempt {}/{}), retrying in {:?}: {}",
+            attempt, MAX_STREAMING_RETRIES, delay, error
+        );
+
+        // get_next_assistant_message already sent StreamingStopped{error: ...} for
+        // the failed request, so the UI knows streaming ended. Now we tell it to
+        // also remove whatever was already rendered.
+        let _ = self
+            .ui
+            .send_event(UiEvent::RollbackStreaming {
+                id: self.next_request_id - 1,
+            })
+            .await;
+
+        let _ = self
+            .ui
+            .send_event(UiEvent::ShowTransientStatus {
+                message: format!(
+                    "Stream interrupted — retrying ({}/{})\u{2026}",
+                    attempt, MAX_STREAMING_RETRIES
+                ),
+            })
+            .await;
+    }
+
     fn is_prompt_too_long_error(error: &anyhow::Error) -> bool {
         let msg = error.to_string().to_lowercase();
         // Anthropic patterns
@@ -2234,43 +2269,87 @@ impl Agent {
     }
 
     /// Executes a tool and catches all errors, returning them as Results
+    /// Special tools the agent handles itself instead of dispatching to the
+    /// registry. Returns `Some(result)` when the request was intercepted; such
+    /// tools do not appear in the UI.
+    fn intercept_special_tool(&mut self, tool_request: &ToolRequest) -> Option<Result<bool>> {
+        match tool_request.name.as_str() {
+            "name_session" => Some(self.apply_session_name(tool_request)),
+            _ => None,
+        }
+    }
+
+    fn apply_session_name(&mut self, tool_request: &ToolRequest) -> Result<bool> {
+        if let Some(title) = tool_request.input["title"].as_str() {
+            let title = title.trim();
+            if !title.is_empty() {
+                trace!("Obtained session title from LLM: {}", title);
+                self.session_name = title.to_string();
+
+                let tool_execution = ToolExecution {
+                    tool_request: tool_request.clone(),
+                    result: Box::new(crate::tools::impls::name_session::NameSessionOutput {
+                        title: title.to_string(),
+                    }),
+                };
+                self.tool_executions.push(tool_execution);
+                return Ok(true);
+            } else {
+                warn!("Title for name_session is empty after trimming");
+            }
+        } else {
+            warn!("No 'title' field found in name_session input or it's not a string");
+        }
+        Err(anyhow::anyhow!("Invalid session title provided"))
+    }
+
+    /// Side effects the agent applies after a tool executed successfully.
+    fn after_tool_success(&mut self, tool_request: &ToolRequest) {
+        // The snapshot enables correct plan reconstruction when switching branches.
+        if tool_request.name == "update_plan" {
+            self.save_plan_snapshot_to_last_assistant_message();
+        }
+    }
+
+    /// A tool may rewrite its own input while executing (e.g. format-on-save).
+    /// Propagates the updated input to the UI and rewrites the originating tool
+    /// call in the message history so that follow-up requests see the final input.
+    async fn propagate_modified_tool_input(
+        &mut self,
+        original_request: &ToolRequest,
+        final_request: &ToolRequest,
+        is_hidden: bool,
+    ) -> Result<()> {
+        if !is_hidden {
+            self.notify_tool_parameter_updates(
+                &original_request.input,
+                &final_request.input,
+                &original_request.id,
+            )
+            .await?;
+        }
+
+        if let Err(e) = self.update_message_history_with_formatted_tool(final_request) {
+            warn!(
+                "Failed to update message history after input modification: {}",
+                e
+            );
+        }
+        Ok(())
+    }
+
     async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<bool> {
         debug!(
             "Executing tool request: {} (id: {})",
             tool_request.name, tool_request.id
         );
 
+        if let Some(result) = self.intercept_special_tool(tool_request) {
+            return result;
+        }
+
         // Check if this is a hidden tool
         let is_hidden = ToolRegistry::global().is_tool_hidden(&tool_request.name, self.tool_scope);
-
-        // Handle name_session tool specially at agent level
-        if tool_request.name == "name_session" {
-            // Extract title from input
-            if let Some(title) = tool_request.input["title"].as_str() {
-                let title = title.trim();
-                if !title.is_empty() {
-                    trace!("Obtained session title from LLM: {}", title);
-                    self.session_name = title.to_string();
-
-                    // Create a successful tool execution record
-                    let tool_execution = ToolExecution {
-                        tool_request: tool_request.clone(),
-                        result: Box::new(crate::tools::impls::name_session::NameSessionOutput {
-                            title: title.to_string(),
-                        }),
-                    };
-                    self.tool_executions.push(tool_execution);
-                    return Ok(true); // Success, but don't show in UI
-                } else {
-                    warn!("Title for name_session is empty after trimming");
-                }
-            } else {
-                warn!("No 'title' field found in name_session input or it's not a string");
-            }
-
-            // If we get here, the input was invalid
-            return Err(anyhow::anyhow!("Invalid session title provided"));
-        }
 
         // Update status to Running before execution (skip for hidden tools)
         if !is_hidden {
@@ -2387,31 +2466,13 @@ impl Agent {
                 // Store the execution record
                 self.tool_executions.push(tool_execution);
 
-                // If this was an update_plan tool, save plan snapshot to the last assistant message
-                // This enables correct plan reconstruction when switching branches
-                if tool_request.name == "update_plan" && success {
-                    self.save_plan_snapshot_to_last_assistant_message();
+                if success {
+                    self.after_tool_success(tool_request);
                 }
 
-                // Update message history if input was modified
                 if input_modified {
-                    if !is_hidden {
-                        self.notify_tool_parameter_updates(
-                            &tool_request.input,
-                            &input,
-                            &tool_request.id,
-                        )
+                    self.propagate_modified_tool_input(tool_request, &final_tool_request, is_hidden)
                         .await?;
-                    }
-
-                    if let Err(e) =
-                        self.update_message_history_with_formatted_tool(&final_tool_request)
-                    {
-                        warn!(
-                            "Failed to update message history after input modification: {}",
-                            e
-                        );
-                    }
                 }
 
                 Ok(success)
