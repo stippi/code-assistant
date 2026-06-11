@@ -102,6 +102,15 @@ pub struct SubAgentResult {
     pub ui_output: String,
 }
 
+/// Execution mode for a sub-agent, selected by the `spawn_agent` tool input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubAgentMode {
+    /// Only read-only tools are available.
+    ReadOnly,
+    /// The sub-agent may also edit files and run commands.
+    Default,
+}
+
 /// Runs sub-agents with isolated history and streams a compact progress view into the parent tool UI.
 #[async_trait::async_trait]
 pub trait SubAgentRunner: Send + Sync {
@@ -109,7 +118,7 @@ pub trait SubAgentRunner: Send + Sync {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        tool_scope: ToolScope,
+        mode: SubAgentMode,
         require_file_references: bool,
     ) -> Result<SubAgentResult>;
 }
@@ -226,19 +235,18 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        tool_scope: ToolScope,
+        mode: SubAgentMode,
         require_file_references: bool,
     ) -> Result<SubAgentResult> {
-        // Sub-agents inherit the parent session's edit-tool layout.
-        // If the parent uses the diff-format edit tool, upgrade the
-        // `SubAgentDefault` scope to `SubAgentDefaultWithDiffBlocks` so the
-        // sub-agent uses `replace_in_file` instead of `edit`.
-        let tool_scope = if matches!(tool_scope, ToolScope::SubAgentDefault)
-            && self.session_config.use_diff_blocks
-        {
-            ToolScope::SubAgentDefaultWithDiffBlocks
-        } else {
-            tool_scope
+        // Sub-agents inherit the parent session's edit-tool layout: with the
+        // diff-format edit tool, the sub-agent uses `replace_in_file` instead
+        // of `edit`.
+        let tool_scope = match mode {
+            SubAgentMode::ReadOnly => ToolScope::SubAgentReadOnly,
+            SubAgentMode::Default if self.session_config.use_diff_blocks => {
+                ToolScope::SubAgentDefaultWithDiffBlocks
+            }
+            SubAgentMode::Default => ToolScope::SubAgentDefault,
         };
 
         let cancelled = self

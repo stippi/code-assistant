@@ -1,3 +1,4 @@
+use crate::agent::SubAgentMode;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
@@ -144,11 +145,9 @@ impl Tool for SpawnAgentTool {
             .clone()
             .ok_or_else(|| anyhow!("Tool ID not available"))?;
 
-        // Determine tool scope based on mode
-        let tool_scope = match input.mode.as_str() {
-            "read_only" => ToolScope::SubAgentReadOnly,
-            "default" => ToolScope::SubAgentDefault,
-            _ => ToolScope::SubAgentReadOnly, // Default to read-only for safety
+        let mode = match input.mode.as_str() {
+            "default" => SubAgentMode::Default,
+            _ => SubAgentMode::ReadOnly, // Default to read-only for safety
         };
 
         // Build final instructions
@@ -167,7 +166,7 @@ impl Tool for SpawnAgentTool {
             .run(
                 &tool_id,
                 final_instructions,
-                tool_scope,
+                mode,
                 input.require_file_references,
             )
             .await;

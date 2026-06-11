@@ -2,6 +2,7 @@
 
 use crate::agent::sub_agent::{SubAgentResult, SubAgentRunner};
 use crate::agent::SubAgentCancellationRegistry;
+use crate::agent::SubAgentMode;
 use crate::tools::core::ToolScope;
 use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentOutput};
 use anyhow::Result;
@@ -43,7 +44,7 @@ impl SubAgentRunner for MockSubAgentRunner {
         &self,
         _parent_tool_id: &str,
         _instructions: String,
-        _tool_scope: ToolScope,
+        _mode: SubAgentMode,
         _require_file_references: bool,
     ) -> Result<SubAgentResult> {
         // Track concurrent executions
@@ -202,12 +203,7 @@ async fn test_mock_sub_agent_runner() {
     let runner = MockSubAgentRunner::new(10, "Test response");
 
     let result = runner
-        .run(
-            "tool-1",
-            "test".to_string(),
-            ToolScope::SubAgentReadOnly,
-            false,
-        )
+        .run("tool-1", "test".to_string(), SubAgentMode::ReadOnly, false)
         .await;
 
     assert!(result.is_ok());
@@ -230,7 +226,7 @@ async fn test_parallel_sub_agent_execution() {
                     .run(
                         &format!("tool-{i}"),
                         format!("Task {i}"),
-                        ToolScope::SubAgentReadOnly,
+                        SubAgentMode::ReadOnly,
                         false,
                     )
                     .await
