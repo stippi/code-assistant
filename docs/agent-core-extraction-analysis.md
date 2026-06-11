@@ -1,7 +1,10 @@
 # Agent Core Extraction — Analysis & Vision
 
-> Status: analysis, no code. The goal is a reusable agent core (comparable to the
-> Claude Code Agent SDK) that `code-assistant` uses as one of several consumers.
+> Status: analysis, no code. The goal is twofold: (a) a reusable agent core (comparable
+> to the Claude Code Agent SDK) that `code-assistant` uses as one of several consumers,
+> and (b) breaking up the monolithic `code_assistant` crate into independent, layered
+> crates — including the UIs — so that the `code_assistant` crate itself shrinks to a
+> thin wiring binary.
 
 ## 1. Vision
 
@@ -15,25 +18,73 @@ clearly defined extension points:
   (system prompt, pre-/post-LLM, pre-/post-tool, special tools, compaction, …),
 - attach **their own UI / persistence / permission adapters**,
 
-all without modifying the core. `code-assistant` itself becomes a "reference
-implementation": it configures the core with its tools, plugins, and adapters. The target
-picture in crate form:
+all without modifying the core. At the same time, the breakup continues *above* the
+generic core: sessions, persistence, the concrete tools, the text dialects, and the
+plugins move into a domain crate; the GPUI and terminal frontends become crates of their
+own. The target picture as a layered crate graph:
 
 ```
-agent_core            (new, generic)           <-- agent loop, traits, hooks
-agent_tools_core      (new, generic)           <-- tool trait, registry, render, spec
-agent_persistence     (new, generic)           <-- SessionState/tree traits (optional)
-llm                   (already generic)
-command_executor      (already generic)
-fs_explorer           (already generic)
-sandbox               (already generic)
-
-code_assistant        (exists)                 <-- concrete tools, plugins, UI, CLI
-└── tool_dialects/    (XML, Caret — code-assistant-internal)
+Layer 0 (exists, generic):   llm  command_executor  fs_explorer  sandbox  web  git  terminal
+Layer 1 (new, generic):      tools_core             <-- tool trait, registry, render, spec
+Layer 2 (new, generic):      agent_core             <-- agent loop, traits, hooks, dialect trait
+Layer 3 (new, domain):       code_assistant_core    <-- sessions, persistence, UiEvent,
+                                                        tool impls, dialects, plugins, sub-agents
+Layer 4 (new, frontends):    ui_gpui  ui_terminal  acp  mcp
+Layer 5 (exists, thin):      code_assistant         <-- CLI, config, wiring
 ```
 
-Other applications can choose to bind only to `agent_core` + `agent_tools_core`, or
-additionally pull in `agent_persistence`.
+Other applications bind only to `agent_core` + `tools_core` (Layers 1–2). Layers 3–4
+are code-assistant product code, but split so that each frontend is an independent
+compile unit (touching agent logic no longer recompiles anything gpui-related, and the
+binary can feature-gate entire frontends).
+
+### 1.1 The domain layer — the UIs are not generic, and that's fine
+
+The GPUI and terminal UIs are not generic agent UIs: they render sessions, branching,
+worktrees, plans, sandbox state. They can never sit on `agent_core` alone, and forcing
+them to (via `AgentUiEvent::Custom(Box<dyn Any>)` downcasts everywhere) would produce
+exactly the cumbersome code this refactoring must avoid. The resolution is the
+**domain crate `code_assistant_core`**: it owns the full `UiEvent` vocabulary, sessions,
+persistence types, the concrete tools, and the XML/Caret dialects. The frontends are
+frontends *of that domain*, not of the generic core.
+
+The domain `UiEvent` **embeds** the core events
+(`enum UiEvent { Agent(AgentUiEvent), Session(...), Worktree(...), ... }`) so the
+frontends consume one concrete, fully-typed enum. The `Custom(Box<dyn Any>)` escape
+hatch in the core exists only for third-party consumers — zero downcasts in our own
+code.
+
+By line count, the UI *is* the actual god-module: of ~77k lines in `code_assistant`,
+`ui/` holds ~43k (gpui ~22.6k, terminal ~11.2k, streaming ~7k); agent + tools + session
+together are ~22k. Today `ui/` references `crate::persistence` 37× and `crate::session`
+16×, while `agent/` and `tools/` reach back into `ui/` (the `UserInterface` trait and
+`UiEvent`). The breakup dissolves that cycle by construction: the trait moves down into
+`agent_core`, the app-specific events into `code_assistant_core`, and the
+implementations up into the frontend crates.
+
+### 1.2 Breakup ground rules (how to avoid "more and cumbersome code")
+
+1. **No shared dumping-ground crate.** When a stubborn cycle appears, the lazy fix is a
+   `common`/`types` crate everything depends on — it grows forever. Instead, every type
+   lives in the lowest crate that *owns the concept*, and cycles get broken with the
+   patterns already in use (events, channels, small traits).
+2. **Watch the generics budget.** Generic parameters that infect the domain and UI
+   crates are the single biggest "cumbersome" risk — see §7.9; decide in favor of
+   fewer generics before the crate split.
+3. **No over-fragmentation.** Every crate boundary is a public-API commitment and
+   friction while iterating. The graph above adds ~5 crates beyond the generic core —
+   don't go finer initially. `acp`/`mcp` may start as modules in `code_assistant_core`
+   or the binary and be carved out when something forces it; `code_assistant_core`
+   itself may split later (tools vs. session) if a reason appears.
+4. **Wiring-crate scope.** "`code_assistant` just wires everything up" is realistic
+   (today's `app/` module is ~500 lines), but session *management* (manager, instances,
+   watcher — ~3.4k lines) belongs in `code_assistant_core`, not the binary. The binary
+   keeps: CLI parsing, config loading, builder calls, frontend selection.
+
+> **Reading note:** the sections below predate the full-breakup decision and often name
+> `code_assistant` as the post-extraction home of dialects, plugins, sessions, etc.
+> With the layering above, that home is the domain crate `code_assistant_core`; the
+> `code_assistant` binary keeps only wiring. The analysis itself is unaffected.
 
 > **Important: text-based tool invocation formats (XML / Caret) do NOT belong in the core.**
 > Tools themselves are already syntax-agnostic today and shall stay that way. What depends
@@ -319,7 +370,7 @@ agent_core
                              mock layer; distilled from today's `tests/mocks.rs`
                              building blocks)
 
-agent_tools_core
+tools_core
 ├── lib.rs
 ├── tool.rs                 (Tool trait, ToolContext with extensions)
 ├── dyn_tool.rs             (DynTool, AnyOutput)
@@ -330,9 +381,9 @@ agent_tools_core
 └── title.rs                (title templating)
    # The core only knows the abstract ToolDialect trait (see §3.7) plus the
    # native default in agent_core. The XML/Caret implementations live in
-   # code_assistant.
+   # code_assistant_core.
 
-code_assistant            (exists, uses the crates above)
+code_assistant_core       (NEW: domain layer, uses the crates above)
 ├── tools/                  (impls, registered in its own registry instance)
 ├── tool_dialects/          (NEW: one directory per dialect as a "vertical slice")
 │   ├── mod.rs              (selection helper: ToolSyntax → Box<dyn ToolDialect>;
@@ -347,11 +398,18 @@ code_assistant            (exists, uses the crates above)
 │   ├── compaction.rs       (threshold + prompt)
 │   ├── prompt_too_long.rs  (recovery strategy)
 │   └── sub_agent.rs        (sub-agent plugin)
-├── ui/                     (all existing UI events stay here;
-│                            streaming/ is empty after the processors move out,
-│                            except for generic parts like DisplayFragment)
-├── session/                (branching, SessionInstance, manager)
+├── ui_events.rs            (domain UiEvent — embeds AgentUiEvent, see §1.1/§3.8;
+│                            plus generic streaming parts like DisplayFragment)
+├── session/                (branching, SessionInstance, manager, persistence)
 └── ...
+
+ui_gpui                   (NEW: GPUI frontend — today's ui/gpui/)
+ui_terminal               (NEW: terminal frontend — today's ui/terminal/)
+
+code_assistant            (exists, shrinks to the wiring binary)
+├── cli/                    (argument parsing)
+├── app/                    (assembly: build runtime via builder, pick frontend)
+└── main.rs
 ```
 
 The exact split can also start as a single `agent_core` crate with submodules and be
@@ -464,7 +522,7 @@ Instead of a monolithic struct, the tool context becomes a "service locator" wit
 type-safe extensions:
 
 ```rust
-// agent_tools_core::tool
+// tools_core::tool
 pub struct ToolContext<'a, Ext: ToolContextExtension = ()> {
     pub command_executor: &'a dyn CommandExecutor,
     pub ui: Option<&'a dyn AgentUi>,
@@ -758,7 +816,7 @@ Consequently:
   and serialized there, and it is **not renamed**.
 - **No global `ParserRegistry`** anymore. There is simply always exactly one dialect,
   set per agent instance.
-- **No `agent_tools_syntax` crate.** Today's XML/Caret implementations move as internal
+- **No `tools_syntax` crate.** Today's XML/Caret implementations move as internal
   modules into `code_assistant` (under `tool_dialects/`). If someone really wants to
   share them, that can become an optional helper crate later — but it is explicitly not
   a mandatory part.
@@ -815,8 +873,13 @@ pub enum AgentUiEvent {
 ```
 
 Today's `UiEvent` variants for sessions, branching, worktrees, sandbox, drafts etc.
-belong in the `code_assistant` layer and travel via `AgentUiEvent::Custom`. This keeps
-the `UserInterface` trait small and manageable for third-party applications.
+belong in the `code_assistant_core` layer. There the domain `UiEvent` **embeds** the
+core events (`enum UiEvent { Agent(AgentUiEvent), Session(...), ... }`); the adapter
+that implements the core's `AgentUi` trait wraps incoming core events into
+`UiEvent::Agent(...)`, and the frontends (`ui_gpui`, `ui_terminal`) consume the one
+concrete, fully-typed domain enum. `AgentUiEvent::Custom(Box<dyn Any>)` remains as an
+escape hatch for third-party consumers only — our own frontends never downcast. This
+keeps the `UserInterface` trait small and manageable for third-party applications.
 
 ### 3.9 Generic persistence
 
@@ -1128,14 +1191,15 @@ in between:
 
 ### Phase 4 — Crate split
 
-1. Create the new crate `agent_tools_core`, moving there:
+1. Create the new crate `tools_core`, moving there:
    `tools/core/{tool, dyn_tool, registry, render, result, spec, title}.rs`.
 2. New crate `agent_core`: `agent/runner.rs`, the new hook modules, `MessageTree`, the
    `AgentUiEvent` minimum, the `StatePersistence` trait, the abstract `ToolDialect`
    trait and `StreamProcessor` trait, plus the **native default implementation**
    (including today's `json_processor` as its stream processor) — *but no XML/Caret
    implementations*.
-3. `code_assistant`:
+3. `code_assistant` (interim — the content moves on to `code_assistant_core` in
+   Phase 5):
    - Moves `tools/{parse, formatter, parser_registry, system_message}.rs` and
      `ui/streaming/{xml,caret}_processor.rs` into an internal module `tool_dialects/` —
      organized **per dialect** (`xml/`, `caret/`, see layout principles in §3.1) — and
@@ -1144,17 +1208,30 @@ in between:
      implementation, see step 2.) The associated tests (`*_processor_tests.rs`, the
      `tools/tests.rs` portions, parser tests from `agent/tests.rs`) move along. These
      implementations stay application-internal.
-   - `tool_use_filter.rs` (`SmartToolFilter`) stays in `code_assistant` — after the
-     refactoring it evaluates capability tags instead of tool names (cf. Phase 3).
+   - `tool_use_filter.rs` (`SmartToolFilter`) — after the refactoring it evaluates
+     capability tags instead of tool names (cf. Phase 3).
    - Implements `AgentExtensions` (`CaExt`, snapshot, ToolExt).
    - Switches the MCP handler to the registry instance and the new `ToolContext`
      (with `CaExt`) — it is the second in-process consumer (§2.12).
-   - Moves `UiEvent` into a `code_assistant_ui` lib, or keeps it and wraps it as
-     `AgentUiEvent::Custom`.
    - Keeps branching, sub-agents, sessions, persistence files.
 4. Optional: extract `agent_persistence` with a JSON file adapter.
 
-### Phase 5 — Cleanup
+### Phase 5 — Domain layer and frontend crates
+
+1. Create `code_assistant_core` and move there: `session/`, `persistence.rs`, the tool
+   impls (`tools/impls/`), `tool_dialects/`, `plugins/`, sub-agents, the permission
+   code, and the domain `UiEvent` (restructured to embed `AgentUiEvent`, see §3.8).
+2. Create `ui_gpui` from `ui/gpui/` and `ui_terminal` from `ui/terminal/`. Both depend
+   on `code_assistant_core` (for `UiEvent`, session/persistence types) — never the
+   other way around. Whatever `agent/`/`tools/` still referenced from `ui/` at this
+   point must already live below (the `UserInterface` trait in `agent_core`, the
+   events in `code_assistant_core`).
+3. `acp/` and `mcp/` either stay as modules in `code_assistant_core` or move into the
+   binary — carve them out as crates only when something forces it (ground rule §1.2.3).
+4. `code_assistant` shrinks to the wiring binary: CLI parsing, config loading, builder
+   assembly, frontend selection (feature-gated, so e.g. a headless build skips gpui).
+
+### Phase 6 — Cleanup
 
 1. Remove `ToolRegistry::global()`; all callers receive the registry by argument or via
    the `ToolContext`/`LoopCtx`. Besides the agent loop and the parser, the caller list
@@ -1163,12 +1240,12 @@ in between:
    the availability configuration is passed when filling the registry instance.
 2. Drop the `ParserRegistry` singleton without replacement — per agent there is exactly
    one `Box<dyn ToolDialect>`, set at build time. The `ToolSyntax` enum disappears from
-   the core; in `code_assistant` it may remain as the internal selection helper for the
-   bundled dialects.
-3. Move the sub-agent-specific UI adapters into `code_assistant`; only the
+   the core; in `code_assistant_core` it may remain as the internal selection helper
+   for the bundled dialects.
+3. Move the sub-agent-specific UI adapters into `code_assistant_core`; only the
    `SubAgentRunner` trait remains in the core — and even that is optional.
 4. Move the resources (`compaction_prompt.md`, `tool_use_intro.md`,
-   `system_prompts/*.md`) into `code_assistant` (no default prompts in the core).
+   `system_prompts/*.md`) into `code_assistant_core` (no default prompts in the core).
 
 ### Test migration (cross-cutting concern across all phases)
 
@@ -1246,13 +1323,16 @@ considered per phase, not at the end:
    docs, request population) and "Native" has no text syntax at all. The two names
    coexist at the boundary: `ToolSyntax` is the consumer's configuration vocabulary,
    `ToolDialect` the core abstraction.
-9. **Generics budget.** `AgentExtensions` with three associated types makes
-   `AgentRuntime<E>`, `HookRegistry<E>`, `ToolRegistry<E::ToolExt>` and all hook traits
-   generic (cf. the note in §3.5). That is type-safe, but the most expensive part of
-   the design. Before Phase 4, consciously decide whether all three type parameters are
-   needed — e.g. the core could always persist a fixed `CoreSnapshot` (§3.9) and leave
-   app fields to the consumer's persistence adapter; then `E::Snapshot` disappears.
-   Phases 1–3 do not force any of these decisions yet.
+9. **Generics budget — leaning decided.** `AgentExtensions` with three associated
+   types makes `AgentRuntime<E>`, `HookRegistry<E>`, `ToolRegistry<E::ToolExt>` and all
+   hook traits generic (cf. the note in §3.5). That is type-safe, but the most
+   expensive part of the design — and with the full breakup (§1.1) the generics would
+   infect `code_assistant_core` and potentially the frontend crates. Decision lean:
+   **trim aggressively before Phase 4.** Persist a fixed `CoreSnapshot` (§3.9) and
+   leave app fields to the consumer's persistence adapter (`E::Snapshot` disappears),
+   and prefer `dyn Any`-based extension state with one downcast helper in
+   `code_assistant_core` over generic parameters on forty types. Phases 1–3 do not
+   force any of these decisions yet.
 
 ---
 
@@ -1270,6 +1350,12 @@ considered per phase, not at the end:
   one process become possible (today they all share one `OnceLock`).
 - **Preparation for SDK delivery:** the core can be published as an external crate (or
   as a `cargo install agent-core` binary for a "headless agent SDK").
+  (Publishing note: workspace-internal names like `tools_core` — and `llm`, `git`,
+  `web` — are generic or taken on crates.io; publishing would mean renames, e.g. a
+  prefix. As internal names they are fine and consistent with the house style.)
+- **Faster builds, smaller binaries:** with `ui_gpui`/`ui_terminal` as separate crates,
+  touching agent logic no longer recompiles the frontends, and headless builds can skip
+  gpui entirely via feature gates.
 
 ---
 
@@ -1279,9 +1365,12 @@ considered per phase, not at the end:
    architecture into a pluggable shape.
 2. Phase 3 (ToolScope → capabilities, schema-driven defaults): medium effort, ends the
    hardcoded tool-name lists.
-3. Phase 4 (crate split): mostly moving work; afterwards the core can be versioned
-   separately.
-4. Phase 5 (cleanup): singleton removal, resource file moves, sub-agent separation.
+3. Phase 4 (generic crate split: `tools_core` → `agent_core`): mostly moving work;
+   afterwards the core can be versioned separately.
+4. Phase 5 (domain layer + frontends: `code_assistant_core` → `ui_gpui`/`ui_terminal`):
+   mostly moving work once the trait/event layering is in place; each crate is a
+   compilable checkpoint.
+5. Phase 6 (cleanup): singleton removal, resource file moves, sub-agent separation.
 
 Each phase is internally compilable, testable, and releasable. A big-bang refactoring
 is not necessary.
