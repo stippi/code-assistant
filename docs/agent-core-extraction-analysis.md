@@ -1,8 +1,9 @@
 # Agent Core Extraction — Analysis & Vision
 
 > Status: Phases 1–3 implemented (hooks + plugins in place, registries injectable,
-> capabilities replace scope data); Phase 4 step 1 implemented (`tools_core`
-> crate extracted). Next up: Phase 4 step 2, the `agent_core` crate.
+> capabilities replace scope data); Phase 4 steps 1 and 2 implemented (`tools_core`
+> and `agent_core` crates extracted). Next up: Phase 4 step 3, reorganizing the
+> XML/Caret machinery into `tool_dialects/` vertical slices.
 > The goal is twofold: (a) a reusable agent core (comparable
 > to the Claude Code Agent SDK) that `code-assistant` uses as one of several consumers,
 > and (b) breaking up the monolithic `code_assistant` crate into independent, layered
@@ -47,6 +48,78 @@
 >   and `agent_core` sits above `tools_core`. Only workspace dep: `command_executor`.
 > - `crate::tools::core::*` and `crate::permissions::*` remain as compatibility
 >   re-export layers; call sites are unchanged.
+>
+> Phase 4 step 2 notes (agent_core extraction):
+> - `agent_core` (Layer 2) holds: `runtime.rs` (the loop, `AgentRuntime`, built from
+>   an `AgentRuntimeComponents` struct — no builder yet), `hooks.rs` (all hook traits
+>   + `HookRegistry` + `LoopCtx`/`PromptCtx`), `dialect.rs` + `native/` (the
+>   `ToolDialect` trait and the native default, including the former
+>   `json_processor` as its stream processor), `ui.rs` (`AgentUi` trait, the minimal
+>   `AgentUiEvent` vocabulary, `ToolStatus`, `UIError`, `DisplayFragment`,
+>   `StreamProcessorTrait`), `tree.rs` (`MessageNode`/`NodeId`/`ConversationPath`),
+>   `types.rs` (`ToolRequest`, `ParseError`, `PromptTooLongError`, `ToolExecution`,
+>   `SerializedToolExecution`, `to_tool_definitions`), and `persistence.rs`
+>   (`AgentSnapshot` + `SnapshotPersistence`). Deps: `llm`, `tools_core`,
+>   `command_executor`.
+> - The §7.9 dyn-Any lean carried through, no generics anywhere: `LoopCtx`,
+>   `PromptCtx`, `ToolServicesProvider`, and `SnapshotPersistence` expose the
+>   application state as `&(mut) (dyn Any + Send)`; the runtime owns it as
+>   `Box<dyn Any + Send + Sync>` (`Sync` because the loop holds `&self` across
+>   awaits). code-assistant's bundle is `plugins::AgentAppState` (session name,
+>   naming-reminder flag, plan, tool scope, session config, model config,
+>   context-limit override, file trees, available projects), downcast via
+>   `AgentAppState::of/of_ref` — the exact `ToolServices` pattern from step 1.
+> - The former runner special paths are now hooks: per-invocation tool services come
+>   from a `ToolServicesProvider` (`plugins::CodeAssistantToolServices` moves the
+>   plan in and out; the policy-selected parallel branch runs "detached" — generic
+>   over tools, no `spawn_agent` knowledge, but without interceptors, plan access,
+>   or format-on-save propagation, as before). The models.json context-limit lookup
+>   moved into `TokenRatioCompaction` via `CompactionPolicy::context_limit`.
+>   `ChatMetadata` updates moved behind the persistence boundary
+>   (`SessionState::build_metadata` + `MetadataNotifyingPersistence`); the
+>   UpdatePlan announcement after a session load moved to the session manager.
+> - `ToolDialect` deviates from the §3.7 sketch: a single `uses_native_tools()`
+>   replaces `uses_native_tool_results` + `populate_request_tools`, and the methods
+>   take `&ToolRegistry` (object-safe, since the as-built registry is not generic)
+>   instead of pre-filtered spec slices; the prompt-doc methods take
+>   `(registry, capability)`. The XML/Caret implementations stayed in
+>   `tools/parser_registry.rs` for now (step 3 moves them into `tool_dialects/`);
+>   the former domain `JsonParser`/`NativeFormatter` are replaced by the core's
+>   `NativeDialect`.
+> - `ToolRequest`, `ParseError`, `PromptTooLongError`, and `SerializedToolExecution`
+>   live in `agent_core::types`, not `tools_core` — they carry the `llm` dependency
+>   (`From<&ContentBlock>`, `to_tool_definitions`) that `tools_core` deliberately
+>   avoids. `AnyOutput` gained `try_clone` (serde round-trip in the blanket impl,
+>   whose bound tightened by `DeserializeOwned` — already required of
+>   `Tool::Output`), so cloning/persisting `ToolExecution` needs no registry;
+>   `SerializedToolExecution::deserialize(registry)` keeps the injected-registry
+>   shape from §3.10.
+> - The core UI boundary is the `AgentUi` trait (`send_event(AgentUiEvent)`,
+>   `display_fragment`, `should_streaming_continue`, rate-limit notifications).
+>   code-assistant adapts it with `ui::AgentUiAdapter`, which translates events via
+>   `UiEvent::from_agent` and stamps the session id (events that need one are
+>   dropped for anonymous agents, e.g. sub-agents). The domain `UserInterface`
+>   trait and `UiEvent` are unchanged; the full embed restructure (§3.8) remains
+>   Phase 5. All stream processors (incl. the domain XML/Caret ones) consume the
+>   core trait — they only ever needed fragments and rate-limit calls.
+> - `MessageNode.plan_snapshot` became a generic
+>   `extension: Option<serde_json::Value>` slot (serde alias keeps old session
+>   files loading); typed access lives domain-side as the `MessageNodeExt`
+>   accessor trait used by the plan plugin and plan reconstruction.
+> - `Agent` (in `agent/runner.rs`) is now the thin domain wrapper: it assembles the
+>   runtime with plugins/dialect/adapter/persistence and keeps session loading,
+>   project registration (`init_projects`), scope switching, model hints, and the
+>   test helpers. Save path: `AgentSnapshot` + extensions →
+>   `SessionStateAdapter` (assembles `SessionState`) → unchanged
+>   `AgentStatePersistence` backends.
+> - The global registry stays (Phase 6 removes it) but gained
+>   `global_registry_arc()`; the runtime holds `Arc<ToolRegistry>`, a capability
+>   tag string, and an injected stream-hidden-tools predicate (preserving the
+>   previously hard-coded Agent-scope hidden set from §2.3). The dead
+>   `LoopFlow::Break` variant (left over from the `complete_task` removal) was
+>   dropped in the core. `crate::agent::{hooks,dialect,ui,types}` and the moved
+>   types under `crate::tools`/`crate::persistence` remain as compatibility
+>   re-exports; call sites are unchanged.
 
 ## 1. Vision
 
@@ -1237,11 +1310,13 @@ in between:
    `tools/core/{tool, dyn_tool, registry, render, result, spec, title}.rs`
    (plus the `PermissionMediator` types; `config.rs` stayed domain-side as
    `tools/config.rs` — see the Phase 4 step 1 notes at the top).
-2. New crate `agent_core`: `agent/runner.rs`, the new hook modules, `MessageTree`, the
+2. **Done.** New crate `agent_core`: `agent/runner.rs`, the new hook modules, `MessageTree`, the
    `AgentUiEvent` minimum, the `StatePersistence` trait, the abstract `ToolDialect`
    trait and `StreamProcessor` trait, plus the **native default implementation**
    (including today's `json_processor` as its stream processor) — *but no XML/Caret
-   implementations*.
+   implementations*. (See the Phase 4 step 2 notes at the top for the as-built
+   state; `Agent` remains in `code_assistant` as a thin wrapper around the
+   extracted `AgentRuntime`.)
 3. `code_assistant` (interim — the content moves on to `code_assistant_core` in
    Phase 5):
    - Moves `tools/{parse, formatter, parser_registry, system_message}.rs` and
