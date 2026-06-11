@@ -1831,7 +1831,11 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
     );
 
     let result =
-        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Xml)?;
+        Agent::update_tool_call_in_text_static(
+        original_text,
+        &updated_request,
+        &*crate::tools::ParserRegistry::get(ToolSyntax::Xml),
+    )?;
 
     // Should have replaced the tool block exactly
     assert_eq!(expected_text, result);
@@ -1909,7 +1913,11 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
     );
 
     let result =
-        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Caret)?;
+        Agent::update_tool_call_in_text_static(
+        original_text,
+        &updated_request,
+        &*crate::tools::ParserRegistry::get(ToolSyntax::Caret),
+    )?;
 
     // Should have replaced the tool block exactly
     assert_eq!(expected_text, result);
@@ -1939,7 +1947,11 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
     };
 
     let result =
-        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Xml)?;
+        Agent::update_tool_call_in_text_static(
+        original_text,
+        &updated_request,
+        &*crate::tools::ParserRegistry::get(ToolSyntax::Xml),
+    )?;
 
     // Should have appended the updated tool call
     assert!(result.contains(original_text));

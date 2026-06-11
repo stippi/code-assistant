@@ -1,6 +1,5 @@
 //! Tool formatter system for regenerating tool blocks in different syntaxes
 
-use crate::agent::ToolSyntax;
 use crate::tools::core::ToolRegistry;
 use crate::tools::ToolRequest;
 use anyhow::Result;
@@ -227,15 +226,6 @@ fn format_parameter_value_for_caret(
     match value {
         Value::String(s) => Ok(s.clone()),
         _ => Ok(serde_json::to_string(value)?),
-    }
-}
-
-/// Get the appropriate formatter for a tool syntax
-pub fn get_formatter(syntax: ToolSyntax) -> Box<dyn ToolFormatter> {
-    match syntax {
-        ToolSyntax::Native => Box::new(NativeFormatter),
-        ToolSyntax::Xml => Box::new(XmlFormatter),
-        ToolSyntax::Caret => Box::new(CaretFormatter),
     }
 }
 

@@ -522,7 +522,7 @@ fn test_tool_use_docs_generation() {
 
     // Test XML documentation
     let xml_parser = ParserRegistry::get(ToolSyntax::Xml);
-    if let Some(xml_docs) = xml_parser.generate_tool_documentation(ToolScope::Agent) {
+    if let Some(xml_docs) = xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag()) {
         println!("=== XML Tool Documentation ===");
         println!("{}", &xml_docs[..1500.min(xml_docs.len())]);
         println!("...\n");
@@ -530,7 +530,7 @@ fn test_tool_use_docs_generation() {
 
     // Test Caret documentation
     let caret_parser = ParserRegistry::get(ToolSyntax::Caret);
-    if let Some(caret_docs) = caret_parser.generate_tool_documentation(ToolScope::Agent) {
+    if let Some(caret_docs) = caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag()) {
         println!("=== Caret Tool Documentation ===");
         println!("{}", &caret_docs[..1500.min(caret_docs.len())]);
         println!("...\n");
@@ -539,7 +539,7 @@ fn test_tool_use_docs_generation() {
     // Test Native documentation (should be None)
     let native_parser = ParserRegistry::get(ToolSyntax::Native);
     if native_parser
-        .generate_tool_documentation(ToolScope::Agent)
+        .render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag())
         .is_some()
     {
         println!("Native parser unexpectedly returned documentation");
@@ -550,19 +550,19 @@ fn test_tool_use_docs_generation() {
 
     // Test syntax documentation
     println!("=== XML Syntax Documentation ===");
-    if let Some(xml_syntax) = xml_parser.generate_syntax_documentation() {
+    if let Some(xml_syntax) = xml_parser.render_format_section_for_prompt() {
         println!("{}", &xml_syntax[..1500.min(xml_syntax.len())]);
         println!("...\n");
     }
 
     println!("=== Caret Syntax Documentation ===");
-    if let Some(caret_syntax) = caret_parser.generate_syntax_documentation() {
+    if let Some(caret_syntax) = caret_parser.render_format_section_for_prompt() {
         println!("{}", &caret_syntax[..1500.min(caret_syntax.len())]);
         println!("...\n");
     }
 
     println!("=== Native Syntax Documentation ===");
-    if native_parser.generate_syntax_documentation().is_some() {
+    if native_parser.render_format_section_for_prompt().is_some() {
         println!("Native parser unexpectedly returned syntax documentation");
     } else {
         println!("None (as expected - uses native function calls)\n");
@@ -594,7 +594,7 @@ fn test_parameter_documentation_formatting() {
     });
 
     // Test that array parameters work correctly by checking generated docs contain proper examples
-    if let Some(docs) = xml_parser.generate_tool_documentation(crate::tools::core::ToolScope::Agent)
+    if let Some(docs) = xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // Should contain XML-style parameter examples
         assert!(
@@ -624,7 +624,7 @@ fn test_parameter_documentation_formatting() {
     // Test with Caret parser
     let caret_parser = ParserRegistry::get(ToolSyntax::Caret);
     if let Some(docs) =
-        caret_parser.generate_tool_documentation(crate::tools::core::ToolScope::Agent)
+        caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // Should contain caret-style parameter examples
         assert!(
@@ -672,7 +672,7 @@ fn test_usage_example_generation() {
     let caret_parser = ParserRegistry::get(ToolSyntax::Caret);
 
     if let Some(xml_docs) =
-        xml_parser.generate_tool_documentation(crate::tools::core::ToolScope::Agent)
+        xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // XML usage examples should be properly formatted
         assert!(
@@ -702,7 +702,7 @@ fn test_usage_example_generation() {
     }
 
     if let Some(caret_docs) =
-        caret_parser.generate_tool_documentation(crate::tools::core::ToolScope::Agent)
+        caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // Caret usage examples should be properly formatted
         assert!(

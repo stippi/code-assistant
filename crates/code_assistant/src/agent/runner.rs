@@ -1,3 +1,4 @@
+use crate::agent::dialect::ToolDialect;
 use crate::agent::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction};
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
@@ -7,7 +8,7 @@ use crate::persistence::{ChatMetadata, SessionModelConfig};
 use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
 use crate::tools::core::{Render, ResourcesTracker, ToolContext, ToolScope};
-use crate::tools::{ParserRegistry, ToolRequest};
+use crate::tools::ToolRequest;
 use crate::types::*;
 use crate::ui::{DisplayFragment, UiEvent, UserInterface};
 use anyhow::Result;
@@ -51,6 +52,9 @@ pub struct Agent {
     plan: PlanState,
     llm_provider: Box<dyn LLMProvider>,
     session_config: SessionConfig,
+    /// How tool calls travel between the LLM and the loop; selected from the
+    /// session's `ToolSyntax` at construction and on session load.
+    dialect: Arc<dyn ToolDialect>,
     tool_scope: ToolScope,
     project_manager: Arc<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
@@ -136,6 +140,7 @@ impl Agent {
             hooks: crate::plugins::default_hooks(),
             plan: PlanState::default(),
             llm_provider,
+            dialect: crate::tools::ParserRegistry::get(session_config.tool_syntax),
             session_config,
             tool_scope: ToolScope::Agent, // Default to Agent scope
             project_manager,
@@ -576,6 +581,7 @@ impl Agent {
         self.tool_executions = session_state.tool_executions;
         self.plan = session_state.plan.clone();
         self.session_config = session_state.config;
+        self.dialect = crate::tools::ParserRegistry::get(self.session_config.tool_syntax);
         if self.session_config.use_diff_blocks {
             self.enable_diff_blocks();
         } else {
@@ -624,8 +630,7 @@ impl Agent {
             return;
         }
 
-        let parser = ParserRegistry::get(self.tool_syntax());
-        let parser = parser.as_ref();
+        let dialect = self.dialect.clone();
         let mut removed = 0usize;
 
         while let Some(last_assistant_idx) = self
@@ -635,7 +640,7 @@ impl Agent {
         {
             let last_assistant = &self.message_history[last_assistant_idx];
 
-            if !parser.message_contains_tool_invocation(last_assistant) {
+            if !dialect.message_contains_invocation(last_assistant) {
                 break;
             }
 
@@ -732,8 +737,7 @@ impl Agent {
         llm_response: &llm::LLMResponse,
         request_counter: u64,
     ) -> Result<(Vec<ToolRequest>, LoopFlow, llm::LLMResponse)> {
-        let parser = ParserRegistry::get(self.tool_syntax());
-        match parser.extract_requests(llm_response, request_counter, 0) {
+        match self.dialect.extract_requests(llm_response, request_counter, 0) {
             Ok((requests, truncated_response)) => {
                 if requests.is_empty() && !self.has_pending_message() {
                     Ok((requests, LoopFlow::GetUserInput, truncated_response))
@@ -744,30 +748,27 @@ impl Agent {
             Err(e) => {
                 let error_text = Self::format_error_for_user(&e);
 
-                let error_msg = match self.tool_syntax() {
-                    ToolSyntax::Native => {
-                        // For native mode, keep text message since parsing errors occur before
-                        // we have any LLM-provided tool IDs to reference
-                        Message::new_user(error_text)
-                    }
-                    _ => {
-                        // For custom tool-syntax modes, create structured tool-result message like regular tool results
-                        // Generate normal tool ID for consistency with UI expectations
-                        let tool_id = format!("tool-{request_counter}-1");
+                let error_msg = if self.dialect.uses_native_tools() {
+                    // For native mode, keep text message since parsing errors occur before
+                    // we have any LLM-provided tool IDs to reference
+                    Message::new_user(error_text)
+                } else {
+                    // For text dialects, create structured tool-result message like regular tool results
+                    // Generate normal tool ID for consistency with UI expectations
+                    let tool_id = format!("tool-{request_counter}-1");
 
-                        // Create and store a ToolExecution for the parse error
-                        let tool_execution =
-                            ToolExecution::create_parse_error(tool_id.clone(), error_text.clone());
-                        self.tool_executions.push(tool_execution);
+                    // Create and store a ToolExecution for the parse error
+                    let tool_execution =
+                        ToolExecution::create_parse_error(tool_id.clone(), error_text.clone());
+                    self.tool_executions.push(tool_execution);
 
-                        Message::new_user_content(vec![ContentBlock::ToolResult {
-                            tool_use_id: tool_id,
-                            content: ToolResultContent::text(error_text),
-                            is_error: Some(true),
-                            start_time: Some(SystemTime::now()),
-                            end_time: None,
-                        }])
-                    }
+                    Message::new_user_content(vec![ContentBlock::ToolResult {
+                        tool_use_id: tool_id,
+                        content: ToolResultContent::text(error_text),
+                        is_error: Some(true),
+                        start_time: Some(SystemTime::now()),
+                        end_time: None,
+                    }])
                 };
 
                 self.append_message(error_msg)?;
@@ -1081,7 +1082,7 @@ impl Agent {
         }
 
         let ctx = crate::agent::hooks::PromptCtx {
-            tool_syntax: self.tool_syntax(),
+            dialect: self.dialect.as_ref(),
             tool_scope: self.tool_scope,
             model_hint: self.model_hint.as_deref(),
             initial_project: &self.session_config.initial_project,
@@ -1222,24 +1223,24 @@ impl Agent {
 
         let messages_with_reminder = self.shape_request_messages(messages);
 
-        // Convert messages based on tool syntax
-        // Native mode keeps ToolUse blocks, all other syntaxes convert to text
-        let converted_messages = match self.tool_syntax() {
-            ToolSyntax::Native => messages_with_reminder, // No conversion needed
-            _ => self.convert_tool_results_to_text(messages_with_reminder), // Convert ToolResults to Text
+        // Convert messages based on the dialect:
+        // native tool calling keeps ToolUse blocks, text dialects convert to text
+        let converted_messages = if self.dialect.uses_native_tools() {
+            messages_with_reminder
+        } else {
+            self.convert_tool_results_to_text(messages_with_reminder)
         };
 
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
-            tools: match self.tool_syntax() {
-                ToolSyntax::Native => {
-                    Some(crate::tools::to_tool_definitions(
-                        crate::tools::global_registry().get_tool_definitions_with_capability(self.tool_scope.tag()),
-                    ))
-                }
-                ToolSyntax::Xml => None,
-                ToolSyntax::Caret => None,
+            tools: if self.dialect.uses_native_tools() {
+                Some(crate::tools::to_tool_definitions(
+                    crate::tools::global_registry()
+                        .get_tool_definitions_with_capability(self.tool_scope.tag()),
+                ))
+            } else {
+                None
             },
             stop_sequences: None,
             request_id,
@@ -1264,9 +1265,8 @@ impl Agent {
         */
 
         // Create a StreamProcessor with the UI and request ID
-        let parser = ParserRegistry::get(self.tool_syntax());
         let hidden_tools = crate::tools::global_registry().hidden_tools(ToolScope::Agent.tag());
-        let processor = Arc::new(Mutex::new(parser.stream_processor(
+        let processor = Arc::new(Mutex::new(self.dialect.stream_processor(
             self.ui.clone(),
             request_id,
             hidden_tools,
@@ -1377,22 +1377,22 @@ impl Agent {
 
         let messages_with_reminder = self.shape_request_messages(messages);
 
-        let converted_messages = match self.tool_syntax() {
-            ToolSyntax::Native => messages_with_reminder,
-            _ => self.convert_tool_results_to_text(messages_with_reminder),
+        let converted_messages = if self.dialect.uses_native_tools() {
+            messages_with_reminder
+        } else {
+            self.convert_tool_results_to_text(messages_with_reminder)
         };
 
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
-            tools: match self.tool_syntax() {
-                ToolSyntax::Native => {
-                    Some(crate::tools::to_tool_definitions(
-                        crate::tools::global_registry().get_tool_definitions_with_capability(self.tool_scope.tag()),
-                    ))
-                }
-                ToolSyntax::Xml => None,
-                ToolSyntax::Caret => None,
+            tools: if self.dialect.uses_native_tools() {
+                Some(crate::tools::to_tool_definitions(
+                    crate::tools::global_registry()
+                        .get_tool_definitions_with_capability(self.tool_scope.tag()),
+                ))
+            } else {
+                None
             },
             stop_sequences: None,
             request_id,
@@ -2308,7 +2308,7 @@ impl Agent {
         &mut self,
         updated_request: &ToolRequest,
     ) -> Result<()> {
-        let tool_syntax = self.tool_syntax();
+        let dialect = self.dialect.clone();
         // Find the most recent assistant message that contains the tool call
         for message in self.message_history.iter_mut().rev() {
             if message.role == MessageRole::Assistant {
@@ -2334,7 +2334,7 @@ impl Agent {
                         if let Ok(updated_text) = Self::update_tool_call_in_text_static(
                             text,
                             updated_request,
-                            tool_syntax,
+                            dialect.as_ref(),
                         ) {
                             *text = updated_text;
                             debug!("Updated tool call {} in text message", updated_request.id);
@@ -2358,10 +2358,8 @@ impl Agent {
     pub fn update_tool_call_in_text_static(
         text: &str,
         updated_request: &ToolRequest,
-        tool_syntax: ToolSyntax,
+        dialect: &dyn ToolDialect,
     ) -> Result<String> {
-        use crate::tools::formatter::get_formatter;
-
         // Check if we have offset information for precise replacement
         if let (Some(start_offset), Some(end_offset)) =
             (updated_request.start_offset, updated_request.end_offset)
@@ -2374,9 +2372,8 @@ impl Agent {
                 && text.is_char_boundary(end_offset)
             {
                 // Generate the new formatted tool call
-                let formatter = get_formatter(tool_syntax);
-                let new_tool_call =
-                    formatter.format_tool_request(updated_request, crate::tools::global_registry())?;
+                let new_tool_call = dialect
+                    .format_tool_request(updated_request, crate::tools::global_registry())?;
 
                 // Replace the tool block at the exact location
                 let mut updated_text = String::new();
@@ -2401,9 +2398,8 @@ impl Agent {
         }
 
         // Fallback: append the updated tool call as a comment (for Native mode or when offsets are missing)
-        let formatter = get_formatter(tool_syntax);
         let new_tool_call =
-            formatter.format_tool_request(updated_request, crate::tools::global_registry())?;
+            dialect.format_tool_request(updated_request, crate::tools::global_registry())?;
 
         let updated_text = format!(
             "{}\n\n<!-- Tool call {} was updated after auto-formatting -->\n{}",

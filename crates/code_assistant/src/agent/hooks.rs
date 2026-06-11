@@ -6,11 +6,12 @@
 //! collected in a [`HookRegistry`]. The concrete implementations live in
 //! `crate::plugins`.
 
+use crate::agent::dialect::ToolDialect;
 use crate::agent::types::ToolExecution;
 use crate::persistence::{ConversationPath, MessageNode, NodeId};
 use crate::tools::core::ToolScope;
 use crate::tools::ToolRequest;
-use crate::types::{PlanState, ToolSyntax};
+use crate::types::PlanState;
 use anyhow::Result;
 use llm::Message;
 use std::collections::{BTreeMap, HashMap};
@@ -93,7 +94,9 @@ pub trait RecoveryPolicy: Send + Sync {
 /// Inputs for building the system prompt. The result is cached per model
 /// hint by the agent.
 pub struct PromptCtx<'a> {
-    pub tool_syntax: ToolSyntax,
+    /// The dialect the agent speaks; providers ask it for the format and
+    /// tool documentation sections.
+    pub dialect: &'a dyn ToolDialect,
     pub tool_scope: ToolScope,
     pub model_hint: Option<&'a str>,
     pub initial_project: &'a str,

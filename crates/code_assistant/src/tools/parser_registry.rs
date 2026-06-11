@@ -1,6 +1,10 @@
-//! Parser registry for different tool invocation syntaxes
+//! The XML, Caret, and native implementations of [`ToolDialect`], plus the
+//! syntax-based selection helper.
 
+use crate::agent::dialect::ToolDialect;
 use crate::agent::ToolSyntax;
+use crate::tools::core::ToolRegistry;
+use crate::tools::formatter::{CaretFormatter, NativeFormatter, ToolFormatter, XmlFormatter};
 use crate::tools::{
     parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SmartToolFilter,
     ToolRequest,
@@ -11,39 +15,6 @@ use anyhow::Result;
 use llm::{ContentBlock, LLMResponse, Message, MessageContent};
 use std::sync::Arc;
 use tracing::debug;
-
-/// Trait for parsing tool invocations from LLM responses
-pub trait ToolInvocationParser: Send + Sync {
-    /// Extract `ToolRequest`s from a complete LLM response and return truncated response.
-    /// Implementations may inspect either the raw text blocks, the `ToolUse`
-    /// blocks, or both.
-    fn extract_requests(
-        &self,
-        response: &LLMResponse,
-        req_id: u64,
-        order_offset: usize,
-    ) -> Result<(Vec<ToolRequest>, LLMResponse)>;
-
-    /// A stream-processor that renders *this syntax* for the UI.
-    /// `hidden_tools` decides which tool invocations are suppressed in the UI.
-    fn stream_processor(
-        &self,
-        ui: Arc<dyn UserInterface>,
-        request_id: u64,
-        hidden_tools: HiddenTools,
-    ) -> Box<dyn StreamProcessorTrait>;
-
-    /// Generate tool documentation in this parser's syntax format.
-    /// Returns None if this parser doesn't need tool documentation (e.g., Native mode).
-    fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String>;
-
-    /// Generate syntax documentation explaining how to use this parser's format.
-    /// Returns None if this parser doesn't need syntax documentation (e.g., Native mode).
-    fn generate_syntax_documentation(&self) -> Option<String>;
-
-    /// Determine whether the provided message contains any tool invocations using this syntax.
-    fn message_contains_tool_invocation(&self, message: &Message) -> bool;
-}
 
 fn message_text_segments(message: &Message) -> Vec<&str> {
     match &message.content {
@@ -216,7 +187,7 @@ fn example_placeholder(name: &str, prop: &serde_json::Value) -> String {
 /// XML-based tool invocation parser
 pub struct XmlParser;
 
-impl ToolInvocationParser for XmlParser {
+impl ToolDialect for XmlParser {
     fn extract_requests(
         &self,
         response: &LLMResponse,
@@ -224,6 +195,18 @@ impl ToolInvocationParser for XmlParser {
         _order_offset: usize,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
         parse_and_truncate_xml_response(response, req_id)
+    }
+
+    fn format_tool_request(
+        &self,
+        request: &ToolRequest,
+        registry: &ToolRegistry,
+    ) -> Result<String> {
+        XmlFormatter.format_tool_request(request, registry)
+    }
+
+    fn uses_native_tools(&self) -> bool {
+        false
     }
 
     fn stream_processor(
@@ -236,16 +219,20 @@ impl ToolInvocationParser for XmlParser {
         Box::new(XmlStreamProcessor::new(ui, request_id, hidden_tools))
     }
 
-    fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String> {
+    fn render_tool_section_for_prompt(
+        &self,
+        registry: &ToolRegistry,
+        capability: &str,
+    ) -> Option<String> {
         // Generate XML-style documentation
-        Some(self.generate_xml_tool_documentation(scope))
+        Some(self.generate_xml_tool_documentation(registry, capability))
     }
 
-    fn generate_syntax_documentation(&self) -> Option<String> {
+    fn render_format_section_for_prompt(&self) -> Option<String> {
         Some(self.generate_xml_syntax_documentation())
     }
 
-    fn message_contains_tool_invocation(&self, message: &Message) -> bool {
+    fn message_contains_invocation(&self, message: &Message) -> bool {
         let request_id = message.request_id.unwrap_or(0);
         for text in message_text_segments(message) {
             if !text.contains("<tool:") {
@@ -268,11 +255,8 @@ impl ToolInvocationParser for XmlParser {
 }
 
 impl XmlParser {
-    fn generate_xml_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> String {
-        
-
-        let registry = crate::tools::global_registry();
-        let tool_defs = registry.get_tool_definitions_with_capability(scope.tag());
+    fn generate_xml_tool_documentation(&self, registry: &ToolRegistry, capability: &str) -> String {
+        let tool_defs = registry.get_tool_definitions_with_capability(capability);
 
         let mut docs = String::new();
 
@@ -457,7 +441,7 @@ Always adhere to this format for the tool use to ensure proper parsing and execu
 /// Caret-based tool invocation parser
 pub struct CaretParser;
 
-impl ToolInvocationParser for CaretParser {
+impl ToolDialect for CaretParser {
     fn extract_requests(
         &self,
         response: &LLMResponse,
@@ -465,6 +449,18 @@ impl ToolInvocationParser for CaretParser {
         _order_offset: usize,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
         parse_and_truncate_caret_response(response, req_id)
+    }
+
+    fn format_tool_request(
+        &self,
+        request: &ToolRequest,
+        registry: &ToolRegistry,
+    ) -> Result<String> {
+        CaretFormatter.format_tool_request(request, registry)
+    }
+
+    fn uses_native_tools(&self) -> bool {
+        false
     }
 
     fn stream_processor(
@@ -477,16 +473,20 @@ impl ToolInvocationParser for CaretParser {
         Box::new(CaretStreamProcessor::new(ui, request_id, hidden_tools))
     }
 
-    fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String> {
+    fn render_tool_section_for_prompt(
+        &self,
+        registry: &ToolRegistry,
+        capability: &str,
+    ) -> Option<String> {
         // Generate caret-style documentation
-        Some(self.generate_caret_tool_documentation(scope))
+        Some(self.generate_caret_tool_documentation(registry, capability))
     }
 
-    fn generate_syntax_documentation(&self) -> Option<String> {
+    fn render_format_section_for_prompt(&self) -> Option<String> {
         Some(self.generate_caret_syntax_documentation())
     }
 
-    fn message_contains_tool_invocation(&self, message: &Message) -> bool {
+    fn message_contains_invocation(&self, message: &Message) -> bool {
         let request_id = message.request_id.unwrap_or(0);
         for text in message_text_segments(message) {
             if !text.contains("^^^") {
@@ -511,11 +511,12 @@ impl ToolInvocationParser for CaretParser {
 }
 
 impl CaretParser {
-    fn generate_caret_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> String {
-        
-
-        let registry = crate::tools::global_registry();
-        let tool_defs = registry.get_tool_definitions_with_capability(scope.tag());
+    fn generate_caret_tool_documentation(
+        &self,
+        registry: &ToolRegistry,
+        capability: &str,
+    ) -> String {
+        let tool_defs = registry.get_tool_definitions_with_capability(capability);
 
         let mut docs = String::new();
 
@@ -696,7 +697,7 @@ Always adhere to this format for the tool use to ensure proper parsing and execu
 /// JSON-based (native) tool invocation parser
 pub struct JsonParser;
 
-impl ToolInvocationParser for JsonParser {
+impl ToolDialect for JsonParser {
     fn extract_requests(
         &self,
         response: &LLMResponse,
@@ -704,6 +705,18 @@ impl ToolInvocationParser for JsonParser {
         _order_offset: usize,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
         parse_json_response(response, req_id)
+    }
+
+    fn format_tool_request(
+        &self,
+        request: &ToolRequest,
+        registry: &ToolRegistry,
+    ) -> Result<String> {
+        NativeFormatter.format_tool_request(request, registry)
+    }
+
+    fn uses_native_tools(&self) -> bool {
+        true
     }
 
     fn stream_processor(
@@ -716,17 +729,21 @@ impl ToolInvocationParser for JsonParser {
         Box::new(JsonStreamProcessor::new(ui, request_id, hidden_tools))
     }
 
-    fn generate_tool_documentation(&self, _scope: crate::tools::core::ToolScope) -> Option<String> {
+    fn render_tool_section_for_prompt(
+        &self,
+        _registry: &ToolRegistry,
+        _capability: &str,
+    ) -> Option<String> {
         // Native mode uses API-provided tool definitions, no custom documentation needed
         None
     }
 
-    fn generate_syntax_documentation(&self) -> Option<String> {
+    fn render_format_section_for_prompt(&self) -> Option<String> {
         // Native mode uses API-provided function calls, no custom syntax documentation needed
         None
     }
 
-    fn message_contains_tool_invocation(&self, message: &Message) -> bool {
+    fn message_contains_invocation(&self, message: &Message) -> bool {
         if let MessageContent::Structured(blocks) = &message.content {
             blocks
                 .iter()
@@ -741,12 +758,12 @@ impl ToolInvocationParser for JsonParser {
 pub struct ParserRegistry;
 
 impl ParserRegistry {
-    /// Get the appropriate parser for the given tool syntax
-    pub fn get(syntax: ToolSyntax) -> Box<dyn ToolInvocationParser> {
+    /// Get the appropriate dialect for the given tool syntax
+    pub fn get(syntax: ToolSyntax) -> Arc<dyn ToolDialect> {
         match syntax {
-            ToolSyntax::Xml => Box::new(XmlParser),
-            ToolSyntax::Native => Box::new(JsonParser),
-            ToolSyntax::Caret => Box::new(CaretParser),
+            ToolSyntax::Xml => Arc::new(XmlParser),
+            ToolSyntax::Native => Arc::new(JsonParser),
+            ToolSyntax::Caret => Arc::new(CaretParser),
         }
     }
 }

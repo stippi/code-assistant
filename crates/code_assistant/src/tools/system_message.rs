@@ -1,8 +1,7 @@
 //! System message generation functionality
 
-use crate::agent::ToolSyntax;
+use crate::agent::dialect::ToolDialect;
 use crate::tools::core::ToolScope;
-use crate::tools::ParserRegistry;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -48,44 +47,41 @@ fn default_prompt_name() -> String {
 
 static PROMPT_MAPPING: OnceLock<PromptMapping> = OnceLock::new();
 
-/// Generate a system message for the given tool syntax, scope, and optional model hint
+/// Generate a system message for the given tool dialect, scope, and optional model hint
 pub fn generate_system_message(
-    tool_syntax: ToolSyntax,
+    dialect: &dyn ToolDialect,
     scope: ToolScope,
     model_hint: Option<&str>,
 ) -> String {
     let mut base = load_base_prompt(model_hint);
 
-    match tool_syntax {
-        ToolSyntax::Native => {
-            // For native mode, replace the entire placeholder section with an empty line
-            base = base.replace("{{syntax}}\n\n{{tools}}\n\n", "\n");
-            base
+    if dialect.uses_native_tools() {
+        // For native mode, replace the entire placeholder section with an empty line
+        base = base.replace("{{syntax}}\n\n{{tools}}\n\n", "\n");
+        base
+    } else {
+        // For text dialects, ask the dialect for its documentation sections
+        let tool_use_header = "TOOL USE\n\n";
+
+        // Replace syntax documentation with tools introduction + syntax doc
+        if let Some(syntax_doc) = dialect.render_format_section_for_prompt() {
+            let syntax_content = format!("{TOOLS_INTRODUCTION}{syntax_doc}");
+            base = base.replace("{{syntax}}", &syntax_content);
+        } else {
+            base = base.replace("{{syntax}}", TOOLS_INTRODUCTION);
         }
-        _ => {
-            // For XML and Caret modes, get parser and generate documentation
-            let parser = ParserRegistry::get(tool_syntax);
 
-            let tool_use_header = "TOOL USE\n\n";
-
-            // Replace syntax documentation with tools introduction + syntax doc
-            if let Some(syntax_doc) = parser.generate_syntax_documentation() {
-                let syntax_content = format!("{TOOLS_INTRODUCTION}{syntax_doc}");
-                base = base.replace("{{syntax}}", &syntax_content);
-            } else {
-                base = base.replace("{{syntax}}", TOOLS_INTRODUCTION);
-            }
-
-            // Replace tools documentation with header + tools doc
-            if let Some(tools_doc) = parser.generate_tool_documentation(scope) {
-                let tools_content = format!("{tool_use_header}{tools_doc}");
-                base = base.replace("{{tools}}", &tools_content);
-            } else {
-                base = base.replace("{{tools}}", tool_use_header);
-            }
-
-            base
+        // Replace tools documentation with header + tools doc
+        if let Some(tools_doc) =
+            dialect.render_tool_section_for_prompt(crate::tools::global_registry(), scope.tag())
+        {
+            let tools_content = format!("{tool_use_header}{tools_doc}");
+            base = base.replace("{{tools}}", &tools_content);
+        } else {
+            base = base.replace("{{tools}}", tool_use_header);
         }
+
+        base
     }
 }
 
@@ -196,8 +192,12 @@ mod tests {
 
     #[test]
     fn test_system_message_generation() {
+        use crate::tools::ParserRegistry;
+        use crate::types::ToolSyntax;
+
         // Test Native mode
-        let native_msg = generate_system_message(ToolSyntax::Native, ToolScope::Agent, None);
+        let native_msg =
+            generate_system_message(&*ParserRegistry::get(ToolSyntax::Native), ToolScope::Agent, None);
         assert!(!native_msg.contains("{{tools}}"));
         assert!(!native_msg.contains("{{syntax}}"));
         assert!(!native_msg.contains("<tool:"));
@@ -205,7 +205,8 @@ mod tests {
         assert!(!native_msg.contains("TOOL USE"));
 
         // Test XML mode
-        let xml_msg = generate_system_message(ToolSyntax::Xml, ToolScope::Agent, None);
+        let xml_msg =
+            generate_system_message(&*ParserRegistry::get(ToolSyntax::Xml), ToolScope::Agent, None);
         assert!(
             !xml_msg.contains("{{tools}}"),
             "XML message contains unreplaced {{tools}} placeholder"
@@ -228,7 +229,11 @@ mod tests {
         );
 
         // Test Caret mode
-        let caret_msg = generate_system_message(ToolSyntax::Caret, ToolScope::Agent, None);
+        let caret_msg = generate_system_message(
+            &*ParserRegistry::get(ToolSyntax::Caret),
+            ToolScope::Agent,
+            None,
+        );
         assert!(
             !caret_msg.contains("{{tools}}"),
             "Caret message contains unreplaced {{tools}} placeholder"
