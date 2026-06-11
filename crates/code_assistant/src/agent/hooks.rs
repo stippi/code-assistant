@@ -10,10 +10,11 @@ use crate::agent::types::ToolExecution;
 use crate::persistence::{ConversationPath, MessageNode, NodeId};
 use crate::tools::core::ToolScope;
 use crate::tools::ToolRequest;
-use crate::types::PlanState;
+use crate::types::{PlanState, ToolSyntax};
 use anyhow::Result;
 use llm::Message;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::time::Duration;
 
 /// View of the agent state that hooks may read and act on.
@@ -89,6 +90,24 @@ pub trait RecoveryPolicy: Send + Sync {
     fn classify(&self, error: &anyhow::Error, completed_retries: u32) -> RecoveryAction;
 }
 
+/// Inputs for building the system prompt. The result is cached per model
+/// hint by the agent.
+pub struct PromptCtx<'a> {
+    pub tool_syntax: ToolSyntax,
+    pub tool_scope: ToolScope,
+    pub model_hint: Option<&'a str>,
+    pub initial_project: &'a str,
+    /// Effective project root (worktree or init path), when configured.
+    pub project_root: Option<&'a Path>,
+    pub file_trees: &'a HashMap<String, String>,
+    pub available_projects: &'a [String],
+}
+
+/// Builds the system prompt.
+pub trait SystemPromptProvider: Send + Sync {
+    fn build(&self, ctx: &PromptCtx) -> String;
+}
+
 /// All hooks an agent instance runs with, set at construction time.
 pub struct HookRegistry {
     pub interceptors: Vec<Box<dyn ToolInterceptor>>,
@@ -96,4 +115,5 @@ pub struct HookRegistry {
     pub dispatch: Box<dyn ToolDispatchPolicy>,
     pub compaction: Box<dyn CompactionPolicy>,
     pub recovery: Box<dyn RecoveryPolicy>,
+    pub system_prompt: Box<dyn SystemPromptProvider>,
 }
