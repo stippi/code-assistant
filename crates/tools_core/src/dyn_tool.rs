@@ -19,12 +19,20 @@ pub trait AnyOutput: Send + Sync {
     #[allow(dead_code)]
     fn to_json(&self) -> Result<serde_json::Value>;
 
+    /// Clone this output by serializing and re-parsing it on the concrete
+    /// type — no registry lookup needed.
+    fn try_clone(&self) -> Result<Box<dyn AnyOutput>>;
+
     /// Return image data produced by this tool, if any.
     fn render_images(&self) -> Vec<ImageData>;
 }
 
-/// Automatically implemented for all types that implement both Render, ToolResult and Serialize
-impl<T: Render + ToolResult + Serialize + Send + Sync + 'static> AnyOutput for T {
+/// Automatically implemented for all types that implement Render, ToolResult
+/// and Serialize/Deserialize (the bounds of [`Tool::Output`])
+impl<T> AnyOutput for T
+where
+    T: Render + ToolResult + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
     fn as_render(&self) -> &dyn Render {
         self
     }
@@ -35,6 +43,14 @@ impl<T: Render + ToolResult + Serialize + Send + Sync + 'static> AnyOutput for T
 
     fn to_json(&self) -> Result<serde_json::Value> {
         serde_json::to_value(self).map_err(|e| anyhow::anyhow!("Failed to serialize output: {e}"))
+    }
+
+    fn try_clone(&self) -> Result<Box<dyn AnyOutput>> {
+        let value = serde_json::to_value(self)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize output: {e}"))?;
+        let cloned: T = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize output: {e}"))?;
+        Ok(Box::new(cloned))
     }
 
     fn render_images(&self) -> Vec<ImageData> {
