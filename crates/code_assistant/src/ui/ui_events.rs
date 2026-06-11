@@ -6,6 +6,17 @@ use crate::ui::{DisplayFragment, ToolStatus};
 use sandbox::SandboxPolicy;
 use std::path::PathBuf;
 
+// When the gpui-ui feature is enabled, StyledLine comes from the `terminal` crate
+// (which captures ANSI-coloured output from the interactive terminal tool).
+// Without gpui-ui the field is always `None`, so we use a zero-sized stub that
+// satisfies the type checker without pulling in the Metal dependency chain.
+#[cfg(feature = "gpui-ui")]
+pub use terminal::StyledLine;
+
+#[cfg(not(feature = "gpui-ui"))]
+#[derive(Debug, Clone)]
+pub struct StyledLine;
+
 /// Role of a message in the conversation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageRole {
@@ -34,7 +45,7 @@ pub struct ToolResultData {
     pub message: Option<String>,
     pub output: Option<String>,
     /// Styled terminal output with ANSI color information preserved.
-    pub styled_output: Option<Vec<terminal::StyledLine>>,
+    pub styled_output: Option<Vec<StyledLine>>,
     /// Duration of the tool execution in seconds, computed from persisted ContentBlock timestamps.
     pub duration_seconds: Option<f64>,
     /// Image data from tools that produce visual output (e.g. view_images).
@@ -79,7 +90,7 @@ pub enum UiEvent {
         message: Option<String>,
         output: Option<String>,
         /// Styled terminal output with ANSI color information preserved.
-        styled_output: Option<Vec<terminal::StyledLine>>,
+        styled_output: Option<Vec<StyledLine>>,
         /// Execution duration in seconds, set from ContentBlock timestamps on completion.
         duration_seconds: Option<f64>,
         /// Image data from tools that produce visual output (e.g. view_images).

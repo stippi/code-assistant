@@ -1,4 +1,5 @@
 pub mod acp;
+#[cfg(feature = "gpui-ui")]
 pub mod gpui;
 pub mod server;
 pub mod terminal;

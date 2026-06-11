@@ -1,4 +1,5 @@
 pub mod backend;
+#[cfg(feature = "gpui-ui")]
 pub mod gpui;
 pub mod streaming;
 pub mod terminal;

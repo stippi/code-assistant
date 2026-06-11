@@ -6,6 +6,9 @@ edition = "2021"
 [features]
 default = ["document-conversion"]
 document-conversion = ["transmutation", "fs_explorer/document-conversion"]
+# Enable the GPUI desktop UI. Requires Xcode / Metal on macOS.
+# Without this flag the binary is TUI-only and compiles without Metal tools.
+gpui-ui = ["dep:gpui", "dep:gpui_platform", "dep:gpui-component", "dep:terminal", "dep:terminal_view"]
 
 [dependencies]
 command_executor = { path = "../command_executor" }
@@ -13,8 +16,8 @@ fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
-terminal = { path = "../terminal" }
-terminal_view = { path = "../terminal_view" }
+terminal = { path = "../terminal", optional = true }
+terminal_view = { path = "../terminal_view", optional = true }
 web = { path = "../web" }
 
 glob = "0.3"
@@ -42,10 +45,10 @@ textwrap = "0.16"
 tui-markdown = "=0.3.6"
 derive_more = { version = "2", features = ["is_variant"] }
 
-# GPUI related
-gpui = "0.2.2"
-gpui_platform = { version = "0.1", features = ["font-kit"] }
-gpui-component = "0.5.2"
+# GPUI related — only needed when the "gpui" feature is enabled
+gpui = { version = "0.2.2", optional = true }
+gpui_platform = { version = "0.1", features = ["font-kit"], optional = true }
+gpui-component = { version = "0.5.2", optional = true }
 smallvec = "1.15"
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
@@ -110,6 +113,5 @@ tokio-util = { version = "0.7", features = ["compat"] }
 core-text = "=21.0.0"
 
 [dev-dependencies]
-gpui = { version = "0.2.2", features = ["test-support"] }
 axum = "0.7"
 bytes = "1.10"
