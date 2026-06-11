@@ -13,7 +13,11 @@ pub use config::ToolsConfig;
 pub use dyn_tool::AnyOutput;
 pub use registry::ToolRegistry;
 pub use render::{ImageData, Render, ResourcesTracker};
-pub use result::ToolResult;
-pub use spec::{capabilities, ToolScope, ToolSpec};
+pub use result::{ToolError, ToolResult};
+pub use spec::{AnnotatedToolDefinition, ToolSpec};
 pub use title::generate_tool_title;
 pub use tool::{Tool, ToolContext};
+
+// Compatibility re-exports: the scope selection vocabulary is domain-side
+// (see `crate::tools::scope`), but callers historically import it from here.
+pub use crate::tools::scope::{capabilities, ToolScope};

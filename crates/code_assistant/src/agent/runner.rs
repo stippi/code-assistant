@@ -6,7 +6,7 @@ use crate::permissions::PermissionMediator;
 use crate::persistence::{ChatMetadata, SessionModelConfig};
 use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
-use crate::tools::core::{Render, ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
+use crate::tools::core::{Render, ResourcesTracker, ToolContext, ToolScope};
 use crate::tools::{ParserRegistry, ToolRequest};
 use crate::types::*;
 use crate::ui::{DisplayFragment, UiEvent, UserInterface};
@@ -1234,8 +1234,8 @@ impl Agent {
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_syntax() {
                 ToolSyntax::Native => {
-                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
-                        ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
+                    Some(crate::tools::to_tool_definitions(
+                        crate::tools::global_registry().get_tool_definitions_with_capability(self.tool_scope.tag()),
                     ))
                 }
                 ToolSyntax::Xml => None,
@@ -1265,7 +1265,7 @@ impl Agent {
 
         // Create a StreamProcessor with the UI and request ID
         let parser = ParserRegistry::get(self.tool_syntax());
-        let hidden_tools = ToolRegistry::global().hidden_tools(ToolScope::Agent);
+        let hidden_tools = crate::tools::global_registry().hidden_tools(ToolScope::Agent.tag());
         let processor = Arc::new(Mutex::new(parser.stream_processor(
             self.ui.clone(),
             request_id,
@@ -1387,8 +1387,8 @@ impl Agent {
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_syntax() {
                 ToolSyntax::Native => {
-                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
-                        ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
+                    Some(crate::tools::to_tool_definitions(
+                        crate::tools::global_registry().get_tool_definitions_with_capability(self.tool_scope.tag()),
                     ))
                 }
                 ToolSyntax::Xml => None,
@@ -2070,7 +2070,7 @@ impl Agent {
         }
 
         // Check if this is a hidden tool
-        let is_hidden = ToolRegistry::global().is_tool_hidden(&tool_request.name, self.tool_scope);
+        let is_hidden = crate::tools::global_registry().is_tool_hidden(&tool_request.name, self.tool_scope.tag());
 
         // Update status to Running before execution (skip for hidden tools)
         if !is_hidden {
@@ -2089,7 +2089,7 @@ impl Agent {
         }
 
         // Get the tool - could fail with UnknownTool
-        let tool = match ToolRegistry::global().get(&tool_request.name) {
+        let tool = match crate::tools::global_registry().get(&tool_request.name) {
             Some(tool) => tool,
             None => return Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
         };
@@ -2098,7 +2098,7 @@ impl Agent {
         // The scope filtering on the tool list offered to the LLM is not sufficient on its own,
         // because models may hallucinate tool calls they know from training even when the tool
         // is not in the provided tool list (e.g. a sub-agent calling write_file).
-        if !ToolRegistry::global().is_tool_in_scope(&tool_request.name, self.tool_scope) {
+        if !crate::tools::global_registry().tool_has_capability(&tool_request.name, self.tool_scope.tag()) {
             return Err(anyhow::anyhow!(
                 "Tool '{}' is not available in the current scope",
                 tool_request.name
@@ -2376,7 +2376,7 @@ impl Agent {
                 // Generate the new formatted tool call
                 let formatter = get_formatter(tool_syntax);
                 let new_tool_call =
-                    formatter.format_tool_request(updated_request, ToolRegistry::global())?;
+                    formatter.format_tool_request(updated_request, crate::tools::global_registry())?;
 
                 // Replace the tool block at the exact location
                 let mut updated_text = String::new();
@@ -2403,7 +2403,7 @@ impl Agent {
         // Fallback: append the updated tool call as a comment (for Native mode or when offsets are missing)
         let formatter = get_formatter(tool_syntax);
         let new_tool_call =
-            formatter.format_tool_request(updated_request, ToolRegistry::global())?;
+            formatter.format_tool_request(updated_request, crate::tools::global_registry())?;
 
         let updated_text = format!(
             "{}\n\n<!-- Tool call {} was updated after auto-formatting -->\n{}",

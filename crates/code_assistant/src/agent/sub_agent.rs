@@ -615,7 +615,7 @@ impl SubAgentUiAdapter {
                 if let Some(new_title) = crate::tools::core::generate_tool_title(
                     &tool.name,
                     &tool.parameters,
-                    crate::tools::core::ToolRegistry::global(),
+                    crate::tools::global_registry(),
                 ) {
                     tool.title = Some(new_title);
                 }

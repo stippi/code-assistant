@@ -47,7 +47,7 @@ impl ToolExecution {
     /// Attempt to clone via serialize/deserialize round-trip.
     pub fn try_clone(&self) -> Result<Self> {
         let serialized = self.serialize()?;
-        serialized.deserialize(ToolRegistry::global())
+        serialized.deserialize(crate::tools::global_registry())
     }
 
     /// Create a ToolExecution for a parse error

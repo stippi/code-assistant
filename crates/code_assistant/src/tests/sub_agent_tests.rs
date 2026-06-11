@@ -255,10 +255,10 @@ async fn test_parallel_sub_agent_execution() {
 
 #[test]
 fn test_tool_scope_for_sub_agent() {
-    use crate::tools::core::ToolRegistry;
+    
 
     // spawn_agent should only be available in main agent scopes
-    let registry = ToolRegistry::global();
+    let registry = crate::tools::global_registry();
 
     // Check spawn_agent is available in normal agent scope
     let tool = registry.get("spawn_agent");
@@ -267,7 +267,7 @@ fn test_tool_scope_for_sub_agent() {
     // Helper to get tool names for a scope
     let get_tools_for_scope = |scope: ToolScope| -> Vec<String> {
         registry
-            .get_tool_definitions_for_scope(scope)
+            .get_tool_definitions_with_capability(scope.tag())
             .iter()
             .map(|t| t.name.clone())
             .collect()
@@ -391,12 +391,12 @@ fn test_can_run_in_parallel_logic() {
 
 #[test]
 fn test_tool_scope_sub_agent_default_with_diff_blocks() {
-    use crate::tools::core::ToolRegistry;
+    
 
-    let registry = ToolRegistry::global();
+    let registry = crate::tools::global_registry();
     let get_tools_for_scope = |scope: ToolScope| -> Vec<String> {
         registry
-            .get_tool_definitions_for_scope(scope)
+            .get_tool_definitions_with_capability(scope.tag())
             .iter()
             .map(|t| t.name.clone())
             .collect()

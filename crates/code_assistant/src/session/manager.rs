@@ -636,7 +636,7 @@ impl SessionManager {
                     .session
                     .tool_executions
                     .iter()
-                    .map(|se| se.deserialize(crate::tools::core::ToolRegistry::global()))
+                    .map(|se| se.deserialize(crate::tools::global_registry()))
                     .collect::<Result<Vec<_>>>()?,
                 plan: session_instance.session.plan.clone(),
                 config: session_config.clone(),

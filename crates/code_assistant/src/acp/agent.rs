@@ -439,8 +439,8 @@ impl acp::Agent for ACPAgentImpl {
             ));
 
             // Create stream processor to extract fragments
-            let hidden_tools = crate::tools::core::ToolRegistry::global()
-                .hidden_tools(crate::tools::core::ToolScope::Agent);
+            let hidden_tools = crate::tools::global_registry()
+                .hidden_tools(crate::tools::core::ToolScope::Agent.tag());
             let mut processor = crate::ui::streaming::create_stream_processor(
                 tool_syntax,
                 ui.clone(),

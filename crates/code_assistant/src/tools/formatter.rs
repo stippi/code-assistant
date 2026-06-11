@@ -269,7 +269,7 @@ mod tests {
         );
 
         let result = formatter
-            .format_tool_request(&request, ToolRegistry::global())
+            .format_tool_request(&request, crate::tools::global_registry())
             .unwrap();
 
         assert_eq!(expected, result);
@@ -303,7 +303,7 @@ mod tests {
         );
 
         let result = formatter
-            .format_tool_request(&request, ToolRegistry::global())
+            .format_tool_request(&request, crate::tools::global_registry())
             .unwrap();
 
         assert_eq!(expected, result);
@@ -338,7 +338,7 @@ mod tests {
         );
 
         let result = formatter
-            .format_tool_request(&request, ToolRegistry::global())
+            .format_tool_request(&request, crate::tools::global_registry())
             .unwrap();
 
         assert_eq!(expected, result);
@@ -369,7 +369,7 @@ mod tests {
         );
 
         let result = formatter
-            .format_tool_request(&request, ToolRegistry::global())
+            .format_tool_request(&request, crate::tools::global_registry())
             .unwrap();
 
         assert_eq!(expected, result);
@@ -392,7 +392,7 @@ mod tests {
         };
 
         let result = formatter
-            .format_tool_request(&request, ToolRegistry::global())
+            .format_tool_request(&request, crate::tools::global_registry())
             .unwrap();
 
         // Should not contain the append parameter since it matches the default
@@ -426,7 +426,7 @@ mod tests {
         };
 
         let result = formatter
-            .format_tool_request(&request, ToolRegistry::global())
+            .format_tool_request(&request, crate::tools::global_registry())
             .unwrap();
 
         // Should not contain the append parameter since it matches the default

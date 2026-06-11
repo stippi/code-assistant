@@ -1,7 +1,6 @@
 use super::resources::ResourceManager;
 use super::types::*;
 use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::tools::core::ToolRegistry;
 use crate::utils::{MessageWriter, StdoutWriter};
 use anyhow::Result;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
@@ -205,9 +204,9 @@ impl MessageHandler {
         debug!("Handling tools/list request");
 
         // Use the ToolRegistry to get tool definitions
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let tool_defs =
-            registry.get_tool_definitions_for_scope(crate::tools::core::ToolScope::McpServer);
+            registry.get_tool_definitions_with_capability(crate::tools::core::ToolScope::McpServer.tag());
 
         // Map tool definitions to the expected JSON structure
         let tools_json = tool_defs
@@ -256,7 +255,7 @@ impl MessageHandler {
                 .ok_or_else(|| anyhow::anyhow!("Missing parameters"))?;
 
             // Get the tool from the registry
-            let registry = ToolRegistry::global();
+            let registry = crate::tools::global_registry();
             let tool = registry
                 .get(&params.name)
                 .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;

@@ -86,15 +86,8 @@ pub struct PlanState {
     pub meta: Option<JsonValue>,
 }
 
-/// Tool description for LLM
-#[derive(Debug, thiserror::Error)]
-pub enum ToolError {
-    #[error("Unknown tool: {0}")]
-    UnknownTool(String),
-
-    #[error("Failed to parse tool parameters: {0}")]
-    ParseError(String),
-}
+// Compatibility re-export: ToolError lives with the tool core now.
+pub use crate::tools::core::ToolError;
 
 /// Specifies the tool invocation syntax
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

@@ -1,9 +1,7 @@
-use super::config::ToolsConfig;
 use super::render::{ImageData, Render};
-use super::result::ToolResult;
+use super::result::{ToolError, ToolResult};
 use super::spec::ToolSpec;
 use super::tool::{Tool, ToolContext};
-use crate::types::ToolError;
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -50,9 +48,6 @@ pub trait DynTool: Send + Sync + 'static {
     /// Get the static metadata for this tool
     fn spec(&self) -> ToolSpec;
 
-    /// Check if this tool is available based on configuration.
-    fn is_available(&self, config: &ToolsConfig) -> bool;
-
     /// Invoke the tool with JSON parameters and get a type-erased output
     async fn invoke<'a>(
         &self,
@@ -74,10 +69,6 @@ where
 {
     fn spec(&self) -> ToolSpec {
         Tool::spec(self)
-    }
-
-    fn is_available(&self, config: &ToolsConfig) -> bool {
-        Tool::is_available(self, config)
     }
 
     async fn invoke<'a>(

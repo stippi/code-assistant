@@ -443,7 +443,7 @@ impl Tool for ReadFilesTool {
 mod tests {
     use super::*;
     use crate::tests::mocks::ToolTestFixture;
-    use crate::tools::core::ToolRegistry;
+    
 
     #[test]
     fn test_loaded_file_content_deserialize_backward_compat() {
@@ -526,7 +526,7 @@ mod tests {
         use crate::ui::UiEvent;
 
         // Create a tool registry
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
 
         // Get the read_files tool
         let read_files_tool = registry
@@ -653,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_files_with_prefix_line_numbers() -> Result<()> {
         // Create a tool registry
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
 
         // Get the read_files tool
         let read_files_tool = registry
@@ -692,7 +692,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_files_without_prefix_line_numbers() -> Result<()> {
         // Create a tool registry
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
 
         // Get the read_files tool
         let read_files_tool = registry
@@ -789,7 +789,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_files_with_line_range_and_prefix() -> Result<()> {
         // Create a tool registry
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
 
         // Get the read_files tool
         let read_files_tool = registry
@@ -832,7 +832,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_files_rejects_large_file() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let read_files_tool = registry
             .get("read_files")
             .expect("read_files tool should be registered");
@@ -866,7 +866,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_files_large_file_with_ignore_size_limit() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let read_files_tool = registry
             .get("read_files")
             .expect("read_files tool should be registered");
@@ -897,7 +897,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_files_large_file_with_line_range_bypasses_limit() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let read_files_tool = registry
             .get("read_files")
             .expect("read_files tool should be registered");
@@ -931,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_files_large_file_error_shows_line_count() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let read_files_tool = registry
             .get("read_files")
             .expect("read_files tool should be registered");
@@ -963,7 +963,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_files_large_single_line_file_shows_minified_warning() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let read_files_tool = registry
             .get("read_files")
             .expect("read_files tool should be registered");

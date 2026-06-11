@@ -1,6 +1,6 @@
 //! Tool use filtering system to control which tool blocks are allowed and when to truncate responses
 
-use crate::tools::core::{capabilities, ToolRegistry};
+use crate::tools::core::capabilities;
 
 /// Trait for filtering tool use blocks during parsing
 /// This allows controlling which tools can be used and when to stop parsing
@@ -59,7 +59,7 @@ impl SmartToolFilter {
     /// Check if a tool is a "read" operation (doesn't modify state) and is
     /// therefore safe to chain.
     fn is_read_tool(&self, tool_name: &str) -> bool {
-        ToolRegistry::global().tool_has_capability(tool_name, capabilities::READ_ONLY)
+        crate::tools::global_registry().tool_has_capability(tool_name, capabilities::READ_ONLY)
     }
 }
 

@@ -125,7 +125,7 @@ impl ToolCallState {
         if let Some(new_title) = crate::tools::core::generate_tool_title(
             tool_name,
             &params,
-            crate::tools::core::ToolRegistry::global(),
+            crate::tools::global_registry(),
         ) {
             self.title = Some(new_title);
         }

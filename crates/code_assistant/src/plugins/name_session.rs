@@ -3,7 +3,6 @@
 
 use crate::agent::hooks::{IterationHook, LoopCtx, ToolInterceptor};
 use crate::agent::types::ToolExecution;
-use crate::tools::core::ToolRegistry;
 use crate::tools::ToolRequest;
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, MessageRole};
@@ -59,7 +58,7 @@ impl IterationHook for NameSessionReminderHook {
         // Skip the reminder when the `name_session` tool isn't available in the
         // current tool scope (e.g. for sub-agents). Otherwise we'd nag the agent
         // to call a tool it cannot use.
-        if !ToolRegistry::global().is_tool_in_scope("name_session", ctx.tool_scope) {
+        if !crate::tools::global_registry().tool_has_capability("name_session", ctx.tool_scope.tag()) {
             return Ok(());
         }
 

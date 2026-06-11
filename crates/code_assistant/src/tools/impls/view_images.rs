@@ -321,11 +321,11 @@ impl Tool for ViewImagesTool {
 mod tests {
     use super::*;
     use crate::tests::mocks::ToolTestFixture;
-    use crate::tools::core::ToolRegistry;
+    
 
     #[tokio::test]
     async fn test_view_images_unsupported_extension() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let tool = registry
             .get("view_images")
             .expect("view_images tool should be registered");
@@ -351,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_view_images_missing_file() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let tool = registry
             .get("view_images")
             .expect("view_images tool should be registered");
@@ -401,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_view_images_absolute_path_rejected() -> Result<()> {
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let tool = registry
             .get("view_images")
             .expect("view_images tool should be registered");

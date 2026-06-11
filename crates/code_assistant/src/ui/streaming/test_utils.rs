@@ -2,7 +2,7 @@
 //!
 //! This module contains shared test helpers, mocks and utilities that are used
 //! by both the XML and JSON processor tests.
-use crate::tools::core::{ToolRegistry, ToolScope};
+use crate::tools::core::ToolScope;
 use crate::ui::streaming::{DisplayFragment, HiddenTools};
 use crate::ui::{UIError, UserInterface};
 use async_trait::async_trait;
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 /// Hidden-tool predicate matching the agent's default behavior.
 pub fn hidden_tools() -> HiddenTools {
-    ToolRegistry::global().hidden_tools(ToolScope::Agent)
+    crate::tools::global_registry().hidden_tools(ToolScope::Agent.tag())
 }
 
 /// A test UI that collects display fragments and merges them appropriately

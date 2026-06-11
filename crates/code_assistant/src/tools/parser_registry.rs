@@ -1,7 +1,6 @@
 //! Parser registry for different tool invocation syntaxes
 
 use crate::agent::ToolSyntax;
-use crate::tools::core::ToolRegistry;
 use crate::tools::{
     parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SmartToolFilter,
     ToolRequest,
@@ -79,7 +78,7 @@ fn parse_and_truncate_caret_response(
                 request_id,
                 tool_requests.len(),
                 Some(&filter),
-                ToolRegistry::global(),
+                crate::tools::global_registry(),
             )?;
 
             tool_requests.extend(block_tool_requests.clone());
@@ -131,7 +130,7 @@ fn parse_and_truncate_xml_response(
                 request_id,
                 tool_requests.len(),
                 Some(&filter),
-                ToolRegistry::global(),
+                crate::tools::global_registry(),
             )?;
 
             tool_requests.extend(block_tool_requests.clone());
@@ -195,7 +194,7 @@ fn parse_json_response(
 /// Whether the named parameter of the given tool typically spans multiple
 /// lines (block syntax in the text dialects).
 fn is_multiline_param(tool_name: &str, param_name: &str) -> bool {
-    ToolRegistry::global()
+    crate::tools::global_registry()
         .get(tool_name)
         .map(|tool| tool.spec().is_multiline_param(param_name))
         .unwrap_or(false)
@@ -252,7 +251,7 @@ impl ToolInvocationParser for XmlParser {
             if !text.contains("<tool:") {
                 continue;
             }
-            match parse_xml_tool_invocations(text, request_id, 0, None, ToolRegistry::global()) {
+            match parse_xml_tool_invocations(text, request_id, 0, None, crate::tools::global_registry()) {
                 Ok((requests, _)) => {
                     if !requests.is_empty() {
                         return true;
@@ -270,10 +269,10 @@ impl ToolInvocationParser for XmlParser {
 
 impl XmlParser {
     fn generate_xml_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> String {
-        use crate::tools::core::ToolRegistry;
+        
 
-        let registry = ToolRegistry::global();
-        let tool_defs = registry.get_tool_definitions_for_scope(scope);
+        let registry = crate::tools::global_registry();
+        let tool_defs = registry.get_tool_definitions_with_capability(scope.tag());
 
         let mut docs = String::new();
 
@@ -493,7 +492,7 @@ impl ToolInvocationParser for CaretParser {
             if !text.contains("^^^") {
                 continue;
             }
-            match parse_caret_tool_invocations(text, request_id, 0, None, ToolRegistry::global()) {
+            match parse_caret_tool_invocations(text, request_id, 0, None, crate::tools::global_registry()) {
                 Ok((requests, _)) => {
                     if !requests.is_empty() {
                         return true;
@@ -513,10 +512,10 @@ impl ToolInvocationParser for CaretParser {
 
 impl CaretParser {
     fn generate_caret_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> String {
-        use crate::tools::core::ToolRegistry;
+        
 
-        let registry = ToolRegistry::global();
-        let tool_defs = registry.get_tool_definitions_for_scope(scope);
+        let registry = crate::tools::global_registry();
+        let tool_defs = registry.get_tool_definitions_with_capability(scope.tag());
 
         let mut docs = String::new();
 

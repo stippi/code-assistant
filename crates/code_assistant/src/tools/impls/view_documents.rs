@@ -465,9 +465,9 @@ mod tests {
     #[tokio::test]
     async fn test_unsupported_extension() {
         use crate::tests::mocks::ToolTestFixture;
-        use crate::tools::core::ToolRegistry;
+        
 
-        let registry = ToolRegistry::global();
+        let registry = crate::tools::global_registry();
         let tool = registry.get("view_documents");
         if tool.is_none() {
             // Tool not registered (feature disabled) - skip test

@@ -65,6 +65,14 @@ impl ToolResult for PerplexityAskOutput {
 // The tool implementation
 pub struct PerplexityAskTool;
 
+impl PerplexityAskTool {
+    /// Whether the tool can run with the given configuration. Consulted at
+    /// registration time (see `crate::tools::register_default_tools`).
+    pub fn is_available(&self, config: &ToolsConfig) -> bool {
+        config.has_perplexity_api_key()
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for PerplexityAskTool {
     type Input = PerplexityAskInput;
@@ -123,10 +131,6 @@ impl Tool for PerplexityAskTool {
             hidden: false,
             title_template: None, // Uses default tool name
         }
-    }
-
-    fn is_available(&self, config: &ToolsConfig) -> bool {
-        config.has_perplexity_api_key()
     }
 
     async fn execute<'a>(

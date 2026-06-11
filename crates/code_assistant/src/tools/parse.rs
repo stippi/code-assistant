@@ -962,7 +962,7 @@ mod tests {
     use super::*;
     use crate::tools::core::capabilities;
     use crate::tools::core::ResourcesTracker;
-    use crate::tools::core::{Tool, ToolContext, ToolScope, ToolSpec};
+    use crate::tools::core::{Tool, ToolContext, ToolSpec};
     use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
     use std::collections::HashMap;
 
@@ -1416,7 +1416,7 @@ mod tests {
         let text = concat!("^^^list_projects\n", "^^^");
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_projects");
     }
@@ -1435,7 +1435,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "write_file");
         assert_eq!(result[0].input["project"], "test");
@@ -1464,7 +1464,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
         assert_eq!(result[0].input["project"], "test");
@@ -1492,7 +1492,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "edit");
         assert_eq!(result[0].input["project"], "test");
@@ -1506,7 +1506,7 @@ mod tests {
         let text = concat!("I'll help you with that.\n\n", "^^^list_projects\n", "^^^");
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_projects");
     }
@@ -1516,7 +1516,7 @@ mod tests {
         let text = "This is just plain text with no tools.";
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 0);
     }
 
@@ -1524,7 +1524,7 @@ mod tests {
     async fn test_parse_caret_tool_invocations_unknown_tool() {
         let text = concat!("^^^unknown_tool\n", "param: value\n", "^^^");
 
-        let result = parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global());
+        let result = parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1564,7 +1564,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text_single, 123, 0, None, ToolRegistry::global())
+            parse_caret_tool_invocations(text_single, 123, 0, None, crate::tools::global_registry())
                 .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "write_file");
@@ -1586,7 +1586,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text_array, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text_array, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
         assert_eq!(result[0].input["project"], "test");
@@ -1611,7 +1611,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text_empty, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text_empty, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
 
@@ -1633,7 +1633,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text_mixed, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text_mixed, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
 
@@ -1659,7 +1659,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_files");
 
@@ -1692,7 +1692,7 @@ mod tests {
         );
 
         let (result, _) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_files");
 
@@ -1724,7 +1724,7 @@ mod tests {
         );
 
         let (tool_requests, truncated_text) =
-            parse_caret_tool_invocations(text, 123, 0, None, ToolRegistry::global()).unwrap();
+            parse_caret_tool_invocations(text, 123, 0, None, crate::tools::global_registry()).unwrap();
 
         assert_eq!(tool_requests.len(), 1);
         let tool_request = &tool_requests[0];
@@ -1763,7 +1763,7 @@ mod tests {
         );
 
         let (tool_requests, truncated_text) =
-            parse_xml_tool_invocations(text, 456, 0, None, ToolRegistry::global()).unwrap();
+            parse_xml_tool_invocations(text, 456, 0, None, crate::tools::global_registry()).unwrap();
 
         assert_eq!(tool_requests.len(), 1);
         let tool_request = &tool_requests[0];
@@ -1809,7 +1809,7 @@ mod tests {
             request_id,
             start_tool_count,
             None,
-            ToolRegistry::global(),
+            crate::tools::global_registry(),
         )
         .unwrap();
         assert_eq!(result.len(), 1);
@@ -1841,7 +1841,7 @@ mod tests {
 
         let request_id = 789;
         let (result, _) =
-            parse_caret_tool_invocations(text, request_id, 0, None, ToolRegistry::global())
+            parse_caret_tool_invocations(text, request_id, 0, None, crate::tools::global_registry())
                 .unwrap();
         assert_eq!(result.len(), 3);
 
