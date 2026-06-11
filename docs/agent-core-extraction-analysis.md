@@ -1,7 +1,8 @@
 # Agent Core Extraction — Analysis & Vision
 
 > Status: Phases 1–3 implemented (hooks + plugins in place, registries injectable,
-> capabilities replace scope data). Next up: Phase 4, the generic crate split.
+> capabilities replace scope data); Phase 4 step 1 implemented (`tools_core`
+> crate extracted). Next up: Phase 4 step 2, the `agent_core` crate.
 > The goal is twofold: (a) a reusable agent core (comparable
 > to the Claude Code Agent SDK) that `code-assistant` uses as one of several consumers,
 > and (b) breaking up the monolithic `code_assistant` crate into independent, layered
@@ -17,6 +18,35 @@
 > - `ToolSpec.supported_scopes` is gone; scope membership is expressed as
 >   `scope:*` capability tags, with `ToolScope` reduced to selection vocabulary
 >   (`ToolScope::tag()`).
+>
+> Phase 4 step 1 notes (tools_core extraction):
+> - `ToolContext` is reduced to the generic shape (`command_executor`, `tool_id`,
+>   `permission_handler`, `extensions`); the domain services travel as the
+>   `ToolServices` struct (project manager, UI, plan, sub-agent runner) through the
+>   `dyn Any` extensions slot, accessed via the `ToolServicesAccess` accessor trait
+>   (`tools/services.rs`) — the dyn-Any lean of §7.9, no generics. Because the
+>   extension must be `'static`, the handles are owned: `Arc<dyn ProjectManager>`
+>   everywhere (`ProjectManager::add_temporary_project` now takes `&self` with
+>   interior mutability), and the agent's plan state moves in per invocation and is
+>   taken back afterwards.
+> - The registry's selection API is tag-based (`tool_has_capability`,
+>   `is_tool_hidden`, `hidden_tools`, `get_tool_definitions_with_capability`);
+>   callers pass `ToolScope::tag()`. `ToolScope` + the `scope:*` constants live in
+>   `tools/scope.rs` (domain).
+> - `ToolRegistry::global()` became `crate::tools::global_registry()` with
+>   `register_default_tools()` next to it; the registry type has no singleton and
+>   no default tools anymore. `Tool::is_available(&ToolsConfig)` is gone from the
+>   traits — availability is checked at registration (perplexity keeps an inherent
+>   helper).
+> - `tools_core` (Layer 1) holds: tool, dyn_tool, registry, render, result
+>   (incl. `ToolError`), spec (incl. `AnnotatedToolDefinition`, *without* the
+>   `llm::ToolDefinition` conversion — that stays as
+>   `crate::tools::to_tool_definitions()` so the core has no `llm` dependency),
+>   title, and — deviating from the §3.1 sketch, which placed it in `agent_core` —
+>   the `PermissionMediator` types, because the core `ToolContext` references them
+>   and `agent_core` sits above `tools_core`. Only workspace dep: `command_executor`.
+> - `crate::tools::core::*` and `crate::permissions::*` remain as compatibility
+>   re-export layers; call sites are unchanged.
 
 ## 1. Vision
 
@@ -1203,8 +1233,10 @@ in between:
 
 ### Phase 4 — Crate split
 
-1. Create the new crate `tools_core`, moving there:
-   `tools/core/{tool, dyn_tool, registry, render, result, spec, title}.rs`.
+1. **Done.** Create the new crate `tools_core`, moving there:
+   `tools/core/{tool, dyn_tool, registry, render, result, spec, title}.rs`
+   (plus the `PermissionMediator` types; `config.rs` stayed domain-side as
+   `tools/config.rs` — see the Phase 4 step 1 notes at the top).
 2. New crate `agent_core`: `agent/runner.rs`, the new hook modules, `MessageTree`, the
    `AgentUiEvent` minimum, the `StatePersistence` trait, the abstract `ToolDialect`
    trait and `StreamProcessor` trait, plus the **native default implementation**
