@@ -125,6 +125,27 @@ impl UserInterface for TestUI {
     }
 }
 
+/// The stream processors consume the agent core's UI boundary; fragments take
+/// the same path as through the domain trait.
+#[async_trait]
+impl agent_core::AgentUi for TestUI {
+    async fn send_event(&self, _event: agent_core::AgentUiEvent) -> Result<(), UIError> {
+        Ok(())
+    }
+
+    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
+        UserInterface::display_fragment(self, fragment)
+    }
+
+    fn should_streaming_continue(&self) -> bool {
+        true
+    }
+
+    fn notify_rate_limit(&self, _seconds_remaining: u64) {}
+
+    fn clear_rate_limit(&self) {}
+}
+
 /// Helper function to split text into small chunks for testing tag handling
 pub fn chunk_str(s: &str, chunk_size: usize) -> Vec<String> {
     let chars: Vec<char> = s.chars().collect();

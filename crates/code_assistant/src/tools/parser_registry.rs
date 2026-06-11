@@ -4,13 +4,13 @@
 use crate::agent::dialect::ToolDialect;
 use crate::agent::ToolSyntax;
 use crate::tools::core::ToolRegistry;
-use crate::tools::formatter::{CaretFormatter, NativeFormatter, ToolFormatter, XmlFormatter};
+use crate::tools::formatter::{CaretFormatter, ToolFormatter, XmlFormatter};
 use crate::tools::{
     parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SmartToolFilter,
     ToolRequest,
 };
 use crate::ui::streaming::{HiddenTools, StreamProcessorTrait};
-use crate::ui::UserInterface;
+use agent_core::AgentUi;
 use anyhow::Result;
 use llm::{ContentBlock, LLMResponse, Message, MessageContent};
 use std::sync::Arc;
@@ -136,32 +136,6 @@ fn parse_and_truncate_xml_response(
     Ok((tool_requests, truncated_response))
 }
 
-/// Extract JSON tool requests from LLM response and return both requests and original response
-fn parse_json_response(
-    response: &LLMResponse,
-    _request_id: u64,
-) -> Result<(Vec<ToolRequest>, LLMResponse)> {
-    let mut tool_requests = Vec::new();
-
-    for block in &response.content {
-        if let ContentBlock::ToolUse {
-            id, name, input, ..
-        } = block
-        {
-            let tool_request = ToolRequest {
-                id: id.clone(),
-                name: name.clone(),
-                input: input.clone(),
-                start_offset: None,
-                end_offset: None,
-            };
-            tool_requests.push(tool_request);
-        }
-    }
-
-    Ok((tool_requests, response.clone()))
-}
-
 /// Whether the named parameter of the given tool typically spans multiple
 /// lines (block syntax in the text dialects).
 fn is_multiline_param(tool_name: &str, param_name: &str) -> bool {
@@ -211,7 +185,7 @@ impl ToolDialect for XmlParser {
 
     fn stream_processor(
         &self,
-        ui: Arc<dyn UserInterface>,
+        ui: Arc<dyn AgentUi>,
         request_id: u64,
         hidden_tools: HiddenTools,
     ) -> Box<dyn StreamProcessorTrait> {
@@ -465,7 +439,7 @@ impl ToolDialect for CaretParser {
 
     fn stream_processor(
         &self,
-        ui: Arc<dyn UserInterface>,
+        ui: Arc<dyn AgentUi>,
         request_id: u64,
         hidden_tools: HiddenTools,
     ) -> Box<dyn StreamProcessorTrait> {
@@ -694,66 +668,6 @@ Always adhere to this format for the tool use to ensure proper parsing and execu
     }
 }
 
-/// JSON-based (native) tool invocation parser
-pub struct JsonParser;
-
-impl ToolDialect for JsonParser {
-    fn extract_requests(
-        &self,
-        response: &LLMResponse,
-        req_id: u64,
-        _order_offset: usize,
-    ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
-        parse_json_response(response, req_id)
-    }
-
-    fn format_tool_request(
-        &self,
-        request: &ToolRequest,
-        registry: &ToolRegistry,
-    ) -> Result<String> {
-        NativeFormatter.format_tool_request(request, registry)
-    }
-
-    fn uses_native_tools(&self) -> bool {
-        true
-    }
-
-    fn stream_processor(
-        &self,
-        ui: Arc<dyn UserInterface>,
-        request_id: u64,
-        hidden_tools: HiddenTools,
-    ) -> Box<dyn StreamProcessorTrait> {
-        use crate::ui::streaming::JsonStreamProcessor;
-        Box::new(JsonStreamProcessor::new(ui, request_id, hidden_tools))
-    }
-
-    fn render_tool_section_for_prompt(
-        &self,
-        _registry: &ToolRegistry,
-        _capability: &str,
-    ) -> Option<String> {
-        // Native mode uses API-provided tool definitions, no custom documentation needed
-        None
-    }
-
-    fn render_format_section_for_prompt(&self) -> Option<String> {
-        // Native mode uses API-provided function calls, no custom syntax documentation needed
-        None
-    }
-
-    fn message_contains_invocation(&self, message: &Message) -> bool {
-        if let MessageContent::Structured(blocks) = &message.content {
-            blocks
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
-        } else {
-            false
-        }
-    }
-}
-
 /// Registry for tool invocation parsers
 pub struct ParserRegistry;
 
@@ -762,7 +676,7 @@ impl ParserRegistry {
     pub fn get(syntax: ToolSyntax) -> Arc<dyn ToolDialect> {
         match syntax {
             ToolSyntax::Xml => Arc::new(XmlParser),
-            ToolSyntax::Native => Arc::new(JsonParser),
+            ToolSyntax::Native => Arc::new(agent_core::native::NativeDialect),
             ToolSyntax::Caret => Arc::new(CaretParser),
         }
     }

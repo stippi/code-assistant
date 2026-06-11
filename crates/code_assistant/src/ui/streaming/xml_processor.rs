@@ -1,6 +1,7 @@
 use super::{DisplayFragment, HiddenTools, StreamProcessorTrait};
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
-use crate::ui::{UIError, UserInterface};
+use agent_core::AgentUi;
+use crate::ui::UIError;
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, ReasoningSummaryItem, StreamingChunk};
 use std::sync::Arc;
@@ -49,7 +50,7 @@ enum StreamingState {
 /// Manages the conversion of LLM streaming chunks to display fragments using XML-style tags
 pub struct XmlStreamProcessor {
     state: ProcessorState,
-    ui: Arc<dyn UserInterface>,
+    ui: Arc<dyn AgentUi>,
     request_id: u64,
     hidden_tools: HiddenTools,
     filter: Box<dyn ToolUseFilter>,
@@ -69,7 +70,7 @@ enum TagType {
 
 // Implement the common StreamProcessorTrait
 impl StreamProcessorTrait for XmlStreamProcessor {
-    fn new(ui: Arc<dyn UserInterface>, request_id: u64, hidden_tools: HiddenTools) -> Self {
+    fn new(ui: Arc<dyn AgentUi>, request_id: u64, hidden_tools: HiddenTools) -> Self {
         Self {
             state: ProcessorState::default(),
             ui,

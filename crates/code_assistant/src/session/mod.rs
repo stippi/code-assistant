@@ -186,7 +186,7 @@ impl SessionState {
                 message: message.clone(),
                 parent_id,
                 created_at: std::time::SystemTime::now(),
-                plan_snapshot: None,
+                extension: None,
             };
 
             message_nodes.insert(node_id, node);

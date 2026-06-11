@@ -1,6 +1,5 @@
 // Original tools implementation
 mod parse;
-mod types;
 
 // Parser registry for different tool syntaxes
 pub mod parser_registry;
@@ -35,23 +34,36 @@ pub use parse::{parse_caret_tool_invocations, parse_xml_tool_invocations};
 pub use parser_registry::ParserRegistry;
 pub use services::{ToolServices, ToolServicesAccess};
 pub use system_message::generate_system_message;
-pub use types::{to_tool_definitions, ParseError, PromptTooLongError, ToolRequest};
+
+// The loop-side tool vocabulary moved to the agent core (Phase 4 step 2).
+pub use agent_core::ToolRequest;
 
 
 use crate::tools::core::{ToolRegistry, ToolsConfig};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+
+static GLOBAL_REGISTRY: OnceLock<Arc<ToolRegistry>> = OnceLock::new();
+
+fn global_registry_cell() -> &'static Arc<ToolRegistry> {
+    GLOBAL_REGISTRY.get_or_init(|| {
+        let mut registry = ToolRegistry::new();
+        register_default_tools(&mut registry);
+        Arc::new(registry)
+    })
+}
 
 /// The process-wide registry preloaded with code-assistant's default tools.
 ///
 /// Scheduled for removal in Phase 6 of the extraction plan; prefer passing a
 /// registry instance where feasible.
 pub fn global_registry() -> &'static ToolRegistry {
-    static INSTANCE: OnceLock<ToolRegistry> = OnceLock::new();
-    INSTANCE.get_or_init(|| {
-        let mut registry = ToolRegistry::new();
-        register_default_tools(&mut registry);
-        registry
-    })
+    global_registry_cell()
+}
+
+/// Shared-handle variant of [`global_registry`], for components that store
+/// the registry (e.g. the agent runtime).
+pub fn global_registry_arc() -> Arc<ToolRegistry> {
+    global_registry_cell().clone()
 }
 
 /// Register all of code-assistant's tools in the given registry. Tools that

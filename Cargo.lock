@@ -86,6 +86,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "command_executor",
+ "futures",
+ "llm",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tools_core",
+ "tracing",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1441,6 +1458,7 @@ name = "code-assistant"
 version = "0.2.10"
 dependencies = [
  "agent-client-protocol",
+ "agent_core",
  "anyhow",
  "arboard",
  "async-channel 2.5.0",

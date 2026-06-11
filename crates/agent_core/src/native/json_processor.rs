@@ -1,6 +1,4 @@
-use super::DisplayFragment;
-use super::{HiddenTools, StreamProcessorTrait};
-use crate::ui::{UIError, UserInterface};
+use crate::ui::{AgentUi, DisplayFragment, HiddenTools, StreamProcessorTrait, UIError};
 use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
 use std::sync::Arc;
 use tracing::debug;
@@ -78,7 +76,7 @@ impl Default for JsonProcessorState {
 /// Process JSON chunks from LLM providers
 pub struct JsonStreamProcessor {
     state: JsonProcessorState,
-    ui: Arc<dyn UserInterface>,
+    ui: Arc<dyn AgentUi>,
     hidden_tools: HiddenTools,
 }
 
@@ -109,7 +107,7 @@ impl JsonStreamProcessor {
 }
 
 impl StreamProcessorTrait for JsonStreamProcessor {
-    fn new(ui: Arc<dyn UserInterface>, _request_id: u64, hidden_tools: HiddenTools) -> Self {
+    fn new(ui: Arc<dyn AgentUi>, _request_id: u64, hidden_tools: HiddenTools) -> Self {
         Self {
             state: JsonProcessorState::default(),
             ui,
@@ -1135,77 +1133,5 @@ impl JsonStreamProcessor {
         }
 
         Ok(fragments)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use llm::ReasoningSummaryItem;
-
-    #[test]
-    fn test_redacted_thinking_streaming_consistency() {
-        use crate::ui::streaming::test_utils::{hidden_tools, TestUI};
-
-        let ui = Arc::new(TestUI::new());
-        let mut processor = JsonStreamProcessor::new(ui, 1, hidden_tools());
-
-        // Create a RedactedThinking block with summary items (as would be stored in session)
-        let redacted_thinking = ContentBlock::RedactedThinking {
-            id: "rs_12345".to_string(),
-            summary: vec![
-                ReasoningSummaryItem::SummaryText {
-                    text: "**Planning response approach**\n\nThe user is asking a general question about what I can do in this environment.".to_string(),
-                },
-                ReasoningSummaryItem::SummaryText {
-                    text: "**Considering next steps**\n\nI need to respond by outlining what I plan to do first.".to_string(),
-                },
-            ],
-            data: "encrypted_data".to_string(),
-            start_time: None,
-            end_time: None,
-        };
-
-        let message = Message::new_assistant_content(vec![redacted_thinking]).with_request_id(1);
-
-        // Extract fragments from the complete message (as would happen when loading a session)
-        let fragments = processor.extract_fragments_from_message(&message).unwrap();
-
-        // Verify we get the expected fragments
-        let mut reasoning_fragments = Vec::new();
-        let mut start_events = 0;
-        let mut has_reasoning_complete = false;
-
-        for fragment in &fragments {
-            match fragment {
-                DisplayFragment::ReasoningSummaryStart => {
-                    start_events += 1;
-                }
-                DisplayFragment::ReasoningSummaryDelta(delta) => {
-                    reasoning_fragments.push(delta.clone());
-                }
-                DisplayFragment::ReasoningComplete => {
-                    has_reasoning_complete = true;
-                }
-                _ => {}
-            }
-        }
-
-        // Should have 2 reasoning summary items (start + delta per item)
-        assert_eq!(start_events, 2);
-        assert_eq!(reasoning_fragments.len(), 2);
-
-        // Content should match the raw text from summary items
-        assert_eq!(
-            reasoning_fragments[0],
-            "**Planning response approach**\n\nThe user is asking a general question about what I can do in this environment."
-        );
-        assert_eq!(
-            reasoning_fragments[1],
-            "**Considering next steps**\n\nI need to respond by outlining what I plan to do first."
-        );
-
-        // Should end with ReasoningComplete
-        assert!(has_reasoning_complete);
     }
 }

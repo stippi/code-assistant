@@ -6,11 +6,11 @@
 //! domain-side pieces (`ToolScope`, the `scope:*` capability tags, and the
 //! tools configuration).
 
-pub use tools_core::{render, tool};
+pub use tools_core::tool;
 
 pub use tools_core::{
-    generate_tool_title, AnnotatedToolDefinition, AnyOutput, ImageData, Render, ResourcesTracker,
-    Tool, ToolContext, ToolError, ToolRegistry, ToolResult, ToolSpec,
+    generate_tool_title, ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolError,
+    ToolRegistry, ToolResult, ToolSpec,
 };
 
 // Domain-side pieces that historically lived here.

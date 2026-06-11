@@ -4,23 +4,12 @@ pub mod streaming;
 pub mod terminal;
 pub mod ui_events;
 use async_trait::async_trait;
+use std::sync::{Arc, Mutex};
 pub use streaming::DisplayFragment;
-use thiserror::Error;
 pub use ui_events::UiEvent;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ToolStatus {
-    Pending, // Default status when a tool appears in the stream
-    Running, // Tool is currently being executed
-    Success, // Execution was successful
-    Error,   // Error during execution
-}
-
-#[derive(Error, Debug)]
-pub enum UIError {
-    #[error("IO error: {0}")]
-    IOError(#[from] std::io::Error),
-}
+// Shared with the agent core: tool status and UI error vocabulary.
+pub use agent_core::ui::{ToolStatus, UIError};
 
 #[async_trait]
 pub trait UserInterface: Send + Sync {
@@ -42,4 +31,52 @@ pub trait UserInterface: Send + Sync {
     /// Downcast to Any for accessing concrete type methods
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Implements the agent core's UI boundary on top of a [`UserInterface`]:
+/// loop events are translated into the application vocabulary
+/// ([`UiEvent::from_agent`]) and stamped with the session id.
+pub struct AgentUiAdapter {
+    inner: Arc<dyn UserInterface>,
+    session_id: Mutex<Option<String>>,
+}
+
+impl AgentUiAdapter {
+    pub fn new(inner: Arc<dyn UserInterface>) -> Self {
+        Self {
+            inner,
+            session_id: Mutex::new(None),
+        }
+    }
+
+    pub fn set_session_id(&self, session_id: Option<String>) {
+        *self.session_id.lock().unwrap() = session_id;
+    }
+}
+
+#[async_trait]
+impl agent_core::AgentUi for AgentUiAdapter {
+    async fn send_event(&self, event: agent_core::AgentUiEvent) -> Result<(), UIError> {
+        let session_id = self.session_id.lock().unwrap().clone();
+        match UiEvent::from_agent(event, session_id.as_deref()) {
+            Some(event) => self.inner.send_event(event).await,
+            None => Ok(()),
+        }
+    }
+
+    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
+        self.inner.display_fragment(fragment)
+    }
+
+    fn should_streaming_continue(&self) -> bool {
+        self.inner.should_streaming_continue()
+    }
+
+    fn notify_rate_limit(&self, seconds_remaining: u64) {
+        self.inner.notify_rate_limit(seconds_remaining);
+    }
+
+    fn clear_rate_limit(&self) {
+        self.inner.clear_rate_limit();
+    }
 }

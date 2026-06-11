@@ -12,6 +12,7 @@ command_executor = { path = "../command_executor" }
 tools_core = { path = "../tools_core" }
 fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
+agent_core = { path = "../agent_core" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
 terminal = { path = "../terminal" }

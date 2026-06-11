@@ -1,7 +1,8 @@
 //! Caret-style tool invocation processor for streaming responses
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use crate::ui::streaming::{DisplayFragment, HiddenTools, StreamProcessorTrait};
-use crate::ui::{UIError, UserInterface};
+use agent_core::AgentUi;
+use crate::ui::UIError;
 use llm::{Message, MessageContent, StreamingChunk};
 use regex::Regex;
 use std::sync::Arc;
@@ -53,7 +54,7 @@ enum StreamingState {
 }
 
 pub struct CaretStreamProcessor {
-    ui: Arc<dyn UserInterface>,
+    ui: Arc<dyn AgentUi>,
     request_id: u64,
     tool_counter: u64,
     buffer: String,
@@ -70,7 +71,7 @@ pub struct CaretStreamProcessor {
 }
 
 impl StreamProcessorTrait for CaretStreamProcessor {
-    fn new(ui: Arc<dyn UserInterface>, request_id: u64, hidden_tools: HiddenTools) -> Self {
+    fn new(ui: Arc<dyn AgentUi>, request_id: u64, hidden_tools: HiddenTools) -> Self {
         Self {
             ui,
             request_id,

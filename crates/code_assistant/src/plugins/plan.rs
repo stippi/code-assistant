@@ -2,6 +2,7 @@
 //! after each successful `update_plan` call.
 
 use crate::agent::hooks::{LoopCtx, ToolInterceptor};
+use crate::persistence::MessageNodeExt;
 use crate::plugins::AgentAppState;
 use crate::tools::ToolRequest;
 use tracing::trace;
@@ -24,7 +25,7 @@ impl ToolInterceptor for PlanSnapshotHook {
                 if node.message.role == llm::MessageRole::Assistant {
                     // Found it - set the snapshot
                     if let Some(node_mut) = ctx.message_nodes.get_mut(&node_id) {
-                        node_mut.plan_snapshot = Some(plan);
+                        node_mut.set_plan_snapshot(plan);
                         trace!("Saved plan snapshot to assistant message node {}", node_id);
                     }
                     return;

@@ -8,7 +8,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 use crate::session::SessionConfig;
-use crate::tools::ToolRequest;
 use crate::types::{PlanState, ToolSyntax};
 use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 
@@ -16,31 +15,28 @@ use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 // Session Branching Types
 // ============================================================================
 
-/// Unique identifier for a message node within a session
-pub type NodeId = u64;
+// The conversation tree types moved to the agent core (Phase 4 step 2).
+pub use agent_core::{ConversationPath, MessageNode, NodeId};
 
-/// A path through the conversation tree (list of node IDs from root to leaf)
-pub type ConversationPath = Vec<NodeId>;
+/// Typed access to the plan snapshot riding on a message node's
+/// application-extension slot (only set if the plan changed in this
+/// message's response; used for plan reconstruction when switching
+/// branches).
+pub trait MessageNodeExt {
+    fn plan_snapshot(&self) -> Option<PlanState>;
+    fn set_plan_snapshot(&mut self, plan: PlanState);
+}
 
-/// A single message node in the conversation tree
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MessageNode {
-    /// Unique ID within this session
-    pub id: NodeId,
+impl MessageNodeExt for MessageNode {
+    fn plan_snapshot(&self) -> Option<PlanState> {
+        self.extension
+            .as_ref()
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+    }
 
-    /// The actual message content
-    pub message: Message,
-
-    /// Parent node ID (None for root/first message)
-    pub parent_id: Option<NodeId>,
-
-    /// Creation timestamp (for ordering siblings)
-    pub created_at: SystemTime,
-
-    /// Plan state snapshot (only set if plan changed in this message's response)
-    /// Used for efficient plan reconstruction when switching branches
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_snapshot: Option<PlanState>,
+    fn set_plan_snapshot(&mut self, plan: PlanState) {
+        self.extension = serde_json::to_value(plan).ok();
+    }
 }
 
 /// Information about a branch point in the conversation (for UI)
@@ -259,7 +255,7 @@ impl ChatSession {
                     message,
                     parent_id,
                     created_at: SystemTime::now(),
-                    plan_snapshot: None,
+                    extension: None,
                 };
 
                 self.message_nodes.insert(node_id, node);
@@ -341,8 +337,8 @@ impl ChatSession {
     pub fn get_plan_for_active_path(&self) -> PlanState {
         for &node_id in self.active_path.iter().rev() {
             if let Some(node) = self.message_nodes.get(&node_id) {
-                if let Some(plan) = &node.plan_snapshot {
-                    return plan.clone();
+                if let Some(plan) = node.plan_snapshot() {
+                    return plan;
                 }
             }
         }
@@ -376,7 +372,7 @@ impl ChatSession {
             message,
             parent_id,
             created_at: SystemTime::now(),
-            plan_snapshot: None,
+            extension: None,
         };
 
         self.message_nodes.insert(node_id, node);
@@ -541,16 +537,8 @@ impl ChatSession {
     }
 }
 
-/// Serialized representation of a tool execution
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SerializedToolExecution {
-    /// Tool request details
-    pub tool_request: ToolRequest,
-    /// Serialized tool result as JSON
-    pub result_json: serde_json::Value,
-    /// Tool name for deserialization
-    pub tool_name: String,
-}
+// The serialized tool execution moved to the agent core (Phase 4 step 2).
+pub use agent_core::SerializedToolExecution;
 
 /// Metadata for a chat session (used for listing)
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

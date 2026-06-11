@@ -12,21 +12,6 @@ pub trait ToolFormatter {
         -> Result<String>;
 }
 
-/// Formatter for Native tool syntax (JSON-based)
-pub struct NativeFormatter;
-
-impl ToolFormatter for NativeFormatter {
-    fn format_tool_request(
-        &self,
-        request: &ToolRequest,
-        _registry: &ToolRegistry,
-    ) -> Result<String> {
-        // Native tools are represented as JSON function calls
-        // Return the input serialized as JSON string
-        Ok(serde_json::to_string(&request.input)?)
-    }
-}
-
 /// Formatter for XML tool syntax
 pub struct XmlFormatter;
 
