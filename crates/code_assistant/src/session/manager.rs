@@ -679,6 +679,11 @@ impl SessionManager {
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
             session_manager_ref,
         ));
+        // Saves announce the refreshed session metadata to the UI
+        let state_storage = Box::new(crate::agent::persistence::MetadataNotifyingPersistence::new(
+            state_storage,
+            proxy_ui.clone(),
+        ));
 
         let sandbox_context_clone = sandbox_context.clone();
 

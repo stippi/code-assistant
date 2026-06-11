@@ -4,7 +4,7 @@ use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::permissions::PermissionMediator;
-use crate::persistence::{ChatMetadata, SessionModelConfig};
+use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolScope};
@@ -34,8 +34,6 @@ pub struct AgentComponents {
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
 }
-
-use super::ToolSyntax;
 
 /// Defines control flow for the agent loop.
 enum LoopFlow {
@@ -182,10 +180,6 @@ impl Agent {
         self.invalidate_system_message_cache();
     }
 
-    fn tool_syntax(&self) -> ToolSyntax {
-        self.session_config.tool_syntax
-    }
-
     /// Set the shared pending message reference from SessionInstance
     pub fn set_pending_message_ref(
         &mut self,
@@ -275,61 +269,6 @@ impl Agent {
         Ok(())
     }
 
-    /// Build current session metadata
-    fn build_current_metadata(&self) -> Option<ChatMetadata> {
-        // Only build metadata if we have a session ID
-        self.session_id.as_ref().map(|session_id| {
-            // Calculate total usage and find last usage across all messages
-            let mut total_usage = llm::Usage::zero();
-            let mut last_usage = llm::Usage::zero();
-
-            for message in &self.message_history {
-                if let Some(usage) = &message.usage {
-                    total_usage.input_tokens += usage.input_tokens;
-                    total_usage.output_tokens += usage.output_tokens;
-                    total_usage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
-                    total_usage.cache_read_input_tokens += usage.cache_read_input_tokens;
-
-                    // For assistant messages, update last usage (most recent wins)
-                    if matches!(message.role, MessageRole::Assistant) {
-                        last_usage = usage.clone();
-                    }
-                }
-            }
-
-            // Use default for tokens limit - will be updated by persistence layer
-            let tokens_limit = None;
-
-            // Compute resumability from the current in-memory history.
-            // While the agent is running this is largely cosmetic — the UI
-            // only acts on it once the session is idle — but we still want
-            // it to reflect the truth as soon as `save_state` runs after
-            // the agent finishes.
-            let messages_ref: Vec<&llm::Message> = self.message_history.iter().collect();
-            let is_resumable =
-                crate::persistence::is_resumable_from_messages(messages_ref.as_slice());
-
-            ChatMetadata {
-                id: session_id.clone(),
-                name: self.session_name.clone(), // Empty string if not named yet
-                created_at: SystemTime::now(),   // Will be overridden by persistence
-                updated_at: SystemTime::now(),
-                message_count: self.message_history.len(),
-                total_usage,
-                last_usage,
-                tokens_limit,
-                tool_syntax: self.tool_syntax(),
-                initial_project: if self.session_config.initial_project.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    self.session_config.initial_project.clone()
-                },
-                plan_collapsed: false, // Agent doesn't track UI state
-                is_resumable,
-            }
-        })
-    }
-
     /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
         trace!(
@@ -353,19 +292,6 @@ impl Agent {
                 model_config: self.session_model_config.clone(),
             };
             self.state_persistence.save_agent_state(session_state)?;
-        }
-
-        // Send updated session metadata to UI
-        if let Some(metadata) = self.build_current_metadata() {
-            let _ = tokio::runtime::Handle::try_current().map(|_| {
-                let ui = self.ui.clone();
-                let metadata = metadata.clone();
-                tokio::spawn(async move {
-                    let _ = ui
-                        .send_event(UiEvent::UpdateSessionMetadata { metadata })
-                        .await;
-                });
-            });
         }
 
         Ok(())

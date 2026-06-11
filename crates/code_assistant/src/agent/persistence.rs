@@ -54,6 +54,39 @@ impl AgentStatePersistence for MockStatePersistence {
     }
 }
 
+/// Decorates a persistence backend with the session-metadata UI update that
+/// accompanies every save while an agent runs. Keeps the agent loop free of
+/// the `ChatMetadata` concern: the metadata is derived from the saved state.
+pub struct MetadataNotifyingPersistence {
+    inner: Box<dyn AgentStatePersistence>,
+    ui: Arc<dyn crate::ui::UserInterface>,
+}
+
+impl MetadataNotifyingPersistence {
+    pub fn new(inner: Box<dyn AgentStatePersistence>, ui: Arc<dyn crate::ui::UserInterface>) -> Self {
+        Self { inner, ui }
+    }
+}
+
+impl AgentStatePersistence for MetadataNotifyingPersistence {
+    fn save_agent_state(&mut self, state: SessionState) -> Result<()> {
+        let metadata = state.build_metadata();
+        self.inner.save_agent_state(state)?;
+
+        // Send updated session metadata to UI (fire-and-forget)
+        let _ = tokio::runtime::Handle::try_current().map(|handle| {
+            let ui = self.ui.clone();
+            handle.spawn(async move {
+                let _ = ui
+                    .send_event(crate::ui::UiEvent::UpdateSessionMetadata { metadata })
+                    .await;
+            });
+        });
+
+        Ok(())
+    }
+}
+
 /// Session-specific wrapper that implements AgentStatePersistence
 /// This allows agents to save state to a specific session without the SessionManager
 /// needing to track a single "current" session (which would break concurrent agents)
