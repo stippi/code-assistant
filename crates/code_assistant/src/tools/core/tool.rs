@@ -25,6 +25,27 @@ pub struct ToolContext<'a> {
 
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<&'a dyn crate::agent::SubAgentRunner>,
+
+    /// Application-specific services for tools that need more than the fields
+    /// above. Tools downcast this to the concrete type they were registered
+    /// with, keeping the context itself application-agnostic.
+    pub extensions: Option<&'a mut (dyn std::any::Any + Send)>,
+}
+
+impl<'a> ToolContext<'a> {
+    /// Downcast the application-specific extensions to a concrete type.
+    pub fn extension<T: 'static>(&self) -> Option<&T> {
+        self.extensions
+            .as_deref()
+            .and_then(|ext| ext.downcast_ref::<T>())
+    }
+
+    /// Downcast the application-specific extensions to a concrete type, mutably.
+    pub fn extension_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.extensions
+            .as_deref_mut()
+            .and_then(|ext| ext.downcast_mut::<T>())
+    }
 }
 
 #[cfg(test)]
@@ -41,6 +62,7 @@ impl<'a> ToolContext<'a> {
             tool_id: None,
             permission_handler: None,
             sub_agent_runner: None,
+            extensions: None,
         }
     }
 }

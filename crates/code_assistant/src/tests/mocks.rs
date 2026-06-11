@@ -220,6 +220,7 @@ pub fn create_test_tool_context<'a>(
         tool_id,
         permission_handler: None,
         sub_agent_runner: None,
+        extensions: None,
     }
 }
 
@@ -1125,6 +1126,7 @@ impl ToolTestFixture {
             tool_id: self.tool_id.clone(),
             permission_handler: self.permission_handler.as_deref(),
             sub_agent_runner: None,
+            extensions: None,
         }
     }
 

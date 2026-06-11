@@ -1038,6 +1038,7 @@ impl Agent {
             tool_id: Some(tool_id.to_string()),
             permission_handler: None, // Will be handled by sub-agent runner
             sub_agent_runner,
+            extensions: None,
         };
 
         let tool = SpawnAgentTool;
@@ -2402,6 +2403,7 @@ impl Agent {
 
             permission_handler: self.permission_handler.as_deref(),
             sub_agent_runner: self.sub_agent_runner.as_deref(),
+            extensions: None,
         };
 
         // Execute the tool - could fail with ParseError or other errors
