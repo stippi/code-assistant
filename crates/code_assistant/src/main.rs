@@ -9,6 +9,7 @@ mod logging;
 mod mcp;
 mod permissions;
 mod persistence;
+mod plugins;
 mod session;
 mod tools;
 mod types;

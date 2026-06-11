@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 
+pub mod hooks;
 pub mod persistence;
 pub mod runner;
 pub mod sub_agent;

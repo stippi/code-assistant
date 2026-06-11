@@ -1625,7 +1625,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     // Test case 1: User message with text content should get reminder
     let messages = vec![Message::new_user("Hello, help me with a task")];
 
-    let result_messages = agent.inject_naming_reminder_if_needed(messages.clone());
+    let result_messages = agent.shape_request_messages(messages.clone());
     assert_eq!(result_messages.len(), 1);
     assert!(result_messages[0].volatile);
 
@@ -1665,8 +1665,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         )]),
     ];
 
-    let result_messages =
-        agent.inject_naming_reminder_if_needed(messages_with_tool_results.clone());
+    let result_messages = agent.shape_request_messages(messages_with_tool_results.clone());
     assert_eq!(result_messages.len(), 3);
     assert!(result_messages[0].volatile);
     assert!(!result_messages[2].volatile);
@@ -1714,7 +1713,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         ContentBlock::new_tool_result("tool-1-1", "Previous tool result"),
     ])];
 
-    let result_messages = agent.inject_naming_reminder_if_needed(mixed_message.clone());
+    let result_messages = agent.shape_request_messages(mixed_message.clone());
     assert_eq!(result_messages.len(), 1);
     assert!(result_messages[0].volatile);
 
@@ -1744,7 +1743,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
 
     // Test case 4: No reminder should be added if session is already named
     agent.set_session_name("Test Session".to_string());
-    let result_messages = agent.inject_naming_reminder_if_needed(messages);
+    let result_messages = agent.shape_request_messages(messages);
     assert_eq!(result_messages.len(), 1);
     assert!(!result_messages[0].volatile);
 

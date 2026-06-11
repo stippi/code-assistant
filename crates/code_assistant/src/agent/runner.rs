@@ -1,3 +1,4 @@
+use crate::agent::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction};
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
@@ -47,17 +48,8 @@ enum LoopFlow {
     GetUserInput,
 }
 
-/// How the agent recovers from a failed LLM request.
-enum RecoveryAction {
-    /// Shrink the conversation (oversized prompt) and retry.
-    ReduceContext,
-    /// Transient streaming failure; retry the request after a delay.
-    RetryStream { delay: std::time::Duration },
-    /// Not recoverable; propagate the error.
-    Fail,
-}
-
 pub struct Agent {
+    hooks: HookRegistry,
     plan: PlanState,
     llm_provider: Box<dyn LLMProvider>,
     session_config: SessionConfig,
@@ -113,15 +105,6 @@ pub struct Agent {
     available_projects: Vec<String>,
 }
 
-const CONTEXT_USAGE_THRESHOLD: f32 = 0.8;
-const CONTEXT_COMPACTION_PROMPT: &str = include_str!("../../resources/compaction_prompt.md");
-
-/// Maximum number of retries for transient streaming errors (e.g. HTTP chunk errors, connection resets).
-const MAX_STREAMING_RETRIES: u32 = 2;
-
-/// Base delay between streaming retries (doubles on each attempt).
-const STREAMING_RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
-
 impl Agent {
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
     fn format_error_for_user(error: &anyhow::Error) -> String {
@@ -152,6 +135,7 @@ impl Agent {
         } = components;
 
         let mut this = Self {
+            hooks: crate::plugins::default_hooks(),
             plan: PlanState::default(),
             llm_provider,
             session_config,
@@ -429,27 +413,6 @@ impl Agent {
         self.append_message_with_node_id(message, node_id)
     }
 
-    /// Save the current plan state as a snapshot on the last assistant message in the tree.
-    /// This is called after update_plan tool execution to enable correct plan reconstruction
-    /// when switching branches.
-    fn save_plan_snapshot_to_last_assistant_message(&mut self) {
-        // Find the last assistant message in the active path
-        for &node_id in self.active_path.iter().rev() {
-            if let Some(node) = self.message_nodes.get(&node_id) {
-                if node.message.role == llm::MessageRole::Assistant {
-                    // Found it - set the snapshot
-                    if let Some(node_mut) = self.message_nodes.get_mut(&node_id) {
-                        node_mut.plan_snapshot = Some(self.plan.clone());
-                        trace!("Saved plan snapshot to assistant message node {}", node_id);
-                    }
-                    return;
-                }
-            }
-        }
-        // No assistant message found - this shouldn't happen in normal flow
-        trace!("No assistant message found to save plan snapshot");
-    }
-
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
@@ -498,14 +461,18 @@ impl Agent {
                 // `continue` restarts the loop, which re-renders the messages and
                 // retries get_next_assistant_message. (StreamingStopped was already
                 // sent by get_next_assistant_message in its error path.)
-                Err(e) => match self.classify_llm_error(&e, streaming_retry_count) {
+                Err(e) => match self.hooks.recovery.classify(&e, streaming_retry_count) {
                     RecoveryAction::ReduceContext => {
                         self.recover_from_oversized_prompt().await?;
                         continue;
                     }
-                    RecoveryAction::RetryStream { delay } => {
-                        streaming_retry_count += 1;
-                        self.prepare_streaming_retry(&e, streaming_retry_count, delay)
+                    RecoveryAction::RetryStream {
+                        delay,
+                        attempt,
+                        max_attempts,
+                    } => {
+                        streaming_retry_count = attempt;
+                        self.prepare_streaming_retry(&e, attempt, max_attempts, delay)
                             .await;
                         tokio::time::sleep(delay).await;
                         continue;
@@ -815,7 +782,7 @@ impl Agent {
     /// Executes a list of tool requests and appends tool results to message history.
     /// Multiple `spawn_agent` read-only calls are executed concurrently for efficiency.
     async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
-        let parallel_indices = self.partition_parallel_tools(tool_requests);
+        let parallel_indices = self.hooks.dispatch.parallel_indices(tool_requests);
 
         // Execute parallel spawn_agent tools concurrently if we have multiple
         let parallel_results = if parallel_indices.len() > 1 {
@@ -886,27 +853,6 @@ impl Agent {
             self.append_message(result_message)?;
         }
         Ok(LoopFlow::Continue)
-    }
-
-    /// Indices of the tool requests that may execute concurrently with each other.
-    fn partition_parallel_tools(&self, tool_requests: &[ToolRequest]) -> Vec<usize> {
-        tool_requests
-            .iter()
-            .enumerate()
-            .filter(|(_, req)| self.can_run_in_parallel(req))
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// Check if a tool request can be run in parallel with others.
-    /// Currently only spawn_agent with read_only mode is parallelizable.
-    fn can_run_in_parallel(&self, tool_request: &ToolRequest) -> bool {
-        if tool_request.name != "spawn_agent" {
-            return false;
-        }
-        // Check if mode is read_only (default if not specified)
-        let mode = tool_request.input["mode"].as_str().unwrap_or("read_only");
-        mode == "read_only"
     }
 
     /// Execute multiple spawn_agent tools in parallel.
@@ -1350,62 +1296,23 @@ impl Agent {
             .collect()
     }
 
-    /// Inject system reminder for session naming if needed
-    pub(crate) fn inject_naming_reminder_if_needed(
-        &self,
-        mut messages: Vec<Message>,
-    ) -> Vec<Message> {
-        // Only inject if enabled, session is not named yet, and we have messages
-        if !self.enable_naming_reminders || !self.session_name.is_empty() || messages.is_empty() {
-            return messages;
-        }
-
-        // Skip the reminder when the `name_session` tool isn't available in the
-        // current tool scope (e.g. for sub-agents). Otherwise we'd nag the agent
-        // to call a tool it cannot use.
-        if !ToolRegistry::global().is_tool_in_scope("name_session", self.tool_scope) {
-            return messages;
-        }
-
-        // Find the last actual user message (not tool results) and add system reminder
-        // Iterate backwards through messages to find the last user message with actual content
-        for msg in messages.iter_mut().rev() {
-            if matches!(msg.role, MessageRole::User) {
-                let is_actual_user_message = match &msg.content {
-                    MessageContent::Text(_) => true, // Text content is always actual user input
-                    MessageContent::Structured(blocks) => {
-                        // Check if this message contains tool results
-                        // If it contains only ToolResult blocks, it's not an actual user message
-                        blocks
-                            .iter()
-                            .any(|block| !matches!(block, ContentBlock::ToolResult { .. }))
-                    }
-                };
-
-                if is_actual_user_message {
-                    let reminder_text = "<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
-
-                    trace!("Injecting session naming reminder to actual user message");
-                    msg.volatile = true;
-
-                    match &mut msg.content {
-                        MessageContent::Text(original_text) => {
-                            // Convert from Text to Structured with two ContentBlocks
-                            msg.content = MessageContent::Structured(vec![
-                                ContentBlock::new_text(original_text.clone()),
-                                ContentBlock::new_text(reminder_text.to_string()),
-                            ]);
-                        }
-                        MessageContent::Structured(blocks) => {
-                            // Add reminder as a new ContentBlock
-                            blocks.push(ContentBlock::new_text(reminder_text));
-                        }
-                    }
-                    break; // Found and updated the last actual user message, we're done
-                }
+    /// Runs the iteration hooks over the rendered messages right before they
+    /// are sent to the LLM (e.g. to inject system reminders).
+    pub(crate) fn shape_request_messages(&mut self, mut messages: Vec<Message>) -> Vec<Message> {
+        let ctx = LoopCtx {
+            session_name: &mut self.session_name,
+            naming_reminders_enabled: self.enable_naming_reminders,
+            tool_scope: self.tool_scope,
+            tool_executions: &mut self.tool_executions,
+            plan: &self.plan,
+            message_nodes: &mut self.message_nodes,
+            active_path: &self.active_path,
+        };
+        for hook in &self.hooks.iteration_hooks {
+            if let Err(e) = hook.shape_request(&mut messages, &ctx) {
+                warn!("Iteration hook failed to shape the request: {}", e);
             }
         }
-
         messages
     }
 
@@ -1433,8 +1340,7 @@ impl Agent {
             request_id, node_id
         );
 
-        // Inject naming reminder if session is not named yet
-        let messages_with_reminder = self.inject_naming_reminder_if_needed(messages);
+        let messages_with_reminder = self.shape_request_messages(messages);
 
         // Convert messages based on tool syntax
         // Native mode keeps ToolUse blocks, all other syntaxes convert to text
@@ -1589,7 +1495,7 @@ impl Agent {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
-        let messages_with_reminder = self.inject_naming_reminder_if_needed(messages);
+        let messages_with_reminder = self.shape_request_messages(messages);
 
         let converted_messages = match self.tool_syntax() {
             ToolSyntax::Native => messages_with_reminder,
@@ -1722,37 +1628,10 @@ impl Agent {
     }
 
     fn should_trigger_compaction(&mut self) -> Result<bool> {
-        if let Some(ratio) = self.context_usage_ratio()? {
-            if ratio >= CONTEXT_USAGE_THRESHOLD {
-                debug!(
-                    "Context usage {:.1}% >= threshold {:.0}% — triggering compaction",
-                    ratio * 100.0,
-                    CONTEXT_USAGE_THRESHOLD * 100.0
-                );
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// Check if an error from the LLM provider indicates the prompt exceeded the
-    /// model's context limit.
-    /// Decides how to recover from a failed LLM request.
-    fn classify_llm_error(
-        &self,
-        error: &anyhow::Error,
-        streaming_retry_count: u32,
-    ) -> RecoveryAction {
-        if Self::is_prompt_too_long_error(error) {
-            return RecoveryAction::ReduceContext;
-        }
-        if Self::is_retryable_streaming_error(error)
-            && streaming_retry_count < MAX_STREAMING_RETRIES
-        {
-            let delay = STREAMING_RETRY_BASE_DELAY * 2u32.saturating_pow(streaming_retry_count);
-            return RecoveryAction::RetryStream { delay };
-        }
-        RecoveryAction::Fail
+        let snapshot = ContextSnapshot {
+            usage_ratio: self.context_usage_ratio()?,
+        };
+        Ok(self.hooks.compaction.should_compact(&snapshot))
     }
 
     /// Shrinks the conversation after the provider rejected the prompt as too long.
@@ -1794,11 +1673,12 @@ impl Agent {
         &self,
         error: &anyhow::Error,
         attempt: u32,
+        max_attempts: u32,
         delay: std::time::Duration,
     ) {
         warn!(
             "Transient streaming error (attempt {}/{}), retrying in {:?}: {}",
-            attempt, MAX_STREAMING_RETRIES, delay, error
+            attempt, max_attempts, delay, error
         );
 
         // get_next_assistant_message already sent StreamingStopped{error: ...} for
@@ -1816,52 +1696,10 @@ impl Agent {
             .send_event(UiEvent::ShowTransientStatus {
                 message: format!(
                     "Stream interrupted — retrying ({}/{})\u{2026}",
-                    attempt, MAX_STREAMING_RETRIES
+                    attempt, max_attempts
                 ),
             })
             .await;
-    }
-
-    fn is_prompt_too_long_error(error: &anyhow::Error) -> bool {
-        let msg = error.to_string().to_lowercase();
-        // Anthropic patterns
-        msg.contains("prompt is too long")
-            || msg.contains("request size exceeds")
-            || msg.contains("exceed context limit")
-            || msg.contains("exceeds model context")
-            // OpenAI patterns
-            || msg.contains("context_length_exceeded")
-            || msg.contains("maximum context length")
-            // Generic patterns
-            || msg.contains("too many tokens")
-            || msg.contains("request too large")
-    }
-
-    /// Check if an error from the LLM provider is a transient streaming/connection
-    /// error that is safe to retry (the request itself was valid, only the
-    /// transport failed mid-stream).
-    fn is_retryable_streaming_error(error: &anyhow::Error) -> bool {
-        let msg = error.to_string().to_lowercase();
-        // HTTP chunked transfer errors
-        msg.contains("http chunk error")
-            || msg.contains("chunk size line")
-            || msg.contains("unexpected eof")
-            // hyper / reqwest body errors
-            || msg.contains("error reading a body from connection")
-            || msg.contains("request or response body error")
-            // Connection-level errors
-            || msg.contains("connection reset")
-            || msg.contains("connection closed")
-            || msg.contains("broken pipe")
-            || msg.contains("connection abort")
-            // Timeout errors (read timeouts, not connect timeouts)
-            || msg.contains("operation timed out")
-            || msg.contains("timed out reading")
-            // Server errors that are transient
-            || msg.contains("502 bad gateway")
-            || msg.contains("503 service")
-            || msg.contains("529")
-            || msg.contains("overloaded")
     }
 
     /// Replace the largest tool execution results **from the most recent turn**
@@ -2041,7 +1879,7 @@ impl Agent {
 
         let compaction_message = Message {
             role: MessageRole::User,
-            content: MessageContent::Text(CONTEXT_COMPACTION_PROMPT.to_string()),
+            content: MessageContent::Text(self.hooks.compaction.compaction_prompt().to_string()),
             ..Default::default()
         };
 
@@ -2278,45 +2116,39 @@ impl Agent {
     }
 
     /// Executes a tool and catches all errors, returning them as Results
-    /// Special tools the agent handles itself instead of dispatching to the
-    /// registry. Returns `Some(result)` when the request was intercepted; such
-    /// tools do not appear in the UI.
-    fn intercept_special_tool(&mut self, tool_request: &ToolRequest) -> Option<Result<bool>> {
-        match tool_request.name.as_str() {
-            "name_session" => Some(self.apply_session_name(tool_request)),
-            _ => None,
-        }
-    }
-
-    fn apply_session_name(&mut self, tool_request: &ToolRequest) -> Result<bool> {
-        if let Some(title) = tool_request.input["title"].as_str() {
-            let title = title.trim();
-            if !title.is_empty() {
-                trace!("Obtained session title from LLM: {}", title);
-                self.session_name = title.to_string();
-
-                let tool_execution = ToolExecution {
-                    tool_request: tool_request.clone(),
-                    result: Box::new(crate::tools::impls::name_session::NameSessionOutput {
-                        title: title.to_string(),
-                    }),
-                };
-                self.tool_executions.push(tool_execution);
-                return Ok(true);
-            } else {
-                warn!("Title for name_session is empty after trimming");
+    /// Gives the registered interceptors a chance to handle the request
+    /// before the standard dispatch. Returns `Some(result)` when one did.
+    fn intercept_tool(&mut self, tool_request: &ToolRequest) -> Option<Result<bool>> {
+        let mut ctx = LoopCtx {
+            session_name: &mut self.session_name,
+            naming_reminders_enabled: self.enable_naming_reminders,
+            tool_scope: self.tool_scope,
+            tool_executions: &mut self.tool_executions,
+            plan: &self.plan,
+            message_nodes: &mut self.message_nodes,
+            active_path: &self.active_path,
+        };
+        for interceptor in &self.hooks.interceptors {
+            if let Some(result) = interceptor.try_intercept(tool_request, &mut ctx) {
+                return Some(result);
             }
-        } else {
-            warn!("No 'title' field found in name_session input or it's not a string");
         }
-        Err(anyhow::anyhow!("Invalid session title provided"))
+        None
     }
 
-    /// Side effects the agent applies after a tool executed successfully.
+    /// Notifies the registered interceptors that a tool executed successfully.
     fn after_tool_success(&mut self, tool_request: &ToolRequest) {
-        // The snapshot enables correct plan reconstruction when switching branches.
-        if tool_request.name == "update_plan" {
-            self.save_plan_snapshot_to_last_assistant_message();
+        let mut ctx = LoopCtx {
+            session_name: &mut self.session_name,
+            naming_reminders_enabled: self.enable_naming_reminders,
+            tool_scope: self.tool_scope,
+            tool_executions: &mut self.tool_executions,
+            plan: &self.plan,
+            message_nodes: &mut self.message_nodes,
+            active_path: &self.active_path,
+        };
+        for interceptor in &self.hooks.interceptors {
+            interceptor.after_tool_success(tool_request, &mut ctx);
         }
     }
 
@@ -2353,7 +2185,7 @@ impl Agent {
             tool_request.name, tool_request.id
         );
 
-        if let Some(result) = self.intercept_special_tool(tool_request) {
+        if let Some(result) = self.intercept_tool(tool_request) {
             return result;
         }
 
