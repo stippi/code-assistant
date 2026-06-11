@@ -368,6 +368,7 @@ fn test_html_inside_parameter_allowed() -> Result<()> {
 #[tokio::test]
 async fn test_unknown_tool_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Task completed.")),
         Ok(create_test_response(
             "read-files-id",
             "read_files",
@@ -418,7 +419,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     // Should see three requests:
     // 1. Failed unknown tool
     // 2. Corrected ReadFiles
-    // 3. CompleteTask
+    // 3. Final text response
     assert_eq!(requests.len(), 3);
 
     // Check error was communicated to LLM
@@ -616,6 +617,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
 #[tokio::test]
 async fn test_parse_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Task completed.")),
         Ok(create_test_response(
             "read-files-2",
             "read_files",
@@ -668,7 +670,7 @@ async fn test_parse_error_handling() -> Result<()> {
     // Should see three requests:
     // 1. Failed parse
     // 2. Corrected ReadFiles
-    // 3. CompleteTask
+    // 3. Final text response
     assert_eq!(requests.len(), 3);
 
     // Check error was communicated to LLM
@@ -2489,9 +2491,8 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
     //  1. LLM requests read_files on big.txt (tool call)
     //  2. "prompt is too long" error (after tool execution, on next LLM call)
     //  3. LLM responds normally after replacement (text only, triggers GetUserInput)
-    //  (complete_task is auto-inserted by MockLLMProvider at position 0)
     let mock_llm = MockLLMProvider::new(vec![
-        // Third response (popped last before complete_task): success after replacement
+        // Third response (popped last): success after replacement
         Ok(create_test_response_text(
             "I see the file was too large. Let me try a different approach.",
         )),
@@ -2608,9 +2609,8 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
     //  2. "prompt is too long" error
     //  3. Compaction summary response (non-streaming, from perform_compaction)
     //  4. LLM responds normally after compaction
-    //  (complete_task auto-inserted)
     let mock_llm = MockLLMProvider::new(vec![
-        // Fourth (popped last before complete_task): normal response after compaction
+        // Fourth (popped last): normal response after compaction
         Ok(create_test_response_text(
             "I'll try a different approach after compaction.",
         )),

@@ -48,7 +48,6 @@ pub const TOOL_WEB_FETCH: &str = "template"; // html.svg (use template/html as f
 pub const TOOL_DELETE_FILES: &str = "trash"; // trash.svg
 pub const TOOL_OPEN_PROJECT: &str = "expanded_folder"; // folder_open.svg
 pub const TOOL_USER_INPUT: &str = "person"; // person.svg
-pub const TOOL_COMPLETE_TASK: &str = "check_circle"; // check_circle.svg
 pub const TOOL_UPDATE_PLAN: &str = "todo_list"; // todo_list.svg
 pub const TOOL_SPAWN_AGENT: &str = "rerun"; // rerun.svg - for spawning sub-agents
 pub const TOOL_VIEW_DOCUMENTS: &str = "file_generic"; // file_generic.svg - for viewing documents
@@ -136,7 +135,6 @@ impl FileIcons {
             // TOOL_WEB_SEARCH uses the same icon as SEARCH_FILES but is handled in the match condition above
             TOOL_DELETE_FILES => Some("icons/trash.svg"),
             TOOL_USER_INPUT => Some("icons/person.svg"),
-            TOOL_COMPLETE_TASK => Some("icons/check_circle.svg"),
 
             TOOL_UPDATE_PLAN => Some("icons/file_generic.svg"),
             TOOL_SPAWN_AGENT => Some("icons/rerun.svg"),
@@ -175,7 +173,6 @@ impl FileIcons {
             TOOL_DELETE_FILES => Some(SharedString::from("🗑️")),
             TOOL_OPEN_PROJECT => Some(SharedString::from("📂")),
             TOOL_USER_INPUT => Some(SharedString::from("👤")),
-            TOOL_COMPLETE_TASK => Some(SharedString::from("✅")),
 
             TOOL_UPDATE_PLAN => Some(SharedString::from("📝")),
             TOOL_SPAWN_AGENT => Some(SharedString::from("🔄")),
@@ -201,8 +198,6 @@ impl FileIcons {
             "delete_files" => TOOL_DELETE_FILES,
             "open_project" => TOOL_OPEN_PROJECT,
             "user_input" => TOOL_USER_INPUT,
-
-            "complete_task" => TOOL_COMPLETE_TASK,
             "update_plan" => TOOL_UPDATE_PLAN,
             "spawn_agent" => TOOL_SPAWN_AGENT,
             "view_documents" => TOOL_VIEW_DOCUMENTS,

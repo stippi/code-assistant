@@ -29,22 +29,10 @@ pub struct MockLLMProvider {
 }
 
 impl MockLLMProvider {
-    pub fn new(mut responses: Vec<Result<LLMResponse, anyhow::Error>>) -> Self {
-        // Add CompleteTask response at the beginning if the first response is ok
-        if responses.first().is_some_and(|r| r.is_ok()) {
-            responses.insert(
-                0,
-                Ok(create_test_response(
-                    "complete-task-id",
-                    "complete_task",
-                    serde_json::json!({
-                        "message": "Task completed successfully"
-                    }),
-                    "Completing task after successful execution",
-                )),
-            );
-        }
-
+    /// Responses are served in reverse order (the vector is used as a stack).
+    /// Each test declares its complete response sequence; a session naturally
+    /// ends when the final response contains no tool calls.
+    pub fn new(responses: Vec<Result<LLMResponse, anyhow::Error>>) -> Self {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(responses)),

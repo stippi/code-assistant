@@ -617,7 +617,6 @@ impl Agent {
                                 return Ok(());
                             }
                             LoopFlow::Break => {
-                                // Task completed (e.g., via complete_task tool)
                                 debug!("Task completed");
                                 return Ok(());
                             }
@@ -861,16 +860,9 @@ impl Agent {
         }
     }
 
-    /// Executes a list of tool requests.
-    /// Handles the "complete_task" action and appends tool results to message history.
+    /// Executes a list of tool requests and appends tool results to message history.
     /// Multiple `spawn_agent` read-only calls are executed concurrently for efficiency.
     async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
-        // Check for complete_task first
-        if tool_requests.iter().any(|r| r.name == "complete_task") {
-            debug!("Task completed");
-            return Ok(LoopFlow::Break);
-        }
-
         // Partition into spawn_agent (read_only) and other tools, preserving indices
 
         let (parallel_indices, _sequential_indices): (Vec<_>, Vec<_>) = tool_requests
