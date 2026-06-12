@@ -6,6 +6,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Configuration for running the agent in either terminal or GPUI mode
+#[derive(Debug, Clone)]
+pub struct AgentRunConfig {
+    pub path: PathBuf,
+    pub task: Option<String>,
+    pub continue_task: bool,
+    pub model: String,
+    pub tool_syntax: crate::types::ToolSyntax,
+    pub use_diff_format: bool,
+    pub record: Option<PathBuf>,
+    pub playback: Option<PathBuf>,
+    pub fast_playback: bool,
+    pub sandbox_policy: sandbox::SandboxPolicy,
+}
+
 /// Get the path to the configuration file
 pub fn get_config_path() -> Result<PathBuf> {
     let config_dir = crate::config_dir::config_dir();

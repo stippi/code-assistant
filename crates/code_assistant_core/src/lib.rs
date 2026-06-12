@@ -7,6 +7,7 @@
 //! binary consume this crate; nothing in here depends on a frontend.
 
 pub mod agent;
+pub mod backend;
 pub mod config;
 pub mod config_dir;
 pub mod permissions;

@@ -3,22 +3,15 @@ pub mod gpui;
 pub mod server;
 pub mod terminal;
 
-use crate::types::ToolSyntax;
-use sandbox::SandboxPolicy;
+pub use code_assistant_core::config::AgentRunConfig;
 
-use std::path::PathBuf;
-
-/// Configuration for running the agent in either terminal or GPUI mode
-#[derive(Debug, Clone)]
-pub struct AgentRunConfig {
-    pub path: PathBuf,
-    pub task: Option<String>,
-    pub continue_task: bool,
-    pub model: String,
-    pub tool_syntax: ToolSyntax,
-    pub use_diff_format: bool,
-    pub record: Option<PathBuf>,
-    pub playback: Option<PathBuf>,
-    pub fast_playback: bool,
-    pub sandbox_policy: SandboxPolicy,
+/// The command executor both interactive frontends use for agent sessions:
+/// commands run attached to live terminal views when the GPUI terminal pool
+/// is available and fall back to plain execution otherwise.
+pub fn gpui_terminal_executor_factory() -> code_assistant_core::backend::CommandExecutorFactory {
+    std::sync::Arc::new(|session_id: &str| {
+        Box::new(ui_gpui::terminal::executor::GpuiTerminalCommandExecutor::new(
+            session_id.to_string(),
+        ))
+    })
 }

@@ -1,0 +1,50 @@
+[package]
+name = "ui_gpui"
+version = "0.2.10"
+edition = "2021"
+
+[dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false }
+agent_core = { path = "../agent_core" }
+command_executor = { path = "../command_executor" }
+git = { path = "../git" }
+llm = { path = "../llm" }
+sandbox = { path = "../sandbox" }
+terminal = { path = "../terminal" }
+terminal_view = { path = "../terminal_view" }
+
+# GPUI related
+gpui = "0.2.2"
+gpui_platform = { version = "0.1", features = ["font-kit"] }
+gpui-component = "0.5.2"
+rust-embed = { version = "8.9", features = ["include-exclude"] }
+
+tokio = { version = "1.48", features = ["full"] }
+futures = "0.3"
+async-channel = "2.5.0"
+async-trait = "0.1"
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+anyhow = "1.0"
+tracing = "0.1"
+dirs = "5.0"
+open = "5"
+
+# Diff visualization
+similar = { version = "2.7.0", features = ["inline"] }
+
+# Image handling (pasted/attached images)
+image = "0.25"
+base64 = "0.22"
+
+# macOS-specific dependencies
+# Pin core-text to avoid version conflict with zed-font-kit
+# See: https://github.com/zed-industries/zed/issues/46966
+[target.'cfg(target_os = "macos")'.dependencies]
+core-text = "=21.0.0"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }
+tempfile = "3.23"

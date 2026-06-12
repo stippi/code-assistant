@@ -5,13 +5,13 @@ mod codex_commands;
 mod logging;
 mod mcp;
 mod permissions;
-mod ui;
 
 // The domain layer lives in `code_assistant_core`; re-exported under the
 // historical module paths so call sites keep using `crate::session::…` etc.
 #[allow(unused_imports)]
 pub(crate) use code_assistant_core::{
-    agent, config, config_dir, persistence, plugins, session, tool_dialects, tools, types, utils,
+    agent, config, config_dir, persistence, plugins, session, tool_dialects, tools, types, ui,
+    utils,
 };
 
 use crate::cli::{Args, Mode};
