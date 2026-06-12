@@ -8,9 +8,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::acp::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
-use crate::tools::core::ToolRegistry;
-use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
+use crate::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
+use tools_core::ToolRegistry;
+use code_assistant_core::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 
 /// Tracks the last type of content for paragraph breaks after hidden tools
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -126,7 +126,7 @@ impl ToolCallState {
             .collect();
 
         if let Some(new_title) =
-            crate::tools::core::generate_tool_title(tool_name, &params, registry)
+            tools_core::generate_tool_title(tool_name, &params, registry)
         {
             self.title = Some(new_title);
         }
@@ -235,7 +235,7 @@ impl ToolCallState {
                 let diff_param = self.parameters.get("diff")?.value.clone();
                 // Try to parse the search/replace blocks. If there's exactly one,
                 // use its search/replace as old_text/new_text for a proper diff.
-                match crate::tools::parse_search_replace_blocks(&diff_param) {
+                match code_assistant_core::tools::parse_search_replace_blocks(&diff_param) {
                     Ok(replacements) if replacements.len() == 1 => {
                         let r = &replacements[0];
                         (r.replace.clone(), Some(r.search.clone()))
@@ -387,7 +387,7 @@ fn text_content(text: String) -> acp::ToolCallContent {
 /// Render SubAgentOutput JSON as markdown for ACP display.
 /// Returns None if the JSON is not valid SubAgentOutput.
 fn render_sub_agent_output_as_markdown(json_str: &str) -> Option<String> {
-    use crate::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
+    use code_assistant_core::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
 
     let output: SubAgentOutput = serde_json::from_str(json_str).ok()?;
 
@@ -608,7 +608,7 @@ impl UserInterface for ACPUserUI {
                 for attachment in attachments {
                     #[allow(clippy::single_match)]
                     match attachment {
-                        crate::persistence::DraftAttachment::Image {
+                        code_assistant_core::persistence::DraftAttachment::Image {
                             content, mime_type, ..
                         } => {
                             self.send_session_update(acp::SessionUpdate::UserMessageChunk(
@@ -646,18 +646,18 @@ impl UserInterface for ACPUserUI {
                     .into_iter()
                     .map(|entry| {
                         let priority = match entry.priority {
-                            crate::types::PlanItemPriority::High => acp::PlanEntryPriority::High,
-                            crate::types::PlanItemPriority::Medium => {
+                            code_assistant_core::types::PlanItemPriority::High => acp::PlanEntryPriority::High,
+                            code_assistant_core::types::PlanItemPriority::Medium => {
                                 acp::PlanEntryPriority::Medium
                             }
-                            crate::types::PlanItemPriority::Low => acp::PlanEntryPriority::Low,
+                            code_assistant_core::types::PlanItemPriority::Low => acp::PlanEntryPriority::Low,
                         };
                         let status = match entry.status {
-                            crate::types::PlanItemStatus::Pending => acp::PlanEntryStatus::Pending,
-                            crate::types::PlanItemStatus::InProgress => {
+                            code_assistant_core::types::PlanItemStatus::Pending => acp::PlanEntryStatus::Pending,
+                            code_assistant_core::types::PlanItemStatus::InProgress => {
                                 acp::PlanEntryStatus::InProgress
                             }
-                            crate::types::PlanItemStatus::Completed => {
+                            code_assistant_core::types::PlanItemStatus::Completed => {
                                 acp::PlanEntryStatus::Completed
                             }
                         };
@@ -755,7 +755,7 @@ impl UserInterface for ACPUserUI {
             } => {
                 // Cross-instance awareness: replay new messages that another
                 // code-assistant instance appended to the currently connected session.
-                use crate::ui::ui_events::MessageRole;
+                use code_assistant_core::ui::ui_events::MessageRole;
 
                 for message_data in &messages {
                     match message_data.role {
@@ -794,8 +794,8 @@ impl UserInterface for ACPUserUI {
                 // Replay tool results as ToolCallUpdate with final status
                 for tool_result in &tool_results {
                     let status = match tool_result.status {
-                        crate::ui::ToolStatus::Success => acp::ToolCallStatus::Completed,
-                        crate::ui::ToolStatus::Error => acp::ToolCallStatus::Failed,
+                        code_assistant_core::ui::ToolStatus::Success => acp::ToolCallStatus::Completed,
+                        code_assistant_core::ui::ToolStatus::Error => acp::ToolCallStatus::Failed,
                         _ => acp::ToolCallStatus::InProgress,
                     };
 
@@ -1051,7 +1051,7 @@ impl UserInterface for ACPUserUI {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus, PlanState};
+    use code_assistant_core::types::{PlanItem, PlanItemPriority, PlanItemStatus, PlanState};
     use serde_json::json;
     use tokio::sync::{mpsc, oneshot};
 

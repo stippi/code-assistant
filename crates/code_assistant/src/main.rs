@@ -1,10 +1,7 @@
-mod acp;
 mod app;
 mod cli;
 mod codex_commands;
 mod logging;
-mod mcp;
-mod permissions;
 
 // The domain layer lives in `code_assistant_core`; re-exported under the
 // historical module paths so call sites keep using `crate::session::…` etc.
@@ -43,7 +40,20 @@ async fn main() -> Result<()> {
         Some(Mode::CodexStatus) => {
             return codex_commands::run_codex_status();
         }
-        Some(Mode::Server { verbose }) => app::server::run(verbose).await,
+        Some(Mode::Server { verbose }) => {
+            #[cfg(feature = "mcp-server")]
+            {
+                app::server::run(verbose).await
+            }
+            #[cfg(not(feature = "mcp-server"))]
+            {
+                let _ = verbose;
+                anyhow::bail!(
+                    "This binary was built without the MCP server \
+                     (feature `mcp-server`)"
+                )
+            }
+        }
         Some(Mode::Acp {
             verbose,
             path,
@@ -53,27 +63,46 @@ async fn main() -> Result<()> {
             sandbox_mode,
             sandbox_network,
         }) => {
-            // Ensure the path exists and is a directory
-            if !path.is_dir() {
-                anyhow::bail!("Path '{}' is not a directory", path.display());
+            #[cfg(feature = "acp-frontend")]
+            {
+                // Ensure the path exists and is a directory
+                if !path.is_dir() {
+                    anyhow::bail!("Path '{}' is not a directory", path.display());
+                }
+
+                let model_name = Args::resolve_model_name(model)?;
+
+                let config = app::AgentRunConfig {
+                    path,
+                    task: None,
+                    continue_task: false,
+                    model: model_name.clone(),
+                    tool_syntax,
+                    use_diff_format,
+                    record: None,
+                    playback: None,
+                    fast_playback: false,
+                    sandbox_policy: sandbox_mode.to_policy(sandbox_network),
+                };
+
+                app::acp::run(verbose, config).await
             }
-
-            let model_name = Args::resolve_model_name(model)?;
-
-            let config = app::AgentRunConfig {
-                path,
-                task: None,
-                continue_task: false,
-                model: model_name.clone(),
-                tool_syntax,
-                use_diff_format,
-                record: None,
-                playback: None,
-                fast_playback: false,
-                sandbox_policy: sandbox_mode.to_policy(sandbox_network),
-            };
-
-            app::acp::run(verbose, config).await
+            #[cfg(not(feature = "acp-frontend"))]
+            {
+                let _ = (
+                    verbose,
+                    path,
+                    model,
+                    tool_syntax,
+                    use_diff_format,
+                    sandbox_mode,
+                    sandbox_network,
+                );
+                anyhow::bail!(
+                    "This binary was built without the ACP frontend \
+                     (feature `acp-frontend`)"
+                )
+            }
         }
         None => {
             if args.ui {

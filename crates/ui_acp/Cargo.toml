@@ -1,0 +1,33 @@
+[package]
+name = "ui_acp"
+version = "0.2.10"
+edition = "2021"
+
+[dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false }
+tools_core = { path = "../tools_core" }
+command_executor = { path = "../command_executor" }
+fs_explorer = { path = "../fs_explorer" }
+llm = { path = "../llm" }
+
+# Agent Client Protocol
+agent-client-protocol = { version = "0.9", features = ["unstable"] }
+
+tokio = { version = "1.48", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+async-channel = "2.5.0"
+async-trait = "0.1"
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+anyhow = "1.0"
+
+chrono = { version = "0.4", features = ["serde"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false, features = ["test-utils"] }
+tempfile = "3.23"

@@ -1,4 +1,4 @@
-use crate::mcp::handler::MessageHandler;
+use crate::handler::MessageHandler;
 use anyhow::Result;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tracing::{debug, error, trace};

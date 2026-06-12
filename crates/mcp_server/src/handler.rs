@@ -1,7 +1,7 @@
 use super::resources::ResourceManager;
 use super::types::*;
-use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::utils::{MessageWriter, StdoutWriter};
+use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
+use code_assistant_core::utils::{MessageWriter, StdoutWriter};
 use anyhow::Result;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use tokio::io::Stdout;
@@ -12,7 +12,7 @@ pub struct MessageHandler {
     command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
     message_writer: Box<dyn MessageWriter>,
-    tool_registry: std::sync::Arc<crate::tools::core::ToolRegistry>,
+    tool_registry: std::sync::Arc<tools_core::ToolRegistry>,
 }
 
 impl MessageHandler {
@@ -22,7 +22,7 @@ impl MessageHandler {
             command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
             message_writer: Box::new(StdoutWriter::new(stdout)),
-            tool_registry: crate::tools::default_registry(),
+            tool_registry: code_assistant_core::tools::default_registry(),
         })
     }
 
@@ -31,7 +31,7 @@ impl MessageHandler {
         project_manager: std::sync::Arc<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         message_writer: Box<dyn MessageWriter>,
-        tool_registry: std::sync::Arc<crate::tools::core::ToolRegistry>,
+        tool_registry: std::sync::Arc<tools_core::ToolRegistry>,
     ) -> Self {
         Self {
             project_manager,
@@ -210,7 +210,7 @@ impl MessageHandler {
         // Use the ToolRegistry to get tool definitions
         let registry = self.tool_registry.clone();
         let tool_defs =
-            registry.get_tool_definitions_with_capability(crate::tools::core::ToolScope::McpServer.tag());
+            registry.get_tool_definitions_with_capability(code_assistant_core::tools::core::ToolScope::McpServer.tag());
 
         // Map tool definitions to the expected JSON structure
         let tools_json = tool_defs
@@ -265,8 +265,8 @@ impl MessageHandler {
                 .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;
 
             // Create a tool context (no UI, no plan for MCP)
-            let mut services = crate::tools::ToolServices::new(self.project_manager.clone());
-            let mut context = crate::tools::core::ToolContext {
+            let mut services = code_assistant_core::tools::ToolServices::new(self.project_manager.clone());
+            let mut context = tools_core::ToolContext {
                 command_executor: self.command_executor.as_ref(),
                 tool_id: None,
                 permission_handler: None,
@@ -279,7 +279,7 @@ impl MessageHandler {
             // input might have changed, but we have to ignore it in MCP mode
 
             // Format the output
-            let mut tracker = crate::tools::core::ResourcesTracker::new();
+            let mut tracker = tools_core::ResourcesTracker::new();
             let output = result.as_render().render(&mut tracker);
             let is_success = result.is_success();
 

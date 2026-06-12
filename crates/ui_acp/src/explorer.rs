@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::types::Project;
+use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
+use code_assistant_core::types::Project;
 use command_executor::CommandExecutor;
 use fs_explorer::encoding::{
     apply_file_format, detect_line_ending, detect_trailing_whitespace, normalize_content,

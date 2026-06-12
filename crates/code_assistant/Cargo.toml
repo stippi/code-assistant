@@ -4,30 +4,32 @@ version = "0.2.10"
 edition = "2021"
 
 [features]
-default = ["gpui-frontend", "terminal-frontend", "document-conversion"]
+default = [
+    "acp-frontend",
+    "gpui-frontend",
+    "mcp-server",
+    "terminal-frontend",
+    "document-conversion",
+]
 document-conversion = ["code_assistant_core/document-conversion"]
-# Each frontend is an optional compile unit; a headless build
-# (--no-default-features) skips gpui and ratatui entirely.
+# Each frontend and protocol mode is an optional compile unit; a headless
+# build (--no-default-features) skips gpui and ratatui entirely.
+acp-frontend = ["dep:ui_acp"]
 gpui-frontend = ["dep:ui_gpui"]
+mcp-server = ["dep:mcp_server"]
 terminal-frontend = ["dep:ui_terminal"]
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
+mcp_server = { path = "../mcp_server", optional = true }
+ui_acp = { path = "../ui_acp", optional = true }
 ui_gpui = { path = "../ui_gpui", optional = true }
 ui_terminal = { path = "../ui_terminal", optional = true }
 command_executor = { path = "../command_executor" }
-tools_core = { path = "../tools_core" }
-fs_explorer = { path = "../fs_explorer" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
 
 tokio = { version = "1.48", features = ["full"] }
-async-channel = "2.5.0"
-async-trait = "0.1"
-
-# JSON (de)serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 
 # Error handling
 anyhow = "1.0"
@@ -40,14 +42,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5", features = ["derive"] }
 open = "5"
 dirs = "5.0"
-
-# Date and time handling
-chrono = { version = "0.4", features = ["serde"] }
-
-# Agent Client Protocol
-agent-client-protocol = { version = "0.9", features = ["unstable"] }
-tokio-util = { version = "0.7", features = ["compat"] }
-
-[dev-dependencies]
-code_assistant_core = { path = "../code_assistant_core", default-features = false, features = ["test-utils"] }
-tempfile = "3.23"
