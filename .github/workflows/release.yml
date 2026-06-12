@@ -239,12 +239,34 @@ jobs:
             zip code-assistant-${{ matrix.name }}.zip "code-assistant${{ matrix.extension }}"
           fi
 
+      - name: Build macOS .app bundle
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          # Map matrix target -> bundle script arch argument
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) ARCH="aarch64" ;;
+            x86_64-apple-darwin)  ARCH="x86_64" ;;
+            *) echo "unknown macOS target: ${{ matrix.target }}"; exit 1 ;;
+          esac
+
+          # The release build was already produced by the previous step, so
+          # just reuse it via --no-build.
+          ./scripts/bundle-macos.sh --no-build "$ARCH"
+
+          # Move the produced zip into the release/ directory with a name
+          # that matches the rest of the release artifacts.
+          mv "target/macos-bundle/Code-Assistant-${{ needs.prepare-version.outputs.new_version }}-$ARCH.zip" \
+             "release/Code-Assistant-${{ matrix.name }}.app.zip"
+
       - name: Upload Release Asset
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           token: ${{ secrets.GH_PUSH_TOKEN }}
           tag_name: v${{ needs.prepare-version.outputs.new_version }}
-          files: release/code-assistant-${{ matrix.name }}.zip
+          files: |
+            release/code-assistant-${{ matrix.name }}.zip
+            release/Code-Assistant-${{ matrix.name }}.app.zip
 
   finalize-release:
     needs: [prepare-version, build]

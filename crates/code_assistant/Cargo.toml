@@ -3,6 +3,17 @@ name = "code-assistant"
 version = "0.2.10"
 edition = "2021"
 
+# Bundling via `cargo bundle` (cargo install cargo-bundle && cargo bundle --release).
+# The canonical macOS bundle metadata lives in assets/Info.plist; keep these
+# values in sync if you change identifiers there.
+[package.metadata.bundle]
+name = "Code Assistant"
+identifier = "dev.stippi.code-assistant"
+icon = ["assets/AppIcon.icns", "assets/app_icon.png"]
+category = "public.app-category.developer-tools"
+short_description = "AI-assisted coding agent."
+osx_minimum_system_version = "10.15"
+
 [features]
 default = [
     "acp-frontend",
