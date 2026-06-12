@@ -86,6 +86,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "command_executor",
+ "futures",
+ "llm",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tools_core",
+ "tracing",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,7 +284,7 @@ version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
 dependencies = [
- "clipboard-win 5.4.1",
+ "clipboard-win",
  "image",
  "log",
  "objc2",
@@ -1349,22 +1366,11 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clipboard-win"
-version = "4.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7191c27c2357d9b7ef96baac1773290d4ca63b24205b82a3fd8a0637afcf0362"
-dependencies = [
- "error-code 2.3.1",
- "str-buf",
- "winapi",
-]
-
-[[package]]
-name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
- "error-code 3.3.2",
+ "error-code",
 ]
 
 [[package]]
@@ -1442,61 +1448,64 @@ version = "0.2.10"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
- "arboard",
+ "async-channel 2.5.0",
+ "async-trait",
+ "chrono",
+ "clap",
+ "code_assistant_core",
+ "command_executor",
+ "dirs 5.0.1",
+ "fs_explorer",
+ "llm",
+ "open",
+ "sandbox",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tools_core",
+ "tracing",
+ "tracing-subscriber",
+ "ui_gpui",
+ "ui_terminal",
+]
+
+[[package]]
+name = "code_assistant_core"
+version = "0.2.10"
+dependencies = [
+ "agent_core",
+ "anyhow",
  "async-channel 2.5.0",
  "async-trait",
  "axum",
  "base64 0.22.1",
- "bytes",
- "chrono",
  "clap",
  "command_executor",
- "core-text",
- "crossterm",
- "derive_more 2.1.1",
  "dirs 5.0.1",
- "dotenv",
  "fs2",
  "fs_explorer",
  "futures",
  "git",
  "glob",
- "gpui",
- "gpui-component",
- "gpui_platform",
  "ignore",
  "image",
- "indexmap",
  "keepawake",
  "llm",
  "md5",
  "notify",
- "open",
- "percent-encoding",
- "rand 0.8.6",
- "ratatui",
  "regex",
  "rust-embed",
- "rustyline",
  "sandbox",
  "serde",
  "serde_json",
- "similar",
- "smallvec",
  "tempfile",
- "terminal",
- "terminal_view",
- "textwrap",
- "thiserror 1.0.69",
+ "terminal_output",
  "tokio",
- "tokio-util",
+ "tools_core",
  "tracing",
- "tracing-subscriber",
  "transmutation",
- "tui-markdown",
- "unicode-segmentation",
- "unicode-width 0.1.14",
- "walkdir",
  "web",
 ]
 
@@ -2375,12 +2384,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotenv"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
-
-[[package]]
 name = "dtoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2482,12 +2485,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
-name = "endian-type"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c34f04666d835ff5d62e058c3995147c06f42fe86ff053337632bca83e42702d"
-
-[[package]]
 name = "entities"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2585,16 +2582,6 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "error-code"
-version = "2.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64f18991e7bf11e7ffee451b5318b5c1a73c52d0d0ada6e5a3017c8c1ced6a21"
-dependencies = [
- "libc",
- "str-buf",
 ]
 
 [[package]]
@@ -2736,17 +2723,6 @@ name = "fax"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a"
-
-[[package]]
-name = "fd-lock"
-version = "3.0.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef033ed5e9bad94e55838ca0ca906db0e043f517adda0c8b79c7a8c66c93c1b5"
-dependencies = [
- "cfg-if",
- "rustix 0.38.44",
- "windows-sys 0.48.0",
-]
 
 [[package]]
 name = "fdeflate"
@@ -6279,15 +6255,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
-name = "nibble_vec"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
-dependencies = [
- "smallvec",
-]
-
-[[package]]
 name = "nix"
 version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7598,16 +7565,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "radix_trie"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c069c179fcdc6a2fe24d8d18305cf085fdbd4f922c041943e203685d6a1c58fd"
-dependencies = [
- "endian-type",
- "nibble_vec",
-]
-
-[[package]]
 name = "rand"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8335,29 +8292,6 @@ dependencies = [
  "unicode-ccc",
  "unicode-properties",
  "unicode-script",
-]
-
-[[package]]
-name = "rustyline"
-version = "12.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "994eca4bca05c87e86e15d90fc7a91d1be64b4482b38cb2d27474568fe7c9db9"
-dependencies = [
- "bitflags 2.11.1",
- "cfg-if",
- "clipboard-win 4.5.0",
- "fd-lock",
- "home",
- "libc",
- "log",
- "memchr",
- "nix 0.26.4",
- "radix_trie",
- "scopeguard",
- "unicode-segmentation",
- "unicode-width 0.1.14",
- "utf8parse",
- "winapi",
 ]
 
 [[package]]
@@ -9139,12 +9073,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "str-buf"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e08d8363704e6c71fc928674353e6b7c23dcea9d82d7012c8faf2a3a025f8d0"
-
-[[package]]
 name = "str_indices"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9546,6 +9474,7 @@ dependencies = [
  "gpui",
  "log",
  "parking_lot",
+ "terminal_output",
 ]
 
 [[package]]
@@ -9557,6 +9486,13 @@ dependencies = [
  "gpui_platform",
  "terminal",
  "terminal_view",
+]
+
+[[package]]
+name = "terminal_output"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
 ]
 
 [[package]]
@@ -9940,6 +9876,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
+name = "tools_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "command_executor",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10235,6 +10184,71 @@ dependencies = [
  "memoffset 0.9.1",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ui_gpui"
+version = "0.2.10"
+dependencies = [
+ "agent_core",
+ "anyhow",
+ "async-channel 2.5.0",
+ "async-trait",
+ "base64 0.22.1",
+ "code_assistant_core",
+ "command_executor",
+ "core-text",
+ "dirs 5.0.1",
+ "futures",
+ "git",
+ "gpui",
+ "gpui-component",
+ "gpui_platform",
+ "image",
+ "llm",
+ "open",
+ "rust-embed",
+ "sandbox",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "terminal",
+ "terminal_view",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ui_terminal"
+version = "0.2.10"
+dependencies = [
+ "agent_core",
+ "anyhow",
+ "arboard",
+ "async-channel 2.5.0",
+ "async-trait",
+ "base64 0.22.1",
+ "code_assistant_core",
+ "command_executor",
+ "crossterm",
+ "derive_more 2.1.1",
+ "dirs 5.0.1",
+ "futures",
+ "image",
+ "indexmap",
+ "llm",
+ "ratatui",
+ "sandbox",
+ "serde",
+ "serde_json",
+ "similar",
+ "textwrap",
+ "tokio",
+ "tracing",
+ "tui-markdown",
+ "unicode-segmentation",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]

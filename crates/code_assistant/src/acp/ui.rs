@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::acp::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
+use crate::tools::core::ToolRegistry;
 use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 
 /// Tracks the last type of content for paragraph breaks after hidden tools
@@ -33,6 +34,8 @@ pub struct ACPUserUI {
     last_content_type: Arc<Mutex<LastContentType>>,
     // Flag indicating a hidden tool completed and we may need a paragraph break
     needs_paragraph_break_after_hidden_tool: Arc<Mutex<bool>>,
+    // Registry for tool title templates
+    tool_registry: Arc<ToolRegistry>,
 }
 
 #[derive(Default, Clone)]
@@ -94,27 +97,27 @@ impl ToolCallState {
         self.status
     }
 
-    fn append_parameter(&mut self, name: &str, value: &str) {
+    fn append_parameter(&mut self, name: &str, value: &str, registry: &ToolRegistry) {
         let entry = self.parameters.entry(name.to_string()).or_default();
         entry.append(value);
 
         // Update title if we have a template for this tool
         if let Some(tool_name) = &self.tool_name {
             let tool_name = tool_name.clone(); // Clone to avoid borrow issues
-            self.update_title_from_template(&tool_name);
+            self.update_title_from_template(&tool_name, registry);
         }
     }
 
-    fn replace_parameter(&mut self, name: &str, value: &str) {
+    fn replace_parameter(&mut self, name: &str, value: &str, registry: &ToolRegistry) {
         let entry = self.parameters.entry(name.to_string()).or_default();
         entry.replace(value);
         if let Some(tool_name) = &self.tool_name {
             let tool_name = tool_name.clone();
-            self.update_title_from_template(&tool_name);
+            self.update_title_from_template(&tool_name, registry);
         }
     }
 
-    fn update_title_from_template(&mut self, tool_name: &str) {
+    fn update_title_from_template(&mut self, tool_name: &str, registry: &ToolRegistry) {
         // Convert parameters to HashMap<String, String> for shared title function
         let params: std::collections::HashMap<String, String> = self
             .parameters
@@ -122,7 +125,9 @@ impl ToolCallState {
             .map(|(k, v)| (k.clone(), v.value.clone()))
             .collect();
 
-        if let Some(new_title) = crate::tools::core::generate_tool_title(tool_name, &params) {
+        if let Some(new_title) =
+            crate::tools::core::generate_tool_title(tool_name, &params, registry)
+        {
             self.title = Some(new_title);
         }
     }
@@ -446,6 +451,7 @@ impl ACPUserUI {
         session_id: acp::SessionId,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
         base_path: Option<PathBuf>,
+        tool_registry: Arc<ToolRegistry>,
     ) -> Self {
         Self {
             session_id,
@@ -456,6 +462,7 @@ impl ACPUserUI {
             last_error: Arc::new(Mutex::new(None)),
             last_content_type: Arc::new(Mutex::new(LastContentType::None)),
             needs_paragraph_break_after_hidden_tool: Arc::new(Mutex::new(false)),
+            tool_registry,
         }
     }
 
@@ -686,13 +693,14 @@ impl UserInterface for ACPUserUI {
                     let name = name.clone();
                     let value = value.clone();
 
+                    let registry = self.tool_registry.clone();
                     let tool_call_update = self.update_tool_call(&tool_id, |state| {
                         if replace {
-                            state.replace_parameter(&name, &value);
+                            state.replace_parameter(&name, &value, registry.as_ref());
                         } else {
                             // Streaming: append (ACP already handled this correctly
                             // via display_fragment, but for consistency handle it here too)
-                            state.replace_parameter(&name, &value);
+                            state.replace_parameter(&name, &value, registry.as_ref());
                         }
                     });
                     self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
@@ -940,8 +948,9 @@ impl UserInterface for ACPUserUI {
 
                 let name = name.clone();
                 let value = value.clone();
+                let registry = self.tool_registry.clone();
                 let tool_call_update = self.update_tool_call(tool_id, |state| {
-                    state.append_parameter(&name, &value);
+                    state.append_parameter(&name, &value, registry.as_ref());
                 });
 
                 self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
@@ -1051,7 +1060,12 @@ mod tests {
         mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
     ) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let ui = ACPUserUI::new(acp::SessionId::new("session-1"), tx, None);
+        let ui = ACPUserUI::new(
+            acp::SessionId::new("session-1"),
+            tx,
+            None,
+            code_assistant_core::tools::test_registry(),
+        );
         (ui, rx)
     }
 
@@ -1059,7 +1073,7 @@ mod tests {
     fn tool_call_state_includes_terminal_content() {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("execute_command");
-        state.append_parameter("command", "npm test");
+        state.append_parameter("command", "npm test", &code_assistant_core::tools::test_registry());
         state.append_output_chunk("running…\n");
 
         state.set_terminal("term-123");
@@ -1188,7 +1202,7 @@ mod tests {
     fn tool_call_content_prioritizes_output_over_parameters() {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("read_files");
-        state.append_parameter("paths", "[\"file1.txt\", \"file2.txt\"]");
+        state.append_parameter("paths", "[\"file1.txt\", \"file2.txt\"]", &code_assistant_core::tools::test_registry());
         state.append_output_chunk("Successfully loaded the following file(s):\n");
         state.append_output_chunk(">>>>> FILE: file1.txt\nContent of file 1\n");
         state.append_output_chunk(">>>>> FILE: file2.txt\nContent of file 2\n");
@@ -1222,9 +1236,9 @@ mod tests {
     fn edit_tool_still_uses_diff_content() {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("edit");
-        state.append_parameter("path", "test.txt");
-        state.append_parameter("old_text", "old content");
-        state.append_parameter("new_text", "new content");
+        state.append_parameter("path", "test.txt", &code_assistant_core::tools::test_registry());
+        state.append_parameter("old_text", "old content", &code_assistant_core::tools::test_registry());
+        state.append_parameter("new_text", "new content", &code_assistant_core::tools::test_registry());
         state.append_output_chunk("File edited successfully");
 
         let content = state
@@ -1255,7 +1269,7 @@ mod tests {
         assert_eq!(state.title, Some("read_files".to_string()));
 
         // Add parameter that should update title
-        state.append_parameter("paths", r#"["src/main.rs", "src/lib.rs"]"#);
+        state.append_parameter("paths", r#"["src/main.rs", "src/lib.rs"]"#, &code_assistant_core::tools::test_registry());
 
         // Title should now be updated with the paths
         assert!(state.title.as_ref().unwrap().contains("src/main.rs"));
@@ -1268,9 +1282,9 @@ mod tests {
         state.set_tool_name("search_files");
 
         // Add parameter in chunks (simulating streaming)
-        state.append_parameter("regex", "fn");
-        state.append_parameter("regex", " main");
-        state.append_parameter("regex", "\\(");
+        state.append_parameter("regex", "fn", &code_assistant_core::tools::test_registry());
+        state.append_parameter("regex", " main", &code_assistant_core::tools::test_registry());
+        state.append_parameter("regex", "\\(", &code_assistant_core::tools::test_registry());
 
         // Should have meaningful title even with partial parameter
         if let Some(title) = &state.title {
@@ -1285,7 +1299,7 @@ mod tests {
         state.set_tool_name("read_files");
 
         // Add JSON array parameter
-        state.append_parameter("paths", r#"["file1.txt", "file2.txt", "file3.txt"]"#);
+        state.append_parameter("paths", r#"["file1.txt", "file2.txt", "file3.txt"]"#, &code_assistant_core::tools::test_registry());
 
         // Should format array nicely
         if let Some(title) = &state.title {

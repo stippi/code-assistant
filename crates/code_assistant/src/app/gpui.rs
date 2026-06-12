@@ -2,17 +2,17 @@ use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
 use crate::session::watcher::SessionWatcher;
 use crate::session::{SessionConfig, SessionManager};
-use crate::ui::gpui::terminal::executor::GpuiTerminalCommandExecutor;
-use crate::ui::{self, UserInterface};
+use crate::ui::UserInterface;
 use anyhow::Result;
 use llm::factory::create_llm_client_from_model;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
+use ui_gpui::terminal::executor::GpuiTerminalCommandExecutor;
 
 pub fn run(config: AgentRunConfig) -> Result<()> {
     // Create shared state between GUI and backend
-    let gui = ui::gpui::Gpui::new();
+    let gui = ui_gpui::Gpui::new();
 
     // Setup unified backend communication
     let (backend_event_rx, backend_response_tx) = gui.setup_backend_communication();
@@ -44,6 +44,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         persistence,
         session_config_template,
         default_model.clone(),
+        code_assistant_core::tools::default_registry(),
     )));
 
     // Clone GUI before moving it into thread
@@ -179,14 +180,15 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 }
             };
 
-            crate::ui::backend::handle_backend_events(
+            code_assistant_core::backend::handle_backend_events(
                 backend_event_rx,
                 backend_response_tx,
                 multi_session_manager,
-                Arc::new(crate::ui::backend::BackendRuntimeOptions {
+                Arc::new(code_assistant_core::backend::BackendRuntimeOptions {
                     record_path: record.clone(),
                     playback_path: playback.clone(),
                     fast_playback,
+                    command_executor_factory: super::session_command_executor_factory(),
                 }),
                 Arc::new(gui_for_thread) as Arc<dyn crate::ui::UserInterface>,
             )

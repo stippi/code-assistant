@@ -47,6 +47,7 @@ pub struct ACPAgentImpl {
     session_manager: Arc<Mutex<SessionManager>>,
     session_config_template: SessionConfig,
     model_name: String,
+    tool_registry: Arc<crate::tools::core::ToolRegistry>,
     playback_path: Option<std::path::PathBuf>,
     fast_playback: bool,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
@@ -68,10 +69,12 @@ struct ModelStateInfo {
 }
 
 impl ACPAgentImpl {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
         session_config_template: SessionConfig,
         model_name: String,
+        tool_registry: Arc<crate::tools::core::ToolRegistry>,
         playback_path: Option<std::path::PathBuf>,
         fast_playback: bool,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
@@ -81,6 +84,7 @@ impl ACPAgentImpl {
             session_manager,
             session_config_template,
             model_name,
+            tool_registry,
             pending_sessions: Arc::new(Mutex::new(HashMap::new())),
             playback_path,
             fast_playback,
@@ -394,6 +398,7 @@ impl acp::Agent for ACPAgentImpl {
         let session_update_tx = self.session_update_tx.clone();
         let default_model_name = self.model_name.clone();
         let connected_session_id = self.connected_session_id.clone();
+        let tool_registry = self.tool_registry.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Loading session: {}", arguments.session_id.0);
@@ -436,11 +441,19 @@ impl acp::Agent for ACPAgentImpl {
                 arguments.session_id.clone(),
                 session_update_tx,
                 base_path,
+                tool_registry.clone(),
             ));
 
             // Create stream processor to extract fragments
-            let mut processor =
-                crate::ui::streaming::create_stream_processor(tool_syntax, ui.clone(), 0);
+            let hidden_tools =
+                tool_registry.hidden_tools(crate::tools::core::ToolScope::Agent.tag());
+            let mut processor = crate::ui::streaming::create_stream_processor(
+                tool_syntax,
+                ui.clone(),
+                0,
+                hidden_tools,
+                tool_registry.clone(),
+            );
 
             // Process each message to extract and send fragments
             for message in messages {
@@ -587,6 +600,7 @@ impl acp::Agent for ACPAgentImpl {
         let client_capabilities = self.client_capabilities.clone();
         let client_connection = get_acp_client_connection();
         let pending_sessions = self.pending_sessions.clone();
+        let tool_registry = self.tool_registry.clone();
 
         Box::pin(async move {
             tracing::info!(
@@ -642,6 +656,7 @@ impl acp::Agent for ACPAgentImpl {
                 arguments.session_id.clone(),
                 session_update_tx.clone(),
                 base_path.clone(),
+                tool_registry.clone(),
             ));
 
             // Store it so cancel() can reach it

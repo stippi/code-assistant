@@ -1,0 +1,67 @@
+[package]
+name = "code_assistant_core"
+version = "0.2.10"
+edition = "2021"
+
+[features]
+default = ["document-conversion"]
+document-conversion = ["transmutation", "fs_explorer/document-conversion"]
+# Exposes the mock building blocks (LLM provider, UI, project manager, tool
+# fixtures) so dependent crates can use them in their own tests.
+test-utils = []
+
+[dependencies]
+agent_core = { path = "../agent_core" }
+command_executor = { path = "../command_executor" }
+fs_explorer = { path = "../fs_explorer" }
+git = { path = "../git" }
+llm = { path = "../llm" }
+sandbox = { path = "../sandbox" }
+terminal_output = { path = "../terminal_output" }
+tools_core = { path = "../tools_core" }
+web = { path = "../web" }
+
+glob = "0.3"
+ignore = "0.4"
+tokio = { version = "1.48", features = ["full"] }
+futures = "0.3"
+tempfile = "3.23"
+fs2 = "0.4"
+notify = { version = "7", features = ["macos_fsevent"] }
+
+# JSON (de)serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+regex = "1.12"
+
+# Logging
+tracing = "0.1"
+
+# ToolSyntax implements clap::ValueEnum so the CLI can offer it directly
+clap = { version = "4.5", features = ["derive"] }
+
+async-trait = "0.1"
+dirs = "5.0"
+md5 = "0.7.0"
+async-channel = "2.5.0"
+
+# Base64 encoding for images
+base64 = "0.22"
+
+# Image processing
+image = "0.25"
+
+# Embedded resources (system prompts)
+rust-embed = { version = "8.9", features = ["include-exclude"] }
+
+# Document conversion (behind feature flag)
+transmutation = { version = "0.3", features = ["office"], optional = true }
+
+# Prevent system sleep while agents are running
+keepawake = "0.6"
+
+[dev-dependencies]
+axum = "0.7"

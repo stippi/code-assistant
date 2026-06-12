@@ -1,0 +1,49 @@
+[package]
+name = "ui_terminal"
+version = "0.2.10"
+edition = "2021"
+
+[dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false }
+agent_core = { path = "../agent_core" }
+command_executor = { path = "../command_executor" }
+llm = { path = "../llm" }
+sandbox = { path = "../sandbox" }
+
+# Terminal UI
+crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }
+unicode-width = "0.1"
+unicode-segmentation = "1.12.0"
+ratatui = { version = "0.29", features = [
+    "scrolling-regions",
+    "unstable-backend-writer",
+    "unstable-rendered-line-info",
+    "unstable-widget-ref",
+] }
+textwrap = "0.16"
+# Pin to 0.3.6 to avoid incompatibility with ratatui 0.29 (0.3.7 requires ratatui-core)
+tui-markdown = "=0.3.6"
+derive_more = { version = "2", features = ["is_variant"] }
+
+tokio = { version = "1.48", features = ["full"] }
+futures = "0.3"
+async-channel = "2.5.0"
+async-trait = "0.1"
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+anyhow = "1.0"
+tracing = "0.1"
+dirs = "5.0"
+indexmap = "2"
+
+# Diff visualization
+similar = { version = "2.7.0", features = ["inline"] }
+
+# Image handling (pasted/attached images)
+image = "0.25"
+base64 = "0.22"
+
+# Clipboard access for paste
+arboard = "3"

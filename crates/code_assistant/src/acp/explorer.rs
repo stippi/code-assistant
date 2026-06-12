@@ -391,7 +391,7 @@ impl AcpProjectManager {
 }
 
 impl ProjectManager for AcpProjectManager {
-    fn add_temporary_project(&mut self, path: PathBuf) -> Result<String> {
+    fn add_temporary_project(&self, path: PathBuf) -> Result<String> {
         self.inner.add_temporary_project(path)
     }
 

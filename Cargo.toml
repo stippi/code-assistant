@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/code_assistant", "crates/command_executor", "crates/fs_explorer", "crates/git", "crates/llm", "crates/sandbox", "crates/terminal", "crates/terminal_test_app", "crates/terminal_view", "crates/web"]
+members = ["crates/agent_core", "crates/code_assistant", "crates/code_assistant_core", "crates/ui_gpui", "crates/ui_terminal", "crates/command_executor", "crates/fs_explorer", "crates/git", "crates/llm", "crates/sandbox", "crates/terminal", "crates/terminal_output", "crates/terminal_test_app", "crates/terminal_view", "crates/tools_core", "crates/web"]
 
 resolver = "2"
 

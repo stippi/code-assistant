@@ -1,0 +1,2152 @@
+use super::*;
+use crate::agent::persistence::MockStatePersistence;
+use crate::persistence::SessionModelConfig;
+use crate::session::instance::SessionActivityState;
+use crate::session::{SessionConfig, SessionState};
+use crate::mocks::MockLLMProvider;
+use crate::mocks::{
+    create_command_executor_mock, create_test_response, create_test_response_text,
+    MockProjectManager, MockUI,
+};
+use crate::types::*;
+use crate::ui::ui_events::UiEvent;
+use anyhow::Result;
+use fs_explorer::Explorer;
+use llm::types::*;
+use sandbox::SandboxPolicy;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tempfile::tempdir;
+
+
+#[tokio::test]
+async fn test_unknown_tool_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Task completed.")),
+        Ok(create_test_response(
+            "read-files-id",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["test.txt:1-2"]
+            }),
+            "Reading file after getting unknown tool error",
+        )),
+        // Simulate LLM attempting to use unknown tool
+        Ok(create_test_response(
+            "test-id",
+            "unknown_tool",
+            serde_json::json!({
+                "some_param": "value"
+            }),
+            "Calling unknown tool",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    agent.start_with_task("Test task".to_string()).await?;
+
+    let requests = mock_llm_ref.get_requests();
+
+    // Should see three requests:
+    // 1. Failed unknown tool
+    // 2. Corrected ReadFiles
+    // 3. Final text response
+    assert_eq!(requests.len(), 3);
+
+    // Check error was communicated to LLM
+    let error_request = &requests[1];
+    // Check that we have the expected number of messages in the error request
+    assert_eq!(error_request.messages.len(), 3);
+
+    // Check first message (task)
+    assert_eq!(error_request.messages[0].role, MessageRole::User);
+    if let MessageContent::Text(content) = &error_request.messages[0].content {
+        assert_eq!(content, "Test task");
+    } else {
+        panic!("Expected Text content in first message");
+    }
+
+    // Check second message (assistant message with unknown tool)
+    assert_eq!(error_request.messages[1].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &error_request.messages[1].content {
+        assert_eq!(blocks.len(), 2);
+
+        // Check first block - text reasoning
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
+            assert!(text.contains("Calling unknown tool"));
+        } else {
+            panic!("Expected Text block as first block in assistant message");
+        }
+
+        // Check second block - tool use
+        if let ContentBlock::ToolUse {
+            id, name, input, ..
+        } = &blocks[1]
+        {
+            assert_eq!(id, "test-id");
+            assert_eq!(name, "unknown_tool");
+            assert_eq!(input["some_param"], "value");
+        } else {
+            panic!("Expected ToolUse block as second block in assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in second message");
+    }
+
+    // Check third message (error response)
+    assert_eq!(error_request.messages[2].role, MessageRole::User);
+    if let MessageContent::Structured(blocks) = &error_request.messages[2].content {
+        assert_eq!(blocks.len(), 1);
+
+        // Check error block
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "test-id");
+            assert!(is_error.unwrap_or(false));
+            assert!(content.contains("unknown_tool"));
+            assert!(content.contains("available tools"));
+        } else {
+            panic!("Expected ToolResult block in error message");
+        }
+    } else {
+        panic!("Expected Structured content in third message");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_invalid_xml_tool_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Task completed successfully.")), // Final response after successful tool
+        Ok(create_test_response_text(concat!(
+            "Correct second attempt:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>test.txt</param:path>\n",
+            "</tool:read_files>"
+        ))),
+        // Simulate LLM using an invalid tool call with mixed start/end tags
+        Ok(create_test_response_text(concat!(
+            "Attempting to read a file with invalid tool call:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>test.txt</param:path>\n",
+            "</tool:read>"
+        ))),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Xml,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    // Add an initial user message like the working test does
+    agent.append_message(Message::new_user("Test task"))?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm_ref.get_requests();
+
+    // Should see three requests:
+    // 1. Initial request with invalid tool
+    // 2. Request with corrected tool after error feedback
+    // 3. Final request after successful tool execution
+    assert_eq!(requests.len(), 3);
+
+    // Verify that we get requests with increasing message counts as expected
+    assert_eq!(requests[0].messages.len(), 1); // Initial user message
+    assert_eq!(requests[1].messages.len(), 3); // User + Assistant(invalid) + User(error)
+    assert_eq!(requests[2].messages.len(), 5); // Previous + Assistant(valid) + User(tool result)
+
+    // Validate Request 1: Invalid XML parse error handling
+    let request1 = &requests[1];
+
+    // Check assistant message with invalid XML
+    assert_eq!(request1.messages[1].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &request1.messages[1].content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
+            assert!(text.contains("invalid tool call"));
+            assert!(text.contains("</tool:read>")); // The invalid closing tag
+        } else {
+            panic!("Expected Text block in assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in assistant message");
+    }
+
+    // Check error message from system - in XML mode gets converted to text but should contain our error content
+    assert_eq!(request1.messages[2].role, MessageRole::User);
+    if let MessageContent::Text(error_text) = &request1.messages[2].content {
+        assert!(error_text.contains("Tool error"));
+        assert!(error_text.contains("mismatching tool names"));
+        assert!(error_text.contains("Expected '</tool:read_files>'"));
+        assert!(error_text.contains("found '</tool:read>'"));
+        assert!(error_text.contains("Please try again"));
+    } else {
+        panic!("Expected Text content in error message for XML mode (after conversion)");
+    }
+
+    // Validate Request 2: Corrected tool call and successful execution
+    let request2 = &requests[2];
+
+    // Check corrected assistant message
+    assert_eq!(request2.messages[3].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &request2.messages[3].content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
+            assert!(text.contains("Correct second attempt"));
+            assert!(text.contains("</tool:read_files>")); // The correct closing tag
+        } else {
+            panic!("Expected Text block in corrected assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in corrected assistant message");
+    }
+
+    // Check successful tool execution result
+    assert_eq!(request2.messages[4].role, MessageRole::User);
+    if let MessageContent::Text(result_text) = &request2.messages[4].content {
+        assert!(result_text.contains("Successfully loaded"));
+        assert!(result_text.contains("FILE: test.txt"));
+        assert!(result_text.contains("line 1"));
+        assert!(result_text.contains("line 2"));
+        assert!(result_text.contains("line 3"));
+    } else {
+        panic!("Expected Text content in tool result message");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parse_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Task completed.")),
+        Ok(create_test_response(
+            "read-files-2",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["test.txt"]
+            }),
+            "Reading with correct parameters",
+        )),
+        // Simulate LLM sending invalid params
+        Ok(create_test_response(
+            "read-files-1",
+            "read_files",
+            serde_json::json!({
+                // Missing required 'paths' parameter
+                "wrong_param": "value"
+            }),
+            "Reading with incorrect parameters",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    agent.start_with_task("Test task".to_string()).await?;
+
+    mock_llm_ref.print_requests();
+    let requests = mock_llm_ref.get_requests();
+
+    // Should see three requests:
+    // 1. Failed parse
+    // 2. Corrected ReadFiles
+    // 3. Final text response
+    assert_eq!(requests.len(), 3);
+
+    // Check error was communicated to LLM
+    let error_request = &requests[1];
+    assert!(error_request.messages.len() >= 2); // May have changed with the new implementation
+
+    // Check that we have the expected number of messages in the error request
+    assert_eq!(error_request.messages.len(), 3);
+
+    // Check first message (task)
+    assert_eq!(error_request.messages[0].role, MessageRole::User);
+    if let MessageContent::Text(content) = &error_request.messages[0].content {
+        assert_eq!(content, "Test task");
+    } else {
+        panic!("Expected Text content in first message");
+    }
+
+    // Check second message (assistant message with incorrect parameters)
+    assert_eq!(error_request.messages[1].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &error_request.messages[1].content {
+        assert_eq!(blocks.len(), 2);
+
+        // Check first block - text reasoning
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
+            assert!(text.contains("Reading with incorrect parameters"));
+        } else {
+            panic!("Expected Text block as first block in assistant message");
+        }
+
+        // Check second block - tool use with wrong parameters
+        if let ContentBlock::ToolUse {
+            id, name, input, ..
+        } = &blocks[1]
+        {
+            assert_eq!(id, "read-files-1");
+            assert_eq!(name, "read_files");
+            assert!(
+                input.get("paths").is_none(),
+                "Should not have 'paths' parameter"
+            );
+            assert_eq!(input["wrong_param"], "value");
+        } else {
+            panic!("Expected ToolUse block as second block in assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in second message");
+    }
+
+    // Check third message (error response)
+    assert_eq!(error_request.messages[2].role, MessageRole::User);
+    if let MessageContent::Structured(blocks) = &error_request.messages[2].content {
+        assert_eq!(blocks.len(), 1);
+
+        // Check error block
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "read-files-1");
+            assert!(is_error.unwrap_or(false));
+
+            // Check for error content about missing parameters
+            let error_content = content.text_content().to_lowercase();
+            assert!(
+                error_content.contains("parameter"),
+                "Error should mention parameters: {content}"
+            );
+        } else {
+            panic!("Expected ToolResult block in error message");
+        }
+    } else {
+        panic!("Expected Structured content in third message");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
+    let temp_project = tempdir()?;
+    let project_root = temp_project.path().to_path_buf();
+    let project_name = "secure_project";
+
+    let write_file_response = create_test_response(
+        "write-file-escape",
+        "write_file",
+        serde_json::json!({
+            "project": project_name,
+            "path": "../outside.txt",
+            "content": "should not be written"
+        }),
+        "Attempting to escape project root",
+    );
+
+    let completion_response =
+        create_test_response_text("Noted the error. Ending the task after the failure.");
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(completion_response), Ok(write_file_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let project_manager = MockProjectManager::default().with_project_path(
+        project_name,
+        project_root.clone(),
+        Box::new(Explorer::new(project_root.clone())),
+    );
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(project_manager),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(project_root.clone()),
+        initial_project: project_name.to_string(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent
+        .start_with_task("Attempt a write outside the root".to_string())
+        .await?;
+
+    let requests = mock_llm_ref.get_requests();
+    assert!(
+        requests.len() >= 2,
+        "Expected at least two LLM requests to capture the error"
+    );
+
+    let error_request = &requests[1];
+    assert!(
+        error_request.messages.len() >= 3,
+        "Conversation should include tool failure response"
+    );
+
+    let error_message = &error_request.messages[2];
+    assert_eq!(error_message.role, MessageRole::User);
+
+    let root_display = project_root.display().to_string();
+    let mut found_tool_result = false;
+    if let MessageContent::Structured(blocks) = &error_message.content {
+        for block in blocks {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = block
+            {
+                if tool_use_id == "write-file-escape" {
+                    found_tool_result = true;
+                    assert!(is_error.unwrap_or(false));
+                    assert!(
+                        content.contains("Access outside project root is not allowed"),
+                        "Tool result should mention access restriction: {content}"
+                    );
+                    assert!(
+                        !content.contains(&root_display),
+                        "Tool result should not leak the project root path: {content}"
+                    );
+                }
+            }
+        }
+    } else {
+        panic!("Expected structured user message containing tool results");
+    }
+
+    assert!(
+        found_tool_result,
+        "Did not find tool result block for the write_file escape attempt"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_context_compaction_inserts_summary() -> Result<()> {
+    let summary_text = "Summary of recent work";
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(summary_text)],
+        usage: Usage {
+            input_tokens: 20,
+            output_tokens: 8,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    agent.append_message(Message::new_user("User request"))?;
+
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text("Assistant reply")])
+            .with_request_id(1)
+            .with_usage(Usage {
+                input_tokens: 85,
+                output_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    // Ensure a compaction summary message was added
+    let summary_message = agent
+        .message_history_for_tests()
+        .iter()
+        .find(|message| message.is_compaction_summary)
+        .cloned()
+        .expect("Expected compaction summary in history");
+    assert_eq!(summary_message.role, MessageRole::User);
+    let stored_summary = match summary_message.content {
+        MessageContent::Text(ref text) => text,
+        MessageContent::Structured(_) => panic!("Summary should be stored as text"),
+    };
+    assert_eq!(stored_summary, summary_text);
+
+    // The compaction prompt should have been sent to the provider
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let compaction_request = &requests[0];
+    let compaction_prompt_found = compaction_request.messages.iter().any(|message| {
+        matches!(&message.content, MessageContent::Text(text) if text.contains("system-compaction"))
+    });
+    assert!(
+        compaction_prompt_found,
+        "Expected compaction prompt in LLM request"
+    );
+
+    // Ensure the UI received a SetMessages event with the compaction divider
+    let streaming_output = ui.get_streaming_output();
+    let has_compaction_fragment = streaming_output
+        .iter()
+        .any(|chunk| chunk.starts_with("[compaction] ") && chunk.contains(summary_text));
+    assert!(
+        has_compaction_fragment,
+        "Expected compaction divider fragment with summary text"
+    );
+
+    // Subsequent prompt should include the summary content
+    let summary_in_followup =
+        requests[1].messages.iter().any(|message| {
+            match &message.content {
+        MessageContent::Structured(blocks) => blocks.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text, .. } if text.contains(summary_text))
+        }),
+        MessageContent::Text(text) => text.contains(summary_text),
+    }
+        });
+    assert!(
+        summary_in_followup,
+        "Expected summary text in follow-up request"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
+    let summary_text = "Summary to store after compaction";
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(summary_text)],
+        usage: Usage {
+            input_tokens: 20,
+            output_tokens: 8,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    agent.append_message(Message::new_user("User request"))?;
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text(
+            "Assistant reply pushing over limit",
+        )])
+        .with_request_id(1)
+        .with_usage(Usage {
+            input_tokens: 85,
+            output_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    let compaction_prompt = include_str!("../../resources/compaction_prompt.md");
+    let history_contains_prompt =
+        agent
+            .message_history_for_tests()
+            .iter()
+            .any(|message| match &message.content {
+                MessageContent::Text(text) => text.contains(compaction_prompt),
+                MessageContent::Structured(blocks) => blocks.iter().any(|block| match block {
+                    ContentBlock::Text { text, .. } => text.contains(compaction_prompt),
+                    ContentBlock::Thinking { thinking, .. } => thinking.contains(compaction_prompt),
+                    ContentBlock::ToolResult { content, .. } => content.contains(compaction_prompt),
+                    _ => false,
+                }),
+            });
+
+    assert!(
+        !history_contains_prompt,
+        "Compaction prompt should not be persisted in the session history",
+    );
+
+    // Still ensure the summary made it into history for future iterations
+    let has_summary = agent.message_history_for_tests().iter().any(|message| {
+        message.is_compaction_summary
+            && matches!(&message.content, MessageContent::Text(text) if text == summary_text)
+    });
+    assert!(
+        has_summary,
+        "Compaction summary should be stored in history"
+    );
+
+    let events = ui.events();
+    let observed_states: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let UiEvent::UpdateSessionActivityState { activity_state, .. } = event {
+                Some(activity_state.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        observed_states.contains(&SessionActivityState::WaitingForResponse),
+        "Compaction should set activity state to WaitingForResponse"
+    );
+    assert!(
+        observed_states.contains(&SessionActivityState::AgentRunning),
+        "Compaction should restore activity state to AgentRunning"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_context_compaction_uses_only_messages_after_previous_summary() -> Result<()> {
+    let new_summary_text = "Second compaction summary";
+    let previous_summary_text = "Earlier summary text";
+    let old_user_text = "Old user request before compaction";
+    let old_assistant_text = "Old assistant response before compaction";
+    let post_summary_user_text = "User request after previous compaction";
+    let post_summary_assistant_text =
+        "Assistant response after compaction that pushed us over the limit";
+
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(new_summary_text)],
+        usage: Usage {
+            input_tokens: 15,
+            output_tokens: 6,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    // Seed history before the first compaction
+    agent.append_message(Message::new_user(old_user_text))?;
+    agent.append_message(
+        Message::new_assistant(old_assistant_text)
+            .with_request_id(1)
+            .with_usage(Usage {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    // Simulate an earlier compaction summary
+    agent.append_message(Message {
+        role: MessageRole::User,
+        content: MessageContent::Text(previous_summary_text.to_string()),
+        is_compaction_summary: true,
+        ..Default::default()
+    })?;
+
+    // Add conversation after the previous compaction that should stay active
+    agent.append_message(Message::new_user(post_summary_user_text))?;
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text(post_summary_assistant_text)])
+            .with_request_id(2)
+            .with_usage(Usage {
+                input_tokens: 85,
+                output_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let compaction_request = &requests[0];
+
+    let message_contains = |message: &Message, needle: &str| -> bool {
+        match &message.content {
+            MessageContent::Text(text) => text.contains(needle),
+            MessageContent::Structured(blocks) => blocks.iter().any(|block| match block {
+                ContentBlock::Text { text, .. } => text.contains(needle),
+                ContentBlock::Thinking { thinking, .. } => thinking.contains(needle),
+                ContentBlock::ToolResult { content, .. } => content.contains(needle),
+                _ => false,
+            }),
+        }
+    };
+
+    let request_contains = |needle: &str| -> bool {
+        compaction_request
+            .messages
+            .iter()
+            .any(|message| message_contains(message, needle))
+    };
+
+    assert!(
+        !request_contains(old_user_text),
+        "Compaction request should skip messages before the previous summary",
+    );
+    assert!(
+        !request_contains(old_assistant_text),
+        "Compaction request should skip assistant replies before the previous summary",
+    );
+    assert!(
+        request_contains(previous_summary_text),
+        "Compaction request should include the most recent summary to preserve context",
+    );
+    assert!(
+        request_contains(post_summary_user_text),
+        "Compaction request should include user messages after the previous summary",
+    );
+    assert!(
+        request_contains(post_summary_assistant_text),
+        "Compaction request should include assistant replies after the previous summary",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
+    use crate::persistence::ChatSession;
+    use crate::session::instance::SessionInstance;
+
+    // Create a session with mixed messages including failed tool error messages
+    let mut session = ChatSession::new_empty(
+        "test-session".to_string(),
+        "Test Session".to_string(),
+        SessionConfig {
+            init_path: None,
+            initial_project: String::new(),
+            tool_syntax: ToolSyntax::Xml,
+            use_diff_blocks: false,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            ..SessionConfig::default()
+        },
+        None,
+    );
+    session.messages = vec![
+        // Regular user message - should be included
+        Message::new_user("Hello, please help me"),
+        // Assistant response
+        Message::new_assistant("I'll help you").with_request_id(1),
+        // Parse error message in XML mode - should be filtered out
+        Message::new_user_content(vec![ContentBlock::new_error_tool_result(
+            "tool-1-0",
+            "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
+        )]),
+        // Regular tool result - should be filtered out
+        Message::new_user_content(vec![ContentBlock::new_tool_result(
+            "regular-tool-123",
+            "File contents here",
+        )]),
+        // Empty user message (legacy) - should be filtered out
+        Message::new_user(""),
+        // Another regular user message - should be included
+        Message::new_user("Thank you for the help!"),
+    ];
+    session.tool_executions = Vec::new();
+    session.next_request_id = 1;
+
+    let session_instance = SessionInstance::new(session, crate::tools::test_registry());
+
+    // Test the UI message conversion - should filter out tool-result and empty messages
+    let ui_messages = session_instance.convert_messages_to_ui_data(ToolSyntax::Xml)?;
+
+    // Should only have 3 messages:
+    // 1. "Hello, please help me" (user)
+    // 2. "I'll help you" (assistant)
+    // 3. "Thank you for the help!" (user)
+    assert_eq!(ui_messages.len(), 3);
+
+    // Verify the first message
+    assert_eq!(ui_messages[0].role, crate::ui::ui_events::MessageRole::User);
+    assert!(ui_messages[0].fragments.iter().any(|f| match f {
+        crate::ui::streaming::DisplayFragment::PlainText(text) =>
+            text.contains("Hello, please help me"),
+        _ => false,
+    }));
+
+    // Verify the second message
+    assert_eq!(
+        ui_messages[1].role,
+        crate::ui::ui_events::MessageRole::Assistant
+    );
+    assert!(ui_messages[1].fragments.iter().any(|f| match f {
+        crate::ui::streaming::DisplayFragment::PlainText(text) => text.contains("I'll help you"),
+        _ => false,
+    }));
+
+    // Verify the third message
+    assert_eq!(ui_messages[2].role, crate::ui::ui_events::MessageRole::User);
+    assert!(ui_messages[2].fragments.iter().any(|f| match f {
+        crate::ui::streaming::DisplayFragment::PlainText(text) =>
+            text.contains("Thank you for the help!"),
+        _ => false,
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
+    // This test verifies that:
+    // 1. Naming reminders are only added to actual user messages, not tool result messages
+    // 2. Text messages are converted to Structured with separate ContentBlocks for original text and reminder
+    // 3. Structured messages get the reminder added as an additional ContentBlock
+    // Create a mock agent for testing
+    let llm_provider = Box::new(MockLLMProvider::new(vec![]));
+    let project_manager = Arc::new(MockProjectManager::default());
+    let command_executor = Arc::new(create_command_executor_mock());
+    let ui = Arc::new(MockUI::default());
+    let state_persistence = Box::new(MockStatePersistence::new());
+
+    let components = AgentComponents {
+        llm_provider,
+        project_manager,
+        command_executor,
+        ui,
+        state_persistence,
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: None,
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Xml,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+
+    // Test case 1: User message with text content should get reminder
+    let messages = vec![Message::new_user("Hello, help me with a task")];
+
+    let result_messages = agent.shape_request_messages(messages.clone());
+    assert_eq!(result_messages.len(), 1);
+    assert!(result_messages[0].volatile);
+
+    // The message should now be structured with two ContentBlocks
+    if let MessageContent::Structured(blocks) = &result_messages[0].content {
+        assert_eq!(blocks.len(), 2);
+
+        // First block should contain the original user text
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
+            assert_eq!(text, "Hello, help me with a task");
+        } else {
+            panic!("Expected first block to be text with original user message");
+        }
+
+        // Second block should contain the reminder
+        if let ContentBlock::Text { text, .. } = &blocks[1] {
+            assert!(text.contains("<system-reminder>"));
+            assert!(text.contains("name_session"));
+        } else {
+            panic!("Expected second block to be text with reminder");
+        }
+    } else {
+        panic!("Expected structured content after reminder injection");
+    }
+
+    // Test case 2: User message with only tool results should be skipped
+    let messages_with_tool_results = vec![
+        Message::new_user("Hello, help me with a task"),
+        Message::new_assistant_content(vec![ContentBlock::new_text(
+            "I'll help you with that task.",
+        )])
+        .with_request_id(1)
+        .with_usage(Usage::zero()),
+        Message::new_user_content(vec![ContentBlock::new_tool_result(
+            "tool-1-1",
+            "Tool execution result",
+        )]),
+    ];
+
+    let result_messages = agent.shape_request_messages(messages_with_tool_results.clone());
+    assert_eq!(result_messages.len(), 3);
+    assert!(result_messages[0].volatile);
+    assert!(!result_messages[2].volatile);
+
+    // The reminder should be added to the first user message (with text content), not the tool result message
+    // The first message should now be structured with two ContentBlocks
+    if let MessageContent::Structured(blocks) = &result_messages[0].content {
+        assert_eq!(blocks.len(), 2);
+
+        // First block should contain the original user text
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
+            assert_eq!(text, "Hello, help me with a task");
+        } else {
+            panic!("Expected first block to be text with original user message");
+        }
+
+        // Second block should contain the reminder
+        if let ContentBlock::Text { text, .. } = &blocks[1] {
+            assert!(text.contains("<system-reminder>"));
+            assert!(text.contains("name_session"));
+        } else {
+            panic!("Expected second block to be text with reminder");
+        }
+    } else {
+        panic!("Expected structured content in first message after reminder injection");
+    }
+
+    // The tool result message should remain unchanged
+    if let MessageContent::Structured(blocks) = &result_messages[2].content {
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0], ContentBlock::ToolResult { .. }));
+        // No reminder should be added to this message
+        for block in blocks {
+            if let ContentBlock::Text { text, .. } = block {
+                assert!(!text.contains("<system-reminder>"));
+            }
+        }
+    } else {
+        panic!("Expected structured content in tool result message");
+    }
+
+    // Test case 3: User message with mixed content (text + tool results) should get reminder
+    let mixed_message = vec![Message::new_user_content(vec![
+        ContentBlock::new_text("Please analyze this file"),
+        ContentBlock::new_tool_result("tool-1-1", "Previous tool result"),
+    ])];
+
+    let result_messages = agent.shape_request_messages(mixed_message.clone());
+    assert_eq!(result_messages.len(), 1);
+    assert!(result_messages[0].volatile);
+
+    if let MessageContent::Structured(blocks) = &result_messages[0].content {
+        assert_eq!(blocks.len(), 3); // Original text + tool result + reminder text
+
+        // First block should be the original text
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
+            assert_eq!(text, "Please analyze this file");
+        } else {
+            panic!("Expected first block to be original text");
+        }
+
+        // Second block should be the tool result (unchanged)
+        assert!(matches!(blocks[1], ContentBlock::ToolResult { .. }));
+
+        // Third block should be the reminder
+        if let ContentBlock::Text { text, .. } = &blocks[2] {
+            assert!(text.contains("<system-reminder>"));
+            assert!(text.contains("name_session"));
+        } else {
+            panic!("Expected third block to be reminder text");
+        }
+    } else {
+        panic!("Expected structured content");
+    }
+
+    // Test case 4: No reminder should be added if session is already named
+    agent.set_session_name("Test Session".to_string());
+    let result_messages = agent.shape_request_messages(messages);
+    assert_eq!(result_messages.len(), 1);
+    assert!(!result_messages[0].volatile);
+
+    // When session is already named, the message should remain unchanged (Text content)
+    if let MessageContent::Text(text) = &result_messages[0].content {
+        assert_eq!(text, "Hello, help me with a task");
+        assert!(!text.contains("<system-reminder>"));
+    } else {
+        panic!("Expected text content to remain unchanged when session is already named");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test XML syntax with offset replacement
+    let original_text = concat!(
+        "I'll write the file for you.\n",
+        "\n",
+        "<tool:write_file>\n",
+        "<param:project>test-project</param:project>\n",
+        "<param:path>some_file.ts</param:path>\n",
+        "<param:content>\n",
+        "console.log('result:',1+1);\n",
+        "</param:content>\n",
+        "</tool:write_file>\n",
+        "\n",
+        "Let me know if you need anything else."
+    );
+
+    // Parse the original text using the XML parser to extract the actual tool block with offsets
+        use llm::{ContentBlock, LLMResponse, Usage};
+
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
+    let llm_response = LLMResponse {
+        content: vec![ContentBlock::new_text(original_text)],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let (parsed_tools, _) = parser.extract_requests(&llm_response, 123, 0, &crate::tools::test_registry())?;
+    assert_eq!(parsed_tools.len(), 1);
+
+    let parsed_tool = &parsed_tools[0];
+    assert_eq!(parsed_tool.name, "write_file");
+    assert!(parsed_tool.start_offset.is_some());
+    assert!(parsed_tool.end_offset.is_some());
+
+    // Create an updated request using the parsed tool's ID and offsets, but with new input
+    let updated_request = ToolRequest {
+        id: parsed_tool.id.clone(),
+        name: parsed_tool.name.clone(),
+        input: json!({
+            "project": "test-project",
+            "path": "some_file.ts",
+            // Simulate content has been formatted on save
+            "content": "console.log(\"result:\", 1 + 1)",
+        }),
+        start_offset: parsed_tool.start_offset,
+        end_offset: parsed_tool.end_offset,
+    };
+
+    // Build expected text by simulating what the formatter would produce
+    // The XML formatter adds a trailing newline after </tool:name>, which creates an extra newline
+    let expected_text = concat!(
+        "I'll write the file for you.\n",
+        "\n",
+        "<tool:write_file>\n",
+        "<param:project>test-project</param:project>\n",
+        "<param:path>some_file.ts</param:path>\n",
+        "<param:content>\n",
+        "console.log(\"result:\", 1 + 1)\n",
+        "</param:content>\n",
+        "</tool:write_file>\n", // Formatter adds this newline
+        "\n",                   // Original newline from text
+        "\n",                   // This creates an extra newline due to formatter
+        "Let me know if you need anything else."
+    );
+
+    let result =
+        Agent::update_tool_call_in_text_static(
+        original_text,
+        &updated_request,
+        &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
+        &crate::tools::test_registry(),
+    )?;
+
+    // Should have replaced the tool block exactly
+    assert_eq!(expected_text, result);
+
+    Ok(())
+}
+
+#[test]
+fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test Caret syntax with offset replacement
+    let original_text = concat!(
+        "Let me write a file for you.\n",
+        "\n",
+        "^^^write_file\n",
+        "project: old-project\n",
+        "path: old-file.txt\n",
+        "content: old content\n",
+        "^^^\n",
+        "\n",
+        "Done!"
+    );
+
+    // Parse the original text using the Caret parser to extract the actual tool block with offsets
+        use llm::{ContentBlock, LLMResponse, Usage};
+
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
+    let llm_response = LLMResponse {
+        content: vec![ContentBlock::new_text(original_text)],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let (parsed_tools, _) = parser.extract_requests(&llm_response, 456, 0, &crate::tools::test_registry())?;
+    assert_eq!(parsed_tools.len(), 1);
+
+    let parsed_tool = &parsed_tools[0];
+    assert_eq!(parsed_tool.name, "write_file");
+    assert!(parsed_tool.start_offset.is_some());
+    assert!(parsed_tool.end_offset.is_some());
+
+    // Create an updated request using the parsed tool's ID and offsets, but with new input
+    let updated_request = ToolRequest {
+        id: parsed_tool.id.clone(),
+        name: parsed_tool.name.clone(),
+        input: json!({
+            "project": "new-project",
+            "path": "new-file.txt",
+            "content": "new content here"
+        }),
+        start_offset: parsed_tool.start_offset,
+        end_offset: parsed_tool.end_offset,
+    };
+
+    // Build expected text by simulating what the formatter would produce
+    // The Caret formatter adds a trailing newline after ^^^, which creates an extra newline
+    let expected_text = concat!(
+        "Let me write a file for you.\n",
+        "\n",
+        "^^^write_file\n",
+        "project: new-project\n",
+        "path: new-file.txt\n",
+        "content ---\n",
+        "new content here\n",
+        "--- content\n",
+        "^^^\n", // Formatter adds this newline
+        "\n",    // Original newline from text
+        "\n",    // This creates an extra newline due to formatter
+        "Done!"
+    );
+
+    let result =
+        Agent::update_tool_call_in_text_static(
+        original_text,
+        &updated_request,
+        &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
+        &crate::tools::test_registry(),
+    )?;
+
+    // Should have replaced the tool block exactly
+    assert_eq!(expected_text, result);
+
+    Ok(())
+}
+
+#[test]
+fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test fallback mode when offsets are missing
+    let original_text = "Here's some original text with a tool call.";
+
+    let updated_request = ToolRequest {
+        id: "tool-789-1".to_string(),
+        name: "read_files".to_string(),
+        input: json!({
+            "project": "test-project",
+            "paths": ["test-file.txt"]
+        }),
+        start_offset: None, // No offset information
+        end_offset: None,
+    };
+
+    let result =
+        Agent::update_tool_call_in_text_static(
+        original_text,
+        &updated_request,
+        &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
+        &crate::tools::test_registry(),
+    )?;
+
+    // Should have appended the updated tool call
+    assert!(result.contains(original_text));
+    assert!(result.contains("<!-- Tool call tool-789-1 was updated after auto-formatting -->"));
+    assert!(result.contains("<tool:read_files>"));
+    assert!(result.contains("<param:project>test-project</param:project>"));
+    assert!(result.contains("<param:path>test-file.txt</param:path>"));
+    assert!(result.contains("</tool:read_files>"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Please inspect the project.");
+    let assistant_message = Message::new_assistant_content(vec![
+        ContentBlock::new_text("I'll read the file now."),
+        ContentBlock::new_tool_use(
+            "tool-1-1",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["README.md"]
+            }),
+        ),
+    ])
+    .with_request_id(1);
+
+    let session_state = SessionState::from_messages(
+        "native-session",
+        "Native Session",
+        vec![user_message, assistant_message],
+        session_config.clone(),
+    );
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 1);
+    assert!(matches!(history[0].role, MessageRole::User));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Please inspect the project.");
+    let assistant_message = Message::new_assistant_content(vec![
+        ContentBlock::new_text("I'll read the file now."),
+        ContentBlock::new_tool_use(
+            "tool-1-1",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["README.md"]
+            }),
+        ),
+    ])
+    .with_request_id(1);
+    let followup_user_message = Message::new_user("Also check the contributing guide.");
+
+    let session_state = SessionState::from_messages(
+        "native-session",
+        "Native Session",
+        vec![
+            user_message.clone(),
+            assistant_message,
+            followup_user_message.clone(),
+        ],
+        session_config.clone(),
+    );
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[0].role, MessageRole::User));
+    assert!(matches!(history[1].role, MessageRole::User));
+    match &history[0].content {
+        MessageContent::Text(content) => assert_eq!(content, "Please inspect the project."),
+        _ => panic!("Expected initial user message to be preserved"),
+    }
+    match &history[1].content {
+        MessageContent::Text(content) => assert_eq!(content, "Also check the contributing guide."),
+        _ => panic!("Expected follow-up user message to be preserved"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Xml,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Find the TODOs.");
+    let assistant_text = concat!(
+        "Searching for TODOs now.\n\n",
+        "<tool:search_files>\n",
+        "<param:project>test</param:project>\n",
+        "<param:regex>TODO</param:regex>\n",
+        "</tool:search_files>\n"
+    );
+    let assistant_message =
+        Message::new_assistant_content(vec![ContentBlock::new_text(assistant_text)])
+            .with_request_id(1);
+
+    let session_state = SessionState::from_messages(
+        "xml-session",
+        "XML Session",
+        vec![user_message, assistant_message],
+        session_config.clone(),
+    );
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 1);
+    assert!(matches!(history[0].role, MessageRole::User));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Summarize the repo.");
+    let assistant_message = Message::new_assistant("Here is a summary of the repository.");
+
+    let session_state = SessionState::from_messages(
+        "text-session",
+        "Regular Session",
+        vec![user_message.clone(), assistant_message.clone()],
+        session_config.clone(),
+    );
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[0].role, MessageRole::User));
+    assert!(matches!(history[1].role, MessageRole::Assistant));
+    match (&history[1].content, &assistant_message.content) {
+        (MessageContent::Text(actual), MessageContent::Text(expected)) => {
+            assert_eq!(actual, expected);
+        }
+        _ => panic!("Expected assistant text content to be preserved"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_render_tool_results_generates_cancelled_results_for_missing_executions() -> Result<()>
+{
+    // This test verifies that when an assistant message contains ToolUse blocks
+    // but there's no corresponding ToolResult in the message history (because the
+    // user cancelled the tool execution), we generate synthetic "user cancelled"
+    // ToolResult blocks to satisfy the API requirement.
+
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    // Simulate a scenario where:
+    // 1. User asks a question
+    // 2. Assistant responds with a tool call
+    // 3. User cancels the tool execution (no ToolResult message added)
+    // 4. User asks a follow-up question
+
+    // Add user message
+    agent.append_message(Message::new_user("Please run the tests."))?;
+
+    // Add assistant message with a tool call (simulating what LLM returned)
+    agent.append_message(
+        Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll run the tests for you."),
+            ContentBlock::new_tool_use(
+                "tool-1-1",
+                "execute_command",
+                serde_json::json!({
+                    "project": "test",
+                    "command_line": "cargo test"
+                }),
+            ),
+        ])
+        .with_request_id(1),
+    )?;
+
+    // Note: We do NOT add a ToolResult message - simulating user cancellation
+
+    // Add another user message (user continues the conversation)
+    agent.append_message(Message::new_user("Never mind, let's do something else."))?;
+
+    // Now call render_tool_results_in_messages - this is what gets sent to the LLM
+    let rendered_messages = agent.render_tool_results_in_messages();
+
+    // We should have:
+    // 1. Original user message
+    // 2. Assistant message with tool call
+    // 3. Synthetic user message with cancelled tool result
+    // 4. Follow-up user message
+    assert_eq!(
+        rendered_messages.len(),
+        4,
+        "Expected 4 messages: user, assistant, cancelled tool result, follow-up user"
+    );
+
+    // Verify the synthetic cancelled tool result was inserted
+    let cancelled_message = &rendered_messages[2];
+    assert_eq!(cancelled_message.role, MessageRole::User);
+
+    if let MessageContent::Structured(blocks) = &cancelled_message.content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "tool-1-1");
+            assert!(content.contains("cancelled"));
+            assert!(is_error.unwrap_or(false));
+        } else {
+            panic!("Expected ToolResult block");
+        }
+    } else {
+        panic!("Expected Structured content for cancelled tool result");
+    }
+
+    // Verify the follow-up user message is still present
+    let followup_message = &rendered_messages[3];
+    assert_eq!(followup_message.role, MessageRole::User);
+    if let MessageContent::Text(text) = &followup_message.content {
+        assert_eq!(text, "Never mind, let's do something else.");
+    } else {
+        panic!("Expected Text content for follow-up message");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()> {
+    // This test verifies that when tool results already exist, we don't add
+    // synthetic cancelled results for them.
+
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    // Simulate a normal scenario where tool execution completed successfully
+
+    // Add user message
+    agent.append_message(Message::new_user("Read the README."))?;
+
+    // Add assistant message with a tool call
+    agent.append_message(
+        Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll read the README file."),
+            ContentBlock::new_tool_use(
+                "tool-1-1",
+                "read_files",
+                serde_json::json!({
+                    "project": "test",
+                    "paths": ["README.md"]
+                }),
+            ),
+        ])
+        .with_request_id(1),
+    )?;
+
+    // Add the tool result (normal execution completed)
+    agent.append_message(Message::new_user_content(vec![ContentBlock::ToolResult {
+        tool_use_id: "tool-1-1".to_string(),
+        content: llm::ToolResultContent::text("File contents here"),
+        is_error: None,
+        start_time: None,
+        end_time: None,
+    }]))?;
+
+    // Now call render_tool_results_in_messages
+    let rendered_messages = agent.render_tool_results_in_messages();
+
+    // We should have exactly 3 messages - no synthetic cancelled results added
+    assert_eq!(
+        rendered_messages.len(),
+        3,
+        "Expected 3 messages: user, assistant, tool result"
+    );
+
+    // Verify the tool result is the original one (not a cancelled one)
+    let result_message = &rendered_messages[2];
+    if let MessageContent::Structured(blocks) = &result_message.content {
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "tool-1-1");
+            // Content should be the original, not "cancelled"
+            assert!(content.contains("File contents") || content.is_empty());
+            // Should not be marked as error
+            assert!(!is_error.unwrap_or(false));
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<()> {
+    // This test verifies that multiple cancelled tool calls are all handled correctly.
+
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    // Add user message
+    agent.append_message(Message::new_user("Check the project."))?;
+
+    // Add assistant message with multiple tool calls (all cancelled)
+    agent.append_message(
+        Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll check multiple things."),
+            ContentBlock::new_tool_use(
+                "tool-1-1",
+                "read_files",
+                serde_json::json!({
+                    "project": "test",
+                    "paths": ["file1.txt"]
+                }),
+            ),
+            ContentBlock::new_tool_use(
+                "tool-1-2",
+                "execute_command",
+                serde_json::json!({
+                    "project": "test",
+                    "command_line": "ls -la"
+                }),
+            ),
+        ])
+        .with_request_id(1),
+    )?;
+
+    // No tool results added - both cancelled
+
+    // Now call render_tool_results_in_messages
+    let rendered_messages = agent.render_tool_results_in_messages();
+
+    // We should have:
+    // 1. Original user message
+    // 2. Assistant message with tool calls
+    // 3. Synthetic user message with both cancelled tool results
+    assert_eq!(
+        rendered_messages.len(),
+        3,
+        "Expected 3 messages: user, assistant, cancelled tool results"
+    );
+
+    // Verify the synthetic cancelled results
+    let cancelled_message = &rendered_messages[2];
+    assert_eq!(cancelled_message.role, MessageRole::User);
+
+    if let MessageContent::Structured(blocks) = &cancelled_message.content {
+        assert_eq!(blocks.len(), 2, "Should have 2 cancelled tool results");
+
+        // Check first cancelled result
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "tool-1-1");
+            assert!(content.contains("cancelled"));
+            assert!(is_error.unwrap_or(false));
+        } else {
+            panic!("Expected ToolResult block for first cancelled tool");
+        }
+
+        // Check second cancelled result
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = &blocks[1]
+        {
+            assert_eq!(tool_use_id, "tool-1-2");
+            assert!(content.contains("cancelled"));
+            assert!(is_error.unwrap_or(false));
+        } else {
+            panic!("Expected ToolResult block for second cancelled tool");
+        }
+    } else {
+        panic!("Expected Structured content for cancelled tool results");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
+    // Scenario: LLM calls read_files on a large file, the result is big (>50KB),
+    // then the *next* LLM call fails with "prompt is too long".
+    // Expected: the large tool result is replaced with a PromptTooLongError,
+    // the UI is notified, and the LLM is retried successfully.
+
+    // Create an explorer with a large file (100KB, well above the 50KB threshold)
+    let large_content = "x".repeat(100 * 1024);
+    let mut files = HashMap::new();
+    files.insert(PathBuf::from("./root/big.txt"), large_content);
+    files.insert(
+        PathBuf::from("./root/test.txt"),
+        "line 1\nline 2\n".to_string(),
+    );
+    let explorer = crate::mocks::MockExplorer::new(files, None);
+
+    let project_manager = MockProjectManager::new().with_project_path(
+        "test",
+        PathBuf::from("./root"),
+        Box::new(explorer),
+    );
+
+    // Response sequence (remember: Vec is a stack, last = popped first):
+    //  1. LLM requests read_files on big.txt (tool call)
+    //  2. "prompt is too long" error (after tool execution, on next LLM call)
+    //  3. LLM responds normally after replacement (text only, triggers GetUserInput)
+    let mock_llm = MockLLMProvider::new(vec![
+        // Third response (popped last): success after replacement
+        Ok(create_test_response_text(
+            "I see the file was too large. Let me try a different approach.",
+        )),
+        // Second response (popped second): prompt too long error
+        Err(anyhow::anyhow!(
+            "Invalid request: prompt is too long: 500000 tokens > 200000 maximum"
+        )),
+        // First response (popped first): LLM asks to read the large file
+        Ok(create_test_response(
+            "read-big-file",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["big.txt"],
+                "ignore_size_limit": true
+            }),
+            "Let me read this large file",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(project_manager),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    agent
+        .start_with_task("Read the big file".to_string())
+        .await?;
+
+    // Verify: 3 LLM requests were made:
+    //  1. Initial task → LLM returns read_files tool call
+    //  2. After tool execution → "prompt too long" error
+    //  3. After replacement → LLM responds with text (triggers GetUserInput)
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "Expected 3 requests (tool call, prompt-too-long, retry after replacement)"
+    );
+
+    // The retry request (3rd, index 2) should contain a ToolResult with is_error=true
+    let retry_request = &requests[2];
+    let has_error_tool_result = retry_request.messages.iter().any(|msg| {
+        if let MessageContent::Structured(blocks) = &msg.content {
+            blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult {
+                        is_error: Some(true),
+                        ..
+                    }
+                )
+            })
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_error_tool_result,
+        "Expected retry request to contain an error ToolResult after replacement"
+    );
+
+    // Verify the UI received an UpdateToolStatus event with Error status
+    let events = ui.events();
+    let has_tool_error_update = events.iter().any(|event| {
+        matches!(
+            event,
+            UiEvent::UpdateToolStatus {
+                tool_id,
+                status: crate::ui::ToolStatus::Error,
+                message: Some(msg),
+                ..
+            } if tool_id == "read-big-file" && msg.contains("Prompt Too Long")
+        )
+    });
+    assert!(
+        has_tool_error_update,
+        "Expected UI to receive UpdateToolStatus with Error for the replaced tool"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<()> {
+    // Scenario: LLM calls read_files with a small result (<50KB), then the next
+    // LLM call fails with "prompt is too long".  Since the tool result is below
+    // the 50KB replacement threshold, the agent should drop the last exchange
+    // and force compaction.
+
+    let mock_project_manager = MockProjectManager::new();
+
+    // Response sequence (stack order, last = popped first):
+    //  1. LLM requests read_files on small file → tool call with small result
+    //  2. "prompt is too long" error
+    //  3. Compaction summary response (non-streaming, from perform_compaction)
+    //  4. LLM responds normally after compaction
+    let mock_llm = MockLLMProvider::new(vec![
+        // Fourth (popped last): normal response after compaction
+        Ok(create_test_response_text(
+            "I'll try a different approach after compaction.",
+        )),
+        // Third (popped third): compaction summary response (consumed by perform_compaction)
+        Ok(LLMResponse {
+            content: vec![ContentBlock::new_text("Summary: user asked to read a file")],
+            usage: Usage {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            rate_limit_info: None,
+        }),
+        // Second (popped second): prompt too long error
+        Err(anyhow::anyhow!(
+            "Invalid request: prompt is too long: 300000 tokens > 200000 maximum"
+        )),
+        // First (popped first): LLM asks to read a small file
+        Ok(create_test_response(
+            "read-small-file",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["test.txt"]
+            }),
+            "Let me read this file",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(mock_project_manager),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+
+    agent.start_with_task("Read the file".to_string()).await?;
+
+    // Verify: 4 LLM requests were made:
+    //  1. Initial task → LLM returns read_files tool call
+    //  2. After tool execution → "prompt too long" error
+    //  3. Compaction summary (non-streaming)
+    //  4. After compaction → LLM responds with text (triggers GetUserInput)
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "Expected 4 requests (tool call, prompt-too-long, compaction, post-compaction)"
+    );
+
+    // The compaction request (3rd, index 2) should contain the compaction prompt marker
+    let compaction_request = &requests[2];
+    let has_compaction_prompt = compaction_request.messages.iter().any(|msg| {
+        matches!(&msg.content, MessageContent::Text(text) if text.contains("system-compaction"))
+    });
+    assert!(
+        has_compaction_prompt,
+        "Expected compaction prompt in the third request"
+    );
+
+    // After compaction, the message history should contain a compaction summary
+    let has_compaction_summary = agent
+        .message_history_for_tests()
+        .iter()
+        .any(|m| m.is_compaction_summary);
+    assert!(
+        has_compaction_summary,
+        "Expected compaction summary in message history"
+    );
+
+    // The dropped exchange (assistant tool_use + user tool_result) should no longer
+    // be in the message history
+    let has_tool_result = agent.message_history_for_tests().iter().any(|msg| {
+        if let MessageContent::Structured(blocks) = &msg.content {
+            blocks.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        ..
+                    } if tool_use_id == "read-small-file"
+                )
+            })
+        } else {
+            false
+        }
+    });
+    assert!(
+        !has_tool_result,
+        "Expected the dropped tool result to be removed from message history"
+    );
+
+    // Verify UI received compaction divider
+    let streaming_output = ui.get_streaming_output();
+    let has_compaction = streaming_output
+        .iter()
+        .any(|s| s.starts_with("[compaction]"));
+    assert!(
+        has_compaction,
+        "Expected compaction divider in UI streaming output"
+    );
+
+    Ok(())
+}

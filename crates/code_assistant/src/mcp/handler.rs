@@ -1,7 +1,6 @@
 use super::resources::ResourceManager;
 use super::types::*;
 use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::tools::core::ToolRegistry;
 use crate::utils::{MessageWriter, StdoutWriter};
 use anyhow::Result;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
@@ -9,33 +8,37 @@ use tokio::io::Stdout;
 use tracing::{debug, error, trace};
 
 pub struct MessageHandler {
-    project_manager: Box<dyn ProjectManager>,
+    project_manager: std::sync::Arc<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
     message_writer: Box<dyn MessageWriter>,
+    tool_registry: std::sync::Arc<crate::tools::core::ToolRegistry>,
 }
 
 impl MessageHandler {
     pub fn new(stdout: Stdout) -> Result<Self> {
         Ok(Self {
-            project_manager: Box::new(DefaultProjectManager::new()),
+            project_manager: std::sync::Arc::new(DefaultProjectManager::new()),
             command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
             message_writer: Box::new(StdoutWriter::new(stdout)),
+            tool_registry: crate::tools::default_registry(),
         })
     }
 
     #[cfg(test)]
     pub fn with_dependencies(
-        project_manager: Box<dyn ProjectManager>,
+        project_manager: std::sync::Arc<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         message_writer: Box<dyn MessageWriter>,
+        tool_registry: std::sync::Arc<crate::tools::core::ToolRegistry>,
     ) -> Self {
         Self {
             project_manager,
             command_executor,
             resources: ResourceManager::new(),
             message_writer,
+            tool_registry,
         }
     }
 
@@ -205,9 +208,9 @@ impl MessageHandler {
         debug!("Handling tools/list request");
 
         // Use the ToolRegistry to get tool definitions
-        let registry = ToolRegistry::global();
+        let registry = self.tool_registry.clone();
         let tool_defs =
-            registry.get_tool_definitions_for_scope(crate::tools::core::ToolScope::McpServer);
+            registry.get_tool_definitions_with_capability(crate::tools::core::ToolScope::McpServer.tag());
 
         // Map tool definitions to the expected JSON structure
         let tools_json = tool_defs
@@ -256,20 +259,18 @@ impl MessageHandler {
                 .ok_or_else(|| anyhow::anyhow!("Missing parameters"))?;
 
             // Get the tool from the registry
-            let registry = ToolRegistry::global();
+            let registry = self.tool_registry.clone();
             let tool = registry
                 .get(&params.name)
                 .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;
 
-            // Create a tool context with references (no UI for MCP)
+            // Create a tool context (no UI, no plan for MCP)
+            let mut services = crate::tools::ToolServices::new(self.project_manager.clone());
             let mut context = crate::tools::core::ToolContext {
-                project_manager: self.project_manager.as_ref(),
                 command_executor: self.command_executor.as_ref(),
-                plan: None,
-                ui: None,
                 tool_id: None,
                 permission_handler: None,
-                sub_agent_runner: None,
+                extensions: Some(&mut services),
             };
 
             // Invoke the tool

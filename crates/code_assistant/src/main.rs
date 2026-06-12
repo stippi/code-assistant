@@ -1,22 +1,18 @@
 mod acp;
-mod agent;
 mod app;
 mod cli;
 mod codex_commands;
-mod config;
-mod config_dir;
 mod logging;
 mod mcp;
 mod permissions;
-mod persistence;
-mod session;
-mod tools;
-mod types;
-mod ui;
-mod utils;
 
-#[cfg(test)]
-mod tests;
+// The domain layer lives in `code_assistant_core`; re-exported under the
+// historical module paths so call sites keep using `crate::session::…` etc.
+#[allow(unused_imports)]
+pub(crate) use code_assistant_core::{
+    agent, config, config_dir, persistence, plugins, session, tool_dialects, tools, types, ui,
+    utils,
+};
 
 use crate::cli::{Args, Mode};
 use crate::logging::setup_logging;
@@ -116,9 +112,31 @@ async fn main() -> Result<()> {
             };
 
             if args.ui {
-                app::gpui::run(config)
+                #[cfg(feature = "gpui-frontend")]
+                {
+                    app::gpui::run(config)
+                }
+                #[cfg(not(feature = "gpui-frontend"))]
+                {
+                    let _ = config;
+                    anyhow::bail!(
+                        "This binary was built without the GPUI frontend \
+                         (feature `gpui-frontend`)"
+                    )
+                }
             } else {
-                app::terminal::run(config).await
+                #[cfg(feature = "terminal-frontend")]
+                {
+                    app::terminal::run(config).await
+                }
+                #[cfg(not(feature = "terminal-frontend"))]
+                {
+                    let _ = config;
+                    anyhow::bail!(
+                        "This binary was built without the terminal frontend \
+                         (feature `terminal-frontend`)"
+                    )
+                }
             }
         }
     }

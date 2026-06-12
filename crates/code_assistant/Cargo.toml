@@ -4,50 +4,26 @@ version = "0.2.10"
 edition = "2021"
 
 [features]
-default = ["document-conversion"]
-document-conversion = ["transmutation", "fs_explorer/document-conversion"]
+default = ["gpui-frontend", "terminal-frontend", "document-conversion"]
+document-conversion = ["code_assistant_core/document-conversion"]
+# Each frontend is an optional compile unit; a headless build
+# (--no-default-features) skips gpui and ratatui entirely.
+gpui-frontend = ["dep:ui_gpui"]
+terminal-frontend = ["dep:ui_terminal"]
 
 [dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false }
+ui_gpui = { path = "../ui_gpui", optional = true }
+ui_terminal = { path = "../ui_terminal", optional = true }
 command_executor = { path = "../command_executor" }
+tools_core = { path = "../tools_core" }
 fs_explorer = { path = "../fs_explorer" }
-git = { path = "../git" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
-terminal = { path = "../terminal" }
-terminal_view = { path = "../terminal_view" }
-web = { path = "../web" }
 
-glob = "0.3"
-ignore = "0.4"
-walkdir = "2.5"
-percent-encoding = "2.3"
 tokio = { version = "1.48", features = ["full"] }
-futures = "0.3"
-tempfile = "3.23"
-fs2 = "0.4"
-notify = { version = "7", features = ["macos_fsevent"] }
-
-# Terminal UI
-rustyline = "12.0.0"
-crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }
-unicode-width = "0.1"
-ratatui = { version = "0.29", features = [
-    "scrolling-regions",
-    "unstable-backend-writer",
-    "unstable-rendered-line-info",
-    "unstable-widget-ref",
-] }
-textwrap = "0.16"
-# Pin to 0.3.6 to avoid incompatibility with ratatui 0.29 (0.3.7 requires ratatui-core)
-tui-markdown = "=0.3.6"
-derive_more = { version = "2", features = ["is_variant"] }
-
-# GPUI related
-gpui = "0.2.2"
-gpui_platform = { version = "0.1", features = ["font-kit"] }
-gpui-component = "0.5.2"
-smallvec = "1.15"
-rust-embed = { version = "8.9", features = ["include-exclude"] }
+async-channel = "2.5.0"
+async-trait = "0.1"
 
 # JSON (de)serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -55,61 +31,23 @@ serde_json = "1.0"
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
-regex = "1.12"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 open = "5"
-
-async-trait = "0.1"
-dotenv = "0.15"
 dirs = "5.0"
-md5 = "0.7.0"
 
 # Date and time handling
 chrono = { version = "0.4", features = ["serde"] }
-
-# File content inspection
-unicode-segmentation = "1.12.0"
-rand = "0.8.5"
-
-# Diff visualization
-similar = { version = "2.7.0", features = ["inline"] }
-async-channel = "2.5.0"
-indexmap = "2"
-
-# Base64 encoding for images
-base64 = "0.22"
-
-# Image processing
-image = "0.25"
-
-# Document conversion (behind feature flag)
-transmutation = { version = "0.3", features = ["office"], optional = true }
-
-# Clipboard access for paste
-arboard = "3"
-
-# Prevent system sleep while agents are running
-keepawake = "0.6"
 
 # Agent Client Protocol
 agent-client-protocol = { version = "0.9", features = ["unstable"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
-# macOS-specific dependencies
-# Pin core-text to avoid version conflict with zed-font-kit
-# See: https://github.com/zed-industries/zed/issues/46966
-[target.'cfg(target_os = "macos")'.dependencies]
-core-text = "=21.0.0"
-
 [dev-dependencies]
-gpui = { version = "0.2.2", features = ["test-support"] }
-axum = "0.7"
-bytes = "1.10"
+code_assistant_core = { path = "../code_assistant_core", default-features = false, features = ["test-utils"] }
+tempfile = "3.23"
