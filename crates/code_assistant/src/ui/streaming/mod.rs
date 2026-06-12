@@ -10,13 +10,9 @@ use crate::ui::UserInterface;
 use std::sync::Arc;
 
 #[cfg(test)]
-mod caret_processor_tests;
-#[cfg(test)]
 mod json_processor_tests;
 #[cfg(test)]
-mod test_utils;
-#[cfg(test)]
-mod xml_processor_tests;
+pub(crate) mod test_utils;
 
 pub use agent_core::ui::{DisplayFragment, HiddenTools, StreamProcessorTrait};
 

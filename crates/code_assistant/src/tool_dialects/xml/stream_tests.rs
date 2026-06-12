@@ -1,5 +1,5 @@
-use super::test_utils::{assert_fragments_match, chunk_str, hidden_tools, TestUI};
-use super::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
+use crate::ui::streaming::test_utils::{assert_fragments_match, chunk_str, hidden_tools, TestUI};
+use crate::ui::streaming::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
 use llm::StreamingChunk;
 use std::sync::Arc;
 

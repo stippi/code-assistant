@@ -7,6 +7,9 @@ pub mod caret;
 pub mod system_message;
 pub mod xml;
 
+#[cfg(test)]
+mod tests;
+
 pub use caret::CaretDialect;
 pub use xml::XmlDialect;
 
@@ -197,7 +200,7 @@ pub fn convert_params_to_json(
 
 
 #[cfg(test)]
-mod tests {
+mod conversion_tests {
     use super::*;
     use crate::tools::core::capabilities;
     use crate::tools::core::ResourcesTracker;

@@ -1,4 +1,4 @@
-use super::test_utils::{assert_fragments_match, chunk_str, hidden_tools, TestUI};
+use crate::ui::streaming::test_utils::{assert_fragments_match, chunk_str, hidden_tools, TestUI};
 use crate::ui::streaming::{CaretStreamProcessor, DisplayFragment, StreamProcessorTrait};
 use llm::{Message, StreamingChunk};
 use std::sync::Arc;
@@ -894,7 +894,7 @@ fn test_smart_filter_blocks_write_tool_after_read_tool() {
 
 #[test]
 fn test_hidden_tool_emits_hidden_tool_completed() {
-    use super::test_utils::print_fragments;
+    use crate::ui::streaming::test_utils::print_fragments;
 
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
@@ -945,7 +945,7 @@ fn test_hidden_tool_emits_hidden_tool_completed() {
 
 #[test]
 fn test_extract_fragments_hidden_tool_emits_hidden_tool_completed() {
-    use super::test_utils::print_fragments;
+    use crate::ui::streaming::test_utils::print_fragments;
 
     // When restoring a session, extract_fragments_from_message should emit
     // HiddenToolCompleted for hidden tools (like update_plan) so that the UI

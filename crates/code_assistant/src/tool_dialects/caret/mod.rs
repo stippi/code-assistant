@@ -5,6 +5,11 @@ mod formatter;
 mod parser;
 pub mod stream;
 
+#[cfg(test)]
+mod stream_tests;
+#[cfg(test)]
+mod tests;
+
 pub use parser::parse_caret_tool_invocations;
 pub use stream::CaretStreamProcessor;
 
