@@ -187,7 +187,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                     record_path: record.clone(),
                     playback_path: playback.clone(),
                     fast_playback,
-                    command_executor_factory: super::gpui_terminal_executor_factory(),
+                    command_executor_factory: super::session_command_executor_factory(),
                 }),
                 Arc::new(gui_for_thread) as Arc<dyn crate::ui::UserInterface>,
             )

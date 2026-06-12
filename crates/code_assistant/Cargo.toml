@@ -4,13 +4,17 @@ version = "0.2.10"
 edition = "2021"
 
 [features]
-default = ["document-conversion"]
+default = ["gpui-frontend", "terminal-frontend", "document-conversion"]
 document-conversion = ["code_assistant_core/document-conversion"]
+# Each frontend is an optional compile unit; a headless build
+# (--no-default-features) skips gpui and ratatui entirely.
+gpui-frontend = ["dep:ui_gpui"]
+terminal-frontend = ["dep:ui_terminal"]
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
-ui_gpui = { path = "../ui_gpui" }
-ui_terminal = { path = "../ui_terminal" }
+ui_gpui = { path = "../ui_gpui", optional = true }
+ui_terminal = { path = "../ui_terminal", optional = true }
 command_executor = { path = "../command_executor" }
 tools_core = { path = "../tools_core" }
 fs_explorer = { path = "../fs_explorer" }

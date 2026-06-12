@@ -4,7 +4,11 @@
 > capabilities replace scope data); Phase 4 implemented (`tools_core` and
 > `agent_core` crates extracted; XML/Caret machinery reorganized into
 > `tool_dialects/` vertical slices — see the per-step notes below and the
-> annotations in §6). Next up: Phase 5, the domain layer and frontend crates.
+> annotations in §6); Phase 5 implemented (`code_assistant_core` domain crate,
+> `ui_gpui`/`ui_terminal` frontend crates, `code_assistant` reduced to the
+> feature-gated wiring binary — see the Phase 5 notes below). Next up: Phase 6,
+> the cleanup (singleton removal; the §3.8 UiEvent embed restructure was
+> deferred and is queued alongside it).
 > The goal is twofold: (a) a reusable agent core (comparable
 > to the Claude Code Agent SDK) that `code-assistant` uses as one of several consumers,
 > and (b) breaking up the monolithic `code_assistant` crate into independent, layered
@@ -121,6 +125,53 @@
 >   dropped in the core. `crate::agent::{hooks,dialect,ui,types}` and the moved
 >   types under `crate::tools`/`crate::persistence` remain as compatibility
 >   re-exports; call sites are unchanged.
+
+Phase 5 notes (domain layer and frontend crates):
+> - `code_assistant_core` (Layer 3) holds the entire former domain tree under its
+>   historical module names: `agent/`, `tools/`, `plugins/`, `tool_dialects/`,
+>   `session/`, `persistence`, `config`, `config_dir`, `types`, `utils`, plus the
+>   UI trait layer as `ui/` (`UserInterface`, `AgentUiAdapter`, `ui_events.rs`,
+>   `streaming/`) and the embedded `resources/` (pre-empting Phase 6 item 4).
+>   The binary re-exports the modules at its crate root
+>   (`pub(crate) use code_assistant_core::{agent, session, …}`), so remaining
+>   `crate::session::…` call sites in `acp/`/`mcp/`/`app/` are unchanged.
+> - The test mocks moved to `code_assistant_core::mocks` (formerly
+>   `tests/mocks.rs`), compiled for the crate's own tests and — behind the new
+>   `test-utils` feature — for dependent crates' tests (the binary's MCP tests
+>   use `MockProjectManager`/`MockWriter` via a feature-enabled dev-dependency).
+>   This is the consumer-facing mock story §3.1 sketched as `agent_core::test_utils`,
+>   realized one layer up where the mocks actually live.
+> - "The permission code" turned out to already live in `tools_core`;
+>   `code_assistant_core::permissions` is a re-export shim, and the ACP
+>   permission mediator stays in the binary because it depends on the `acp` module.
+> - `ui/backend.rs` (not in the §3.1 sketch; the shared UI→SessionManager bridge,
+>   `BackendEvent`/`BackendResponse` + `handle_backend_events`) is session
+>   orchestration per ground rule §1.2.4 and moved to
+>   `code_assistant_core::backend`. Its one frontend coupling — hardcoded
+>   construction of `GpuiTerminalCommandExecutor` for agent runs — became an
+>   injected `CommandExecutorFactory` on `BackendRuntimeOptions`; the wiring
+>   binary supplies the GPUI executor for both interactive frontends (behavior
+>   unchanged: that executor falls back to `DefaultCommandExecutor` when no GPUI
+>   terminal worker exists, which is exactly the terminal-frontend situation).
+>   `AgentRunConfig` moved from `app/` to `code_assistant_core::config` so
+>   `ui_terminal` can consume it.
+> - `ui_gpui` (with the icon `assets/` and the macOS `core-text` pin) and
+>   `ui_terminal` are Layer-4 crates depending on `code_assistant_core` — never
+>   the other way around. `acp/` and `mcp/` stayed modules in the binary
+>   (per step 3's "or move into the binary"; nothing forces a carve-out yet).
+> - `code_assistant` is the wiring binary: `cli`, `app/`, `acp/`, `mcp/`,
+>   `permissions/` (ACP mediator), `logging`. The frontends are feature-gated
+>   (`gpui-frontend`, `terminal-frontend`, both default); a
+>   `--no-default-features` build skips both. Caveat: such a headless build still
+>   compiles `gpui` transitively, because the Layer-0 `terminal` crate (PTY
+>   emulation) is built on gpui and the domain layer uses its `StyledLine` type
+>   in `UiEvent` — splitting that type out (or feature-gating gpui in `terminal`)
+>   is a Phase 6 candidate.
+> - **Deferred:** the §3.8 restructure of the domain `UiEvent` to *embed*
+>   `AgentUiEvent` (`UiEvent::Agent(…)`). The `UiEvent::from_agent` translation
+>   from Phase 4 still bridges the two vocabularies. The restructure is now
+>   purely internal to the new layering (touches `code_assistant_core::ui` and
+>   both frontend crates, no manifest changes) and is queued with Phase 6.
 
 ## 1. Vision
 
@@ -1349,18 +1400,31 @@ in between:
 
 ### Phase 5 — Domain layer and frontend crates
 
-1. Create `code_assistant_core` and move there: `session/`, `persistence.rs`, the tool
+1. **Done.** Create `code_assistant_core` and move there: `session/`, `persistence.rs`, the tool
    impls (`tools/impls/`), `tool_dialects/`, `plugins/`, sub-agents, the permission
    code, and the domain `UiEvent` (restructured to embed `AgentUiEvent`, see §3.8).
-2. Create `ui_gpui` from `ui/gpui/` and `ui_terminal` from `ui/terminal/`. Both depend
+   (As built: the whole domain tree moved under its historical module names, plus
+   `resources/` and the mocks as `code_assistant_core::mocks` behind a `test-utils`
+   feature; the permission code was already in `tools_core` — the core module is a
+   re-export shim, the ACP mediator stays with `acp/` in the binary. The §3.8 embed
+   restructure was deferred to Phase 6; `UiEvent::from_agent` keeps bridging. See
+   the Phase 5 notes at the top.)
+2. **Done.** Create `ui_gpui` from `ui/gpui/` and `ui_terminal` from `ui/terminal/`. Both depend
    on `code_assistant_core` (for `UiEvent`, session/persistence types) — never the
    other way around. Whatever `agent/`/`tools/` still referenced from `ui/` at this
    point must already live below (the `UserInterface` trait in `agent_core`, the
    events in `code_assistant_core`).
-3. `acp/` and `mcp/` either stay as modules in `code_assistant_core` or move into the
+   (As built: `ui/backend.rs` moved to `code_assistant_core::backend` with an
+   injected `CommandExecutorFactory` replacing the hardcoded GPUI executor;
+   `AgentRunConfig` moved to `code_assistant_core::config`.)
+3. **Done.** `acp/` and `mcp/` either stay as modules in `code_assistant_core` or move into the
    binary — carve them out as crates only when something forces it (ground rule §1.2.3).
-4. `code_assistant` shrinks to the wiring binary: CLI parsing, config loading, builder
+   (They stayed in the binary.)
+4. **Done.** `code_assistant` shrinks to the wiring binary: CLI parsing, config loading, builder
    assembly, frontend selection (feature-gated, so e.g. a headless build skips gpui).
+   (Features `gpui-frontend`/`terminal-frontend`, both default. Headless builds
+   still pull gpui transitively through the Layer-0 `terminal` crate — see the
+   Phase 5 notes; Phase 6 candidate.)
 
 ### Phase 6 — Cleanup
 
@@ -1375,8 +1439,12 @@ in between:
    for the bundled dialects.
 3. Move the sub-agent-specific UI adapters into `code_assistant_core`; only the
    `SubAgentRunner` trait remains in the core — and even that is optional.
-4. Move the resources (`compaction_prompt.md`, `tool_use_intro.md`,
+4. **Done in Phase 5.** Move the resources (`compaction_prompt.md`, `tool_use_intro.md`,
    `system_prompts/*.md`) into `code_assistant_core` (no default prompts in the core).
+5. (Added in Phase 5:) the §3.8 restructure of the domain `UiEvent` to embed
+   `AgentUiEvent`, replacing the `UiEvent::from_agent` translation; and breaking the
+   headless build's transitive gpui dependency by splitting `StyledLine` out of the
+   gpui-based `terminal` crate (or feature-gating gpui there).
 
 ### Test migration (cross-cutting concern across all phases)
 

@@ -112,9 +112,31 @@ async fn main() -> Result<()> {
             };
 
             if args.ui {
-                app::gpui::run(config)
+                #[cfg(feature = "gpui-frontend")]
+                {
+                    app::gpui::run(config)
+                }
+                #[cfg(not(feature = "gpui-frontend"))]
+                {
+                    let _ = config;
+                    anyhow::bail!(
+                        "This binary was built without the GPUI frontend \
+                         (feature `gpui-frontend`)"
+                    )
+                }
             } else {
-                app::terminal::run(config).await
+                #[cfg(feature = "terminal-frontend")]
+                {
+                    app::terminal::run(config).await
+                }
+                #[cfg(not(feature = "terminal-frontend"))]
+                {
+                    let _ = config;
+                    anyhow::bail!(
+                        "This binary was built without the terminal frontend \
+                         (feature `terminal-frontend`)"
+                    )
+                }
             }
         }
     }
