@@ -184,7 +184,7 @@ async fn handle_watcher_events(
     session_manager: Arc<Mutex<SessionManager>>,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     connected_session_id: Arc<StdMutex<Option<String>>>,
-    tool_registry: std::sync::Arc<code_assistant_core::tools::core::ToolRegistry>,
+    tool_registry: std::sync::Arc<tools_core::ToolRegistry>,
 ) {
     while let Ok(event) = event_rx.recv().await {
         match event {

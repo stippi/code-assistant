@@ -12,7 +12,7 @@ pub struct MessageHandler {
     command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
     message_writer: Box<dyn MessageWriter>,
-    tool_registry: std::sync::Arc<code_assistant_core::tools::core::ToolRegistry>,
+    tool_registry: std::sync::Arc<tools_core::ToolRegistry>,
 }
 
 impl MessageHandler {
@@ -31,7 +31,7 @@ impl MessageHandler {
         project_manager: std::sync::Arc<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         message_writer: Box<dyn MessageWriter>,
-        tool_registry: std::sync::Arc<code_assistant_core::tools::core::ToolRegistry>,
+        tool_registry: std::sync::Arc<tools_core::ToolRegistry>,
     ) -> Self {
         Self {
             project_manager,
@@ -266,7 +266,7 @@ impl MessageHandler {
 
             // Create a tool context (no UI, no plan for MCP)
             let mut services = code_assistant_core::tools::ToolServices::new(self.project_manager.clone());
-            let mut context = code_assistant_core::tools::core::ToolContext {
+            let mut context = tools_core::ToolContext {
                 command_executor: self.command_executor.as_ref(),
                 tool_id: None,
                 permission_handler: None,
@@ -279,7 +279,7 @@ impl MessageHandler {
             // input might have changed, but we have to ignore it in MCP mode
 
             // Format the output
-            let mut tracker = code_assistant_core::tools::core::ResourcesTracker::new();
+            let mut tracker = tools_core::ResourcesTracker::new();
             let output = result.as_render().render(&mut tracker);
             let is_success = result.is_success();
 

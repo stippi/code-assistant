@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
-use code_assistant_core::tools::core::ToolRegistry;
+use tools_core::ToolRegistry;
 use code_assistant_core::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 
 /// Tracks the last type of content for paragraph breaks after hidden tools
@@ -126,7 +126,7 @@ impl ToolCallState {
             .collect();
 
         if let Some(new_title) =
-            code_assistant_core::tools::core::generate_tool_title(tool_name, &params, registry)
+            tools_core::generate_tool_title(tool_name, &params, registry)
         {
             self.title = Some(new_title);
         }

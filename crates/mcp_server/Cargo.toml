@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
+tools_core = { path = "../tools_core" }
 command_executor = { path = "../command_executor" }
 fs_explorer = { path = "../fs_explorer" }
 

@@ -6035,6 +6035,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tools_core",
  "tracing",
 ]
 
