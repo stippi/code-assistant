@@ -27,10 +27,11 @@ use tracing::debug;
 fn parse_and_truncate_xml_response(
     response: &LLMResponse,
     request_id: u64,
+    registry: &ToolRegistry,
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
-    let filter = SmartToolFilter::new();
+    let filter = SmartToolFilter::new(registry);
 
     for block in &response.content {
         if let ContentBlock::Text { text, .. } = block {
@@ -40,7 +41,7 @@ fn parse_and_truncate_xml_response(
                 request_id,
                 tool_requests.len(),
                 Some(&filter),
-                crate::tools::global_registry(),
+                registry,
             )?;
 
             tool_requests.extend(block_tool_requests.clone());
@@ -84,8 +85,9 @@ impl ToolDialect for XmlDialect {
         response: &LLMResponse,
         req_id: u64,
         _order_offset: usize,
+        registry: &ToolRegistry,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
-        parse_and_truncate_xml_response(response, req_id)
+        parse_and_truncate_xml_response(response, req_id, registry)
     }
 
     fn format_tool_request(
@@ -105,8 +107,14 @@ impl ToolDialect for XmlDialect {
         ui: Arc<dyn AgentUi>,
         request_id: u64,
         hidden_tools: HiddenTools,
+        registry: Arc<ToolRegistry>,
     ) -> Box<dyn StreamProcessorTrait> {
-        Box::new(XmlStreamProcessor::new(ui, request_id, hidden_tools))
+        Box::new(XmlStreamProcessor::new(
+            ui,
+            request_id,
+            hidden_tools,
+            registry,
+        ))
     }
 
     fn render_tool_section_for_prompt(
@@ -122,13 +130,13 @@ impl ToolDialect for XmlDialect {
         Some(self.generate_xml_syntax_documentation())
     }
 
-    fn message_contains_invocation(&self, message: &Message) -> bool {
+    fn message_contains_invocation(&self, message: &Message, registry: &ToolRegistry) -> bool {
         let request_id = message.request_id.unwrap_or(0);
         for text in message_text_segments(message) {
             if !text.contains("<tool:") {
                 continue;
             }
-            match parse_xml_tool_invocations(text, request_id, 0, None, crate::tools::global_registry()) {
+            match parse_xml_tool_invocations(text, request_id, 0, None, registry) {
                 Ok((requests, _)) => {
                     if !requests.is_empty() {
                         return true;
@@ -171,7 +179,7 @@ impl XmlDialect {
 
             // Tool usage
             docs.push_str("Usage:\n");
-            docs.push_str(&self.generate_xml_usage_example(&tool.name, &tool.parameters));
+            docs.push_str(&self.generate_xml_usage_example(&tool.name, &tool.parameters, registry));
             docs.push('\n');
         }
 
@@ -229,6 +237,7 @@ impl XmlDialect {
         &self,
         tool_name: &str,
         parameters: &serde_json::Value,
+        registry: &ToolRegistry,
     ) -> String {
         let mut example = format!("<tool:{tool_name}>\n");
 
@@ -246,7 +255,7 @@ impl XmlDialect {
                 .iter()
                 .filter(|(name, _)| required_fields.contains(&name.as_str()))
             {
-                self.generate_xml_parameter_example(&mut example, tool_name, name, prop);
+                self.generate_xml_parameter_example(&mut example, tool_name, name, prop, registry);
             }
 
             // Then add optional parameters
@@ -254,7 +263,7 @@ impl XmlDialect {
                 .iter()
                 .filter(|(name, _)| !required_fields.contains(&name.as_str()))
             {
-                self.generate_xml_parameter_example(&mut example, tool_name, name, prop);
+                self.generate_xml_parameter_example(&mut example, tool_name, name, prop, registry);
             }
         }
 
@@ -268,6 +277,7 @@ impl XmlDialect {
         tool_name: &str,
         name: &str,
         prop: &serde_json::Value,
+        registry: &ToolRegistry,
     ) {
         // Determine if this parameter is an array
         let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
@@ -281,7 +291,7 @@ impl XmlDialect {
         };
 
         // Generate appropriate placeholder text
-        let placeholder = if is_multiline_param(tool_name, name) {
+        let placeholder = if is_multiline_param(tool_name, name, registry) {
             format!("\nYour {name} here\n")
         } else {
             example_placeholder(name, prop)

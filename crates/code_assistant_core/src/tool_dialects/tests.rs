@@ -9,7 +9,7 @@ fn test_tool_use_docs_generation() {
 
     // Test XML documentation
     let xml_parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
-    if let Some(xml_docs) = xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag()) {
+    if let Some(xml_docs) = xml_parser.render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag()) {
         println!("=== XML Tool Documentation ===");
         println!("{}", &xml_docs[..1500.min(xml_docs.len())]);
         println!("...\n");
@@ -17,7 +17,7 @@ fn test_tool_use_docs_generation() {
 
     // Test Caret documentation
     let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    if let Some(caret_docs) = caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag()) {
+    if let Some(caret_docs) = caret_parser.render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag()) {
         println!("=== Caret Tool Documentation ===");
         println!("{}", &caret_docs[..1500.min(caret_docs.len())]);
         println!("...\n");
@@ -26,7 +26,7 @@ fn test_tool_use_docs_generation() {
     // Test Native documentation (should be None)
     let native_parser = crate::tool_dialects::dialect_for(ToolSyntax::Native);
     if native_parser
-        .render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag())
+        .render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag())
         .is_some()
     {
         println!("Native parser unexpectedly returned documentation");
@@ -80,7 +80,7 @@ fn test_parameter_documentation_formatting() {
     });
 
     // Test that array parameters work correctly by checking generated docs contain proper examples
-    if let Some(docs) = xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
+    if let Some(docs) = xml_parser.render_tool_section_for_prompt(&crate::tools::test_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // Should contain XML-style parameter examples
         assert!(
@@ -110,7 +110,7 @@ fn test_parameter_documentation_formatting() {
     // Test with Caret parser
     let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     if let Some(docs) =
-        caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
+        caret_parser.render_tool_section_for_prompt(&crate::tools::test_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // Should contain caret-style parameter examples
         assert!(
@@ -157,7 +157,7 @@ fn test_usage_example_generation() {
     let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
 
     if let Some(xml_docs) =
-        xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
+        xml_parser.render_tool_section_for_prompt(&crate::tools::test_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // XML usage examples should be properly formatted
         assert!(
@@ -187,7 +187,7 @@ fn test_usage_example_generation() {
     }
 
     if let Some(caret_docs) =
-        caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
+        caret_parser.render_tool_section_for_prompt(&crate::tools::test_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
         // Caret usage examples should be properly formatted
         assert!(
@@ -245,13 +245,14 @@ async fn test_mixed_syntax_scenarios_with_filters() {
 <param:hits_page_number>1</param:hits_page_number>
 </tool:web_search>"#;
 
-    let smart_filter = SmartToolFilter::new();
+    let registry = crate::tools::test_registry();
+    let smart_filter = SmartToolFilter::new(&registry);
     let (xml_tools, _) = parse_xml_tool_invocations(
         xml_text,
         123,
         0,
         Some(&smart_filter),
-        crate::tools::global_registry(),
+        &crate::tools::test_registry(),
     )
     .unwrap();
 
@@ -277,7 +278,7 @@ async fn test_mixed_syntax_scenarios_with_filters() {
         123,
         0,
         Some(&smart_filter),
-        crate::tools::global_registry(),
+        &crate::tools::test_registry(),
     )
     .unwrap();
 
@@ -294,7 +295,7 @@ async fn test_mixed_syntax_scenarios_with_filters() {
         123,
         0,
         Some(&single_filter),
-        crate::tools::global_registry(),
+        &crate::tools::test_registry(),
     )
     .unwrap();
     assert_eq!(xml_single.len(), 1);
@@ -305,7 +306,7 @@ async fn test_mixed_syntax_scenarios_with_filters() {
         123,
         0,
         Some(&single_filter),
-        crate::tools::global_registry(),
+        &crate::tools::test_registry(),
     )
     .unwrap();
     assert_eq!(caret_single.len(), 1);

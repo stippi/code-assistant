@@ -12,7 +12,7 @@ fn parse_and_truncate_llm_response(
     response: &LLMResponse,
     request_id: u64,
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
-    crate::tool_dialects::dialect_for(ToolSyntax::Xml).extract_requests(response, request_id, 0)
+    crate::tool_dialects::dialect_for(ToolSyntax::Xml).extract_requests(response, request_id, 0, &crate::tools::test_registry())
 }
 
 #[tokio::test]
@@ -31,7 +31,7 @@ async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
 <param:project>qwen-"#;
 
     // Currently this fails completely, losing the valid first tool block
-    let result = parse_xml_tool_invocations(text, 123, 0, None, crate::tools::global_registry());
+    let result = parse_xml_tool_invocations(text, 123, 0, None, &crate::tools::test_registry());
 
     // This assertion will currently fail because the function returns an error
     // instead of returning the valid first tool block
@@ -76,7 +76,7 @@ And finally modify the file:
     // With the new system, this should return only the first tool and truncate after it
     let filter = SingleToolFilter;
     let (result, _truncated_text) =
-        parse_xml_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should only get the first tool
     assert_eq!(result.len(), 1);
@@ -106,7 +106,7 @@ async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
 <param:project>incomplete-"#;
 
     let filter = SingleToolFilter;
-    let result = parse_xml_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry());
+    let result = parse_xml_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry());
 
     // Should succeed and return the valid first tool
     assert!(
@@ -168,9 +168,10 @@ But I shouldn't be able to write files yet:
 <param:content>test content</param:content>
 </tool:write_file>"#;
 
-    let filter = SmartToolFilter::new();
+    let registry = crate::tools::test_registry();
+    let filter = SmartToolFilter::new(&registry);
     let (tools, truncated_text) =
-        parse_xml_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should get the first three read tools but not the write tool
     assert_eq!(tools.len(), 3);
@@ -203,9 +204,10 @@ Now I want to modify it immediately:
 <param:diff>some diff content</param:diff>
 </tool:replace_in_file>"#;
 
-    let filter = SmartToolFilter::new();
+    let registry = crate::tools::test_registry();
+    let filter = SmartToolFilter::new(&registry);
     let (tools, truncated_text) =
-        parse_xml_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should only get the read tool, not the replace tool
     assert_eq!(tools.len(), 1);
@@ -241,7 +243,7 @@ async fn test_xml_parsing_with_unlimited_filter_allows_all_tools() {
 
     let filter = UnlimitedToolFilter;
     let (tools, truncated_text) =
-        parse_xml_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should get all three tools
     assert_eq!(tools.len(), 3);

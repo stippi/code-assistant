@@ -52,6 +52,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -175,6 +176,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -302,6 +304,7 @@ async fn test_parse_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -442,6 +445,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -544,6 +548,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -663,6 +668,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -791,6 +797,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -936,7 +943,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     session.tool_executions = Vec::new();
     session.next_request_id = 1;
 
-    let session_instance = SessionInstance::new(session);
+    let session_instance = SessionInstance::new(session, crate::tools::test_registry());
 
     // Test the UI message conversion - should filter out tool-result and empty messages
     let ui_messages = session_instance.convert_messages_to_ui_data(ToolSyntax::Xml)?;
@@ -996,6 +1003,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         ui,
         state_persistence,
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1178,7 +1186,7 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let (parsed_tools, _) = parser.extract_requests(&llm_response, 123, 0)?;
+    let (parsed_tools, _) = parser.extract_requests(&llm_response, 123, 0, &crate::tools::test_registry())?;
     assert_eq!(parsed_tools.len(), 1);
 
     let parsed_tool = &parsed_tools[0];
@@ -1222,6 +1230,7 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
         original_text,
         &updated_request,
         &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
+        &crate::tools::test_registry(),
     )?;
 
     // Should have replaced the tool block exactly
@@ -1260,7 +1269,7 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let (parsed_tools, _) = parser.extract_requests(&llm_response, 456, 0)?;
+    let (parsed_tools, _) = parser.extract_requests(&llm_response, 456, 0, &crate::tools::test_registry())?;
     assert_eq!(parsed_tools.len(), 1);
 
     let parsed_tool = &parsed_tools[0];
@@ -1303,6 +1312,7 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
         original_text,
         &updated_request,
         &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
+        &crate::tools::test_registry(),
     )?;
 
     // Should have replaced the tool block exactly
@@ -1337,6 +1347,7 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
         original_text,
         &updated_request,
         &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
+        &crate::tools::test_registry(),
     )?;
 
     // Should have appended the updated tool call
@@ -1360,6 +1371,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1411,6 +1423,7 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1476,6 +1489,7 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1525,6 +1539,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1578,6 +1593,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1681,6 +1697,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1765,6 +1782,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -1919,6 +1937,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 
@@ -2047,6 +2066,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
     };
 

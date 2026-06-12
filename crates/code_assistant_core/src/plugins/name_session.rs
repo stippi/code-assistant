@@ -62,7 +62,8 @@ impl IterationHook for NameSessionReminderHook {
         // Skip the reminder when the `name_session` tool isn't available in the
         // current tool scope (e.g. for sub-agents). Otherwise we'd nag the agent
         // to call a tool it cannot use.
-        if !crate::tools::global_registry()
+        if !ctx
+            .registry
             .tool_has_capability("name_session", state.tool_scope.tag())
         {
             return Ok(());

@@ -325,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_view_images_unsupported_extension() -> Result<()> {
-        let registry = crate::tools::global_registry();
+        let registry = crate::tools::test_registry();
         let tool = registry
             .get("view_images")
             .expect("view_images tool should be registered");
@@ -351,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_view_images_missing_file() -> Result<()> {
-        let registry = crate::tools::global_registry();
+        let registry = crate::tools::test_registry();
         let tool = registry
             .get("view_images")
             .expect("view_images tool should be registered");
@@ -401,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_view_images_absolute_path_rejected() -> Result<()> {
-        let registry = crate::tools::global_registry();
+        let registry = crate::tools::test_registry();
         let tool = registry
             .get("view_images")
             .expect("view_images tool should be registered");

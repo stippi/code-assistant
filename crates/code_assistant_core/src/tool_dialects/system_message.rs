@@ -52,6 +52,7 @@ pub fn generate_system_message(
     dialect: &dyn ToolDialect,
     scope: ToolScope,
     model_hint: Option<&str>,
+    registry: &crate::tools::core::ToolRegistry,
 ) -> String {
     let mut base = load_base_prompt(model_hint);
 
@@ -72,9 +73,7 @@ pub fn generate_system_message(
         }
 
         // Replace tools documentation with header + tools doc
-        if let Some(tools_doc) =
-            dialect.render_tool_section_for_prompt(crate::tools::global_registry(), scope.tag())
-        {
+        if let Some(tools_doc) = dialect.render_tool_section_for_prompt(registry, scope.tag()) {
             let tools_content = format!("{tool_use_header}{tools_doc}");
             base = base.replace("{{tools}}", &tools_content);
         } else {
@@ -197,7 +196,7 @@ mod tests {
 
         // Test Native mode
         let native_msg =
-            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Native), ToolScope::Agent, None);
+            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Native), ToolScope::Agent, None, &crate::tools::test_registry());
         assert!(!native_msg.contains("{{tools}}"));
         assert!(!native_msg.contains("{{syntax}}"));
         assert!(!native_msg.contains("<tool:"));
@@ -206,7 +205,7 @@ mod tests {
 
         // Test XML mode
         let xml_msg =
-            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Xml), ToolScope::Agent, None);
+            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Xml), ToolScope::Agent, None, &crate::tools::test_registry());
         assert!(
             !xml_msg.contains("{{tools}}"),
             "XML message contains unreplaced {{tools}} placeholder"
@@ -229,11 +228,7 @@ mod tests {
         );
 
         // Test Caret mode
-        let caret_msg = generate_system_message(
-            &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
-            ToolScope::Agent,
-            None,
-        );
+        let caret_msg = generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Caret), ToolScope::Agent, None, &crate::tools::test_registry());
         assert!(
             !caret_msg.contains("{{tools}}"),
             "Caret message contains unreplaced {{tools}} placeholder"

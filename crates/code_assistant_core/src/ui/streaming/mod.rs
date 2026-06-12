@@ -6,6 +6,7 @@
 //! step of the extraction plan.
 
 use crate::agent::ToolSyntax;
+use crate::tools::core::ToolRegistry;
 use crate::ui::UserInterface;
 use std::sync::Arc;
 
@@ -28,11 +29,22 @@ pub fn create_stream_processor(
     ui: Arc<dyn UserInterface>,
     request_id: u64,
     hidden_tools: HiddenTools,
+    registry: Arc<ToolRegistry>,
 ) -> Box<dyn StreamProcessorTrait> {
     let ui: Arc<dyn agent_core::AgentUi> = Arc::new(crate::ui::AgentUiAdapter::new(ui));
     match tool_syntax {
-        ToolSyntax::Xml => Box::new(XmlStreamProcessor::new(ui, request_id, hidden_tools)),
+        ToolSyntax::Xml => Box::new(XmlStreamProcessor::new(
+            ui,
+            request_id,
+            hidden_tools,
+            registry,
+        )),
         ToolSyntax::Native => Box::new(JsonStreamProcessor::new(ui, request_id, hidden_tools)),
-        ToolSyntax::Caret => Box::new(CaretStreamProcessor::new(ui, request_id, hidden_tools)),
+        ToolSyntax::Caret => Box::new(CaretStreamProcessor::new(
+            ui,
+            request_id,
+            hidden_tools,
+            registry,
+        )),
     }
 }

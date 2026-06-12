@@ -1,3 +1,4 @@
+use crate::tools::core::ToolRegistry;
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use agent_core::ui::{AgentUi, DisplayFragment, HiddenTools, StreamProcessorTrait, UIError};
 use anyhow::Result;
@@ -51,7 +52,7 @@ pub struct XmlStreamProcessor {
     ui: Arc<dyn AgentUi>,
     request_id: u64,
     hidden_tools: HiddenTools,
-    filter: Box<dyn ToolUseFilter>,
+    registry: Arc<ToolRegistry>,
     streaming_state: StreamingState,
 }
 
@@ -66,19 +67,31 @@ enum TagType {
     ParamEnd,
 }
 
-// Implement the common StreamProcessorTrait
-impl StreamProcessorTrait for XmlStreamProcessor {
-    fn new(ui: Arc<dyn AgentUi>, request_id: u64, hidden_tools: HiddenTools) -> Self {
+impl XmlStreamProcessor {
+    pub fn new(
+        ui: Arc<dyn AgentUi>,
+        request_id: u64,
+        hidden_tools: HiddenTools,
+        registry: Arc<ToolRegistry>,
+    ) -> Self {
         Self {
             state: ProcessorState::default(),
             ui,
             request_id,
             hidden_tools,
-            filter: Box::new(SmartToolFilter::new()),
+            registry,
             streaming_state: StreamingState::PreFirstTool,
         }
     }
 
+    /// The chaining-rules filter, freshly borrowed from the registry.
+    fn filter(&self) -> impl ToolUseFilter + '_ {
+        SmartToolFilter::new(self.registry.as_ref())
+    }
+}
+
+// Implement the common StreamProcessorTrait
+impl StreamProcessorTrait for XmlStreamProcessor {
     /// Process a streaming chunk and send display fragments to the UI
     fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError> {
         match chunk {
@@ -641,7 +654,7 @@ impl XmlStreamProcessor {
                 match &fragment {
                     DisplayFragment::ToolName { name, .. } => {
                         // First tool starting - check if it's allowed (should always be allowed)
-                        if !self.filter.allow_tool_at_position(name, 1) {
+                        if !self.filter().allow_tool_at_position(name, 1) {
                             // First tool denied - block streaming
                             self.streaming_state = StreamingState::Blocked;
                             return Err(UIError::IOError(std::io::Error::new(
@@ -659,7 +672,7 @@ impl XmlStreamProcessor {
                         // Get the tool name from processor state
                         let tool_name = self.state.tool_name.clone();
 
-                        if self.filter.allow_content_after_tool(&tool_name, 1) {
+                        if self.filter().allow_content_after_tool(&tool_name, 1) {
                             // Transition to buffering state
                             self.streaming_state = StreamingState::BufferingAfterTool {
                                 last_tool_name: tool_name,
@@ -685,7 +698,7 @@ impl XmlStreamProcessor {
                         // New tool starting - check if it's allowed
                         let tool_count = self.state.tool_counter + 1; // Next tool count
                         if self
-                            .filter
+                            .filter()
                             .allow_tool_at_position(name, tool_count as usize)
                         {
                             // Tool allowed - emit all buffered fragments first
@@ -716,7 +729,7 @@ impl XmlStreamProcessor {
                         let tool_name = last_tool_name.clone();
                         let tool_count = self.state.tool_counter as usize;
 
-                        if self.filter.allow_content_after_tool(&tool_name, tool_count) {
+                        if self.filter().allow_content_after_tool(&tool_name, tool_count) {
                             // Continue buffering
                             self.streaming_state = StreamingState::BufferingAfterTool {
                                 last_tool_name: tool_name,

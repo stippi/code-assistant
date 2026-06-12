@@ -63,13 +63,17 @@ impl ToolResult for PerplexityAskOutput {
 }
 
 // The tool implementation
-pub struct PerplexityAskTool;
+pub struct PerplexityAskTool {
+    api_key: String,
+}
 
 impl PerplexityAskTool {
-    /// Whether the tool can run with the given configuration. Consulted at
-    /// registration time (see `crate::tools::register_default_tools`).
-    pub fn is_available(&self, config: &ToolsConfig) -> bool {
-        config.has_perplexity_api_key()
+    /// Construct the tool from the configuration. `None` when no API key is
+    /// configured — the tool is then unavailable and not registered (see
+    /// `crate::tools::register_default_tools`).
+    pub fn from_config(config: &ToolsConfig) -> Option<Self> {
+        let api_key = config.perplexity_api_key.clone().filter(|k| !k.is_empty())?;
+        Some(Self { api_key })
     }
 }
 
@@ -138,11 +142,8 @@ impl Tool for PerplexityAskTool {
         _context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        // Get the API key from configuration
-        let api_key = ToolsConfig::global().perplexity_api_key.clone();
-
-        // Create a new Perplexity client
-        let client = PerplexityClient::new(api_key);
+        // Create a new Perplexity client with the key captured at registration
+        let client = PerplexityClient::new(Some(self.api_key.clone()));
 
         // Extract last 'user' message for display
         let query = input

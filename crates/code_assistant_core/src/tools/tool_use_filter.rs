@@ -1,6 +1,6 @@
 //! Tool use filtering system to control which tool blocks are allowed and when to truncate responses
 
-use crate::tools::core::capabilities;
+use crate::tools::core::{capabilities, ToolRegistry};
 
 /// Trait for filtering tool use blocks during parsing
 /// This allows controlling which tools can be used and when to stop parsing
@@ -49,21 +49,24 @@ impl ToolUseFilter for UnlimitedToolFilter {
 
 /// Smart filter that prevents certain tool combinations that don't make logical sense
 /// For example, prevents file editing tools before file reading tools have had their results processed
-pub struct SmartToolFilter {}
+pub struct SmartToolFilter<'r> {
+    registry: &'r ToolRegistry,
+}
 
-impl SmartToolFilter {
-    pub fn new() -> Self {
-        Self {}
+impl<'r> SmartToolFilter<'r> {
+    pub fn new(registry: &'r ToolRegistry) -> Self {
+        Self { registry }
     }
 
     /// Check if a tool is a "read" operation (doesn't modify state) and is
     /// therefore safe to chain.
     fn is_read_tool(&self, tool_name: &str) -> bool {
-        crate::tools::global_registry().tool_has_capability(tool_name, capabilities::READ_ONLY)
+        self.registry
+            .tool_has_capability(tool_name, capabilities::READ_ONLY)
     }
 }
 
-impl ToolUseFilter for SmartToolFilter {
+impl ToolUseFilter for SmartToolFilter<'_> {
     fn allow_content_after_tool(&self, tool_name: &str, _tool_count: usize) -> bool {
         // Allow content after read tools, but not after write tools
         // This allows the LLM to potentially chain multiple read tools
@@ -79,12 +82,6 @@ impl ToolUseFilter for SmartToolFilter {
         // Allow read tools after other read tools (e.g., read file then list directory)
         // But don't allow write tools after any tool (they need to see results first)
         self.is_read_tool(tool_name)
-    }
-}
-
-impl Default for SmartToolFilter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -122,7 +119,8 @@ mod tests {
 
     #[test]
     fn test_smart_tool_filter() {
-        let filter = SmartToolFilter::new();
+        let registry = crate::tools::test_registry();
+        let filter = SmartToolFilter::new(&registry);
 
         // First tool always allowed
         assert!(filter.allow_tool_at_position("read_files", 1));
@@ -149,7 +147,8 @@ mod tests {
 
     #[test]
     fn test_tool_classification() {
-        let filter = SmartToolFilter::new();
+        let registry = crate::tools::test_registry();
+        let filter = SmartToolFilter::new(&registry);
 
         // Test read tool classification
         assert!(filter.is_read_tool("read_files"));

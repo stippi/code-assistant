@@ -128,7 +128,7 @@ mod tests {
             "</tool:read_files>\n"
         );
 
-        let result = format_tool_request(&request, crate::tools::global_registry()).unwrap();
+        let result = format_tool_request(&request, &crate::tools::test_registry()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -159,7 +159,7 @@ mod tests {
             "</tool:write_file>\n",
         );
 
-        let result = format_tool_request(&request, crate::tools::global_registry()).unwrap();
+        let result = format_tool_request(&request, &crate::tools::test_registry()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -191,7 +191,7 @@ mod tests {
             "</tool:write_file>\n",
         );
 
-        let result = format_tool_request(&request, crate::tools::global_registry()).unwrap();
+        let result = format_tool_request(&request, &crate::tools::test_registry()).unwrap();
 
         assert_eq!(expected, result);
     }

@@ -107,11 +107,15 @@ pub struct SessionInstance {
 
     /// Number of tool executions the UI has been told about.
     pub last_ui_synced_tool_count: usize,
+
+    /// The tool registry this session's agent runs with (for deserializing
+    /// persisted tool executions and stream-processor metadata lookups).
+    pub tool_registry: Arc<crate::tools::core::ToolRegistry>,
 }
 
 impl SessionInstance {
     /// Create a new session instance
-    pub fn new(session: ChatSession) -> Self {
+    pub fn new(session: ChatSession, tool_registry: Arc<crate::tools::core::ToolRegistry>) -> Self {
         let sandbox_context = Arc::new(SandboxContext::default());
         if let Some(path) = session.config.effective_project_path() {
             let _ = sandbox_context.register_root(path);
@@ -133,6 +137,7 @@ impl SessionInstance {
             agent_lock: None,
             last_ui_synced_path: initial_path,
             last_ui_synced_tool_count: initial_tool_count,
+            tool_registry,
         }
     }
 
@@ -420,9 +425,16 @@ impl SessionInstance {
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
-        let hidden_tools = crate::tools::global_registry()
+        let hidden_tools = self
+            .tool_registry
             .hidden_tools(crate::tools::core::ToolScope::Agent.tag());
-        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0, hidden_tools);
+        let mut processor = create_stream_processor(
+            tool_syntax,
+            dummy_ui,
+            0,
+            hidden_tools,
+            self.tool_registry.clone(),
+        );
 
         let mut messages_data = Vec::new();
 
@@ -547,9 +559,16 @@ impl SessionInstance {
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
-        let hidden_tools = crate::tools::global_registry()
+        let hidden_tools = self
+            .tool_registry
             .hidden_tools(crate::tools::core::ToolScope::Agent.tag());
-        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0, hidden_tools);
+        let mut processor = create_stream_processor(
+            tool_syntax,
+            dummy_ui,
+            0,
+            hidden_tools,
+            self.tool_registry.clone(),
+        );
 
         let mut messages_data = Vec::new();
 
@@ -636,8 +655,7 @@ impl SessionInstance {
 
         for serialized_execution in &self.session.tool_executions {
             // Deserialize the tool execution
-            let execution =
-                serialized_execution.deserialize(crate::tools::global_registry())?;
+            let execution = serialized_execution.deserialize(self.tool_registry.as_ref())?;
 
             // Generate status and output from result
             let success = execution.result.is_success();

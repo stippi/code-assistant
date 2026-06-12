@@ -106,15 +106,17 @@ impl JsonStreamProcessor {
     }
 }
 
-impl StreamProcessorTrait for JsonStreamProcessor {
-    fn new(ui: Arc<dyn AgentUi>, _request_id: u64, hidden_tools: HiddenTools) -> Self {
+impl JsonStreamProcessor {
+    pub fn new(ui: Arc<dyn AgentUi>, _request_id: u64, hidden_tools: HiddenTools) -> Self {
         Self {
             state: JsonProcessorState::default(),
             ui,
             hidden_tools,
         }
     }
+}
 
+impl StreamProcessorTrait for JsonStreamProcessor {
     fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError> {
         match chunk {
             StreamingChunk::Thinking(text) => self

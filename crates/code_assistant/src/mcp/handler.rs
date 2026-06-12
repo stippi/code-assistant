@@ -12,6 +12,7 @@ pub struct MessageHandler {
     command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
     message_writer: Box<dyn MessageWriter>,
+    tool_registry: std::sync::Arc<crate::tools::core::ToolRegistry>,
 }
 
 impl MessageHandler {
@@ -21,6 +22,7 @@ impl MessageHandler {
             command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
             message_writer: Box::new(StdoutWriter::new(stdout)),
+            tool_registry: crate::tools::default_registry(),
         })
     }
 
@@ -29,12 +31,14 @@ impl MessageHandler {
         project_manager: std::sync::Arc<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         message_writer: Box<dyn MessageWriter>,
+        tool_registry: std::sync::Arc<crate::tools::core::ToolRegistry>,
     ) -> Self {
         Self {
             project_manager,
             command_executor,
             resources: ResourceManager::new(),
             message_writer,
+            tool_registry,
         }
     }
 
@@ -204,7 +208,7 @@ impl MessageHandler {
         debug!("Handling tools/list request");
 
         // Use the ToolRegistry to get tool definitions
-        let registry = crate::tools::global_registry();
+        let registry = self.tool_registry.clone();
         let tool_defs =
             registry.get_tool_definitions_with_capability(crate::tools::core::ToolScope::McpServer.tag());
 
@@ -255,7 +259,7 @@ impl MessageHandler {
                 .ok_or_else(|| anyhow::anyhow!("Missing parameters"))?;
 
             // Get the tool from the registry
-            let registry = crate::tools::global_registry();
+            let registry = self.tool_registry.clone();
             let tool = registry
                 .get(&params.name)
                 .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;

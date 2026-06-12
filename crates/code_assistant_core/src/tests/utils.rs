@@ -10,5 +10,5 @@ pub fn parse_and_truncate_llm_response(
 ) -> Result<(Vec<ToolRequest>, llm::LLMResponse)> {
     // Default to XML parser for backward compatibility with existing tests
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
-    parser.extract_requests(response, request_id, 0)
+    parser.extract_requests(response, request_id, 0, &crate::tools::test_registry())
 }

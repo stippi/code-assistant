@@ -29,7 +29,7 @@ async fn test_caret_parsing_with_single_tool_filter() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should only get the first tool due to SingleToolFilter
     assert_eq!(tools.len(), 1);
@@ -75,9 +75,10 @@ async fn test_caret_parsing_with_smart_filter_allows_multiple_read_tools() {
         "^^^"
     );
 
-    let filter = SmartToolFilter::new();
+    let registry = crate::tools::test_registry();
+    let filter = SmartToolFilter::new(&registry);
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should get the first three read tools but not the write tool
     assert_eq!(tools.len(), 3);
@@ -113,9 +114,10 @@ async fn test_caret_parsing_with_smart_filter_blocks_write_after_read() {
         "^^^"
     );
 
-    let filter = SmartToolFilter::new();
+    let registry = crate::tools::test_registry();
+    let filter = SmartToolFilter::new(&registry);
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should only get the read tool, not the replace tool
     assert_eq!(tools.len(), 1);
@@ -152,7 +154,7 @@ async fn test_caret_parsing_with_unlimited_filter_allows_all_tools() {
 
     let filter = UnlimitedToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should get all three tools
     assert_eq!(tools.len(), 3);
@@ -185,7 +187,7 @@ async fn test_caret_parsing_with_truncation_preserves_valid_tool() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should succeed and return the valid first tool
     assert_eq!(tools.len(), 1);
@@ -234,7 +236,7 @@ async fn test_caret_parsing_multiline_parameters_with_filter() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should only get the first tool
     assert_eq!(tools.len(), 1);
@@ -274,7 +276,7 @@ async fn test_caret_parsing_edge_case_empty_arrays_with_filter() {
 
     let filter = SingleToolFilter;
     let (tools, truncated_text) =
-        parse_caret_tool_invocations(text, 123, 0, Some(&filter), crate::tools::global_registry()).unwrap();
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter), &crate::tools::test_registry()).unwrap();
 
     // Should only get the first tool
     assert_eq!(tools.len(), 1);
@@ -309,7 +311,7 @@ fn test_caret_array_parsing() -> Result<()> {
     };
 
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0, &crate::tools::test_registry())?;
 
     assert_eq!(tool_requests.len(), 1);
     assert_eq!(tool_requests[0].name, "read_files");
@@ -357,7 +359,7 @@ fn test_caret_empty_array_parsing() -> Result<()> {
     };
 
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0, &crate::tools::test_registry())?;
 
     assert_eq!(tool_requests.len(), 1);
     assert_eq!(tool_requests[0].name, "read_files");
@@ -396,7 +398,7 @@ fn test_caret_multiple_arrays_parsing() -> Result<()> {
     };
 
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0, &crate::tools::test_registry())?;
 
     assert_eq!(tool_requests.len(), 1);
     assert_eq!(tool_requests[0].name, "search_files");
@@ -451,7 +453,7 @@ fn test_caret_array_with_multiline_parsing() -> Result<()> {
     };
 
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0, &crate::tools::test_registry())?;
 
     assert_eq!(tool_requests.len(), 1);
     assert_eq!(tool_requests[0].name, "write_file");
@@ -515,7 +517,7 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
     };
 
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    let result = parser.extract_requests(&response, 123, 0);
+    let result = parser.extract_requests(&response, 123, 0, &crate::tools::test_registry());
 
     match result {
         Ok((tool_requests, _truncated_response)) => {

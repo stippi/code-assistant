@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 /// Hidden-tool predicate matching the agent's default behavior.
 pub fn hidden_tools() -> HiddenTools {
-    crate::tools::global_registry().hidden_tools(ToolScope::Agent.tag())
+    crate::tools::test_registry().hidden_tools(ToolScope::Agent.tag())
 }
 
 /// A test UI that collects display fragments and merges them appropriately

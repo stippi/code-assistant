@@ -351,6 +351,7 @@ impl TerminalTuiApp {
             session_persistence,
             session_config_template,
             config.model.clone(),
+            code_assistant_core::tools::default_registry(),
         );
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 

@@ -15,12 +15,15 @@ use llm::Message;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::time::Duration;
+use tools_core::ToolRegistry;
 
 /// View of the agent state that hooks may read and act on.
 pub struct LoopCtx<'a> {
     pub tool_executions: &'a mut Vec<ToolExecution>,
     pub message_nodes: &'a mut BTreeMap<NodeId, MessageNode>,
     pub active_path: &'a ConversationPath,
+    /// The agent's tool registry (e.g. for capability checks).
+    pub registry: &'a ToolRegistry,
     /// Application-specific loop state. Hooks downcast this to the concrete
     /// type their application installed.
     pub extensions: &'a mut (dyn Any + Send),
@@ -114,6 +117,8 @@ pub struct PromptCtx<'a> {
     /// tool documentation sections.
     pub dialect: &'a dyn ToolDialect,
     pub model_hint: Option<&'a str>,
+    /// The agent's tool registry, for rendering tool documentation.
+    pub registry: &'a ToolRegistry,
     /// Application-specific state (projects, scope, …); see
     /// [`LoopCtx::extensions`].
     pub extensions: &'a (dyn Any + Send),

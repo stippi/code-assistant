@@ -50,8 +50,12 @@ pub(crate) fn message_text_segments(message: &Message) -> Vec<&str> {
 
 /// Whether the named parameter of the given tool typically spans multiple
 /// lines (block syntax in the text dialects).
-pub(crate) fn is_multiline_param(tool_name: &str, param_name: &str) -> bool {
-    crate::tools::global_registry()
+pub(crate) fn is_multiline_param(
+    tool_name: &str,
+    param_name: &str,
+    registry: &ToolRegistry,
+) -> bool {
+    registry
         .get(tool_name)
         .map(|tool| tool.spec().is_multiline_param(param_name))
         .unwrap_or(false)

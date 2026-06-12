@@ -258,7 +258,7 @@ fn test_tool_scope_for_sub_agent() {
     
 
     // spawn_agent should only be available in main agent scopes
-    let registry = crate::tools::global_registry();
+    let registry = crate::tools::test_registry();
 
     // Check spawn_agent is available in normal agent scope
     let tool = registry.get("spawn_agent");
@@ -393,7 +393,7 @@ fn test_can_run_in_parallel_logic() {
 fn test_tool_scope_sub_agent_default_with_diff_blocks() {
     
 
-    let registry = crate::tools::global_registry();
+    let registry = crate::tools::test_registry();
     let get_tools_for_scope = |scope: ToolScope| -> Vec<String> {
         registry
             .get_tool_definitions_with_capability(scope.tag())

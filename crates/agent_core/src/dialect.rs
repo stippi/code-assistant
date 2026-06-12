@@ -27,6 +27,7 @@ pub trait ToolDialect: Send + Sync {
         response: &LLMResponse,
         request_id: u64,
         order_offset: usize,
+        registry: &ToolRegistry,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)>;
 
     /// Format a `ToolRequest` back into this dialect's text representation.
@@ -47,12 +48,14 @@ pub trait ToolDialect: Send + Sync {
 
     /// A stream processor that translates `StreamingChunk`s into display
     /// fragments for the UI. `hidden_tools` decides which tool invocations
-    /// are suppressed.
+    /// are suppressed; `registry` lets text dialects consult tool metadata
+    /// (e.g. capability-based chaining rules) while streaming.
     fn stream_processor(
         &self,
         ui: Arc<dyn AgentUi>,
         request_id: u64,
         hidden_tools: HiddenTools,
+        registry: Arc<ToolRegistry>,
     ) -> Box<dyn StreamProcessorTrait>;
 
     /// Format description for the system prompt ("this is how you call
@@ -69,5 +72,5 @@ pub trait ToolDialect: Send + Sync {
 
     /// Whether an already stored message contains a tool invocation in this
     /// dialect (used to normalize the history when loading a session).
-    fn message_contains_invocation(&self, message: &Message) -> bool;
+    fn message_contains_invocation(&self, message: &Message, registry: &ToolRegistry) -> bool;
 }

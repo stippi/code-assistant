@@ -125,7 +125,7 @@ mod tests {
             "^^^\n",
         );
 
-        let result = format_tool_request(&request, crate::tools::global_registry()).unwrap();
+        let result = format_tool_request(&request, &crate::tools::test_registry()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -145,7 +145,7 @@ mod tests {
             end_offset: None,
         };
 
-        let result = format_tool_request(&request, crate::tools::global_registry()).unwrap();
+        let result = format_tool_request(&request, &crate::tools::test_registry()).unwrap();
 
         // Should not contain the append parameter since it matches the default
         let expected = concat!(
@@ -176,7 +176,7 @@ mod tests {
             end_offset: None,
         };
 
-        let result = format_tool_request(&request, crate::tools::global_registry()).unwrap();
+        let result = format_tool_request(&request, &crate::tools::test_registry()).unwrap();
 
         // Should not contain the append parameter since it matches the default
         let expected = concat!(

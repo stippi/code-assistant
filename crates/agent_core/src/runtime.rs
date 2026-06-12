@@ -488,7 +488,7 @@ impl AgentRuntime {
         {
             let last_assistant = &self.message_history[last_assistant_idx];
 
-            if !dialect.message_contains_invocation(last_assistant) {
+            if !dialect.message_contains_invocation(last_assistant, self.registry.as_ref()) {
                 break;
             }
 
@@ -538,7 +538,10 @@ impl AgentRuntime {
         llm_response: &llm::LLMResponse,
         request_counter: u64,
     ) -> Result<(Vec<ToolRequest>, LoopFlow, llm::LLMResponse)> {
-        match self.dialect.extract_requests(llm_response, request_counter, 0) {
+        match self
+            .dialect
+            .extract_requests(llm_response, request_counter, 0, self.registry.as_ref())
+        {
             Ok((requests, truncated_response)) => {
                 if requests.is_empty() && !self.has_pending_message() {
                     Ok((requests, LoopFlow::GetUserInput, truncated_response))
@@ -846,6 +849,7 @@ impl AgentRuntime {
         let ctx = crate::hooks::PromptCtx {
             dialect: self.dialect.as_ref(),
             model_hint: self.model_hint.as_deref(),
+            registry: self.registry.as_ref(),
             extensions: self.extensions.as_ref(),
         };
         let system_message = self.hooks.system_prompt.build(&ctx);
@@ -939,6 +943,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
         for hook in &self.hooks.iteration_hooks {
@@ -1021,6 +1026,7 @@ impl AgentRuntime {
             self.ui.clone(),
             request_id,
             hidden_tools,
+            self.registry.clone(),
         )));
 
         let ui_for_callback = self.ui.clone();
@@ -1715,6 +1721,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
         for interceptor in &self.hooks.interceptors {
@@ -1731,6 +1738,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
         for interceptor in &self.hooks.interceptors {

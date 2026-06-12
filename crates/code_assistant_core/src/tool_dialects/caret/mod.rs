@@ -28,10 +28,11 @@ use tracing::debug;
 fn parse_and_truncate_caret_response(
     response: &LLMResponse,
     request_id: u64,
+    registry: &ToolRegistry,
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
-    let filter = SmartToolFilter::new();
+    let filter = SmartToolFilter::new(registry);
 
     for block in &response.content {
         if let ContentBlock::Text { text, .. } = block {
@@ -41,7 +42,7 @@ fn parse_and_truncate_caret_response(
                 request_id,
                 tool_requests.len(),
                 Some(&filter),
-                crate::tools::global_registry(),
+                registry,
             )?;
 
             tool_requests.extend(block_tool_requests.clone());
@@ -85,8 +86,9 @@ impl ToolDialect for CaretDialect {
         response: &LLMResponse,
         req_id: u64,
         _order_offset: usize,
+        registry: &ToolRegistry,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
-        parse_and_truncate_caret_response(response, req_id)
+        parse_and_truncate_caret_response(response, req_id, registry)
     }
 
     fn format_tool_request(
@@ -106,8 +108,14 @@ impl ToolDialect for CaretDialect {
         ui: Arc<dyn AgentUi>,
         request_id: u64,
         hidden_tools: HiddenTools,
+        registry: Arc<ToolRegistry>,
     ) -> Box<dyn StreamProcessorTrait> {
-        Box::new(CaretStreamProcessor::new(ui, request_id, hidden_tools))
+        Box::new(CaretStreamProcessor::new(
+            ui,
+            request_id,
+            hidden_tools,
+            registry,
+        ))
     }
 
     fn render_tool_section_for_prompt(
@@ -123,13 +131,13 @@ impl ToolDialect for CaretDialect {
         Some(self.generate_caret_syntax_documentation())
     }
 
-    fn message_contains_invocation(&self, message: &Message) -> bool {
+    fn message_contains_invocation(&self, message: &Message, registry: &ToolRegistry) -> bool {
         let request_id = message.request_id.unwrap_or(0);
         for text in message_text_segments(message) {
             if !text.contains("^^^") {
                 continue;
             }
-            match parse_caret_tool_invocations(text, request_id, 0, None, crate::tools::global_registry()) {
+            match parse_caret_tool_invocations(text, request_id, 0, None, registry) {
                 Ok((requests, _)) => {
                     if !requests.is_empty() {
                         return true;
@@ -178,7 +186,7 @@ impl CaretDialect {
 
             // Tool usage
             docs.push_str("Usage:\n");
-            docs.push_str(&self.generate_caret_usage_example(&tool.name, &tool.parameters));
+            docs.push_str(&self.generate_caret_usage_example(&tool.name, &tool.parameters, registry));
             docs.push('\n');
         }
 
@@ -236,6 +244,7 @@ impl CaretDialect {
         &self,
         tool_name: &str,
         parameters: &serde_json::Value,
+        registry: &ToolRegistry,
     ) -> String {
         let mut example = format!("^^^{tool_name}\n");
 
@@ -253,7 +262,7 @@ impl CaretDialect {
                 .iter()
                 .filter(|(name, _)| required_fields.contains(&name.as_str()))
             {
-                self.generate_caret_parameter_example(&mut example, tool_name, name, prop);
+                self.generate_caret_parameter_example(&mut example, tool_name, name, prop, registry);
             }
 
             // Then add optional parameters
@@ -261,7 +270,7 @@ impl CaretDialect {
                 .iter()
                 .filter(|(name, _)| !required_fields.contains(&name.as_str()))
             {
-                self.generate_caret_parameter_example(&mut example, tool_name, name, prop);
+                self.generate_caret_parameter_example(&mut example, tool_name, name, prop, registry);
             }
         }
 
@@ -275,11 +284,12 @@ impl CaretDialect {
         tool_name: &str,
         name: &str,
         prop: &serde_json::Value,
+        registry: &ToolRegistry,
     ) {
         // Determine if this parameter is an array
         let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
 
-        let is_multiline = is_multiline_param(tool_name, name);
+        let is_multiline = is_multiline_param(tool_name, name, registry);
         let placeholder = example_placeholder(name, prop);
 
         if is_array {

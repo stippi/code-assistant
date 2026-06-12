@@ -168,14 +168,10 @@ pub trait AgentUi: Send + Sync {
 /// Predicate deciding whether a tool's invocation is hidden from the UI.
 pub type HiddenTools = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Common trait for stream processors
+/// Common trait for stream processors. Implementations are constructed by
+/// their dialect (see `ToolDialect::stream_processor`) with whatever context
+/// they need.
 pub trait StreamProcessorTrait: Send + Sync {
-    /// Create a new stream processor with the given UI and request context.
-    /// `hidden_tools` decides which tool invocations are suppressed in the UI.
-    fn new(ui: Arc<dyn AgentUi>, request_id: u64, hidden_tools: HiddenTools) -> Self
-    where
-        Self: Sized;
-
     /// Process a streaming chunk and send display fragments to the UI
     fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError>;
 

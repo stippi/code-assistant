@@ -92,6 +92,9 @@ pub struct SessionManager {
     /// Prevents system idle sleep while any agent is running.
     /// Shared with spawned agent tasks so they can signal completion.
     sleep_inhibitor: Arc<SleepInhibitor>,
+
+    /// The tool registry shared by all sessions this manager runs.
+    tool_registry: Arc<crate::tools::core::ToolRegistry>,
 }
 
 impl SessionManager {
@@ -104,6 +107,7 @@ impl SessionManager {
         mut persistence: FileSessionPersistence,
         session_config_template: SessionConfig,
         default_model_name: String,
+        tool_registry: Arc<crate::tools::core::ToolRegistry>,
     ) -> Self {
         // Clean up empty sessions from previous runs at startup
         match persistence.delete_empty_sessions() {
@@ -132,6 +136,7 @@ impl SessionManager {
             default_model_name,
             force_diff_format,
             sleep_inhibitor: Arc::new(SleepInhibitor::new()),
+            tool_registry,
         }
     }
 
@@ -212,7 +217,7 @@ impl SessionManager {
         self.persistence.save_chat_session(&session)?;
 
         // Create session instance
-        let instance = SessionInstance::new(session);
+        let instance = SessionInstance::new(session, self.tool_registry.clone());
 
         // Add to active sessions
         self.active_sessions.insert(session_id.clone(), instance);
@@ -231,7 +236,7 @@ impl SessionManager {
         let messages = session.messages.clone();
 
         // Create session instance
-        let instance = SessionInstance::new(session);
+        let instance = SessionInstance::new(session, self.tool_registry.clone());
 
         // Add to active sessions
         self.active_sessions
@@ -636,7 +641,7 @@ impl SessionManager {
                     .session
                     .tool_executions
                     .iter()
-                    .map(|se| se.deserialize(crate::tools::global_registry()))
+                    .map(|se| se.deserialize(self.tool_registry.as_ref()))
                     .collect::<Result<Vec<_>>>()?,
                 plan: session_instance.session.plan.clone(),
                 config: session_config.clone(),
@@ -674,6 +679,7 @@ impl SessionManager {
             self.persistence.clone(),
             self.session_config_template.clone(),
             self.default_model_name.clone(),
+            self.tool_registry.clone(),
         )));
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
@@ -725,6 +731,7 @@ impl SessionManager {
                 sub_agent_cancellation_registry.clone(),
                 proxy_ui.clone(),
                 permission_handler.clone(),
+                self.tool_registry.clone(),
             ));
 
         let components = AgentComponents {
@@ -734,6 +741,7 @@ impl SessionManager {
             ui: proxy_ui.clone(),
             state_persistence: state_storage,
             permission_handler,
+            tool_registry: self.tool_registry.clone(),
             sub_agent_runner: Some(sub_agent_runner),
         };
 
@@ -1470,7 +1478,12 @@ mod tests {
             use_diff_blocks: force_diff,
             ..SessionConfig::default()
         };
-        let manager = SessionManager::new(persistence, template, "test-model".to_string());
+        let manager = SessionManager::new(
+            persistence,
+            template,
+            "test-model".to_string(),
+            crate::tools::test_registry(),
+        );
         (manager, dir)
     }
 

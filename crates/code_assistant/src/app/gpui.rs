@@ -44,6 +44,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         persistence,
         session_config_template,
         default_model.clone(),
+        code_assistant_core::tools::default_registry(),
     )));
 
     // Clone GUI before moving it into thread

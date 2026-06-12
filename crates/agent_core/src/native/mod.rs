@@ -23,6 +23,7 @@ impl ToolDialect for NativeDialect {
         response: &LLMResponse,
         _request_id: u64,
         _order_offset: usize,
+        _registry: &ToolRegistry,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
         let mut tool_requests = Vec::new();
 
@@ -63,6 +64,7 @@ impl ToolDialect for NativeDialect {
         ui: Arc<dyn AgentUi>,
         request_id: u64,
         hidden_tools: HiddenTools,
+        _registry: Arc<ToolRegistry>,
     ) -> Box<dyn StreamProcessorTrait> {
         Box::new(JsonStreamProcessor::new(ui, request_id, hidden_tools))
     }
@@ -81,7 +83,7 @@ impl ToolDialect for NativeDialect {
         None
     }
 
-    fn message_contains_invocation(&self, message: &Message) -> bool {
+    fn message_contains_invocation(&self, message: &Message, _registry: &ToolRegistry) -> bool {
         if let MessageContent::Structured(blocks) = &message.content {
             blocks
                 .iter()

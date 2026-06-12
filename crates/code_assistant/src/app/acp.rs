@@ -67,10 +67,12 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     // Create session manager
     let persistence = FileSessionPersistence::new();
     let persistence_for_watcher = FileSessionPersistence::new();
+    let tool_registry = code_assistant_core::tools::default_registry();
     let session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         session_config_template.clone(),
         model_name.clone(),
+        tool_registry.clone(),
     )));
 
     // Setup stdio transport
@@ -88,6 +90,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         session_manager.clone(),
         session_config_template,
         model_name.clone(),
+        tool_registry.clone(),
         config.playback.clone(),
         config.fast_playback,
         session_update_tx.clone(),
@@ -149,12 +152,14 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
             let session_manager_for_watcher = session_manager.clone();
             let session_update_tx_for_watcher = session_update_tx.clone();
             let connected_session_id_for_watcher = connected_session_id.clone();
+            let tool_registry_for_watcher = tool_registry.clone();
             tokio::task::spawn_local(async move {
                 handle_watcher_events(
                     watcher_event_rx,
                     session_manager_for_watcher,
                     session_update_tx_for_watcher,
                     connected_session_id_for_watcher,
+                    tool_registry_for_watcher,
                 )
                 .await;
             });
@@ -178,6 +183,7 @@ async fn handle_watcher_events(
     session_manager: Arc<Mutex<SessionManager>>,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     connected_session_id: Arc<StdMutex<Option<String>>>,
+    tool_registry: std::sync::Arc<code_assistant_core::tools::core::ToolRegistry>,
 ) {
     while let Ok(event) = event_rx.recv().await {
         match event {
@@ -225,6 +231,7 @@ async fn handle_watcher_events(
                     acp::SessionId::new(session_id.clone()),
                     session_update_tx.clone(),
                     base_path,
+                    tool_registry.clone(),
                 );
 
                 for ui_event in ui_events {

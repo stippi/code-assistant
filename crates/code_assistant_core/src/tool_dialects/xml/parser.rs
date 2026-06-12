@@ -354,7 +354,7 @@ mod tests {
         );
 
         let (tool_requests, truncated_text) =
-            parse_xml_tool_invocations(text, 456, 0, None, crate::tools::global_registry()).unwrap();
+            parse_xml_tool_invocations(text, 456, 0, None, &crate::tools::test_registry()).unwrap();
 
         assert_eq!(tool_requests.len(), 1);
         let tool_request = &tool_requests[0];

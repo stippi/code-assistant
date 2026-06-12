@@ -467,7 +467,7 @@ mod tests {
         use crate::mocks::ToolTestFixture;
         
 
-        let registry = crate::tools::global_registry();
+        let registry = crate::tools::test_registry();
         let tool = registry.get("view_documents");
         if tool.is_none() {
             // Tool not registered (feature disabled) - skip test

@@ -28,6 +28,9 @@ pub struct AgentComponents {
     pub state_persistence: Box<dyn AgentStatePersistence>,
     pub permission_handler: Option<Arc<dyn PermissionMediator>>,
 
+    /// The tool registry the agent selects and executes tools from.
+    pub tool_registry: Arc<crate::tools::core::ToolRegistry>,
+
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
 }
@@ -49,6 +52,7 @@ impl Agent {
             ui,
             state_persistence,
             permission_handler,
+            tool_registry,
             sub_agent_runner,
         } = components;
 
@@ -66,10 +70,9 @@ impl Agent {
             llm_provider,
             dialect: crate::tool_dialects::dialect_for(session_config.tool_syntax),
             ui: ui_adapter.clone(),
-            registry: crate::tools::global_registry_arc(),
+            stream_hidden_tools: tool_registry.hidden_tools(ToolScope::Agent.tag()),
+            registry: tool_registry,
             tool_capability,
-            stream_hidden_tools: crate::tools::global_registry()
-                .hidden_tools(ToolScope::Agent.tag()),
             command_executor,
             permission_handler,
             services_provider,
@@ -368,12 +371,8 @@ impl Agent {
         text: &str,
         updated_request: &crate::tools::ToolRequest,
         dialect: &dyn agent_core::ToolDialect,
+        registry: &crate::tools::core::ToolRegistry,
     ) -> Result<String> {
-        AgentRuntime::update_tool_call_in_text_static(
-            text,
-            updated_request,
-            dialect,
-            crate::tools::global_registry(),
-        )
+        AgentRuntime::update_tool_call_in_text_static(text, updated_request, dialect, registry)
     }
 }

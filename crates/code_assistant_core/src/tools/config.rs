@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 /// Configuration for tools that require external services.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -14,13 +13,6 @@ pub struct ToolsConfig {
 }
 
 impl ToolsConfig {
-    /// Get the global singleton instance of the tools configuration.
-    /// Returns a default (empty) config if no configuration file exists.
-    pub fn global() -> &'static Self {
-        static INSTANCE: OnceLock<ToolsConfig> = OnceLock::new();
-        INSTANCE.get_or_init(|| Self::load().unwrap_or_default())
-    }
-
     /// Load the tools configuration from disk.
     /// Returns Ok with default config if the file doesn't exist.
     pub fn load() -> Result<Self> {

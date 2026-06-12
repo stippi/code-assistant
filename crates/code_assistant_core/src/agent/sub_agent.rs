@@ -133,9 +133,12 @@ pub struct DefaultSubAgentRunner {
     ui: Arc<dyn UserInterface>,
     /// Optional permission handler for sub-agent tool invocations.
     permission_handler: Option<Arc<dyn PermissionMediator>>,
+    /// The tool registry sub-agents run with (shared with the parent agent).
+    tool_registry: Arc<crate::tools::core::ToolRegistry>,
 }
 
 impl DefaultSubAgentRunner {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model_name: String,
         session_config: SessionConfig,
@@ -143,6 +146,7 @@ impl DefaultSubAgentRunner {
         cancellation_registry: Arc<SubAgentCancellationRegistry>,
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
+        tool_registry: Arc<crate::tools::core::ToolRegistry>,
     ) -> Self {
         let sandbox_policy = session_config.sandbox_policy.clone();
         Self {
@@ -153,6 +157,7 @@ impl DefaultSubAgentRunner {
             cancellation_registry,
             ui,
             permission_handler,
+            tool_registry,
         }
     }
 
@@ -162,7 +167,12 @@ impl DefaultSubAgentRunner {
         parent_tool_id: String,
         cancelled: Arc<AtomicBool>,
     ) -> Arc<SubAgentUiAdapter> {
-        Arc::new(SubAgentUiAdapter::new(parent_ui, parent_tool_id, cancelled))
+        Arc::new(SubAgentUiAdapter::new(
+            parent_ui,
+            parent_tool_id,
+            cancelled,
+            self.tool_registry.clone(),
+        ))
     }
 
     async fn build_agent(
@@ -203,6 +213,7 @@ impl DefaultSubAgentRunner {
             ui,
             state_persistence: Box::new(NoOpStatePersistence),
             permission_handler,
+            tool_registry: self.tool_registry.clone(),
             sub_agent_runner: None,
         };
 
@@ -524,6 +535,8 @@ struct SubAgentUiAdapter {
     output: Mutex<SubAgentOutput>,
     /// Map from tool_id to index in output.tools for fast lookup
     tool_id_to_index: Mutex<std::collections::HashMap<String, usize>>,
+    /// Registry for tool title templates.
+    tool_registry: Arc<crate::tools::core::ToolRegistry>,
 }
 
 impl SubAgentUiAdapter {
@@ -531,6 +544,7 @@ impl SubAgentUiAdapter {
         parent: Arc<dyn UserInterface>,
         parent_tool_id: String,
         cancelled: Arc<AtomicBool>,
+        tool_registry: Arc<crate::tools::core::ToolRegistry>,
     ) -> Self {
         Self {
             parent,
@@ -538,6 +552,7 @@ impl SubAgentUiAdapter {
             cancelled,
             output: Mutex::new(SubAgentOutput::new()),
             tool_id_to_index: Mutex::new(std::collections::HashMap::new()),
+            tool_registry,
         }
     }
 
@@ -615,7 +630,7 @@ impl SubAgentUiAdapter {
                 if let Some(new_title) = crate::tools::core::generate_tool_title(
                     &tool.name,
                     &tool.parameters,
-                    crate::tools::global_registry(),
+                    self.tool_registry.as_ref(),
                 ) {
                     tool.title = Some(new_title);
                 }

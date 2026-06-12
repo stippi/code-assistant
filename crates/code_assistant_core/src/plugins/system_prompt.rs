@@ -17,7 +17,7 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
 
         // Generate the system message using the tools module
         let mut system_message =
-            generate_system_message(ctx.dialect, state.tool_scope, ctx.model_hint);
+            generate_system_message(ctx.dialect, state.tool_scope, ctx.model_hint, ctx.registry);
 
         // Add project information
         let mut project_info = String::new();

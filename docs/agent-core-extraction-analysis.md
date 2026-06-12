@@ -1428,17 +1428,40 @@ in between:
 
 ### Phase 6 — Cleanup
 
-1. Remove `ToolRegistry::global()`; all callers receive the registry by argument or via
+1. **Done.** Remove `ToolRegistry::global()`; all callers receive the registry by argument or via
    the `ToolContext`/`LoopCtx`. Besides the agent loop and the parser, the caller list
    includes: the stream processors, `title.rs`, `formatter.rs`, the MCP handler, and
    `SerializedToolExecution::deserialize`. Likewise dissolve `ToolsConfig::global()` —
    the availability configuration is passed when filling the registry instance.
-2. Drop the `ParserRegistry` singleton without replacement — per agent there is exactly
+   (As built: the `ToolDialect` methods that still read the singleton internally —
+   `extract_requests`, `message_contains_invocation`, `stream_processor` — gained a
+   registry parameter, matching `format_tool_request`/`render_tool_section_for_prompt`,
+   which already had one; dialects stay stateless. The `StreamProcessorTrait::new`
+   associated constructor was dropped — each processor has an inherent constructor and
+   only the dialect (or `create_stream_processor`, which gained a registry parameter)
+   builds them. `LoopCtx` and `PromptCtx` expose `registry: &ToolRegistry` for hooks
+   (naming reminder, system prompt). `ToolRegistry::hidden_tools` takes
+   `self: &Arc<Self>` instead of `&'static self`. `SmartToolFilter` borrows
+   `&ToolRegistry`; the stream processors own an `Arc` and construct it on the fly.
+   The `Arc<ToolRegistry>` is carried by `AgentComponents`, `SessionManager`,
+   `SessionInstance`, `DefaultSubAgentRunner`/`SubAgentUiAdapter`, the MCP
+   `MessageHandler`, `ACPAgentImpl`, and `ACPUserUI`; the wiring layer creates it once
+   per entry point via `tools::default_registry()` (loads `tools.json`). `ToolsConfig`
+   has no `global()` anymore: `register_default_tools(&mut registry, &ToolsConfig)`,
+   and `PerplexityAskTool::from_config` captures the API key at construction. Tests use
+   the deterministic `tools::test_registry()` fixture (default tools, empty config —
+   no more `tools.json` influence on test runs), exported under the `test-utils`
+   feature for the binary's tests.)
+2. **Done in Phase 4 step 3.** Drop the `ParserRegistry` singleton without replacement — per agent there is exactly
    one `Box<dyn ToolDialect>`, set at build time. The `ToolSyntax` enum disappears from
    the core; in `code_assistant_core` it may remain as the internal selection helper
-   for the bundled dialects.
-3. Move the sub-agent-specific UI adapters into `code_assistant_core`; only the
+   for the bundled dialects. (`dialect_for(ToolSyntax)` is that helper.)
+3. **Done in Phase 5.** Move the sub-agent-specific UI adapters into `code_assistant_core`; only the
    `SubAgentRunner` trait remains in the core — and even that is optional.
+   (The whole sub-agent module moved with the domain tree; `agent_core` contains
+   nothing sub-agent-specific, not even the trait — it lives in
+   `code_assistant_core::agent::sub_agent` and travels to the loop via the
+   `ToolServicesProvider` plugin.)
 4. **Done in Phase 5.** Move the resources (`compaction_prompt.md`, `tool_use_intro.md`,
    `system_prompts/*.md`) into `code_assistant_core` (no default prompts in the core).
 5. (Added in Phase 5:) the §3.8 restructure of the domain `UiEvent` to embed

@@ -1,4 +1,5 @@
 //! Caret-style tool invocation processor for streaming responses
+use crate::tools::core::ToolRegistry;
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use agent_core::ui::{AgentUi, DisplayFragment, HiddenTools, StreamProcessorTrait, UIError};
 use llm::{Message, MessageContent, StreamingChunk};
@@ -64,12 +65,17 @@ pub struct CaretStreamProcessor {
     current_tool_name: String,
     current_tool_hidden: bool,
     hidden_tools: HiddenTools,
-    filter: Box<dyn ToolUseFilter>,
+    registry: Arc<ToolRegistry>,
     streaming_state: StreamingState,
 }
 
-impl StreamProcessorTrait for CaretStreamProcessor {
-    fn new(ui: Arc<dyn AgentUi>, request_id: u64, hidden_tools: HiddenTools) -> Self {
+impl CaretStreamProcessor {
+    pub fn new(
+        ui: Arc<dyn AgentUi>,
+        request_id: u64,
+        hidden_tools: HiddenTools,
+        registry: Arc<ToolRegistry>,
+    ) -> Self {
         Self {
             ui,
             request_id,
@@ -83,11 +89,18 @@ impl StreamProcessorTrait for CaretStreamProcessor {
             current_tool_name: String::new(),
             current_tool_hidden: false,
             hidden_tools,
-            filter: Box::new(SmartToolFilter::new()),
+            registry,
             streaming_state: StreamingState::PreFirstTool,
         }
     }
 
+    /// The chaining-rules filter, freshly borrowed from the registry.
+    fn filter(&self) -> impl ToolUseFilter + '_ {
+        SmartToolFilter::new(self.registry.as_ref())
+    }
+}
+
+impl StreamProcessorTrait for CaretStreamProcessor {
     fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError> {
         match chunk {
             StreamingChunk::Text(text) => {
@@ -808,7 +821,7 @@ impl CaretStreamProcessor {
                 match &fragment {
                     DisplayFragment::ToolName { name, .. } => {
                         // First tool starting - check if it's allowed (should always be allowed)
-                        if !self.filter.allow_tool_at_position(name, 1) {
+                        if !self.filter().allow_tool_at_position(name, 1) {
                             // First tool denied - block streaming
                             self.streaming_state = StreamingState::Blocked;
                             return Err(UIError::IOError(std::io::Error::new(
@@ -826,7 +839,7 @@ impl CaretStreamProcessor {
                         // Get the tool name from current_tool_id or extract from somewhere
                         let tool_name = self.extract_tool_name_from_current_context();
 
-                        if self.filter.allow_content_after_tool(&tool_name, 1) {
+                        if self.filter().allow_content_after_tool(&tool_name, 1) {
                             // Transition to buffering state
                             self.streaming_state = StreamingState::BufferingAfterTool {
                                 last_tool_name: tool_name,
@@ -852,7 +865,7 @@ impl CaretStreamProcessor {
                         // New tool starting - check if it's allowed
                         let tool_count = self.tool_counter + 1; // Next tool count
                         if self
-                            .filter
+                            .filter()
                             .allow_tool_at_position(name, tool_count as usize)
                         {
                             // Tool allowed - emit all buffered fragments first
@@ -883,7 +896,7 @@ impl CaretStreamProcessor {
                         let tool_name = last_tool_name.clone();
                         let tool_count = self.tool_counter as usize;
 
-                        if self.filter.allow_content_after_tool(&tool_name, tool_count) {
+                        if self.filter().allow_content_after_tool(&tool_name, tool_count) {
                             // Continue buffering
                             self.streaming_state = StreamingState::BufferingAfterTool {
                                 last_tool_name: tool_name,

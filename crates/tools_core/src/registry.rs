@@ -43,10 +43,12 @@ impl ToolRegistry {
     /// capability tag. Lets UI-layer consumers check hidden-ness without
     /// referencing the registry.
     pub fn hidden_tools(
-        &'static self,
-        capability: &'static str,
+        self: &std::sync::Arc<Self>,
+        capability: &str,
     ) -> std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync> {
-        std::sync::Arc::new(move |name| self.is_tool_hidden(name, capability))
+        let registry = self.clone();
+        let capability = capability.to_string();
+        std::sync::Arc::new(move |name| registry.is_tool_hidden(name, &capability))
     }
 
     /// Check if a tool carrying the given capability tag is hidden

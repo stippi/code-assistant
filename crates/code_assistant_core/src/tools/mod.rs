@@ -28,44 +28,38 @@ pub use agent_core::ToolRequest;
 
 
 use crate::tools::core::{ToolRegistry, ToolsConfig};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-static GLOBAL_REGISTRY: OnceLock<Arc<ToolRegistry>> = OnceLock::new();
-
-fn global_registry_cell() -> &'static Arc<ToolRegistry> {
-    GLOBAL_REGISTRY.get_or_init(|| {
-        let mut registry = ToolRegistry::new();
-        register_default_tools(&mut registry);
-        Arc::new(registry)
-    })
+/// Build a registry with code-assistant's default tools, loading the tools
+/// configuration (`tools.json`) from disk. Intended for the wiring layer:
+/// create one per process entry point and share the `Arc`.
+pub fn default_registry() -> Arc<ToolRegistry> {
+    let config = ToolsConfig::load().unwrap_or_default();
+    let mut registry = ToolRegistry::new();
+    register_default_tools(&mut registry, &config);
+    Arc::new(registry)
 }
 
-/// The process-wide registry preloaded with code-assistant's default tools.
-///
-/// Scheduled for removal in Phase 6 of the extraction plan; prefer passing a
-/// registry instance where feasible.
-pub fn global_registry() -> &'static ToolRegistry {
-    global_registry_cell()
-}
-
-/// Shared-handle variant of [`global_registry`], for components that store
-/// the registry (e.g. the agent runtime).
-pub fn global_registry_arc() -> Arc<ToolRegistry> {
-    global_registry_cell().clone()
+/// Registry with code-assistant's default tools and an empty tools
+/// configuration — a deterministic fixture for tests (no `tools.json`
+/// influence, so e.g. `perplexity_ask` is never registered).
+#[cfg(any(test, feature = "test-utils"))]
+pub fn test_registry() -> Arc<ToolRegistry> {
+    let mut registry = ToolRegistry::new();
+    register_default_tools(&mut registry, &ToolsConfig::default());
+    Arc::new(registry)
 }
 
 /// Register all of code-assistant's tools in the given registry. Tools that
 /// depend on external services are skipped when their configuration is
 /// missing.
-pub fn register_default_tools(registry: &mut ToolRegistry) {
+pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig) {
     use impls::{
         DeleteFilesTool, EditTool, ExecuteCommandTool, GlobFilesTool, ListFilesTool,
         ListProjectsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool,
         SearchFilesTool, SpawnAgentTool, UpdatePlanTool, ViewDocumentsTool, ViewImagesTool,
         WebFetchTool, WebSearchTool, WriteFileTool,
     };
-
-    let config = ToolsConfig::global();
 
     registry.register(Box::new(DeleteFilesTool));
     registry.register(Box::new(EditTool));
@@ -74,8 +68,8 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     registry.register(Box::new(ListFilesTool));
     registry.register(Box::new(ListProjectsTool));
     registry.register(Box::new(NameSessionTool));
-    if PerplexityAskTool.is_available(config) {
-        registry.register(Box::new(PerplexityAskTool));
+    if let Some(perplexity) = PerplexityAskTool::from_config(config) {
+        registry.register(Box::new(perplexity));
     } else {
         tracing::debug!("Tool 'perplexity_ask' is not available (missing configuration)");
     }
