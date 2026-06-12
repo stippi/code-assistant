@@ -32,12 +32,13 @@ Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, 
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
 Layer 3 (domain):     code_assistant_core — sessions, persistence, UiEvent, tool impls,
                                            dialects (xml/caret), plugins, sub-agents, backend
-Layer 4 (frontends):  ui_gpui  ui_terminal  (acp/ and mcp/ remain as modules in the binary)
+Layer 4 (frontends):  ui_gpui  ui_terminal  ui_acp  mcp_server
 Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend wiring
 ```
 
-The binary feature-gates `gpui-frontend` and `terminal-frontend` (both default).
-A `--no-default-features` build produces a headless binary without gpui.
+The binary feature-gates `gpui-frontend`, `terminal-frontend`, `acp-frontend`,
+and `mcp-server` (all default). A `--no-default-features` build produces a
+headless binary without gpui.
 
 ### Key Entry Points
 - **Agent loop**: `crates/agent_core/src/runtime.rs`
@@ -49,8 +50,8 @@ A `--no-default-features` build produces a headless binary without gpui.
 - **Session management**: `crates/code_assistant_core/src/session/`
 - **GPUI frontend**: `crates/ui_gpui/src/`
 - **Terminal frontend**: `crates/ui_terminal/src/`
-- **MCP server**: `crates/code_assistant/src/mcp/`
-- **ACP server**: `crates/code_assistant/src/acp/`
+- **MCP server**: `crates/mcp_server/src/`
+- **ACP frontend**: `crates/ui_acp/src/`
 
 ### Tool Architecture
 - **Core framework** (`tools_core`): `DynTool` trait, `ToolRegistry` (instance, not singleton), `ToolSpec` with capability tags
