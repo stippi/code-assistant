@@ -11,9 +11,8 @@ use crate::persistence::SessionModelConfig;
 use crate::plugins::AgentAppState;
 use crate::session::SessionConfig;
 use crate::tools::core::ToolScope;
-use crate::tools::ToolRequest;
 use crate::ui::{AgentUiAdapter, UserInterface};
-use agent_core::{AgentRuntime, AgentRuntimeComponents, ToolDialect};
+use agent_core::{AgentRuntime, AgentRuntimeComponents};
 use anyhow::Result;
 use command_executor::CommandExecutor;
 use llm::{LLMProvider, Message};
@@ -65,7 +64,7 @@ impl Agent {
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {
             llm_provider,
-            dialect: crate::tools::ParserRegistry::get(session_config.tool_syntax),
+            dialect: crate::tool_dialects::dialect_for(session_config.tool_syntax),
             ui: ui_adapter.clone(),
             registry: crate::tools::global_registry_arc(),
             tool_capability,
@@ -194,7 +193,7 @@ impl Agent {
         }
         let session_config = self.app_state().session_config.clone();
         self.runtime
-            .set_dialect(crate::tools::ParserRegistry::get(session_config.tool_syntax));
+            .set_dialect(crate::tool_dialects::dialect_for(session_config.tool_syntax));
         if session_config.use_diff_blocks {
             self.enable_diff_blocks();
         } else {
@@ -336,6 +335,7 @@ impl Agent {
     }
 
     /// Prepare messages for LLM request, dynamically rendering tool outputs.
+    #[cfg(test)]
     pub fn render_tool_results_in_messages(&self) -> Vec<Message> {
         self.runtime.render_tool_results_in_messages()
     }
@@ -366,8 +366,8 @@ impl Agent {
     #[cfg(test)]
     pub fn update_tool_call_in_text_static(
         text: &str,
-        updated_request: &ToolRequest,
-        dialect: &dyn ToolDialect,
+        updated_request: &crate::tools::ToolRequest,
+        dialect: &dyn agent_core::ToolDialect,
     ) -> Result<String> {
         AgentRuntime::update_tool_call_in_text_static(
             text,

@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests;
 
-pub mod dialect;
 pub mod hooks;
 pub mod persistence;
 pub mod runner;
@@ -10,7 +9,6 @@ pub mod types;
 pub mod ui;
 
 pub use crate::types::ToolSyntax;
-pub use dialect::ToolDialect;
 // pub use persistence::FileStatePersistence;
 pub use runner::{Agent, AgentComponents};
 pub use sub_agent::{

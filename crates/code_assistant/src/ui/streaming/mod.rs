@@ -9,9 +9,6 @@ use crate::agent::ToolSyntax;
 use crate::ui::UserInterface;
 use std::sync::Arc;
 
-mod caret_processor;
-mod xml_processor;
-
 #[cfg(test)]
 mod caret_processor_tests;
 #[cfg(test)]
@@ -25,8 +22,8 @@ pub use agent_core::ui::{DisplayFragment, HiddenTools, StreamProcessorTrait};
 
 // Export the concrete implementations
 pub use agent_core::native::JsonStreamProcessor;
-pub use caret_processor::CaretStreamProcessor;
-pub use xml_processor::XmlStreamProcessor;
+pub use crate::tool_dialects::caret::CaretStreamProcessor;
+pub use crate::tool_dialects::xml::XmlStreamProcessor;
 
 /// Factory function to create the appropriate processor based on tool syntax.
 /// The given [`UserInterface`] is adapted to the core's UI boundary.

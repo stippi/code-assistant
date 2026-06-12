@@ -1,6 +1,6 @@
 //! System message generation functionality
 
-use crate::agent::dialect::ToolDialect;
+use agent_core::ToolDialect;
 use crate::tools::core::ToolScope;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
@@ -192,12 +192,12 @@ mod tests {
 
     #[test]
     fn test_system_message_generation() {
-        use crate::tools::ParserRegistry;
+        
         use crate::types::ToolSyntax;
 
         // Test Native mode
         let native_msg =
-            generate_system_message(&*ParserRegistry::get(ToolSyntax::Native), ToolScope::Agent, None);
+            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Native), ToolScope::Agent, None);
         assert!(!native_msg.contains("{{tools}}"));
         assert!(!native_msg.contains("{{syntax}}"));
         assert!(!native_msg.contains("<tool:"));
@@ -206,7 +206,7 @@ mod tests {
 
         // Test XML mode
         let xml_msg =
-            generate_system_message(&*ParserRegistry::get(ToolSyntax::Xml), ToolScope::Agent, None);
+            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Xml), ToolScope::Agent, None);
         assert!(
             !xml_msg.contains("{{tools}}"),
             "XML message contains unreplaced {{tools}} placeholder"
@@ -230,7 +230,7 @@ mod tests {
 
         // Test Caret mode
         let caret_msg = generate_system_message(
-            &*ParserRegistry::get(ToolSyntax::Caret),
+            &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
             ToolScope::Agent,
             None,
         );

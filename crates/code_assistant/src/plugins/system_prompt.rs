@@ -3,7 +3,7 @@
 
 use crate::agent::hooks::{PromptCtx, SystemPromptProvider};
 use crate::plugins::AgentAppState;
-use crate::tools::generate_system_message;
+use crate::tool_dialects::system_message::generate_system_message;
 use std::fs;
 use std::path::Path;
 use tracing::warn;

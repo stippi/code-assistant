@@ -1323,7 +1323,6 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
 
 #[test]
 fn test_caret_array_parsing() -> Result<()> {
-    use crate::tools::ParserRegistry;
 
     let text = concat!(
         "^^^read_files\n",
@@ -1340,7 +1339,7 @@ fn test_caret_array_parsing() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
 
     assert_eq!(tool_requests.len(), 1);
@@ -1373,7 +1372,6 @@ fn test_caret_array_parsing() -> Result<()> {
 
 #[test]
 fn test_caret_empty_array_parsing() -> Result<()> {
-    use crate::tools::ParserRegistry;
 
     let text = concat!(
         "^^^read_files\n",
@@ -1389,7 +1387,7 @@ fn test_caret_empty_array_parsing() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
 
     assert_eq!(tool_requests.len(), 1);
@@ -1405,7 +1403,6 @@ fn test_caret_empty_array_parsing() -> Result<()> {
 
 #[test]
 fn test_caret_multiple_arrays_parsing() -> Result<()> {
-    use crate::tools::ParserRegistry;
 
     let text = concat!(
         "^^^search_files\n",
@@ -1429,7 +1426,7 @@ fn test_caret_multiple_arrays_parsing() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
 
     assert_eq!(tool_requests.len(), 1);
@@ -1462,7 +1459,6 @@ fn test_caret_multiple_arrays_parsing() -> Result<()> {
 
 #[test]
 fn test_caret_array_with_multiline_parsing() -> Result<()> {
-    use crate::tools::ParserRegistry;
 
     let text = concat!(
         "^^^write_file\n",
@@ -1485,7 +1481,7 @@ fn test_caret_array_with_multiline_parsing() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
 
     assert_eq!(tool_requests.len(), 1);
@@ -1532,7 +1528,6 @@ fn test_caret_array_with_multiline_parsing() -> Result<()> {
 
 #[test]
 fn test_original_caret_issue_reproduction() -> Result<()> {
-    use crate::tools::ParserRegistry;
 
     // This is the exact block that was reported as failing
     let text = concat!(
@@ -1550,7 +1545,7 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     let result = parser.extract_requests(&response, 123, 0);
 
     match result {
@@ -1781,10 +1776,9 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
     );
 
     // Parse the original text using the XML parser to extract the actual tool block with offsets
-    use crate::tools::parser_registry::ParserRegistry;
-    use llm::{ContentBlock, LLMResponse, Usage};
+        use llm::{ContentBlock, LLMResponse, Usage};
 
-    let parser = ParserRegistry::get(ToolSyntax::Xml);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
     let llm_response = LLMResponse {
         content: vec![ContentBlock::new_text(original_text)],
         usage: Usage::zero(),
@@ -1834,7 +1828,7 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
         Agent::update_tool_call_in_text_static(
         original_text,
         &updated_request,
-        &*crate::tools::ParserRegistry::get(ToolSyntax::Xml),
+        &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
     )?;
 
     // Should have replaced the tool block exactly
@@ -1864,10 +1858,9 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
     );
 
     // Parse the original text using the Caret parser to extract the actual tool block with offsets
-    use crate::tools::parser_registry::ParserRegistry;
-    use llm::{ContentBlock, LLMResponse, Usage};
+        use llm::{ContentBlock, LLMResponse, Usage};
 
-    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     let llm_response = LLMResponse {
         content: vec![ContentBlock::new_text(original_text)],
         usage: Usage::zero(),
@@ -1916,7 +1909,7 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
         Agent::update_tool_call_in_text_static(
         original_text,
         &updated_request,
-        &*crate::tools::ParserRegistry::get(ToolSyntax::Caret),
+        &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
     )?;
 
     // Should have replaced the tool block exactly
@@ -1950,7 +1943,7 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
         Agent::update_tool_call_in_text_static(
         original_text,
         &updated_request,
-        &*crate::tools::ParserRegistry::get(ToolSyntax::Xml),
+        &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
     )?;
 
     // Should have appended the updated tool call

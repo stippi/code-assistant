@@ -11,6 +11,7 @@ mod permissions;
 mod persistence;
 mod plugins;
 mod session;
+mod tool_dialects;
 mod tools;
 mod types;
 mod ui;

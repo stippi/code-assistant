@@ -1,6 +1,6 @@
 use crate::config::ProjectManager;
 use crate::permissions::PermissionMediator;
-use crate::tools::core::tool::ToolContext;
+use crate::tools::core::ToolContext;
 use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
 use anyhow::Result;

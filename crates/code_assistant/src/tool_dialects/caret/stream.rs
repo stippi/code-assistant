@@ -1,8 +1,6 @@
 //! Caret-style tool invocation processor for streaming responses
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
-use crate::ui::streaming::{DisplayFragment, HiddenTools, StreamProcessorTrait};
-use agent_core::AgentUi;
-use crate::ui::UIError;
+use agent_core::ui::{AgentUi, DisplayFragment, HiddenTools, StreamProcessorTrait, UIError};
 use llm::{Message, MessageContent, StreamingChunk};
 use regex::Regex;
 use std::sync::Arc;

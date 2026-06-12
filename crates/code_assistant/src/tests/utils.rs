@@ -1,4 +1,4 @@
-use crate::tools::{ParserRegistry, ToolRequest};
+use crate::tools::ToolRequest;
 use crate::types::ToolSyntax;
 use anyhow::Result;
 
@@ -9,6 +9,6 @@ pub fn parse_and_truncate_llm_response(
     request_id: u64,
 ) -> Result<(Vec<ToolRequest>, llm::LLMResponse)> {
     // Default to XML parser for backward compatibility with existing tests
-    let parser = ParserRegistry::get(ToolSyntax::Xml);
+    let parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
     parser.extract_requests(response, request_id, 0)
 }

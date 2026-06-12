@@ -1,17 +1,8 @@
-// Original tools implementation
-mod parse;
-
-// Parser registry for different tool syntaxes
-pub mod parser_registry;
-
-// System message generation
-pub mod system_message;
+// Parsing helpers for tool inputs (paths with ranges, search/replace blocks)
+pub mod parse;
 
 // Tool use filtering system
 pub mod tool_use_filter;
-
-// Tool formatter system
-pub mod formatter;
 
 // Tools configuration (tools.json)
 pub mod config;
@@ -30,10 +21,7 @@ pub mod scope;
 mod tests;
 
 pub(crate) use parse::parse_search_replace_blocks;
-pub use parse::{parse_caret_tool_invocations, parse_xml_tool_invocations};
-pub use parser_registry::ParserRegistry;
 pub use services::{ToolServices, ToolServicesAccess};
-pub use system_message::generate_system_message;
 
 // The loop-side tool vocabulary moved to the agent core (Phase 4 step 2).
 pub use agent_core::ToolRequest;

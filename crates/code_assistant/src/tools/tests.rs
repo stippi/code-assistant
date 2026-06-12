@@ -518,10 +518,9 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
 fn test_tool_use_docs_generation() {
     use crate::agent::ToolSyntax;
     use crate::tools::core::ToolScope;
-    use crate::tools::ParserRegistry;
 
     // Test XML documentation
-    let xml_parser = ParserRegistry::get(ToolSyntax::Xml);
+    let xml_parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
     if let Some(xml_docs) = xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag()) {
         println!("=== XML Tool Documentation ===");
         println!("{}", &xml_docs[..1500.min(xml_docs.len())]);
@@ -529,7 +528,7 @@ fn test_tool_use_docs_generation() {
     }
 
     // Test Caret documentation
-    let caret_parser = ParserRegistry::get(ToolSyntax::Caret);
+    let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     if let Some(caret_docs) = caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag()) {
         println!("=== Caret Tool Documentation ===");
         println!("{}", &caret_docs[..1500.min(caret_docs.len())]);
@@ -537,7 +536,7 @@ fn test_tool_use_docs_generation() {
     }
 
     // Test Native documentation (should be None)
-    let native_parser = ParserRegistry::get(ToolSyntax::Native);
+    let native_parser = crate::tool_dialects::dialect_for(ToolSyntax::Native);
     if native_parser
         .render_tool_section_for_prompt(crate::tools::global_registry(), ToolScope::Agent.tag())
         .is_some()
@@ -572,11 +571,10 @@ fn test_tool_use_docs_generation() {
 #[test]
 fn test_parameter_documentation_formatting() {
     use crate::agent::ToolSyntax;
-    use crate::tools::ParserRegistry;
     use serde_json::json;
 
     // Test parameter formatting with XML parser
-    let xml_parser = ParserRegistry::get(ToolSyntax::Xml);
+    let xml_parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
 
     // Test simple parameter documentation
     let _param = json!({
@@ -622,7 +620,7 @@ fn test_parameter_documentation_formatting() {
     }
 
     // Test with Caret parser
-    let caret_parser = ParserRegistry::get(ToolSyntax::Caret);
+    let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     if let Some(docs) =
         caret_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
     {
@@ -665,11 +663,10 @@ fn test_parameter_documentation_formatting() {
 #[test]
 fn test_usage_example_generation() {
     use crate::agent::ToolSyntax;
-    use crate::tools::ParserRegistry;
 
     // Test both XML and Caret parsers generate proper usage examples
-    let xml_parser = ParserRegistry::get(ToolSyntax::Xml);
-    let caret_parser = ParserRegistry::get(ToolSyntax::Caret);
+    let xml_parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
+    let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
 
     if let Some(xml_docs) =
         xml_parser.render_tool_section_for_prompt(crate::tools::global_registry(), crate::tools::core::ToolScope::Agent.tag())
@@ -742,7 +739,7 @@ fn test_usage_example_generation() {
 
 #[tokio::test]
 async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
-    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tool_dialects::xml::parse_xml_tool_invocations;
 
     // This reproduces the exact error scenario described by the user
     let text = r#"I will analyze the structure and code of the project to find out which tool-use syntax is used. Let me start with the most important files.
@@ -772,7 +769,7 @@ async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
 
 #[tokio::test]
 async fn test_xml_parsing_with_multiple_valid_blocks_should_limit_to_first() {
-    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tool_dialects::xml::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     // Test case where we have multiple valid blocks but want to limit to first
@@ -816,7 +813,7 @@ And finally modify the file:
 
 #[tokio::test]
 async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
-    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tool_dialects::xml::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     // Test that truncation function can extract valid tool even with invalid following content
@@ -861,7 +858,7 @@ async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
 
 #[tokio::test]
 async fn test_xml_parsing_with_smart_filter_allows_multiple_read_tools() {
-    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tool_dialects::xml::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::SmartToolFilter;
 
     let text = r#"Let me analyze the project structure:
@@ -910,7 +907,7 @@ But I shouldn't be able to write files yet:
 
 #[tokio::test]
 async fn test_xml_parsing_with_smart_filter_blocks_write_after_read() {
-    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tool_dialects::xml::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::SmartToolFilter;
 
     let text = r#"First I'll read a file:
@@ -943,7 +940,7 @@ Now I want to modify it immediately:
 
 #[tokio::test]
 async fn test_xml_parsing_with_unlimited_filter_allows_all_tools() {
-    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tool_dialects::xml::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::UnlimitedToolFilter;
 
     let text = r#"I'll do multiple operations:
@@ -982,7 +979,7 @@ async fn test_xml_parsing_with_unlimited_filter_allows_all_tools() {
 
 #[tokio::test]
 async fn test_caret_parsing_with_single_tool_filter() {
-    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     let text = concat!(
@@ -1019,7 +1016,7 @@ async fn test_caret_parsing_with_single_tool_filter() {
 
 #[tokio::test]
 async fn test_caret_parsing_with_smart_filter_allows_multiple_read_tools() {
-    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
     use crate::tools::tool_use_filter::SmartToolFilter;
 
     let text = concat!(
@@ -1067,7 +1064,7 @@ async fn test_caret_parsing_with_smart_filter_allows_multiple_read_tools() {
 
 #[tokio::test]
 async fn test_caret_parsing_with_smart_filter_blocks_write_after_read() {
-    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
     use crate::tools::tool_use_filter::SmartToolFilter;
 
     let text = concat!(
@@ -1103,7 +1100,7 @@ async fn test_caret_parsing_with_smart_filter_blocks_write_after_read() {
 
 #[tokio::test]
 async fn test_caret_parsing_with_unlimited_filter_allows_all_tools() {
-    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
     use crate::tools::tool_use_filter::UnlimitedToolFilter;
 
     let text = concat!(
@@ -1143,7 +1140,7 @@ async fn test_caret_parsing_with_unlimited_filter_allows_all_tools() {
 
 #[tokio::test]
 async fn test_caret_parsing_with_truncation_preserves_valid_tool() {
-    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     let text = concat!(
@@ -1184,7 +1181,7 @@ async fn test_caret_parsing_with_truncation_preserves_valid_tool() {
 
 #[tokio::test]
 async fn test_caret_parsing_multiline_parameters_with_filter() {
-    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     let text = concat!(
@@ -1229,7 +1226,7 @@ async fn test_caret_parsing_multiline_parameters_with_filter() {
 
 #[tokio::test]
 async fn test_caret_parsing_edge_case_empty_arrays_with_filter() {
-    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     let text = concat!(
@@ -1267,7 +1264,8 @@ async fn test_caret_parsing_edge_case_empty_arrays_with_filter() {
 
 #[tokio::test]
 async fn test_mixed_syntax_scenarios_with_filters() {
-    use crate::tools::parse::{parse_caret_tool_invocations, parse_xml_tool_invocations};
+    use crate::tool_dialects::caret::parse_caret_tool_invocations;
+    use crate::tool_dialects::xml::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::{SingleToolFilter, SmartToolFilter};
 
     // Test that each parser handles its own syntax correctly with filters
