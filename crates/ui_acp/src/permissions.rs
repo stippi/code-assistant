@@ -1,5 +1,10 @@
-use super::{PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason};
-use crate::acp::ACPUserUI;
+// The generic permission types live with the tool core; re-exported here so
+// the mediator and its types share one import path.
+pub use tools_core::permissions::{
+    PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
+};
+
+use crate::ACPUserUI;
 use agent_client_protocol::{self as acp, Client};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;

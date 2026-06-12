@@ -1,4 +1,4 @@
-use crate::ui::streaming::DisplayFragment;
+use code_assistant_core::ui::streaming::DisplayFragment;
 use agent_client_protocol as acp;
 
 /// Convert a DisplayFragment to an ACP ContentBlock
@@ -49,12 +49,12 @@ pub fn map_tool_kind(tool_name: &str) -> acp::ToolKind {
 }
 
 /// Map tool status
-pub fn map_tool_status(status: crate::ui::ToolStatus) -> acp::ToolCallStatus {
+pub fn map_tool_status(status: code_assistant_core::ui::ToolStatus) -> acp::ToolCallStatus {
     match status {
-        crate::ui::ToolStatus::Pending => acp::ToolCallStatus::Pending,
-        crate::ui::ToolStatus::Running => acp::ToolCallStatus::InProgress,
-        crate::ui::ToolStatus::Success => acp::ToolCallStatus::Completed,
-        crate::ui::ToolStatus::Error => acp::ToolCallStatus::Failed,
+        code_assistant_core::ui::ToolStatus::Pending => acp::ToolCallStatus::Pending,
+        code_assistant_core::ui::ToolStatus::Running => acp::ToolCallStatus::InProgress,
+        code_assistant_core::ui::ToolStatus::Success => acp::ToolCallStatus::Completed,
+        code_assistant_core::ui::ToolStatus::Error => acp::ToolCallStatus::Failed,
     }
 }
 
@@ -176,7 +176,7 @@ fn make_relative_path(absolute_path: &str, base_path: Option<&std::path::Path>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::streaming::DisplayFragment;
+    use code_assistant_core::ui::streaming::DisplayFragment;
 
     #[test]
     fn prompt_conversion_handles_text_and_images() {

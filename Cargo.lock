@@ -1446,7 +1446,6 @@ dependencies = [
 name = "code-assistant"
 version = "0.2.10"
 dependencies = [
- "agent-client-protocol",
  "anyhow",
  "async-channel 2.5.0",
  "async-trait",
@@ -1463,10 +1462,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "tokio-util",
  "tools_core",
  "tracing",
  "tracing-subscriber",
+ "ui_acp",
  "ui_gpui",
  "ui_terminal",
 ]
@@ -10184,6 +10183,29 @@ dependencies = [
  "memoffset 0.9.1",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ui_acp"
+version = "0.2.10"
+dependencies = [
+ "agent-client-protocol",
+ "anyhow",
+ "async-channel 2.5.0",
+ "async-trait",
+ "chrono",
+ "code_assistant_core",
+ "command_executor",
+ "fs_explorer",
+ "llm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tools_core",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

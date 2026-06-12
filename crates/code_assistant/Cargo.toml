@@ -13,6 +13,7 @@ terminal-frontend = ["dep:ui_terminal"]
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
+ui_acp = { path = "../ui_acp" }
 ui_gpui = { path = "../ui_gpui", optional = true }
 ui_terminal = { path = "../ui_terminal", optional = true }
 command_executor = { path = "../command_executor" }
@@ -43,10 +44,6 @@ dirs = "5.0"
 
 # Date and time handling
 chrono = { version = "0.4", features = ["serde"] }
-
-# Agent Client Protocol
-agent-client-protocol = { version = "0.9", features = ["unstable"] }
-tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false, features = ["test-utils"] }

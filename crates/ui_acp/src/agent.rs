@@ -7,15 +7,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::acp::error_handling::to_acp_error;
-use crate::acp::types::convert_prompt_to_content_blocks;
-use crate::acp::{ACPUserUI, AcpProjectManager};
-use crate::config::{DefaultProjectManager, ProjectManager};
+use crate::error_handling::to_acp_error;
+use crate::types::convert_prompt_to_content_blocks;
+use crate::{ACPUserUI, AcpProjectManager};
+use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use crate::permissions::{AcpPermissionMediator, PermissionMediator};
-use crate::persistence::SessionModelConfig;
+use code_assistant_core::persistence::SessionModelConfig;
 
-use crate::session::{SessionConfig, SessionManager};
-use crate::ui::UserInterface;
+use code_assistant_core::session::{SessionConfig, SessionManager};
+use code_assistant_core::ui::UserInterface;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
@@ -47,7 +47,7 @@ pub struct ACPAgentImpl {
     session_manager: Arc<Mutex<SessionManager>>,
     session_config_template: SessionConfig,
     model_name: String,
-    tool_registry: Arc<crate::tools::core::ToolRegistry>,
+    tool_registry: Arc<code_assistant_core::tools::core::ToolRegistry>,
     playback_path: Option<std::path::PathBuf>,
     fast_playback: bool,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
@@ -74,7 +74,7 @@ impl ACPAgentImpl {
         session_manager: Arc<Mutex<SessionManager>>,
         session_config_template: SessionConfig,
         model_name: String,
-        tool_registry: Arc<crate::tools::core::ToolRegistry>,
+        tool_registry: Arc<code_assistant_core::tools::core::ToolRegistry>,
         playback_path: Option<std::path::PathBuf>,
         fast_playback: bool,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
@@ -342,7 +342,7 @@ impl acp::Agent for ACPAgentImpl {
         Box::pin(async move {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
 
-            let session_id = crate::persistence::generate_session_id();
+            let session_id = code_assistant_core::persistence::generate_session_id();
 
             let mut session_config = session_config_template.clone();
             session_config.init_path = Some(arguments.cwd.clone());
@@ -446,8 +446,8 @@ impl acp::Agent for ACPAgentImpl {
 
             // Create stream processor to extract fragments
             let hidden_tools =
-                tool_registry.hidden_tools(crate::tools::core::ToolScope::Agent.tag());
-            let mut processor = crate::ui::streaming::create_stream_processor(
+                tool_registry.hidden_tools(code_assistant_core::tools::core::ToolScope::Agent.tag());
+            let mut processor = code_assistant_core::ui::streaming::create_stream_processor(
                 tool_syntax,
                 ui.clone(),
                 0,
@@ -475,7 +475,7 @@ impl acp::Agent for ACPAgentImpl {
                             .trim()
                             .to_string(),
                     };
-                    let fragment = crate::ui::DisplayFragment::CompactionDivider { summary };
+                    let fragment = code_assistant_core::ui::DisplayFragment::CompactionDivider { summary };
                     ui.display_fragment(&fragment)
                         .map_err(|_| acp::Error::internal_error())?;
                     continue;
@@ -665,7 +665,7 @@ impl acp::Agent for ACPAgentImpl {
                 uis.insert(arguments.session_id.0.to_string(), acp_ui.clone());
             }
 
-            let ui: Arc<dyn crate::ui::UserInterface> = acp_ui.clone();
+            let ui: Arc<dyn code_assistant_core::ui::UserInterface> = acp_ui.clone();
 
             // Convert prompt content blocks
             let content_blocks =
@@ -744,7 +744,7 @@ impl acp::Agent for ACPAgentImpl {
                         "ACP: Using ACPTerminalCommandExecutor for session {}",
                         arguments.session_id.0
                     );
-                    Box::new(crate::acp::ACPTerminalCommandExecutor::new(
+                    Box::new(crate::ACPTerminalCommandExecutor::new(
                         arguments.session_id.clone(),
                     ))
                 } else {
@@ -1105,7 +1105,7 @@ impl acp::Agent for ACPAgentImpl {
             })?;
 
             // Load project configuration to resolve project names to paths
-            let projects = crate::config::load_projects().unwrap_or_default();
+            let projects = code_assistant_core::config::load_projects().unwrap_or_default();
 
             // Canonicalize the filter path once for comparison
             let filter_path_canonical = arguments
