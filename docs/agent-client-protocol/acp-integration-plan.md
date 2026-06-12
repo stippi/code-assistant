@@ -11,8 +11,8 @@ The Agent Client Protocol standardizes communication between code editors (clien
 ### Current Architecture
 
 code-assistant currently supports three run modes:
-1. **Terminal UI** (`code-assistant --task "..."`) - Interactive terminal interface
-2. **GPUI** (`code-assistant --ui`) - Modern graphical interface
+1. **Terminal UI** (`code-assistant --tui --task "..."`) - Interactive terminal interface
+2. **GPUI** (`code-assistant`) - Modern graphical interface (default)
 3. **MCP Server** (`code-assistant server`) - Model Context Protocol server for Claude Desktop
 
 The architecture has:

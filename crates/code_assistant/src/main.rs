@@ -105,7 +105,16 @@ async fn main() -> Result<()> {
             }
         }
         None => {
-            if args.ui {
+            // Determine whether to launch the GPUI frontend. The graphical
+            // interface is the default when compiled in; otherwise we fall
+            // back to the terminal frontend so the binary stays useful in
+            // headless builds (e.g. `--no-default-features`).
+            #[cfg(feature = "gpui-frontend")]
+            let use_gpui = !args.tui;
+            #[cfg(not(feature = "gpui-frontend"))]
+            let use_gpui = false;
+
+            if use_gpui {
                 // GPUI mode - use stderr to keep stdout clean
                 setup_logging(args.verbose, false);
             } else {
@@ -120,7 +129,7 @@ async fn main() -> Result<()> {
 
             // In GUI mode, allow starting without a valid model config
             // (the settings screen will guide the user through setup).
-            let model_name = if args.ui {
+            let model_name = if use_gpui {
                 args.get_model_name().unwrap_or_default()
             } else {
                 args.get_model_name()?
@@ -140,7 +149,7 @@ async fn main() -> Result<()> {
                 sandbox_policy,
             };
 
-            if args.ui {
+            if use_gpui {
                 #[cfg(feature = "gpui-frontend")]
                 {
                     app::gpui::run(config)
@@ -148,10 +157,7 @@ async fn main() -> Result<()> {
                 #[cfg(not(feature = "gpui-frontend"))]
                 {
                     let _ = config;
-                    anyhow::bail!(
-                        "This binary was built without the GPUI frontend \
-                         (feature `gpui-frontend`)"
-                    )
+                    unreachable!("use_gpui is only true when the gpui-frontend feature is enabled")
                 }
             } else {
                 #[cfg(feature = "terminal-frontend")]

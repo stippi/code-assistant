@@ -79,13 +79,13 @@ pub struct Args {
     #[arg(long, default_value = ".")]
     pub path: PathBuf,
 
-    /// Task to perform on the codebase (required in terminal mode, optional with --ui)
+    /// Task to perform on the codebase (required in terminal mode, optional in GUI mode)
     #[arg(short, long)]
     pub task: Option<String>,
 
-    /// Start with GUI interface
+    /// Start with terminal interface instead of GUI
     #[arg(long)]
-    pub ui: bool,
+    pub tui: bool,
 
     /// Continue from previous state
     #[arg(long)]
@@ -274,7 +274,7 @@ mod tests {
 
         assert_eq!(args.path, std::path::PathBuf::from("."));
         assert_eq!(args.verbose, 0);
-        assert!(!args.ui);
+        assert!(!args.tui);
         assert!(!args.continue_task);
         assert!(!args.fast_playback);
         assert!(!args.use_diff_format);
