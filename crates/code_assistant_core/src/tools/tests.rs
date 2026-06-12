@@ -1,7 +1,7 @@
 use crate::mocks::ToolTestFixture;
-use crate::tools::ToolServicesAccess;
 use crate::tools::core::{ResourcesTracker, ToolRegistry};
 use crate::tools::impls::{ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};
+use crate::tools::ToolServicesAccess;
 
 use anyhow::Result;
 use serde_json::json;

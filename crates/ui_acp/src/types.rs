@@ -1,5 +1,5 @@
-use code_assistant_core::ui::streaming::DisplayFragment;
 use agent_client_protocol as acp;
+use code_assistant_core::ui::streaming::DisplayFragment;
 
 /// Convert a DisplayFragment to an ACP ContentBlock
 pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBlock {

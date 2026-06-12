@@ -2,14 +2,10 @@
 //! [`crate::hooks`]; application state travels type-erased in `extensions`.
 
 use crate::dialect::ToolDialect;
-use crate::hooks::{
-    ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction, ToolServicesProvider,
-};
+use crate::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction, ToolServicesProvider};
 use crate::persistence::{AgentSnapshot, SnapshotPersistence};
 use crate::tree::{ConversationPath, MessageNode, NodeId};
-use crate::types::{
-    text_summary_from_blocks, to_tool_definitions, ToolExecution, ToolRequest,
-};
+use crate::types::{ToolExecution, ToolRequest, text_summary_from_blocks, to_tool_definitions};
 use crate::ui::{AgentActivity, AgentUi, AgentUiEvent, DisplayFragment, HiddenTools, UIError};
 use anyhow::Result;
 use command_executor::CommandExecutor;
@@ -21,9 +17,7 @@ use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use tools_core::{
-    PermissionMediator, ResourcesTracker, ToolContext, ToolError, ToolRegistry,
-};
+use tools_core::{PermissionMediator, ResourcesTracker, ToolContext, ToolError, ToolRegistry};
 use tracing::{debug, trace, warn};
 
 /// Everything an [`AgentRuntime`] is built from.
@@ -294,7 +288,8 @@ impl AgentRuntime {
             tool_executions: self.tool_executions.clone(),
             next_request_id: self.next_request_id,
         };
-        self.state_persistence.save(snapshot, self.extensions.as_ref())
+        self.state_persistence
+            .save(snapshot, self.extensions.as_ref())
     }
 
     /// Pre-allocate the next node_id without creating a node.
@@ -309,11 +304,7 @@ impl AgentRuntime {
     /// Adds a message to the history using a pre-allocated node_id.
     /// Use `reserve_node_id()` to obtain the ID before streaming starts,
     /// then call this after streaming completes.
-    pub fn append_message_with_node_id(
-        &mut self,
-        message: Message,
-        node_id: NodeId,
-    ) -> Result<()> {
+    pub fn append_message_with_node_id(&mut self, message: Message, node_id: NodeId) -> Result<()> {
         let parent_id = self.active_path.last().copied();
 
         let node = MessageNode {
@@ -538,10 +529,12 @@ impl AgentRuntime {
         llm_response: &llm::LLMResponse,
         request_counter: u64,
     ) -> Result<(Vec<ToolRequest>, LoopFlow, llm::LLMResponse)> {
-        match self
-            .dialect
-            .extract_requests(llm_response, request_counter, 0, self.registry.as_ref())
-        {
+        match self.dialect.extract_requests(
+            llm_response,
+            request_counter,
+            0,
+            self.registry.as_ref(),
+        ) {
             Ok((requests, truncated_response)) => {
                 if requests.is_empty() && !self.has_pending_message() {
                     Ok((requests, LoopFlow::GetUserInput, truncated_response))
@@ -754,12 +747,12 @@ impl AgentRuntime {
 
         let invoke_result = match registry.get(&tool_request.name) {
             None => Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
-            Some(_) if !registry.tool_has_capability(&tool_request.name, &scope_tag) => Err(
-                anyhow::anyhow!(
+            Some(_) if !registry.tool_has_capability(&tool_request.name, &scope_tag) => {
+                Err(anyhow::anyhow!(
                     "Tool '{}' is not available in the current scope",
                     tool_request.name
-                ),
-            ),
+                ))
+            }
             Some(tool) => {
                 let mut services = services_provider.detached(&tool_request.id);
                 let mut context = ToolContext {
@@ -992,7 +985,8 @@ impl AgentRuntime {
             system_prompt: self.get_system_prompt(),
             tools: if self.dialect.uses_native_tools() {
                 Some(to_tool_definitions(
-                    self.registry.as_ref()
+                    self.registry
+                        .as_ref()
                         .get_tool_definitions_with_capability(self.tool_capability.as_str()),
                 ))
             } else {
@@ -1142,7 +1136,8 @@ impl AgentRuntime {
             system_prompt: self.get_system_prompt(),
             tools: if self.dialect.uses_native_tools() {
                 Some(to_tool_definitions(
-                    self.registry.as_ref()
+                    self.registry
+                        .as_ref()
                         .get_tool_definitions_with_capability(self.tool_capability.as_str()),
                 ))
             } else {
@@ -1207,7 +1202,11 @@ impl AgentRuntime {
     }
 
     fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
-        let Some(limit) = self.hooks.compaction.context_limit(self.extensions.as_ref())? else {
+        let Some(limit) = self
+            .hooks
+            .compaction
+            .context_limit(self.extensions.as_ref())?
+        else {
             return Ok(None);
         };
 
@@ -1328,11 +1327,7 @@ impl AgentRuntime {
                             }
                         })
                         .collect();
-                    if ids.is_empty() {
-                        None
-                    } else {
-                        Some(ids)
-                    }
+                    if ids.is_empty() { None } else { Some(ids) }
                 } else {
                     None
                 }
@@ -1784,7 +1779,10 @@ impl AgentRuntime {
         }
 
         // Check if this is a hidden tool
-        let is_hidden = self.registry.as_ref().is_tool_hidden(&tool_request.name, self.tool_capability.as_str());
+        let is_hidden = self
+            .registry
+            .as_ref()
+            .is_tool_hidden(&tool_request.name, self.tool_capability.as_str());
 
         // Update status to Running before execution (skip for hidden tools)
         if !is_hidden {
@@ -1809,7 +1807,11 @@ impl AgentRuntime {
         // The scope filtering on the tool list offered to the LLM is not sufficient on its own,
         // because models may hallucinate tool calls they know from training even when the tool
         // is not in the provided tool list (e.g. a sub-agent calling write_file).
-        if !self.registry.as_ref().tool_has_capability(&tool_request.name, self.tool_capability.as_str()) {
+        if !self
+            .registry
+            .as_ref()
+            .tool_has_capability(&tool_request.name, self.tool_capability.as_str())
+        {
             return Err(anyhow::anyhow!(
                 "Tool '{}' is not available in the current scope",
                 tool_request.name
@@ -1835,7 +1837,8 @@ impl AgentRuntime {
 
         let invoke_result = tool.invoke(&mut context, &mut input).await;
         drop(context);
-        self.services_provider.end(self.extensions.as_mut(), services);
+        self.services_provider
+            .end(self.extensions.as_mut(), services);
 
         let result = match invoke_result {
             Ok(result) => {

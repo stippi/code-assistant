@@ -4,9 +4,9 @@ pub mod sandbox_selector;
 pub mod worktree_selector;
 
 use super::shared::file_icons;
-use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
+use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use gpui::{
     div, prelude::*, px, ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
     FocusHandle, Focusable, Render, SharedString, Subscription, Window,

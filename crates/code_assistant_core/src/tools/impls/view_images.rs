@@ -1,7 +1,7 @@
-use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
+use crate::tools::ToolServicesAccess;
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -321,7 +321,6 @@ impl Tool for ViewImagesTool {
 mod tests {
     use super::*;
     use crate::mocks::ToolTestFixture;
-    
 
     #[tokio::test]
     async fn test_view_images_unsupported_extension() -> Result<()> {

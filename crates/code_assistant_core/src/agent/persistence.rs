@@ -3,9 +3,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[cfg(test)]
-use agent_core::types::ToolExecution;
-#[cfg(test)]
 use crate::types::PlanState;
+#[cfg(test)]
+use agent_core::types::ToolExecution;
 #[cfg(test)]
 use llm::Message;
 
@@ -104,7 +104,10 @@ pub struct MetadataNotifyingPersistence {
 }
 
 impl MetadataNotifyingPersistence {
-    pub fn new(inner: Box<dyn AgentStatePersistence>, ui: Arc<dyn crate::ui::UserInterface>) -> Self {
+    pub fn new(
+        inner: Box<dyn AgentStatePersistence>,
+        ui: Arc<dyn crate::ui::UserInterface>,
+    ) -> Self {
         Self { inner, ui }
     }
 }

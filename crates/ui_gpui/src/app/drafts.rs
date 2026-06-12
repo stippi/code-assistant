@@ -76,7 +76,10 @@ impl Gpui {
     pub fn load_draft_for_session(
         &self,
         session_id: &str,
-    ) -> Option<(String, Vec<code_assistant_core::persistence::DraftAttachment>)> {
+    ) -> Option<(
+        String,
+        Vec<code_assistant_core::persistence::DraftAttachment>,
+    )> {
         // First check in-memory cache for text
         let cached_text = {
             let drafts = self.session_drafts.lock().unwrap();

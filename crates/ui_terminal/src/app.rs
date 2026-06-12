@@ -1,11 +1,3 @@
-use code_assistant_core::config::AgentRunConfig;
-use code_assistant_core::config;
-use code_assistant_core::persistence::FileSessionPersistence;
-use code_assistant_core::session::manager::SessionManager;
-use code_assistant_core::session::SessionConfig;
-use code_assistant_core::backend::{
-    handle_backend_events, BackendEvent, BackendResponse, BackendRuntimeOptions,
-};
 use crate::{
     input::{InputManager, KeyEventResult},
     renderer::ProductionTerminalRenderer,
@@ -13,8 +5,16 @@ use crate::{
     tui,
     ui::TerminalUI,
 };
-use code_assistant_core::ui::UserInterface;
 use anyhow::Result;
+use code_assistant_core::backend::{
+    handle_backend_events, BackendEvent, BackendResponse, BackendRuntimeOptions,
+};
+use code_assistant_core::config;
+use code_assistant_core::config::AgentRunConfig;
+use code_assistant_core::persistence::FileSessionPersistence;
+use code_assistant_core::session::manager::SessionManager;
+use code_assistant_core::session::SessionConfig;
+use code_assistant_core::ui::UserInterface;
 
 use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, EventStream};
@@ -360,7 +360,8 @@ impl TerminalTuiApp {
         let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui.clone());
 
         // Setup UI event channel for display fragments
-        let (ui_event_tx, ui_event_rx) = async_channel::unbounded::<code_assistant_core::ui::UiEvent>();
+        let (ui_event_tx, ui_event_rx) =
+            async_channel::unbounded::<code_assistant_core::ui::UiEvent>();
         terminal_ui.set_event_sender(ui_event_tx);
 
         // Setup backend communication channels
@@ -478,7 +479,9 @@ impl TerminalTuiApp {
                     match resp {
                         BackendResponse::SessionsListed { sessions } => {
                             let _ = ui_clone
-                                .send_event(code_assistant_core::ui::UiEvent::UpdateChatList { sessions })
+                                .send_event(code_assistant_core::ui::UiEvent::UpdateChatList {
+                                    sessions,
+                                })
                                 .await;
                         }
                         BackendResponse::PendingMessageUpdated {
@@ -486,7 +489,11 @@ impl TerminalTuiApp {
                             message,
                         } => {
                             let _ = ui_clone
-                                .send_event(code_assistant_core::ui::UiEvent::UpdatePendingMessage { message })
+                                .send_event(
+                                    code_assistant_core::ui::UiEvent::UpdatePendingMessage {
+                                        message,
+                                    },
+                                )
                                 .await;
                         }
                         BackendResponse::PendingMessageForEdit {
@@ -495,15 +502,19 @@ impl TerminalTuiApp {
                         } => {
                             // For now, just clear pending in UI
                             let _ = ui_clone
-                                .send_event(code_assistant_core::ui::UiEvent::UpdatePendingMessage {
-                                    message: None,
-                                })
+                                .send_event(
+                                    code_assistant_core::ui::UiEvent::UpdatePendingMessage {
+                                        message: None,
+                                    },
+                                )
                                 .await;
                         }
                         BackendResponse::Error { message } => {
                             // Display error in status area
                             let _ = ui_clone
-                                .send_event(code_assistant_core::ui::UiEvent::DisplayError { message })
+                                .send_event(code_assistant_core::ui::UiEvent::DisplayError {
+                                    message,
+                                })
                                 .await;
                         }
                         BackendResponse::SessionCreated { .. } => {}

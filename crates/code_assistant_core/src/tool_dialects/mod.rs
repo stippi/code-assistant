@@ -202,7 +202,6 @@ pub fn convert_params_to_json(
     Ok(result)
 }
 
-
 #[cfg(test)]
 mod conversion_tests {
     use super::*;
@@ -302,7 +301,6 @@ mod conversion_tests {
         }
     }
 
-
     #[tokio::test]
     async fn test_convert_params_to_json() {
         // Create a registry with our test tool
@@ -392,5 +390,4 @@ mod conversion_tests {
         assert!(json_params["paths"].is_array()); // Should match "paths" (plural) from schema
         assert_eq!(json_params["paths"].as_array().unwrap().len(), 2);
     }
-
 }

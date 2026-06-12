@@ -107,11 +107,12 @@ pub fn render_message(
                             {
                                 if let Some(sender) = cx.try_global::<super::super::UiEventSender>()
                                 {
-                                    let _ =
-                                        sender.0.try_send(code_assistant_core::ui::UiEvent::StartMessageEdit {
+                                    let _ = sender.0.try_send(
+                                        code_assistant_core::ui::UiEvent::StartMessageEdit {
                                             session_id,
                                             node_id,
-                                        });
+                                        },
+                                    );
                                 }
                             }
                         })

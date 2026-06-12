@@ -72,7 +72,10 @@ impl PerplexityAskTool {
     /// configured — the tool is then unavailable and not registered (see
     /// `crate::tools::register_default_tools`).
     pub fn from_config(config: &ToolsConfig) -> Option<Self> {
-        let api_key = config.perplexity_api_key.clone().filter(|k| !k.is_empty())?;
+        let api_key = config
+            .perplexity_api_key
+            .clone()
+            .filter(|k| !k.is_empty())?;
         Some(Self { api_key })
     }
 }

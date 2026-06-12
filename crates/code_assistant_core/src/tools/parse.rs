@@ -87,9 +87,7 @@ impl PathWithLineRange {
     }
 }
 
-pub fn parse_search_replace_blocks(
-    content: &str,
-) -> Result<Vec<FileReplacement>, ToolError> {
+pub fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>, ToolError> {
     let mut replacements = Vec::new();
     let mut lines = content.lines().peekable();
     let mut had_valid_block = false;
@@ -269,7 +267,6 @@ pub fn parse_search_replace_blocks(
 
     Ok(replacements)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -539,5 +536,4 @@ mod tests {
             "Error should mention unexpected content: {error_message}"
         );
     }
-
 }

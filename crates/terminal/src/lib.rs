@@ -839,5 +839,5 @@ fn shell_command_flag() -> &'static str {
 
 // Styled terminal output for static rendering lives in the gpui-free
 // `terminal_output` crate; re-exported here for the rendering-side consumers.
-pub use terminal_output::{get_indexed_color_rgb, StyledLine, StyledSpan};
 use terminal_output::trim_trailing_whitespace;
+pub use terminal_output::{get_indexed_color_rgb, StyledLine, StyledSpan};

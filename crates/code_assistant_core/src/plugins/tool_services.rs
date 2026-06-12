@@ -3,12 +3,12 @@
 //! sequential invocation and is taken back afterwards; detached (parallel)
 //! invocations run without plan access.
 
-use agent_core::hooks::ToolServicesProvider;
 use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
 use crate::plugins::AgentAppState;
 use crate::tools::ToolServices;
 use crate::ui::UserInterface;
+use agent_core::hooks::ToolServicesProvider;
 use std::any::Any;
 use std::sync::Arc;
 

@@ -255,8 +255,6 @@ async fn test_parallel_sub_agent_execution() {
 
 #[test]
 fn test_tool_scope_for_sub_agent() {
-    
-
     // spawn_agent should only be available in main agent scopes
     let registry = crate::tools::test_registry();
 
@@ -391,8 +389,6 @@ fn test_can_run_in_parallel_logic() {
 
 #[test]
 fn test_tool_scope_sub_agent_default_with_diff_blocks() {
-    
-
     let registry = crate::tools::test_registry();
     let get_tools_for_scope = |scope: ToolScope| -> Vec<String> {
         registry

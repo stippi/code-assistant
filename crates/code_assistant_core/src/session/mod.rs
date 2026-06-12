@@ -1,6 +1,6 @@
-use agent_core::types::ToolExecution;
 use crate::persistence::{ConversationPath, MessageNode, NodeId, SessionModelConfig};
 use crate::types::{PlanState, ToolSyntax};
+use agent_core::types::ToolExecution;
 use llm::Message;
 use sandbox::SandboxPolicy;
 use serde::{Deserialize, Serialize};
@@ -135,7 +135,7 @@ impl SessionState {
 
         crate::persistence::ChatMetadata {
             id: self.session_id.clone(),
-            name: self.name.clone(), // Empty string if not named yet
+            name: self.name.clone(),       // Empty string if not named yet
             created_at: SystemTime::now(), // Will be overridden by persistence
             updated_at: SystemTime::now(),
             message_count: self.messages.len(),

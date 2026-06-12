@@ -4,14 +4,14 @@ use crate::{
     register_fs_worker, register_terminal_worker, set_acp_client_connection, ACPAgentImpl,
     ACPUserUI,
 };
+use agent_client_protocol as acp;
+use agent_client_protocol::Client;
+use anyhow::Result;
 use code_assistant_core::persistence::FileSessionPersistence;
 use code_assistant_core::session::watcher::SessionWatcher;
 use code_assistant_core::session::{SessionConfig, SessionManager};
 use code_assistant_core::ui::ui_events::UiEvent;
 use code_assistant_core::ui::UserInterface;
-use agent_client_protocol as acp;
-use agent_client_protocol::Client;
-use anyhow::Result;
 
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{mpsc, oneshot, Mutex};

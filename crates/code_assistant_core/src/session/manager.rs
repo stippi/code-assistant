@@ -8,7 +8,6 @@ use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
-use tools_core::permissions::PermissionMediator;
 use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
 };
@@ -21,6 +20,7 @@ use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
+use tools_core::permissions::PermissionMediator;
 use tracing::{debug, error, info, warn};
 
 /// Result of checking whether a session may switch to another model.
@@ -686,10 +686,12 @@ impl SessionManager {
             session_manager_ref,
         ));
         // Saves announce the refreshed session metadata to the UI
-        let state_storage = Box::new(crate::agent::persistence::MetadataNotifyingPersistence::new(
-            state_storage,
-            proxy_ui.clone(),
-        ));
+        let state_storage = Box::new(
+            crate::agent::persistence::MetadataNotifyingPersistence::new(
+                state_storage,
+                proxy_ui.clone(),
+            ),
+        );
 
         let sandbox_context_clone = sandbox_context.clone();
 

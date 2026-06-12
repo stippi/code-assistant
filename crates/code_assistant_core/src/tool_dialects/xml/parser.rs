@@ -86,7 +86,6 @@ fn parse_tool_xml(xml: &str, registry: &ToolRegistry) -> Result<(String, Value),
     Ok((tool_name, json_params))
 }
 
-
 pub fn parse_xml_tool_invocations(
     text: &str,
     request_id: u64,
@@ -336,7 +335,6 @@ pub fn parse_xml_tool_invocations(
     Ok((tool_requests, truncated_text.to_string()))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +377,4 @@ mod tests {
         assert!(truncated_text.contains("<tool:read_files>"));
         assert!(truncated_text.contains("</tool:read_files>"));
     }
-
 }

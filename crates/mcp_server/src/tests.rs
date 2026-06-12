@@ -1,8 +1,8 @@
-use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use crate::handler::MessageHandler;
+use anyhow::Result;
+use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use code_assistant_core::mocks::MockProjectManager;
 use code_assistant_core::utils::MockWriter;
-use anyhow::Result;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use fs_explorer::Explorer;
 use std::sync::Arc;
@@ -63,13 +63,12 @@ async fn setup_test_environment() -> Result<(TempDir, Arc<Mutex<Vec<String>>>, M
     let message_writer = Box::new(mock_writer);
 
     // Create MessageHandler with our dependencies
-    let handler =
-        MessageHandler::with_dependencies(
-            project_manager,
-            command_executor,
-            message_writer,
-            code_assistant_core::tools::test_registry(),
-        );
+    let handler = MessageHandler::with_dependencies(
+        project_manager,
+        command_executor,
+        message_writer,
+        code_assistant_core::tools::test_registry(),
+    );
 
     Ok((temp_dir, writer_messages, handler))
 }
@@ -78,20 +77,20 @@ async fn setup_test_environment() -> Result<(TempDir, Arc<Mutex<Vec<String>>>, M
 #[tokio::test]
 async fn test_message_handler_with_mock_writer() {
     // Create mock components
-    let project_manager: std::sync::Arc<dyn ProjectManager> = std::sync::Arc::new(DefaultProjectManager::new());
+    let project_manager: std::sync::Arc<dyn ProjectManager> =
+        std::sync::Arc::new(DefaultProjectManager::new());
     let command_executor: Box<dyn CommandExecutor> = Box::new(DefaultCommandExecutor);
     let mock_writer = MockWriter::new();
     let writer_messages = mock_writer.messages.clone();
     let message_writer = Box::new(mock_writer);
 
     // Create message handler with mocked dependencies
-    let mut handler =
-        MessageHandler::with_dependencies(
-            project_manager,
-            command_executor,
-            message_writer,
-            code_assistant_core::tools::test_registry(),
-        );
+    let mut handler = MessageHandler::with_dependencies(
+        project_manager,
+        command_executor,
+        message_writer,
+        code_assistant_core::tools::test_registry(),
+    );
 
     // Create a valid JSON-RPC message that will be handled
     let message = r#"{"jsonrpc": "2.0", "method": "resources/list", "id": 1}"#;
@@ -115,20 +114,20 @@ async fn test_message_handler_with_mock_writer() {
 #[tokio::test]
 async fn test_tools_list() {
     // Create mock components
-    let project_manager: std::sync::Arc<dyn ProjectManager> = std::sync::Arc::new(DefaultProjectManager::new());
+    let project_manager: std::sync::Arc<dyn ProjectManager> =
+        std::sync::Arc::new(DefaultProjectManager::new());
     let command_executor: Box<dyn CommandExecutor> = Box::new(DefaultCommandExecutor);
     let mock_writer = MockWriter::new();
     let writer_messages = mock_writer.messages.clone();
     let message_writer = Box::new(mock_writer);
 
     // Create message handler with mocked dependencies
-    let mut handler =
-        MessageHandler::with_dependencies(
-            project_manager,
-            command_executor,
-            message_writer,
-            code_assistant_core::tools::test_registry(),
-        );
+    let mut handler = MessageHandler::with_dependencies(
+        project_manager,
+        command_executor,
+        message_writer,
+        code_assistant_core::tools::test_registry(),
+    );
 
     // Create a tools/list JSON-RPC message
     let message = r#"{"jsonrpc": "2.0", "method": "tools/list", "id": 1}"#;

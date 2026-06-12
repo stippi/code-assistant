@@ -13,11 +13,7 @@ use tracing::{debug, trace, warn};
 use super::super::*;
 
 impl Gpui {
-    pub(crate) fn process_ui_event_async(
-        &self,
-        event: UiEvent,
-        cx: &mut gpui::AsyncApp,
-    ) {
+    pub(crate) fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
         match event {
             UiEvent::DisplayUserInput {
                 content,
@@ -51,7 +47,9 @@ impl Gpui {
                                 } => {
                                     new_message.add_image_block(&mime_type, &content, cx);
                                 }
-                                code_assistant_core::persistence::DraftAttachment::Text { content } => {
+                                code_assistant_core::persistence::DraftAttachment::Text {
+                                    content,
+                                } => {
                                     new_message.add_text_block(&content, cx);
                                 }
                                 code_assistant_core::persistence::DraftAttachment::File {
@@ -338,7 +336,9 @@ impl Gpui {
                 // already has (e.g. due to race between agent Idle transition and
                 // file-watcher debounce — the streaming container already has the
                 // pre-allocated node_id).
-                let existing_node_ids: std::collections::HashSet<code_assistant_core::persistence::NodeId> = {
+                let existing_node_ids: std::collections::HashSet<
+                    code_assistant_core::persistence::NodeId,
+                > = {
                     let queue = self.message_queue.lock().unwrap();
                     queue
                         .iter()

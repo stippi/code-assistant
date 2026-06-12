@@ -6,7 +6,10 @@ use anyhow::Result;
 use serde_json::Value;
 
 /// Format a tool request in Caret syntax.
-pub(crate) fn format_tool_request(request: &ToolRequest, registry: &ToolRegistry) -> Result<String> {
+pub(crate) fn format_tool_request(
+    request: &ToolRequest,
+    registry: &ToolRegistry,
+) -> Result<String> {
     let mut formatted = format!("^^^{}\n", request.name);
 
     // Get tool spec to understand parameter types and defaults

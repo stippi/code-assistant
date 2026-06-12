@@ -26,7 +26,6 @@ pub use services::{ToolServices, ToolServicesAccess};
 // The loop-side tool vocabulary lives in the agent core.
 pub use agent_core::ToolRequest;
 
-
 use crate::tools::core::{ToolRegistry, ToolsConfig};
 use std::sync::Arc;
 

@@ -1,7 +1,6 @@
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::{Agent, AgentComponents};
 use crate::config::DefaultProjectManager;
-use tools_core::permissions::PermissionMediator;
 use crate::persistence::SessionModelConfig;
 use crate::session::SessionConfig;
 use crate::tools::core::ToolScope;
@@ -12,6 +11,7 @@ use llm::Message;
 use sandbox::{SandboxContext, SandboxPolicy};
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
+use tools_core::permissions::PermissionMediator;
 
 /// Cancellation registry keyed by the parent `spawn_agent` tool id.
 #[derive(Default)]

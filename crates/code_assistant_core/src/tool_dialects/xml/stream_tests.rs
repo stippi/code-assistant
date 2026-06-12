@@ -7,7 +7,8 @@ use std::sync::Arc;
 fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(test_ui.clone());
-    let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+    let mut processor =
+        XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
     // Split text into small chunks and process each one
     for chunk in chunk_str(text, chunk_size) {
@@ -115,7 +116,8 @@ mod tests {
 
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process the input and expect an error
         let result = processor.process(&StreamingChunk::Text(input.to_string()));
@@ -266,7 +268,8 @@ mod tests {
     fn test_extract_fragments_from_text_message_with_xml_tags() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Create a message with text content containing XML-style tags
         let message = llm::Message::new_assistant(
@@ -301,7 +304,8 @@ mod tests {
     fn test_extract_fragments_from_structured_message_converted_to_xml_style() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Create a message with structured content including tool use
         // This tests conversion from JSON ToolUse to XML-style fragments
@@ -347,7 +351,8 @@ mod tests {
     fn test_extract_fragments_from_mixed_structured_message() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Create a message with mixed content blocks
         let message = llm::Message::new_assistant_content(vec![
@@ -443,7 +448,8 @@ mod tests {
 
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Create a user message with XML-like content
         let user_message = Message::new_user(
@@ -600,7 +606,8 @@ mod tests {
 
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process the input and expect an error
         let result = processor.process(&StreamingChunk::Text(input.to_string()));
@@ -698,7 +705,8 @@ mod tests {
 
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process the input and expect an error
         let result = processor.process(&StreamingChunk::Text(input.to_string()));
@@ -767,7 +775,8 @@ mod tests {
 
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Split text into small chunks and process each one
         for chunk in chunks {
@@ -813,7 +822,8 @@ mod tests {
     fn test_smart_filter_allows_content_after_read_tools() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process a complete read tool block followed by text
         // Read tools should allow content after them according to SmartToolFilter
@@ -858,7 +868,8 @@ mod tests {
     fn test_smart_filter_allows_chaining_read_tools() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process first read tool
         let input1 = "<tool:read_files><param:project>test</param:project></tool:read_files>";
@@ -907,7 +918,8 @@ mod tests {
     fn test_smart_filter_blocks_write_tool_after_read_tool() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process first read tool
         let input1 = "<tool:read_files><param:project>test</param:project></tool:read_files>";
@@ -952,7 +964,8 @@ mod tests {
     fn test_smart_filter_blocks_write_tool_immediately() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process a complete write tool block followed by text
         // Write tools should block further content according to SmartToolFilter
@@ -1012,7 +1025,8 @@ mod tests {
 
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         // Process the input
         processor
@@ -1066,7 +1080,8 @@ mod tests {
         // can insert paragraph breaks between surrounding text.
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
-        let mut processor = XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
+        let mut processor =
+            XmlStreamProcessor::new(ui_arc, 42, hidden_tools(), crate::tools::test_registry());
 
         let tool_input = serde_json::json!({
             "entries": [{"content": "step 1"}]

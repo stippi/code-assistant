@@ -186,7 +186,11 @@ impl CaretDialect {
 
             // Tool usage
             docs.push_str("Usage:\n");
-            docs.push_str(&self.generate_caret_usage_example(&tool.name, &tool.parameters, registry));
+            docs.push_str(&self.generate_caret_usage_example(
+                &tool.name,
+                &tool.parameters,
+                registry,
+            ));
             docs.push('\n');
         }
 
@@ -262,7 +266,13 @@ impl CaretDialect {
                 .iter()
                 .filter(|(name, _)| required_fields.contains(&name.as_str()))
             {
-                self.generate_caret_parameter_example(&mut example, tool_name, name, prop, registry);
+                self.generate_caret_parameter_example(
+                    &mut example,
+                    tool_name,
+                    name,
+                    prop,
+                    registry,
+                );
             }
 
             // Then add optional parameters
@@ -270,7 +280,13 @@ impl CaretDialect {
                 .iter()
                 .filter(|(name, _)| !required_fields.contains(&name.as_str()))
             {
-                self.generate_caret_parameter_example(&mut example, tool_name, name, prop, registry);
+                self.generate_caret_parameter_example(
+                    &mut example,
+                    tool_name,
+                    name,
+                    prop,
+                    registry,
+                );
             }
         }
 

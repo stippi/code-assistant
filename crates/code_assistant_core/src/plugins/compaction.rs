@@ -1,8 +1,8 @@
 //! Compaction policy: compact once the context window fills up past a
 //! fixed threshold.
 
-use agent_core::hooks::{CompactionPolicy, ContextSnapshot};
 use crate::plugins::AgentAppState;
+use agent_core::hooks::{CompactionPolicy, ContextSnapshot};
 use anyhow::Result;
 use std::any::Any;
 use tracing::debug;

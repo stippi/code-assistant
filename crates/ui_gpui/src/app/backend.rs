@@ -10,11 +10,7 @@ use tracing::{debug, info, warn};
 use super::super::*;
 
 impl Gpui {
-    pub(crate) fn handle_backend_response(
-        &self,
-        response: BackendResponse,
-        cx: &mut AsyncApp,
-    ) {
+    pub(crate) fn handle_backend_response(&self, response: BackendResponse, cx: &mut AsyncApp) {
         match response {
             BackendResponse::SessionCreated { session_id } => {
                 debug!("Received BackendResponse::SessionCreated");

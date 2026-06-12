@@ -1298,7 +1298,6 @@ mod tests {
     }
 }
 
-
 #[test]
 fn test_redacted_thinking_streaming_consistency() {
     use llm::{ContentBlock, Message, ReasoningSummaryItem};

@@ -24,8 +24,8 @@ pub use persistence::{AgentSnapshot, SnapshotPersistence};
 pub use runtime::{AgentRuntime, AgentRuntimeComponents};
 pub use tree::{ConversationPath, MessageNode, NodeId};
 pub use types::{
-    text_summary_from_blocks, to_tool_definition, to_tool_definitions, ParseError,
-    PromptTooLongError, SerializedToolExecution, ToolExecution, ToolRequest,
+    ParseError, PromptTooLongError, SerializedToolExecution, ToolExecution, ToolRequest,
+    text_summary_from_blocks, to_tool_definition, to_tool_definitions,
 };
 pub use ui::{
     AgentActivity, AgentUi, AgentUiEvent, DisplayFragment, HiddenTools, StreamProcessorTrait,

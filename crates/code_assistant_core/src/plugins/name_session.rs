@@ -1,10 +1,10 @@
 //! Session naming: the hidden `name_session` tool and the reminder that
 //! nudges the LLM to call it.
 
-use agent_core::hooks::{IterationHook, LoopCtx, ToolInterceptor};
-use agent_core::types::ToolExecution;
 use crate::plugins::AgentAppState;
 use crate::tools::ToolRequest;
+use agent_core::hooks::{IterationHook, LoopCtx, ToolInterceptor};
+use agent_core::types::ToolExecution;
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, MessageRole};
 use tracing::{trace, warn};

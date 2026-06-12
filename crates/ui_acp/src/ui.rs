@@ -9,8 +9,8 @@ use tokio::sync::{mpsc, oneshot};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
-use tools_core::ToolRegistry;
 use code_assistant_core::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
+use tools_core::ToolRegistry;
 
 /// Tracks the last type of content for paragraph breaks after hidden tools
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -125,9 +125,7 @@ impl ToolCallState {
             .map(|(k, v)| (k.clone(), v.value.clone()))
             .collect();
 
-        if let Some(new_title) =
-            tools_core::generate_tool_title(tool_name, &params, registry)
-        {
+        if let Some(new_title) = tools_core::generate_tool_title(tool_name, &params, registry) {
             self.title = Some(new_title);
         }
     }
@@ -609,7 +607,9 @@ impl UserInterface for ACPUserUI {
                     #[allow(clippy::single_match)]
                     match attachment {
                         code_assistant_core::persistence::DraftAttachment::Image {
-                            content, mime_type, ..
+                            content,
+                            mime_type,
+                            ..
                         } => {
                             self.send_session_update(acp::SessionUpdate::UserMessageChunk(
                                 Self::content_chunk(acp::ContentBlock::Image(
@@ -646,14 +646,20 @@ impl UserInterface for ACPUserUI {
                     .into_iter()
                     .map(|entry| {
                         let priority = match entry.priority {
-                            code_assistant_core::types::PlanItemPriority::High => acp::PlanEntryPriority::High,
+                            code_assistant_core::types::PlanItemPriority::High => {
+                                acp::PlanEntryPriority::High
+                            }
                             code_assistant_core::types::PlanItemPriority::Medium => {
                                 acp::PlanEntryPriority::Medium
                             }
-                            code_assistant_core::types::PlanItemPriority::Low => acp::PlanEntryPriority::Low,
+                            code_assistant_core::types::PlanItemPriority::Low => {
+                                acp::PlanEntryPriority::Low
+                            }
                         };
                         let status = match entry.status {
-                            code_assistant_core::types::PlanItemStatus::Pending => acp::PlanEntryStatus::Pending,
+                            code_assistant_core::types::PlanItemStatus::Pending => {
+                                acp::PlanEntryStatus::Pending
+                            }
                             code_assistant_core::types::PlanItemStatus::InProgress => {
                                 acp::PlanEntryStatus::InProgress
                             }
@@ -794,7 +800,9 @@ impl UserInterface for ACPUserUI {
                 // Replay tool results as ToolCallUpdate with final status
                 for tool_result in &tool_results {
                     let status = match tool_result.status {
-                        code_assistant_core::ui::ToolStatus::Success => acp::ToolCallStatus::Completed,
+                        code_assistant_core::ui::ToolStatus::Success => {
+                            acp::ToolCallStatus::Completed
+                        }
                         code_assistant_core::ui::ToolStatus::Error => acp::ToolCallStatus::Failed,
                         _ => acp::ToolCallStatus::InProgress,
                     };
@@ -1073,7 +1081,11 @@ mod tests {
     fn tool_call_state_includes_terminal_content() {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("execute_command");
-        state.append_parameter("command", "npm test", &code_assistant_core::tools::test_registry());
+        state.append_parameter(
+            "command",
+            "npm test",
+            &code_assistant_core::tools::test_registry(),
+        );
         state.append_output_chunk("running…\n");
 
         state.set_terminal("term-123");
@@ -1202,7 +1214,11 @@ mod tests {
     fn tool_call_content_prioritizes_output_over_parameters() {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("read_files");
-        state.append_parameter("paths", "[\"file1.txt\", \"file2.txt\"]", &code_assistant_core::tools::test_registry());
+        state.append_parameter(
+            "paths",
+            "[\"file1.txt\", \"file2.txt\"]",
+            &code_assistant_core::tools::test_registry(),
+        );
         state.append_output_chunk("Successfully loaded the following file(s):\n");
         state.append_output_chunk(">>>>> FILE: file1.txt\nContent of file 1\n");
         state.append_output_chunk(">>>>> FILE: file2.txt\nContent of file 2\n");
@@ -1236,9 +1252,21 @@ mod tests {
     fn edit_tool_still_uses_diff_content() {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("edit");
-        state.append_parameter("path", "test.txt", &code_assistant_core::tools::test_registry());
-        state.append_parameter("old_text", "old content", &code_assistant_core::tools::test_registry());
-        state.append_parameter("new_text", "new content", &code_assistant_core::tools::test_registry());
+        state.append_parameter(
+            "path",
+            "test.txt",
+            &code_assistant_core::tools::test_registry(),
+        );
+        state.append_parameter(
+            "old_text",
+            "old content",
+            &code_assistant_core::tools::test_registry(),
+        );
+        state.append_parameter(
+            "new_text",
+            "new content",
+            &code_assistant_core::tools::test_registry(),
+        );
         state.append_output_chunk("File edited successfully");
 
         let content = state
@@ -1269,7 +1297,11 @@ mod tests {
         assert_eq!(state.title, Some("read_files".to_string()));
 
         // Add parameter that should update title
-        state.append_parameter("paths", r#"["src/main.rs", "src/lib.rs"]"#, &code_assistant_core::tools::test_registry());
+        state.append_parameter(
+            "paths",
+            r#"["src/main.rs", "src/lib.rs"]"#,
+            &code_assistant_core::tools::test_registry(),
+        );
 
         // Title should now be updated with the paths
         assert!(state.title.as_ref().unwrap().contains("src/main.rs"));
@@ -1283,7 +1315,11 @@ mod tests {
 
         // Add parameter in chunks (simulating streaming)
         state.append_parameter("regex", "fn", &code_assistant_core::tools::test_registry());
-        state.append_parameter("regex", " main", &code_assistant_core::tools::test_registry());
+        state.append_parameter(
+            "regex",
+            " main",
+            &code_assistant_core::tools::test_registry(),
+        );
         state.append_parameter("regex", "\\(", &code_assistant_core::tools::test_registry());
 
         // Should have meaningful title even with partial parameter
@@ -1299,7 +1335,11 @@ mod tests {
         state.set_tool_name("read_files");
 
         // Add JSON array parameter
-        state.append_parameter("paths", r#"["file1.txt", "file2.txt", "file3.txt"]"#, &code_assistant_core::tools::test_registry());
+        state.append_parameter(
+            "paths",
+            r#"["file1.txt", "file2.txt", "file3.txt"]"#,
+            &code_assistant_core::tools::test_registry(),
+        );
 
         // Should format array nicely
         if let Some(title) = &state.title {

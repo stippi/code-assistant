@@ -3,15 +3,15 @@ mod status_popover;
 
 use crate::sidebar::{SessionSidebar, SessionSidebarEvent};
 
-use code_assistant_core::persistence::ChatMetadata;
 use crate::input::{InputArea, InputAreaEvent};
 use crate::messages::MessagesView;
+use code_assistant_core::persistence::ChatMetadata;
 
-use code_assistant_core::backend::BackendEvent;
 use crate::shared::plan_banner;
 use crate::shared::settings;
 use crate::shared::theme;
 use crate::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
+use code_assistant_core::backend::BackendEvent;
 use code_assistant_core::ui::ui_events::UiEvent;
 
 use project_dialog::{NewProjectDialog, NewProjectDialogEvent};
@@ -313,9 +313,7 @@ impl MainScreen {
 
                     // Persist via the UI state store (debounced write to disk)
 
-                    if let Ok(mut store) =
-                        crate::shared::ui_state::UiStateStore::global().lock()
-                    {
+                    if let Ok(mut store) = crate::shared::ui_state::UiStateStore::global().lock() {
                         store.set_plan_collapsed(session_id, self.plan_collapsed);
                     }
                     if let Some(sender) = cx.try_global::<UiEventSender>() {

@@ -1,8 +1,8 @@
 use super::resources::ResourceManager;
 use super::types::*;
+use anyhow::Result;
 use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use code_assistant_core::utils::{MessageWriter, StdoutWriter};
-use anyhow::Result;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use tokio::io::Stdout;
 use tracing::{debug, error, trace};
@@ -209,8 +209,9 @@ impl MessageHandler {
 
         // Use the ToolRegistry to get tool definitions
         let registry = self.tool_registry.clone();
-        let tool_defs =
-            registry.get_tool_definitions_with_capability(code_assistant_core::tools::core::ToolScope::McpServer.tag());
+        let tool_defs = registry.get_tool_definitions_with_capability(
+            code_assistant_core::tools::core::ToolScope::McpServer.tag(),
+        );
 
         // Map tool definitions to the expected JSON structure
         let tools_json = tool_defs
@@ -265,7 +266,8 @@ impl MessageHandler {
                 .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;
 
             // Create a tool context (no UI, no plan for MCP)
-            let mut services = code_assistant_core::tools::ToolServices::new(self.project_manager.clone());
+            let mut services =
+                code_assistant_core::tools::ToolServices::new(self.project_manager.clone());
             let mut context = tools_core::ToolContext {
                 command_executor: self.command_executor.as_ref(),
                 tool_id: None,

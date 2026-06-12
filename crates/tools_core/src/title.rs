@@ -56,11 +56,7 @@ pub fn generate_title_from_template(
         .to_string();
 
     // Only return the new title if we actually made substitutions
-    if has_substitution {
-        Some(result)
-    } else {
-        None
-    }
+    if has_substitution { Some(result) } else { None }
 }
 
 /// Format a parameter value for display in a title.

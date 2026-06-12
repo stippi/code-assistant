@@ -222,7 +222,10 @@ impl UserInterface for TerminalUI {
                                 };
                                 format!("[image {dims}({mime_type})]")
                             }
-                            code_assistant_core::persistence::DraftAttachment::File { filename, .. } => {
+                            code_assistant_core::persistence::DraftAttachment::File {
+                                filename,
+                                ..
+                            } => {
                                 format!("[file ({filename})]")
                             }
                         })

@@ -1,8 +1,7 @@
-use crate::tools::ToolServicesAccess;
-use tools_core::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
+use crate::tools::ToolServicesAccess;
 use crate::ui::streaming::DisplayFragment;
 use crate::ui::UserInterface;
 use anyhow::{anyhow, Result};
@@ -10,6 +9,7 @@ use command_executor::{SandboxCommandRequest, StreamingCallback};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
+use tools_core::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
 
 // Input type for the execute_command tool
 #[derive(Deserialize, Serialize)]
@@ -292,13 +292,13 @@ impl Tool for ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tools_core::permissions::PermissionMediator;
     use crate::mocks::ToolTestFixture;
     use command_executor::CommandOutput;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+    use tools_core::permissions::PermissionMediator;
 
     struct TestPermissionMediator {
         decision: PermissionDecision,

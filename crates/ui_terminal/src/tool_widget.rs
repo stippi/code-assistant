@@ -182,7 +182,9 @@ impl<'a> ToolWidget<'a> {
                             code_assistant_core::agent::sub_agent::SubAgentToolStatus::Success => {
                                 ("●", Color::Green)
                             }
-                            code_assistant_core::agent::sub_agent::SubAgentToolStatus::Error => ("●", Color::Red),
+                            code_assistant_core::agent::sub_agent::SubAgentToolStatus::Error => {
+                                ("●", Color::Red)
+                            }
                         };
 
                         let display_text = tool

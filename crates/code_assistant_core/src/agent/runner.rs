@@ -6,7 +6,6 @@
 
 use crate::agent::persistence::{AgentStatePersistence, SessionStateAdapter};
 use crate::config::ProjectManager;
-use tools_core::permissions::PermissionMediator;
 use crate::persistence::SessionModelConfig;
 use crate::plugins::AgentAppState;
 use crate::session::SessionConfig;
@@ -17,6 +16,7 @@ use anyhow::Result;
 use command_executor::CommandExecutor;
 use llm::{LLMProvider, Message};
 use std::sync::{Arc, Mutex};
+use tools_core::permissions::PermissionMediator;
 use tracing::debug;
 
 /// Runtime components required to construct an `Agent`.
@@ -172,8 +172,7 @@ impl Agent {
         // Restore all state components
         self.ui_adapter
             .set_session_id(Some(session_state.session_id.clone()));
-        self.runtime
-            .set_session_id(Some(session_state.session_id));
+        self.runtime.set_session_id(Some(session_state.session_id));
 
         debug!(
             "loading {} messages from session (tree nodes: {})",
@@ -195,8 +194,9 @@ impl Agent {
             state.session_config = session_state.config;
         }
         let session_config = self.app_state().session_config.clone();
-        self.runtime
-            .set_dialect(crate::tool_dialects::dialect_for(session_config.tool_syntax));
+        self.runtime.set_dialect(crate::tool_dialects::dialect_for(
+            session_config.tool_syntax,
+        ));
         if session_config.use_diff_blocks {
             self.enable_diff_blocks();
         } else {
@@ -309,8 +309,12 @@ impl Agent {
 
         self.init_project_context()?;
 
-        self.runtime
-            .restore_conversation(std::collections::BTreeMap::new(), Vec::new(), 1, Vec::new());
+        self.runtime.restore_conversation(
+            std::collections::BTreeMap::new(),
+            Vec::new(),
+            1,
+            Vec::new(),
+        );
         use agent_core::AgentUi;
         self.ui_adapter
             .send_event(agent_core::AgentUiEvent::UserInputAppended {

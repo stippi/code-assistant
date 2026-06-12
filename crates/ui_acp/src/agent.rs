@@ -8,10 +8,10 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::error_handling::to_acp_error;
+use crate::permissions::{AcpPermissionMediator, PermissionMediator};
 use crate::types::convert_prompt_to_content_blocks;
 use crate::{ACPUserUI, AcpProjectManager};
 use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
-use crate::permissions::{AcpPermissionMediator, PermissionMediator};
 use code_assistant_core::persistence::SessionModelConfig;
 
 use code_assistant_core::session::{SessionConfig, SessionManager};
@@ -445,8 +445,8 @@ impl acp::Agent for ACPAgentImpl {
             ));
 
             // Create stream processor to extract fragments
-            let hidden_tools =
-                tool_registry.hidden_tools(code_assistant_core::tools::core::ToolScope::Agent.tag());
+            let hidden_tools = tool_registry
+                .hidden_tools(code_assistant_core::tools::core::ToolScope::Agent.tag());
             let mut processor = code_assistant_core::ui::streaming::create_stream_processor(
                 tool_syntax,
                 ui.clone(),
@@ -475,7 +475,8 @@ impl acp::Agent for ACPAgentImpl {
                             .trim()
                             .to_string(),
                     };
-                    let fragment = code_assistant_core::ui::DisplayFragment::CompactionDivider { summary };
+                    let fragment =
+                        code_assistant_core::ui::DisplayFragment::CompactionDivider { summary };
                     ui.display_fragment(&fragment)
                         .map_err(|_| acp::Error::internal_error())?;
                     continue;

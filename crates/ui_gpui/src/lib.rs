@@ -11,12 +11,12 @@ pub mod sidebar;
 pub mod terminal;
 pub mod tool_cards;
 
-use code_assistant_core::persistence::{ChatMetadata, DraftStorage};
-use code_assistant_core::types::PlanState;
-use code_assistant_core::backend::{BackendEvent, BackendResponse};
-use code_assistant_core::ui::UiEvent;
 use async_channel;
 use blocks::MessageContainer;
+use code_assistant_core::backend::{BackendEvent, BackendResponse};
+use code_assistant_core::persistence::{ChatMetadata, DraftStorage};
+use code_assistant_core::types::PlanState;
+use code_assistant_core::ui::UiEvent;
 use gpui::{
     actions, px, App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point,
     SharedString,

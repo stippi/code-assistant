@@ -2,9 +2,9 @@ use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::permissions::PermissionMediator;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use command_executor::CommandExecutor;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Context provided to tools during execution.
 ///

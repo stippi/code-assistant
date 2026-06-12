@@ -1,7 +1,7 @@
 //! System message generation functionality
 
-use agent_core::ToolDialect;
 use crate::tools::core::ToolScope;
+use agent_core::ToolDialect;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -191,12 +191,15 @@ mod tests {
 
     #[test]
     fn test_system_message_generation() {
-        
         use crate::types::ToolSyntax;
 
         // Test Native mode
-        let native_msg =
-            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Native), ToolScope::Agent, None, &crate::tools::test_registry());
+        let native_msg = generate_system_message(
+            &*crate::tool_dialects::dialect_for(ToolSyntax::Native),
+            ToolScope::Agent,
+            None,
+            &crate::tools::test_registry(),
+        );
         assert!(!native_msg.contains("{{tools}}"));
         assert!(!native_msg.contains("{{syntax}}"));
         assert!(!native_msg.contains("<tool:"));
@@ -204,8 +207,12 @@ mod tests {
         assert!(!native_msg.contains("TOOL USE"));
 
         // Test XML mode
-        let xml_msg =
-            generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Xml), ToolScope::Agent, None, &crate::tools::test_registry());
+        let xml_msg = generate_system_message(
+            &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
+            ToolScope::Agent,
+            None,
+            &crate::tools::test_registry(),
+        );
         assert!(
             !xml_msg.contains("{{tools}}"),
             "XML message contains unreplaced {{tools}} placeholder"
@@ -228,7 +235,12 @@ mod tests {
         );
 
         // Test Caret mode
-        let caret_msg = generate_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Caret), ToolScope::Agent, None, &crate::tools::test_registry());
+        let caret_msg = generate_system_message(
+            &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
+            ToolScope::Agent,
+            None,
+            &crate::tools::test_registry(),
+        );
         assert!(
             !caret_msg.contains("{{tools}}"),
             "Caret message contains unreplaced {{tools}} placeholder"

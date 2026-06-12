@@ -286,7 +286,9 @@ impl BlockView {
             if ToolCollapseState::set(session_id, &tool.id, tool.state.clone()) {
                 // Schedule a debounced save
                 if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                    let _ = sender.0.try_send(code_assistant_core::ui::UiEvent::PersistUiState);
+                    let _ = sender
+                        .0
+                        .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
                 }
             }
         }
@@ -303,7 +305,9 @@ impl BlockView {
             if ToolDiffModeState::set(session_id, &tool.id, self.write_file_diff_mode) {
                 // Schedule a debounced save
                 if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                    let _ = sender.0.try_send(code_assistant_core::ui::UiEvent::PersistUiState);
+                    let _ = sender
+                        .0
+                        .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
                 }
             }
         }

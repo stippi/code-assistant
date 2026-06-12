@@ -729,7 +729,10 @@ impl XmlStreamProcessor {
                         let tool_name = last_tool_name.clone();
                         let tool_count = self.state.tool_counter as usize;
 
-                        if self.filter().allow_content_after_tool(&tool_name, tool_count) {
+                        if self
+                            .filter()
+                            .allow_content_after_tool(&tool_name, tool_count)
+                        {
                             // Continue buffering
                             self.streaming_state = StreamingState::BufferingAfterTool {
                                 last_tool_name: tool_name,

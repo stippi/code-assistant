@@ -1,13 +1,13 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
-use crate::persistence::SessionModelConfig;
-use crate::session::instance::SessionActivityState;
-use crate::session::{SessionConfig, SessionState};
 use crate::mocks::MockLLMProvider;
 use crate::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
     MockProjectManager, MockUI,
 };
+use crate::persistence::SessionModelConfig;
+use crate::session::instance::SessionActivityState;
+use crate::session::{SessionConfig, SessionState};
 use crate::types::*;
 use crate::ui::ui_events::UiEvent;
 use anyhow::Result;
@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
-
 
 #[tokio::test]
 async fn test_unknown_tool_error_handling() -> Result<()> {
@@ -1177,7 +1176,7 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
     );
 
     // Parse the original text using the XML parser to extract the actual tool block with offsets
-        use llm::{ContentBlock, LLMResponse, Usage};
+    use llm::{ContentBlock, LLMResponse, Usage};
 
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
     let llm_response = LLMResponse {
@@ -1186,7 +1185,8 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let (parsed_tools, _) = parser.extract_requests(&llm_response, 123, 0, &crate::tools::test_registry())?;
+    let (parsed_tools, _) =
+        parser.extract_requests(&llm_response, 123, 0, &crate::tools::test_registry())?;
     assert_eq!(parsed_tools.len(), 1);
 
     let parsed_tool = &parsed_tools[0];
@@ -1225,8 +1225,7 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
         "Let me know if you need anything else."
     );
 
-    let result =
-        Agent::update_tool_call_in_text_static(
+    let result = Agent::update_tool_call_in_text_static(
         original_text,
         &updated_request,
         &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
@@ -1260,7 +1259,7 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
     );
 
     // Parse the original text using the Caret parser to extract the actual tool block with offsets
-        use llm::{ContentBlock, LLMResponse, Usage};
+    use llm::{ContentBlock, LLMResponse, Usage};
 
     let parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
     let llm_response = LLMResponse {
@@ -1269,7 +1268,8 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let (parsed_tools, _) = parser.extract_requests(&llm_response, 456, 0, &crate::tools::test_registry())?;
+    let (parsed_tools, _) =
+        parser.extract_requests(&llm_response, 456, 0, &crate::tools::test_registry())?;
     assert_eq!(parsed_tools.len(), 1);
 
     let parsed_tool = &parsed_tools[0];
@@ -1307,8 +1307,7 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
         "Done!"
     );
 
-    let result =
-        Agent::update_tool_call_in_text_static(
+    let result = Agent::update_tool_call_in_text_static(
         original_text,
         &updated_request,
         &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
@@ -1342,8 +1341,7 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
         end_offset: None,
     };
 
-    let result =
-        Agent::update_tool_call_in_text_static(
+    let result = Agent::update_tool_call_in_text_static(
         original_text,
         &updated_request,
         &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),

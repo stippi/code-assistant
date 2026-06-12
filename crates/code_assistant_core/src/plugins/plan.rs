@@ -1,10 +1,10 @@
 //! Plan persistence: snapshots the plan onto the last assistant message
 //! after each successful `update_plan` call.
 
-use agent_core::hooks::{LoopCtx, ToolInterceptor};
 use crate::persistence::MessageNodeExt;
 use crate::plugins::AgentAppState;
 use crate::tools::ToolRequest;
+use agent_core::hooks::{LoopCtx, ToolInterceptor};
 use tracing::trace;
 
 /// Stores a plan snapshot in the message tree so the plan can be

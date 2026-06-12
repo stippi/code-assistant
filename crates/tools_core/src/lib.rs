@@ -25,6 +25,6 @@ pub use permissions::{
 pub use registry::ToolRegistry;
 pub use render::{ImageData, Render, ResourcesTracker};
 pub use result::{ToolError, ToolResult};
-pub use spec::{capabilities, AnnotatedToolDefinition, ToolSpec};
+pub use spec::{AnnotatedToolDefinition, ToolSpec, capabilities};
 pub use title::{format_parameter_for_title, generate_title_from_template, generate_tool_title};
 pub use tool::{Tool, ToolContext};

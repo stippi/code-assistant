@@ -1385,8 +1385,8 @@ fn merge_blocks_preserving_stream_slots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use code_assistant_core::types::{PlanItem, PlanItemStatus, PlanState};
     use crate::message::{LiveMessage, MessageBlock, PlainTextBlock};
+    use code_assistant_core::types::{PlanItem, PlanItemStatus, PlanState};
 
     /// Test harness that provides a TerminalRenderer and a buffer to render into.
     /// This replaces the old approach where TerminalRenderer owned a Terminal<TestBackend>.
@@ -2077,7 +2077,10 @@ mod tests {
             assert_eq!(live_message.blocks.len(), 1);
 
             if let MessageBlock::ToolUse(tool_block) = &live_message.blocks[0] {
-                assert_eq!(tool_block.status, code_assistant_core::ui::ToolStatus::Running);
+                assert_eq!(
+                    tool_block.status,
+                    code_assistant_core::ui::ToolStatus::Running
+                );
                 assert_eq!(tool_block.status_message, Some("Processing...".to_string()));
             } else {
                 panic!("Expected ToolUse block");

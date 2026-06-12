@@ -1,5 +1,4 @@
 use crate::config::ProjectManager;
-use tools_core::permissions::PermissionMediator;
 use crate::tools::core::ToolContext;
 use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
@@ -20,6 +19,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tools_core::permissions::PermissionMediator;
 
 // New MockLLMProvider that works with the trait-based tool system
 #[derive(Default, Clone)]
@@ -913,8 +913,14 @@ impl MockProjectManager {
         project: Project,
         explorer: Box<dyn CodeExplorer>,
     ) -> Self {
-        self.projects.lock().unwrap().insert(name.to_string(), project);
-        self.explorers.lock().unwrap().insert(name.to_string(), explorer);
+        self.projects
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), project);
+        self.explorers
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), explorer);
         self
     }
 }
@@ -970,7 +976,10 @@ pub struct ToolTestFixture {
 }
 
 impl ToolTestFixture {
-    fn from_parts(project_manager: MockProjectManager, command_executor: MockCommandExecutor) -> Self {
+    fn from_parts(
+        project_manager: MockProjectManager,
+        command_executor: MockCommandExecutor,
+    ) -> Self {
         let project_manager = Arc::new(project_manager);
         let services = crate::tools::ToolServices::new(project_manager.clone());
         Self {
@@ -1048,7 +1057,10 @@ impl ToolTestFixture {
 
     /// Create a test fixture with specific command responses
     pub fn with_command_responses(responses: Vec<Result<CommandOutput, anyhow::Error>>) -> Self {
-        Self::from_parts(MockProjectManager::new(), MockCommandExecutor::new(responses))
+        Self::from_parts(
+            MockProjectManager::new(),
+            MockCommandExecutor::new(responses),
+        )
     }
 
     /// Create a test fixture with both files and command responses

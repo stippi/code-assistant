@@ -1,6 +1,6 @@
-use code_assistant_core::persistence::DraftAttachment;
 use crate::shared::file_icons;
 use crate::shared::image;
+use code_assistant_core::persistence::DraftAttachment;
 
 use gpui::{
     div, img, prelude::*, px, ClickEvent, Context, FocusHandle, Focusable, ImageSource,

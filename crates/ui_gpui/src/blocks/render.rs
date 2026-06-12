@@ -344,8 +344,7 @@ impl gpui::Render for BlockView {
                 // Use theme utilities for colors
                 let blue_base = cx.theme().info; // Theme color for thinking block
 
-                let thinking_bg =
-                    crate::shared::theme::colors::thinking_block_bg(cx.theme());
+                let thinking_bg = crate::shared::theme::colors::thinking_block_bg(cx.theme());
                 let chevron_color =
                     crate::shared::theme::colors::thinking_block_chevron(cx.theme());
                 let text_color = cx.theme().info_foreground;
@@ -471,9 +470,7 @@ impl gpui::Render for BlockView {
             }
             BlockData::ToolUse(block) => {
                 // Unified tool block rendering via ToolBlockRendererRegistry
-                if let Some(registry) =
-                    crate::tool_cards::ToolBlockRendererRegistry::global()
-                {
+                if let Some(registry) = crate::tool_cards::ToolBlockRendererRegistry::global() {
                     if let Some(renderer) = registry.get(&block.name) {
                         match renderer.style() {
                             crate::tool_cards::ToolBlockStyle::Inline => {

@@ -33,11 +33,8 @@ pub trait ToolDialect: Send + Sync {
     /// Used by the format-on-save path when a tool rewrites its input during
     /// execution and the originating call must be replaced in the message
     /// history.
-    fn format_tool_request(
-        &self,
-        request: &ToolRequest,
-        registry: &ToolRegistry,
-    ) -> Result<String>;
+    fn format_tool_request(&self, request: &ToolRequest, registry: &ToolRegistry)
+    -> Result<String>;
 
     /// Whether tool calls and results travel through the LLM API natively
     /// (`ToolUse`/`ToolResult` blocks and the request's `tools` field). Text

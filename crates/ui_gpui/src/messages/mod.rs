@@ -3,9 +3,9 @@ mod branch_switcher;
 mod message_item;
 mod scroll;
 
-use code_assistant_core::session::instance::SessionActivityState;
-use code_assistant_core::backend::BackendEvent;
 use crate::Gpui;
+use code_assistant_core::backend::BackendEvent;
+use code_assistant_core::session::instance::SessionActivityState;
 
 use gpui::{
     div, list, prelude::*, px, rems, App, Context, Entity, FocusHandle, Focusable, ListAlignment,

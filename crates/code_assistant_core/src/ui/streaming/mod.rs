@@ -18,9 +18,9 @@ pub(crate) mod test_utils;
 pub use agent_core::ui::{DisplayFragment, HiddenTools, StreamProcessorTrait};
 
 // Export the concrete implementations
-pub use agent_core::native::JsonStreamProcessor;
 pub use crate::tool_dialects::caret::CaretStreamProcessor;
 pub use crate::tool_dialects::xml::XmlStreamProcessor;
+pub use agent_core::native::JsonStreamProcessor;
 
 /// Factory function to create the appropriate processor based on tool syntax.
 /// The given [`UserInterface`] is adapted to the core's UI boundary.

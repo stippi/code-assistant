@@ -369,8 +369,8 @@ impl JsonStreamProcessor {
                 None => break 'char_processing_loop,
             };
             let char_len = char_to_process.len_utf8(); // Byte length of the current character
-                                                       // Bytes consumed in this iteration. Defaults to current char's length.
-                                                       // Will be updated by states like InValueString if they consume more.
+            // Bytes consumed in this iteration. Defaults to current char's length.
+            // Will be updated by states like InValueString if they consume more.
             let mut iteration_consumed_bytes = char_len;
 
             // Cloned for debugging, avoid multiple calls to current_tool_id!
@@ -403,10 +403,16 @@ impl JsonStreamProcessor {
                         self.state.temp_chars_for_value.clear(); // Used for accumulating key name
                     } else if char_to_process == '}' {
                         let tool_id = if self.state.tool_id.is_empty() {
-                            debug!("Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                            debug!(
+                                "Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'",
+                                self.state.json_parsing_state, self.state.buffer
+                            );
                             // This is a critical error, as fragments cannot be emitted without a tool_id.
                             // Returning an error might be more appropriate, but for now, stop processing this chunk.
-                            debug!("Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                            debug!(
+                                "Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'",
+                                self.state.json_parsing_state, self.state.buffer
+                            );
                             return Ok(()); // Stop processing this chunk, as tool_id is essential and missing.
                         } else {
                             self.state.tool_id.clone()
@@ -415,8 +421,8 @@ impl JsonStreamProcessor {
                         self.state.json_parsing_state = JsonParsingState::ExpectOpenBrace; // Reset for next potential JSON object
                         self.state.current_key = None;
                         self.state.buffer.clear(); // Object done, clear buffer of this object. This might be too aggressive if there's trailing content.
-                                                   // Let's refine: only clear if this was the *only* content, or handle trailing chars.
-                                                   // For now, `drain` handles consumed chars.
+                    // Let's refine: only clear if this was the *only* content, or handle trailing chars.
+                    // For now, `drain` handles consumed chars.
                     } else if char_to_process == ',' {
                         // This is for cases like {"a":"b",} -> expecting a key next.
                         // If we see `,,,` this will just loop. Assuming valid JSON structure mostly.
@@ -429,7 +435,10 @@ impl JsonStreamProcessor {
                             char_to_process
                         );
                     } else {
-                        debug!("Expected '\"' (key start), '}}' (obj end), or whitespace. Got '{}'. Consuming.", char_to_process);
+                        debug!(
+                            "Expected '\"' (key start), '}}' (obj end), or whitespace. Got '{}'. Consuming.",
+                            char_to_process
+                        );
                     }
                 }
                 JsonParsingState::InKey => {
@@ -467,7 +476,7 @@ impl JsonStreamProcessor {
                         self.state.json_parsing_state = JsonParsingState::InValueString;
                         self.state.in_string_escape = false;
                         self.state.emitted_string_part_for_current_key = false; // Initialize for new string value
-                                                                                // temp_chars_for_value is not used for streaming string parts directly to UI
+                    // temp_chars_for_value is not used for streaming string parts directly to UI
                     } else if char_to_process == '{' || char_to_process == '[' {
                         // Start of complex value
                         self.state.json_parsing_state = JsonParsingState::InValueComplex;
@@ -487,7 +496,10 @@ impl JsonStreamProcessor {
                         self.state.temp_chars_for_value.clear();
                         self.state.temp_chars_for_value.push(char_to_process); // Start accumulating simple value
                     } else {
-                        debug!("Expected value start (\",{{,[,digit,t,f,n) or whitespace, got '{}'. Consuming.", char_to_process);
+                        debug!(
+                            "Expected value start (\",{{,[,digit,t,f,n) or whitespace, got '{}'. Consuming.",
+                            char_to_process
+                        );
                     }
                 }
                 JsonParsingState::InValueString => {
@@ -508,7 +520,10 @@ impl JsonStreamProcessor {
                     let current_key_name = self.state.current_key.as_ref().unwrap().clone(); // Safe due to check above
 
                     let tool_id = if self.state.tool_id.is_empty() {
-                        debug!("Critical error: tool_id is empty during JSON processing (InValueString). Aborting processing for this chunk. Current key: {:?}, Buffer: '{}'", self.state.current_key, self.state.buffer);
+                        debug!(
+                            "Critical error: tool_id is empty during JSON processing (InValueString). Aborting processing for this chunk. Current key: {:?}, Buffer: '{}'",
+                            self.state.current_key, self.state.buffer
+                        );
                         // Stop processing this chunk. Without tool_id, fragments are meaningless.
                         return Ok(());
                     } else {
@@ -597,7 +612,10 @@ impl JsonStreamProcessor {
                                 // This case (Some(next_peek_char) being None) should ideally not be hit if
                                 // next_char_scan_offset_in_buffer < self.state.buffer.len() is true
                                 // and the buffer contains valid UTF-8. Breaking defensively.
-                                debug!("Unexpected end of buffer peek while in greedy string consumption. Offset: {}", next_char_scan_offset_in_buffer);
+                                debug!(
+                                    "Unexpected end of buffer peek while in greedy string consumption. Offset: {}",
+                                    next_char_scan_offset_in_buffer
+                                );
                                 break;
                             }
                         }
@@ -620,7 +638,10 @@ impl JsonStreamProcessor {
                 }
                 JsonParsingState::InValueComplex => {
                     if self.state.current_key.is_none() {
-                        debug!("InValueComplex state but current_key is None. Char: '{}', Buffer: '{}'", char_to_process, self.state.buffer);
+                        debug!(
+                            "InValueComplex state but current_key is None. Char: '{}', Buffer: '{}'",
+                            char_to_process, self.state.buffer
+                        );
                         self.state.json_parsing_state = JsonParsingState::ExpectCommaOrCloseBrace;
                         made_progress_in_iteration = true; // Ensure loop continues for re-processing
                         continue 'char_processing_loop;
@@ -628,10 +649,16 @@ impl JsonStreamProcessor {
                     let current_key_name = self.state.current_key.as_ref().unwrap(); // Safe due to check above
 
                     let tool_id = if self.state.tool_id.is_empty() {
-                        debug!("Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                        debug!(
+                            "Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'",
+                            self.state.json_parsing_state, self.state.buffer
+                        );
                         // This is a critical error, as fragments cannot be emitted without a tool_id.
                         // Returning an error might be more appropriate, but for now, stop processing this chunk.
-                        debug!("Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                        debug!(
+                            "Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'",
+                            self.state.json_parsing_state, self.state.buffer
+                        );
                         return Ok(()); // Stop processing this chunk, as tool_id is essential and missing.
                     } else {
                         self.state.tool_id.clone()
@@ -684,10 +711,16 @@ impl JsonStreamProcessor {
                     let current_key_name = self.state.current_key.as_ref().unwrap(); // Safe due to check above
 
                     let tool_id = if self.state.tool_id.is_empty() {
-                        debug!("Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                        debug!(
+                            "Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'",
+                            self.state.json_parsing_state, self.state.buffer
+                        );
                         // This is a critical error, as fragments cannot be emitted without a tool_id.
                         // Returning an error might be more appropriate, but for now, stop processing this chunk.
-                        debug!("Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                        debug!(
+                            "Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'",
+                            self.state.json_parsing_state, self.state.buffer
+                        );
                         return Ok(()); // Stop processing this chunk, as tool_id is essential and missing.
                     } else {
                         self.state.tool_id.clone()
@@ -712,7 +745,7 @@ impl JsonStreamProcessor {
                         self.state.json_parsing_state = JsonParsingState::ExpectCommaOrCloseBrace;
                         // self.state.current_key = None; // Key used up
                         made_progress_in_iteration = true; // Ensure loop continues for re-processing
-                                                           // CRITICAL: The char (terminator) should be re-processed, so we must continue here.
+                        // CRITICAL: The char (terminator) should be re-processed, so we must continue here.
                         continue 'char_processing_loop; // Add continue to re-process current char in new state
                     } else {
                         self.state.temp_chars_for_value.push(char_to_process);
@@ -726,10 +759,16 @@ impl JsonStreamProcessor {
                         self.state.current_key = None; // Clear current key, expecting a new one
                     } else if char_to_process == '}' {
                         let tool_id = if self.state.tool_id.is_empty() {
-                            debug!("Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                            debug!(
+                                "Error: tool_id is empty while trying to emit a fragment. Current state: {:?}, Buffer: '{}'",
+                                self.state.json_parsing_state, self.state.buffer
+                            );
                             // This is a critical error, as fragments cannot be emitted without a tool_id.
                             // Returning an error might be more appropriate, but for now, stop processing this chunk.
-                            debug!("Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'", self.state.json_parsing_state, self.state.buffer);
+                            debug!(
+                                "Critical error: tool_id is empty during JSON processing. Aborting processing for this chunk. State: {:?}, Buffer: '{}'",
+                                self.state.json_parsing_state, self.state.buffer
+                            );
                             return Ok(()); // Stop processing this chunk, as tool_id is essential and missing.
                         } else {
                             self.state.tool_id.clone()
@@ -738,7 +777,10 @@ impl JsonStreamProcessor {
                         self.state.json_parsing_state = JsonParsingState::ExpectOpenBrace; // Reset for next potential JSON object
                         self.state.current_key = None;
                     } else {
-                        debug!("Expected ',', '}}', or whitespace, got '{}'. Consuming to attempt recovery.", char_to_process);
+                        debug!(
+                            "Expected ',', '}}', or whitespace, got '{}'. Consuming to attempt recovery.",
+                            char_to_process
+                        );
                         // This might be an error or trailing characters. For now, consume.
                         // If strict parsing is needed, this could be an error.
                     }

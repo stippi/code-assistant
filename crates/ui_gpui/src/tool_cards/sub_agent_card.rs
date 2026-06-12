@@ -10,10 +10,10 @@
 //! `ToolBlockRenderer`.
 
 use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
-use code_assistant_core::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::context_indicator::ContextIndicator;
 use crate::shared::file_icons;
+use code_assistant_core::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
 use code_assistant_core::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -231,9 +231,11 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                     .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
                         cx.stop_propagation();
                         if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                            let _ = sender.0.try_send(code_assistant_core::ui::UiEvent::CancelSubAgent {
-                                tool_id: tool_id_cancel.clone(),
-                            });
+                            let _ = sender.0.try_send(
+                                code_assistant_core::ui::UiEvent::CancelSubAgent {
+                                    tool_id: tool_id_cancel.clone(),
+                                },
+                            );
                         }
                     }))
                     .child("Cancel"),

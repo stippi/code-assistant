@@ -18,9 +18,9 @@ use code_assistant_core::backend::CommandExecutorFactory;
 #[cfg(feature = "gpui-frontend")]
 pub fn session_command_executor_factory() -> CommandExecutorFactory {
     std::sync::Arc::new(|session_id: &str| {
-        Box::new(ui_gpui::terminal::executor::GpuiTerminalCommandExecutor::new(
-            session_id.to_string(),
-        ))
+        Box::new(
+            ui_gpui::terminal::executor::GpuiTerminalCommandExecutor::new(session_id.to_string()),
+        )
     })
 }
 
