@@ -3,8 +3,8 @@ use crate::agent::persistence::MockStatePersistence;
 use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
 use crate::session::{SessionConfig, SessionState};
-use crate::tests::mocks::MockLLMProvider;
-use crate::tests::mocks::{
+use crate::mocks::MockLLMProvider;
+use crate::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
     MockProjectManager, MockUI,
 };
@@ -1876,7 +1876,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
         PathBuf::from("./root/test.txt"),
         "line 1\nline 2\n".to_string(),
     );
-    let explorer = crate::tests::mocks::MockExplorer::new(files, None);
+    let explorer = crate::mocks::MockExplorer::new(files, None);
 
     let project_manager = MockProjectManager::new().with_project_path(
         "test",

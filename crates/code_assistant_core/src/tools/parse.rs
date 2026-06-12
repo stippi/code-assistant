@@ -87,7 +87,7 @@ impl PathWithLineRange {
     }
 }
 
-pub(crate) fn parse_search_replace_blocks(
+pub fn parse_search_replace_blocks(
     content: &str,
 ) -> Result<Vec<FileReplacement>, ToolError> {
     let mut replacements = Vec::new();

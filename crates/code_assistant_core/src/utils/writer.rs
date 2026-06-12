@@ -2,9 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::io::{AsyncWriteExt, Stdout};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use std::sync::Arc;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use tokio::sync::Mutex as TokioMutex;
 
 /// A trait for writing messages to an output stream.
@@ -37,13 +37,13 @@ impl MessageWriter for StdoutWriter {
 }
 
 /// A mock writer implementation for testing.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub struct MockWriter {
     /// Stores all messages written to this writer
     pub messages: Arc<TokioMutex<Vec<String>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 impl MockWriter {
     pub fn new() -> Self {
         Self {
@@ -57,7 +57,7 @@ impl MockWriter {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[async_trait]
 impl MessageWriter for MockWriter {
     async fn write_message(&mut self, message: &str) -> Result<()> {
@@ -67,7 +67,7 @@ impl MessageWriter for MockWriter {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 mod tests {
     use super::*;
 

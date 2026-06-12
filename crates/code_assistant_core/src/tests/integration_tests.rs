@@ -1,5 +1,5 @@
 use crate::config::{ProjectManager, SandboxAwareProjectManager};
-use crate::tests::mocks::MockProjectManager;
+use crate::mocks::MockProjectManager;
 use crate::tests::utils::parse_and_truncate_llm_response;
 use anyhow::Result;
 use axum::{routing::post, Router};

@@ -99,7 +99,7 @@ impl Tool for NameSessionTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::ToolTestFixture;
+    use crate::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_name_session_basic() {

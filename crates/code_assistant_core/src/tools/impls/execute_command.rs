@@ -293,7 +293,7 @@ impl Tool for ExecuteCommandTool {
 mod tests {
     use super::*;
     use crate::permissions::PermissionMediator;
-    use crate::tests::mocks::ToolTestFixture;
+    use crate::mocks::ToolTestFixture;
     use command_executor::CommandOutput;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},

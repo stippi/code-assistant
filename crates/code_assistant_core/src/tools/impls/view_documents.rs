@@ -464,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsupported_extension() {
-        use crate::tests::mocks::ToolTestFixture;
+        use crate::mocks::ToolTestFixture;
         
 
         let registry = crate::tools::global_registry();

@@ -1,4 +1,4 @@
-use crate::tests::mocks::{MockCommandExecutor, MockExplorer, MockProjectManager};
+use crate::mocks::{MockCommandExecutor, MockExplorer, MockProjectManager};
 use crate::tools::core::{Tool, ToolContext};
 use crate::tools::impls::edit::{EditInput, EditTool};
 use crate::tools::impls::replace_in_file::{ReplaceInFileInput, ReplaceInFileTool};

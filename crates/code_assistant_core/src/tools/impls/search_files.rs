@@ -577,7 +577,7 @@ impl SearchFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::ToolTestFixture;
+    use crate::mocks::ToolTestFixture;
     use std::path::PathBuf;
 
     #[tokio::test]

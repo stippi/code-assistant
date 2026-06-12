@@ -442,7 +442,7 @@ impl Tool for ReadFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::ToolTestFixture;
+    use crate::mocks::ToolTestFixture;
     
 
     #[test]

@@ -4,7 +4,8 @@
 //! events and display fragments from the agent loop and forwards them into
 //! the GPUI event queue for processing on the UI thread.
 
-use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
+use async_trait::async_trait;
+use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 
 use super::super::*;
 

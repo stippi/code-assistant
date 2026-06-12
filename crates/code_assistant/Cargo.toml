@@ -5,9 +5,10 @@ edition = "2021"
 
 [features]
 default = ["document-conversion"]
-document-conversion = ["transmutation", "fs_explorer/document-conversion"]
+document-conversion = ["code_assistant_core/document-conversion"]
 
 [dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false }
 command_executor = { path = "../command_executor" }
 tools_core = { path = "../tools_core" }
 fs_explorer = { path = "../fs_explorer" }
@@ -92,9 +93,6 @@ base64 = "0.22"
 # Image processing
 image = "0.25"
 
-# Document conversion (behind feature flag)
-transmutation = { version = "0.3", features = ["office"], optional = true }
-
 # Clipboard access for paste
 arboard = "3"
 
@@ -112,6 +110,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 core-text = "=21.0.0"
 
 [dev-dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false, features = ["test-utils"] }
 gpui = { version = "0.2.2", features = ["test-support"] }
 axum = "0.7"
 bytes = "1.10"

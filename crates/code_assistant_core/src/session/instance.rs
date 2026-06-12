@@ -969,7 +969,7 @@ impl UserInterface for ProxyUI {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::MockUI;
+    use crate::mocks::MockUI;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 

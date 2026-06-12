@@ -20,7 +20,7 @@ pub mod scope;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use parse::parse_search_replace_blocks;
+pub use parse::parse_search_replace_blocks;
 pub use services::{ToolServices, ToolServicesAccess};
 
 // The loop-side tool vocabulary moved to the agent core (Phase 4 step 2).

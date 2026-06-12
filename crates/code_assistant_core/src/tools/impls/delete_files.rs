@@ -183,7 +183,7 @@ impl Tool for DeleteFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::ToolTestFixture;
+    use crate::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_delete_files_output_rendering() {

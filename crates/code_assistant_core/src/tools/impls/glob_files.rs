@@ -222,7 +222,7 @@ fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::ToolTestFixture;
+    use crate::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_glob_files_output_rendering() {

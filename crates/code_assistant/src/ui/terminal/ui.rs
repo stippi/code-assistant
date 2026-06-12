@@ -1,4 +1,5 @@
-use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
+use async_trait::async_trait;
+use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 use std::any::Any;
 use std::sync::{
     atomic::{AtomicBool, Ordering},

@@ -1,4 +1,4 @@
-use crate::tests::mocks::ToolTestFixture;
+use crate::mocks::ToolTestFixture;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{ResourcesTracker, ToolRegistry};
 use crate::tools::impls::{ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};

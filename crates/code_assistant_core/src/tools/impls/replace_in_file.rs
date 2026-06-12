@@ -2,69 +2,79 @@ use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
+use crate::tools::parse::parse_search_replace_blocks;
 use anyhow::{anyhow, Result};
 use fs_explorer::{find_match_start_lines, FileReplacement, FileUpdaterError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 
-// Input type for the edit tool
+// Input type for the replace_in_file tool
 #[derive(Deserialize, Serialize)]
-pub struct EditInput {
+pub struct ReplaceInFileInput {
     pub project: String,
     pub path: String,
-    pub old_text: String,
-    pub new_text: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub replace_all: bool,
+    pub diff: String,
 }
 
 // Output type
 #[derive(Serialize, Deserialize)]
-pub struct EditOutput {
+pub struct ReplaceInFileOutput {
+    #[allow(dead_code)]
     pub project: String,
     pub path: PathBuf,
     pub error: Option<FileUpdaterError>,
-    /// 1-based line numbers where each match starts in the file (before replacement).
-    /// For a single edit, this has one element.
+    /// 1-based line numbers where each SEARCH block matched in the file (before replacement).
+    /// One entry per SEARCH/REPLACE section.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub match_start_lines: Vec<usize>,
 }
 
 // Render implementation for output formatting
-impl Render for EditOutput {
+impl Render for ReplaceInFileOutput {
     fn status(&self) -> String {
         if self.error.is_none() {
-            format!("Successfully edited file: {}", self.path.display())
+            format!(
+                "Successfully replaced content in file: {}",
+                self.path.display()
+            )
         } else {
-            format!("Failed to edit file: {}", self.path.display())
+            format!("Failed to replace content in file: {}", self.path.display())
         }
     }
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(error) = &self.error {
             match error {
-                FileUpdaterError::SearchBlockNotFound(_, _) => {
-                    "Could not find old_text. Make sure it matches exactly what's in the file."
-                        .to_string()
-                }
-                FileUpdaterError::MultipleMatches(count, _, _) => {
+                FileUpdaterError::SearchBlockNotFound(idx, _) => {
                     format!(
-                        "Found {count} occurrences of old_text\nIt must match exactly one location. Try enlarging old_text to make it unique or use replace_all to replace all occurrences."
+                        "Please adjust your SEARCH block with index {idx} to the current contents of the file."
+                    )
+                }
+                FileUpdaterError::MultipleMatches(count, idx, _) => {
+                    format!(
+                        "Found {count} occurrences of SEARCH block with index {idx}\nA SEARCH block must match exactly one location. Try enlarging the section to replace."
                     )
                 }
                 FileUpdaterError::OverlappingMatches(index1, index2) => {
-                    format!("Overlapping replacements detected (blocks {index1} and {index2})")
+                    format!("Overlapping SEARCH blocks detected (blocks {index1} and {index2})")
                 }
                 FileUpdaterError::AdjacentMatches(index1, index2) => {
-                    format!("Adjacent replacements detected (blocks {index1} and {index2})")
+                    format!("Adjacent SEARCH blocks detected (blocks {index1} and {index2})")
                 }
                 FileUpdaterError::Other(msg) => {
-                    format!("Failed to edit file '{}': {}", self.path.display(), msg)
+                    format!(
+                        "Failed to replace in file '{}': {}",
+                        self.path.display(),
+                        msg
+                    )
                 }
             }
         } else {
-            format!("Successfully edited file '{}'", self.path.display())
+            format!(
+                "Successfully replaced content in file '{}'",
+                self.path.display()
+            )
         }
     }
 
@@ -79,29 +89,51 @@ impl Render for EditOutput {
 }
 
 // ToolResult implementation
-impl ToolResult for EditOutput {
+impl ToolResult for ReplaceInFileOutput {
     fn is_success(&self) -> bool {
         self.error.is_none()
     }
 }
 
+fn render_diff_from_replacements(replacements: &[FileReplacement]) -> String {
+    let mut out = String::new();
+    for (i, r) in replacements.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if r.replace_all {
+            out.push_str("<<<<<<< SEARCH_ALL\n");
+            out.push_str(&r.search);
+            out.push_str("\n=======\n");
+            out.push_str(&r.replace);
+            out.push_str("\n>>>>>>> REPLACE_ALL");
+        } else {
+            out.push_str("<<<<<<< SEARCH\n");
+            out.push_str(&r.search);
+            out.push_str("\n=======\n");
+            out.push_str(&r.replace);
+            out.push_str("\n>>>>>>> REPLACE");
+        }
+    }
+    out
+}
+
 // Tool implementation
-pub struct EditTool;
+pub struct ReplaceInFileTool;
 
 #[async_trait::async_trait]
-impl Tool for EditTool {
-    type Input = EditInput;
-    type Output = EditOutput;
+impl Tool for ReplaceInFileTool {
+    type Input = ReplaceInFileInput;
+    type Output = ReplaceInFileOutput;
 
     fn spec(&self) -> ToolSpec {
         let description = concat!(
-            "Edit a file by replacing specific text content. ",
-            "This tool finds the exact text specified in old_text and replaces it with new_text. ",
-            "By default, the old_text must match exactly one location in the file. ",
-            "Set replace_all to true to replace all occurrences of the pattern.",
+            "Replace sections in a file within a specified project using search/replace blocks.\n",
+            "By default, each search text must match exactly once in the file, ",
+            "but you can use SEARCH_ALL/REPLACE_ALL blocks to replace all occurrences of a pattern.",
         );
         ToolSpec {
-            name: "edit",
+            name: "replace_in_file",
             description,
             parameters_schema: json!({
                 "type": "object",
@@ -116,21 +148,12 @@ impl Tool for EditTool {
                         "type": "string",
                         "description": "Path to the file to modify (relative to project root)"
                     },
-                    "old_text": {
+                    "diff": {
                         "type": "string",
-                        "description": "The exact text content to find and replace. This must match exactly what appears in the file, including whitespace and line breaks. The search is case-sensitive and whitespace-sensitive."
-                    },
-                    "new_text": {
-                        "type": "string",
-                        "description": "The text content to replace the old_text with. Can be empty to delete the old_text. Maintains the same indentation and formatting as needed."
-                    },
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": "Optional. If true, replace all occurrences of old_text. If false or omitted, old_text must match exactly one location (default: false).",
-                        "default": false
+                        "description": "One or more SEARCH/REPLACE or SEARCH_ALL/REPLACE_ALL blocks following either of these formats:\n<<<<<<< SEARCH\n[exact content to find]\n=======\n[new content to replace with]\n>>>>>>> REPLACE\n\nOR\n\n<<<<<<< SEARCH_ALL\n[content pattern to find]\n=======\n[new content to replace with]\n>>>>>>> REPLACE_ALL\n\nWith SEARCH/REPLACE blocks, the search content must match exactly one location. With SEARCH_ALL/REPLACE_ALL blocks, all occurrences of the pattern will be replaced."
                     }
                 },
-                "required": ["project", "path", "old_text", "new_text"]
+                "required": ["project", "path", "diff"]
             }),
             annotations: Some(json!({
                 "readOnlyHint": false,
@@ -138,13 +161,12 @@ impl Tool for EditTool {
             })),
             capabilities: &[
                 capabilities::EDITS_FILES,
-                capabilities::SCOPE_MCP,
-                capabilities::SCOPE_AGENT,
-                capabilities::SCOPE_SUBAGENT_DEFAULT,
+                capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ],
-            multiline_params: &["old_text", "new_text"],
+            multiline_params: &["diff"],
             hidden: false,
-            title_template: Some("Editing {path}"),
+            title_template: Some("Replacing in {path}"),
         }
     }
 
@@ -165,16 +187,31 @@ impl Tool for EditTool {
                 )
             })?;
 
-        // Get project configuration for format-on-save
+        // Load project configuration
         let project_config = context
             .project_manager()
             .get_project(&input.project)?
             .ok_or_else(|| anyhow!("Project not found: {}", input.project))?;
 
+        // Parse the replacements from the diff
+        let replacements = match parse_search_replace_blocks(&input.diff) {
+            Ok(replacements) => replacements,
+            Err(e) => {
+                return Ok(ReplaceInFileOutput {
+                    project: input.project.clone(),
+                    path: PathBuf::from(&input.path),
+                    error: Some(FileUpdaterError::Other(format!(
+                        "Failed to parse replacements: {e}"
+                    ))),
+                    match_start_lines: Vec::new(),
+                });
+            }
+        };
+
         // Check for absolute path
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
-            return Ok(EditOutput {
+            return Ok(ReplaceInFileOutput {
                 project: input.project.clone(),
                 path,
                 error: Some(FileUpdaterError::Other(
@@ -187,13 +224,6 @@ impl Tool for EditTool {
         // Join with root_dir to get full path
         let full_path = explorer.root_dir().join(&path);
 
-        // Create a FileReplacement from the input
-        let replacements = [FileReplacement {
-            search: input.old_text.clone(),
-            replace: input.new_text.clone(),
-            replace_all: input.replace_all,
-        }];
-
         // Compute match start line numbers before applying (need the original content)
         let match_start_lines = if let Ok(content) = std::fs::read_to_string(&full_path) {
             find_match_start_lines(&content, &replacements, false)
@@ -201,13 +231,13 @@ impl Tool for EditTool {
             Vec::new()
         };
 
-        // Apply with or without formatting, based on project configuration
-        let format_result = if let Some(format_command) = project_config.format_command_for(&path) {
+        // If format-on-save applies, use format-aware path
+        let result = if let Some(command_line) = project_config.format_command_for(&path) {
             explorer
                 .apply_replacements_with_formatting(
                     &full_path,
                     &replacements,
-                    &format_command,
+                    &command_line,
                     context.command_executor,
                 )
                 .await
@@ -218,15 +248,11 @@ impl Tool for EditTool {
             }
         };
 
-        match format_result {
+        match result {
             Ok((_new_content, updated_replacements)) => {
-                // If formatting updated the replacement parameters, update our input
+                // If we have updated replacements (after formatting), update the diff text
                 if let Some(updated) = updated_replacements {
-                    if let Some(updated_replacement) = updated.first() {
-                        input.old_text = updated_replacement.search.clone();
-                        input.new_text = updated_replacement.replace.clone();
-                        input.replace_all = updated_replacement.replace_all;
-                    }
+                    input.diff = render_diff_from_replacements(&updated);
                 }
 
                 // Emit resource event
@@ -239,7 +265,7 @@ impl Tool for EditTool {
                         .await;
                 }
 
-                Ok(EditOutput {
+                Ok(ReplaceInFileOutput {
                     project: input.project.clone(),
                     path,
                     error: None,
@@ -247,14 +273,13 @@ impl Tool for EditTool {
                 })
             }
             Err(e) => {
-                // Extract FileUpdaterError if present
                 let error = if let Some(file_err) = e.downcast_ref::<FileUpdaterError>() {
                     file_err.clone()
                 } else {
                     FileUpdaterError::Other(e.to_string())
                 };
 
-                Ok(EditOutput {
+                Ok(ReplaceInFileOutput {
                     project: input.project.clone(),
                     path,
                     error: Some(error),
@@ -268,12 +293,12 @@ impl Tool for EditTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::ToolTestFixture;
+    use crate::mocks::ToolTestFixture;
 
     #[tokio::test]
-    async fn test_edit_output_rendering() {
+    async fn test_replace_in_file_output_rendering() {
         // Success case
-        let output = EditOutput {
+        let output = ReplaceInFileOutput {
             project: "test-project".to_string(),
             path: PathBuf::from("src/test.rs"),
             error: None,
@@ -282,11 +307,11 @@ mod tests {
 
         let mut tracker = ResourcesTracker::new();
         let rendered = output.render(&mut tracker);
-        assert!(rendered.contains("Successfully edited file"));
+        assert!(rendered.contains("Successfully replaced content"));
         assert!(rendered.contains("src/test.rs"));
 
-        // Error case with text not found
-        let output_error = EditOutput {
+        // Error case with block not found
+        let output_error = ReplaceInFileOutput {
             project: "test-project".to_string(),
             path: PathBuf::from("src/test.rs"),
             error: Some(FileUpdaterError::SearchBlockNotFound(
@@ -297,11 +322,10 @@ mod tests {
         };
 
         let rendered_error = output_error.render(&mut tracker);
-        assert!(rendered_error.contains("Could not find old_text"));
-        assert!(rendered_error.contains("matches exactly"));
+        assert!(rendered_error.contains("Please adjust your SEARCH block"));
 
         // Error case with multiple matches
-        let output_multiple = EditOutput {
+        let output_multiple = ReplaceInFileOutput {
             project: "test-project".to_string(),
             path: PathBuf::from("src/test.rs"),
             error: Some(FileUpdaterError::MultipleMatches(
@@ -314,12 +338,12 @@ mod tests {
 
         let rendered_multiple = output_multiple.render(&mut tracker);
         assert!(rendered_multiple.contains("Found 3 occurrences"));
-        assert!(rendered_multiple.contains("Try enlarging old_text"));
-        assert!(rendered_multiple.contains("make it unique"));
+        assert!(rendered_multiple.contains("Try enlarging the section"));
     }
 
     #[tokio::test]
-    async fn test_edit_basic_replacement() -> Result<()> {
+
+    async fn test_replace_in_file_emits_resource_event() -> Result<()> {
         // Create test fixture with UI for event capture
         let mut fixture = ToolTestFixture::with_files(vec![(
             "test.rs".to_string(),
@@ -329,16 +353,14 @@ mod tests {
         let mut context = fixture.context();
 
         // Create input for a valid replacement
-        let mut input = EditInput {
+        let mut input = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
-            old_text: "fn original() {\n    println!(\"Original\");\n}".to_string(),
-            new_text: "fn renamed() {\n    println!(\"Updated\");\n}".to_string(),
-            replace_all: false,
+            diff: "<<<<<<< SEARCH\nfn original() {\n    println!(\"Original\");\n}\n=======\nfn renamed() {\n    println!(\"Updated\");\n}\n>>>>>>> REPLACE".to_string(),
         };
 
         // Execute the tool
-        let tool = EditTool;
+        let tool = ReplaceInFileTool;
         let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
@@ -359,36 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_replace_all() -> Result<()> {
-        // Create test fixture with UI for event capture
-        let mut fixture = ToolTestFixture::with_files(vec![(
-            "test.js".to_string(),
-            "console.log('test1');\nconsole.log('test2');\nconsole.log('test3');".to_string(),
-        )])
-        .with_ui();
-        let mut context = fixture.context();
-
-        // Create input for replace all
-        let mut input = EditInput {
-            project: "test-project".to_string(),
-            path: "test.js".to_string(),
-            old_text: "console.log(".to_string(),
-            new_text: "logger.debug(".to_string(),
-            replace_all: true,
-        };
-
-        // Execute the tool
-        let tool = EditTool;
-        let result = tool.execute(&mut context, &mut input).await?;
-
-        // Verify the result
-        assert!(result.error.is_none());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_edit_error_handling() -> Result<()> {
+    async fn test_replace_in_file_error_handling() -> Result<()> {
         // Create test fixture
         let mut fixture = ToolTestFixture::with_files(vec![(
             "test.rs".to_string(),
@@ -396,17 +389,16 @@ mod tests {
         )]);
         let mut context = fixture.context();
 
-        // Test case with multiple matches but replace_all = false
-        let mut input_multiple = EditInput {
+        // Test case with multiple matches
+        let mut input_multiple = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
-            old_text: "console.log".to_string(),
-            new_text: "console.debug".to_string(),
-            replace_all: false,
+            diff: "<<<<<<< SEARCH\nconsole.log\n=======\nconsole.debug\n>>>>>>> REPLACE"
+                .to_string(),
         };
 
         // Execute the tool - should fail with multiple matches
-        let tool = EditTool;
+        let tool = ReplaceInFileTool;
         let result = tool.execute(&mut context, &mut input_multiple).await?;
 
         // Verify error for multiple matches
@@ -418,12 +410,11 @@ mod tests {
         }
 
         // Test case with missing content
-        let mut input_missing = EditInput {
+        let mut input_missing = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
-            old_text: "non_existent_content".to_string(),
-            new_text: "replacement".to_string(),
-            replace_all: false,
+            diff: "<<<<<<< SEARCH\nnon_existent_content\n=======\nreplacement\n>>>>>>> REPLACE"
+                .to_string(),
         };
 
         // Execute the tool - should fail with content not found
@@ -435,65 +426,6 @@ mod tests {
             Some(FileUpdaterError::SearchBlockNotFound(_, _)) => (),
             _ => panic!("Expected SearchBlockNotFound error"),
         }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_edit_empty_replacement() -> Result<()> {
-        // Test deleting content by replacing with empty string
-        let mut fixture = ToolTestFixture::with_files(vec![(
-            "test.rs".to_string(),
-            "fn test() {\n    // TODO: Remove this comment\n    println!(\"Hello\");\n}"
-                .to_string(),
-        )])
-        .with_ui();
-        let mut context = fixture.context();
-
-        // Delete the TODO comment
-        let mut input = EditInput {
-            project: "test-project".to_string(),
-            path: "test.rs".to_string(),
-            old_text: "    // TODO: Remove this comment\n".to_string(),
-            new_text: "".to_string(),
-            replace_all: false,
-        };
-
-        let tool = EditTool;
-        let result = tool.execute(&mut context, &mut input).await?;
-
-        // Verify the result
-        assert!(result.error.is_none());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_edit_whitespace_normalization() -> Result<()> {
-        // Test that whitespace differences are handled correctly
-        let mut fixture = ToolTestFixture::with_files(vec![
-            (
-                "test.rs".to_string(),
-                "function test() {\r\n  console.log('test');\r\n}".to_string(),
-            ), // CRLF endings
-        ])
-        .with_ui();
-        let mut context = fixture.context();
-
-        // Use LF endings in search text, should still match CRLF in file
-        let mut input = EditInput {
-            project: "test-project".to_string(),
-            path: "test.rs".to_string(),
-            old_text: "function test() {\n  console.log('test');\n}".to_string(), // LF endings
-            new_text: "function answer() {\n  return 42;\n}".to_string(),
-            replace_all: false,
-        };
-
-        let tool = EditTool;
-        let result = tool.execute(&mut context, &mut input).await?;
-
-        // Verify the result
-        assert!(result.error.is_none());
 
         Ok(())
     }

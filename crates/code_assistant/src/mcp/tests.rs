@@ -1,6 +1,6 @@
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::mcp::handler::MessageHandler;
-use crate::tests::mocks::MockProjectManager;
+use code_assistant_core::mocks::MockProjectManager;
 use crate::utils::MockWriter;
 use anyhow::Result;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
