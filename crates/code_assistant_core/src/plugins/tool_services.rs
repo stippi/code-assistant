@@ -3,7 +3,7 @@
 //! sequential invocation and is taken back afterwards; detached (parallel)
 //! invocations run without plan access.
 
-use crate::agent::hooks::ToolServicesProvider;
+use agent_core::hooks::ToolServicesProvider;
 use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
 use crate::plugins::AgentAppState;

@@ -1,5 +1,5 @@
-//! XML dialect tests: invocation parsing with filters and truncation, and
-//! the parser behaviors formerly tested through the agent test module.
+//! XML dialect tests: invocation parsing with filters and truncation, plus
+//! the parser behaviors specific to the XML syntax.
 
 use crate::tools::ToolRequest;
 use crate::types::ToolSyntax;

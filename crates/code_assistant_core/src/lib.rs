@@ -1,4 +1,4 @@
-//! Domain layer of code-assistant (Layer 3 of the extraction plan).
+//! Domain layer of code-assistant.
 //!
 //! Sits on top of the generic `agent_core`/`tools_core` crates and owns the
 //! application concepts: sessions, persistence, the concrete tools, the
@@ -10,7 +10,6 @@ pub mod agent;
 pub mod backend;
 pub mod config;
 pub mod config_dir;
-pub mod permissions;
 pub mod persistence;
 pub mod plugins;
 pub mod session;

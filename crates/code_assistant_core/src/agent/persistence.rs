@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[cfg(test)]
-use crate::agent::ToolExecution;
+use agent_core::types::ToolExecution;
 #[cfg(test)]
 use crate::types::PlanState;
 #[cfg(test)]
@@ -12,7 +12,7 @@ use llm::Message;
 use crate::session::{SessionManager, SessionState};
 
 // The snapshot shape and trait the loop persists through live in the agent
-// core (Phase 4 step 2).
+// core.
 pub use agent_core::{AgentSnapshot, SnapshotPersistence};
 
 /// Trait for persisting agent state

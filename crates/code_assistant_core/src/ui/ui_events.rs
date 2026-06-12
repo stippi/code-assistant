@@ -49,10 +49,10 @@ impl UiEvent {
     /// loop's previous behavior of skipping those updates for anonymous
     /// agents (e.g. sub-agents).
     pub fn from_agent(
-        event: crate::agent::ui::AgentUiEvent,
+        event: agent_core::ui::AgentUiEvent,
         session_id: Option<&str>,
     ) -> Option<UiEvent> {
-        use crate::agent::ui::{AgentActivity, AgentUiEvent};
+        use agent_core::ui::{AgentActivity, AgentUiEvent};
 
         Some(match event {
             AgentUiEvent::UserInputAppended { content, node_id } => UiEvent::DisplayUserInput {

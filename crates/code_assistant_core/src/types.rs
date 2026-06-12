@@ -86,7 +86,7 @@ pub struct PlanState {
     pub meta: Option<JsonValue>,
 }
 
-// Compatibility re-export: ToolError lives with the tool core now.
+// `ToolError` lives with the generic tool core; re-exported for convenience.
 pub use crate::tools::core::ToolError;
 
 /// Specifies the tool invocation syntax

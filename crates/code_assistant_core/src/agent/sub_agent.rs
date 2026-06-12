@@ -1,7 +1,7 @@
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::{Agent, AgentComponents};
 use crate::config::DefaultProjectManager;
-use crate::permissions::PermissionMediator;
+use tools_core::permissions::PermissionMediator;
 use crate::persistence::SessionModelConfig;
 use crate::session::SessionConfig;
 use crate::tools::core::ToolScope;

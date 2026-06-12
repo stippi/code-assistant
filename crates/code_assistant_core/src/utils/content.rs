@@ -2,7 +2,6 @@ use crate::persistence::DraftAttachment;
 use llm::ContentBlock;
 use std::time::SystemTime;
 
-// Moved to the agent core (Phase 4 step 2).
 pub use agent_core::text_summary_from_blocks;
 
 pub fn content_blocks_from(message: &str, attachments: &[DraftAttachment]) -> Vec<ContentBlock> {

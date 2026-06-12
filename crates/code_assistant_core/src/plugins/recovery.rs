@@ -1,6 +1,6 @@
 //! Recovery policy: classifies failed LLM requests by provider error text.
 
-use crate::agent::hooks::{RecoveryAction, RecoveryPolicy};
+use agent_core::hooks::{RecoveryAction, RecoveryPolicy};
 use std::time::Duration;
 
 /// Maximum number of retries for transient streaming errors (e.g. HTTP chunk

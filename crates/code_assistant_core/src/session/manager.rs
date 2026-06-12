@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
-use crate::permissions::PermissionMediator;
+use tools_core::permissions::PermissionMediator;
 use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
 };

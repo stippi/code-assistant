@@ -1,7 +1,7 @@
 //! Dispatch policy for the `spawn_agent` tool: multiple read-only sub-agents
 //! of the same turn run concurrently.
 
-use crate::agent::hooks::ToolDispatchPolicy;
+use agent_core::hooks::ToolDispatchPolicy;
 use crate::tools::ToolRequest;
 
 pub struct SpawnAgentParallelPolicy;

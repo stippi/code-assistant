@@ -1,5 +1,5 @@
 use crate::tools::ToolServicesAccess;
-use crate::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
+use tools_core::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -292,7 +292,7 @@ impl Tool for ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::PermissionMediator;
+    use tools_core::permissions::PermissionMediator;
     use crate::mocks::ToolTestFixture;
     use command_executor::CommandOutput;
     use std::sync::{

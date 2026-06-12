@@ -6,7 +6,7 @@
 
 use crate::agent::persistence::{AgentStatePersistence, SessionStateAdapter};
 use crate::config::ProjectManager;
-use crate::permissions::PermissionMediator;
+use tools_core::permissions::PermissionMediator;
 use crate::persistence::SessionModelConfig;
 use crate::plugins::AgentAppState;
 use crate::session::SessionConfig;

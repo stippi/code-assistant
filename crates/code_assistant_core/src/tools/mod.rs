@@ -23,7 +23,7 @@ mod tests;
 pub use parse::parse_search_replace_blocks;
 pub use services::{ToolServices, ToolServicesAccess};
 
-// The loop-side tool vocabulary moved to the agent core (Phase 4 step 2).
+// The loop-side tool vocabulary lives in the agent core.
 pub use agent_core::ToolRequest;
 
 

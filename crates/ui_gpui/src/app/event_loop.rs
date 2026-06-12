@@ -1066,7 +1066,7 @@ impl Gpui {
                     session_id,
                     messages.len()
                 );
-                // TODO Phase 4: Update messages display with new branch content
+                // TODO: Update messages display with new branch content
                 // For now, we can reuse the SetMessages logic
                 self.process_ui_event_async(
                     UiEvent::SetMessages {

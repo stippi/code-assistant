@@ -1,5 +1,5 @@
 //! Code-assistant-specific behavior, plugged into the agent loop through the
-//! hook traits in `crate::agent::hooks`.
+//! hook traits in `agent_core::hooks`.
 
 mod app_state;
 mod compaction;
@@ -19,7 +19,7 @@ pub use sub_agent::SpawnAgentParallelPolicy;
 pub use system_prompt::CodeAssistantSystemPrompt;
 pub use tool_services::CodeAssistantToolServices;
 
-use crate::agent::hooks::HookRegistry;
+use agent_core::hooks::HookRegistry;
 
 /// The hook set code-assistant runs its agents with.
 pub fn default_hooks() -> HookRegistry {

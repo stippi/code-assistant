@@ -1,6 +1,6 @@
-//! The agent loop's UI boundary (§3.8 of the extraction plan): a minimal,
-//! agent-centric event vocabulary plus the [`AgentUi`] trait the loop talks
-//! to. Applications adapt these events into their own richer UI event types.
+//! The agent loop's UI boundary: a minimal, agent-centric event vocabulary
+//! plus the [`AgentUi`] trait the loop talks to. Applications adapt these
+//! events into their own richer UI event types.
 
 use async_trait::async_trait;
 use llm::{Message, StreamingChunk};

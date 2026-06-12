@@ -15,7 +15,8 @@ use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 // Session Branching Types
 // ============================================================================
 
-// The conversation tree types moved to the agent core (Phase 4 step 2).
+// The conversation tree types live in the agent core; re-exported here for
+// use alongside the session persistence types.
 pub use agent_core::{ConversationPath, MessageNode, NodeId};
 
 /// Typed access to the plan snapshot riding on a message node's
@@ -495,7 +496,7 @@ impl ChatSession {
     }
 
     /// Check if the session has any branches.
-    #[allow(dead_code)] // Used by tests, will be used by UI in Phase 4
+    #[allow(dead_code)] // Used by tests
     pub fn has_branches(&self) -> bool {
         // A session has branches if any node has more than one child
         let mut child_counts: HashMap<Option<NodeId>, usize> = HashMap::new();
@@ -537,7 +538,7 @@ impl ChatSession {
     }
 }
 
-// The serialized tool execution moved to the agent core (Phase 4 step 2).
+// The serialized tool execution lives in the agent core.
 pub use agent_core::SerializedToolExecution;
 
 /// Metadata for a chat session (used for listing)

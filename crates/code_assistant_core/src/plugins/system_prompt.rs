@@ -1,7 +1,7 @@
 //! System prompt construction: model-specific base prompt, project file
 //! trees, and repository guidance (AGENTS.md / CLAUDE.md).
 
-use crate::agent::hooks::{PromptCtx, SystemPromptProvider};
+use agent_core::hooks::{PromptCtx, SystemPromptProvider};
 use crate::plugins::AgentAppState;
 use crate::tool_dialects::system_message::generate_system_message;
 use std::fs;

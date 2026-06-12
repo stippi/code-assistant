@@ -2,8 +2,8 @@
 //!
 //! The display-fragment vocabulary, the processor trait, and the native
 //! (JSON) processor live in the agent core; the XML and Caret processors are
-//! application code and will move into the per-dialect modules in a later
-//! step of the extraction plan.
+//! application code, each living with its dialect in `tool_dialects`. This
+//! module ties them together with a factory keyed on the tool syntax.
 
 use crate::agent::ToolSyntax;
 use crate::tools::core::ToolRegistry;

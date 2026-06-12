@@ -7,9 +7,8 @@
 //! their own tool invocation format ([`dialect::ToolDialect`]; the built-in
 //! default is native tool calling, [`native::NativeDialect`]).
 //!
-//! Application state rides on the loop type-erased (`extensions` slots, the
-//! dyn-Any lean of §7.9 of the extraction plan) — no generics infect the
-//! embedding application.
+//! Application state rides on the loop type-erased (`extensions` slots, a
+//! dyn-Any approach) — no generics infect the embedding application.
 
 pub mod dialect;
 pub mod hooks;

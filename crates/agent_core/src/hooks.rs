@@ -5,7 +5,7 @@
 //! thresholds, error recovery, system prompts, per-invocation tool services)
 //! is provided through these traits, collected in a [`HookRegistry`].
 //! Application state travels type-erased through `extensions` slots — the
-//! same dyn-Any lean `ToolContext` uses (§7.9 of the extraction plan).
+//! same dyn-Any approach `ToolContext` uses.
 
 use crate::dialect::ToolDialect;
 use crate::tree::{ConversationPath, MessageNode, NodeId};

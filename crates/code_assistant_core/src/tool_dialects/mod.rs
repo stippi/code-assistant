@@ -1,7 +1,7 @@
-//! Tool invocation dialects — vertical slices per syntax (§3.1 of the
-//! extraction plan): everything one dialect needs (parser, formatter, stream
-//! processor, prompt docs, tests) lives in its directory. The native default
-//! (plain LLM tool calling) ships with the agent core.
+//! Tool invocation dialects — vertical slices per syntax: everything one
+//! dialect needs (parser, formatter, stream processor, prompt docs, tests)
+//! lives in its directory. The native default (plain LLM tool calling) ships
+//! with the agent core.
 
 pub mod caret;
 pub mod system_message;

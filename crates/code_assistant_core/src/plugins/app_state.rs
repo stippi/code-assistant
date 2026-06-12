@@ -1,8 +1,8 @@
 //! The application state code-assistant rides on the agent loop.
 //!
 //! The loop context exposes this bundle type-erased (`LoopCtx::extensions`,
-//! `PromptCtx::extensions`) — the same dyn-Any lean (§7.9 of the extraction
-//! plan) that `ToolServices` uses on `ToolContext`. The plugins downcast via
+//! `PromptCtx::extensions`) — the same dyn-Any approach that `ToolServices`
+//! uses on `ToolContext`. The plugins downcast via
 //! [`AgentAppState::of`] / [`AgentAppState::of_ref`].
 
 use crate::persistence::SessionModelConfig;

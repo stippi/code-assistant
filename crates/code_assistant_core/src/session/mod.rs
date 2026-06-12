@@ -1,4 +1,4 @@
-use crate::agent::ToolExecution;
+use agent_core::types::ToolExecution;
 use crate::persistence::{ConversationPath, MessageNode, NodeId, SessionModelConfig};
 use crate::types::{PlanState, ToolSyntax};
 use llm::Message;

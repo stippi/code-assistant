@@ -1,5 +1,4 @@
-//! How a tool call travels between the LLM and the agent (§3.7 of the
-//! extraction plan).
+//! How a tool call travels between the LLM and the agent.
 //!
 //! The agent loop knows only this abstraction: it extracts abstract
 //! [`ToolRequest`]s from responses, formats a request back into text for the
