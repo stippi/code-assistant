@@ -1,6 +1,8 @@
+#[cfg(feature = "acp-frontend")]
 pub mod acp;
 #[cfg(feature = "gpui-frontend")]
 pub mod gpui;
+#[cfg(feature = "mcp-server")]
 pub mod server;
 #[cfg(feature = "terminal-frontend")]
 pub mod terminal;

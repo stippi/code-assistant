@@ -4,17 +4,25 @@ version = "0.2.10"
 edition = "2021"
 
 [features]
-default = ["gpui-frontend", "terminal-frontend", "document-conversion"]
+default = [
+    "acp-frontend",
+    "gpui-frontend",
+    "mcp-server",
+    "terminal-frontend",
+    "document-conversion",
+]
 document-conversion = ["code_assistant_core/document-conversion"]
-# Each frontend is an optional compile unit; a headless build
-# (--no-default-features) skips gpui and ratatui entirely.
+# Each frontend and protocol mode is an optional compile unit; a headless
+# build (--no-default-features) skips gpui and ratatui entirely.
+acp-frontend = ["dep:ui_acp"]
 gpui-frontend = ["dep:ui_gpui"]
+mcp-server = ["dep:mcp_server"]
 terminal-frontend = ["dep:ui_terminal"]
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
-mcp_server = { path = "../mcp_server" }
-ui_acp = { path = "../ui_acp" }
+mcp_server = { path = "../mcp_server", optional = true }
+ui_acp = { path = "../ui_acp", optional = true }
 ui_gpui = { path = "../ui_gpui", optional = true }
 ui_terminal = { path = "../ui_terminal", optional = true }
 command_executor = { path = "../command_executor" }
