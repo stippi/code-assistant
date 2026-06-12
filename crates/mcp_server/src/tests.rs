@@ -1,7 +1,7 @@
-use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::mcp::handler::MessageHandler;
+use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
+use crate::handler::MessageHandler;
 use code_assistant_core::mocks::MockProjectManager;
-use crate::utils::MockWriter;
+use code_assistant_core::utils::MockWriter;
 use anyhow::Result;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use fs_explorer::Explorer;

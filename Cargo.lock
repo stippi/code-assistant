@@ -1447,22 +1447,15 @@ name = "code-assistant"
 version = "0.2.10"
 dependencies = [
  "anyhow",
- "async-channel 2.5.0",
- "async-trait",
- "chrono",
  "clap",
  "code_assistant_core",
  "command_executor",
  "dirs 5.0.1",
- "fs_explorer",
  "llm",
+ "mcp_server",
  "open",
  "sandbox",
- "serde",
- "serde_json",
- "tempfile",
  "tokio",
- "tools_core",
  "tracing",
  "tracing-subscriber",
  "ui_acp",
@@ -6028,6 +6021,21 @@ checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
  "rayon",
+]
+
+[[package]]
+name = "mcp_server"
+version = "0.2.10"
+dependencies = [
+ "anyhow",
+ "code_assistant_core",
+ "command_executor",
+ "fs_explorer",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

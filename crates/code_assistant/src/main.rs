@@ -2,7 +2,6 @@ mod app;
 mod cli;
 mod codex_commands;
 mod logging;
-mod mcp;
 
 // The domain layer lives in `code_assistant_core`; re-exported under the
 // historical module paths so call sites keep using `crate::session::…` etc.

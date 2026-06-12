@@ -1,6 +1,6 @@
 use crate::logging::setup_logging;
-use crate::mcp::MCPServer;
 use anyhow::Result;
+use mcp_server::MCPServer;
 
 pub async fn run(verbose: bool) -> Result<()> {
     // Setup logging based on verbose flag
