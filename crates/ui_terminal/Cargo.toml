@@ -9,7 +9,6 @@ agent_core = { path = "../agent_core" }
 command_executor = { path = "../command_executor" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
-terminal = { path = "../terminal" }
 
 # Terminal UI
 crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }

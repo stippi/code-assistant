@@ -67,7 +67,7 @@ impl MessageWriter for MockWriter {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

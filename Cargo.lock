@@ -1462,7 +1462,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "terminal",
  "tokio",
  "tokio-util",
  "tools_core",
@@ -1502,7 +1501,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "terminal",
+ "terminal_output",
  "tokio",
  "tools_core",
  "tracing",
@@ -9475,6 +9474,7 @@ dependencies = [
  "gpui",
  "log",
  "parking_lot",
+ "terminal_output",
 ]
 
 [[package]]
@@ -9486,6 +9486,13 @@ dependencies = [
  "gpui_platform",
  "terminal",
  "terminal_view",
+]
+
+[[package]]
+name = "terminal_output"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
 ]
 
 [[package]]
@@ -10236,7 +10243,6 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
- "terminal",
  "textwrap",
  "tokio",
  "tracing",

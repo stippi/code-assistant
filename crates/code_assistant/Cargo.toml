@@ -20,7 +20,6 @@ tools_core = { path = "../tools_core" }
 fs_explorer = { path = "../fs_explorer" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
-terminal = { path = "../terminal" }
 
 tokio = { version = "1.48", features = ["full"] }
 async-channel = "2.5.0"

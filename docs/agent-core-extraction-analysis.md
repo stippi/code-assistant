@@ -6,9 +6,14 @@
 > `tool_dialects/` vertical slices — see the per-step notes below and the
 > annotations in §6); Phase 5 implemented (`code_assistant_core` domain crate,
 > `ui_gpui`/`ui_terminal` frontend crates, `code_assistant` reduced to the
-> feature-gated wiring binary — see the Phase 5 notes below). Next up: Phase 6,
-> the cleanup (singleton removal; the §3.8 UiEvent embed restructure was
-> deferred and is queued alongside it).
+> feature-gated wiring binary — see the Phase 5 notes below); Phase 6 implemented
+> (global registry/config singletons removed — the registry is created per
+> process entry point and injected; headless builds no longer compile gpui via
+> the new `terminal_output` crate; the §3.8 UiEvent embed was re-evaluated and
+> deliberately dropped — see the Phase 6 notes in §6). **The migration plan is
+> complete.** Remaining follow-up candidates live outside the plan: a deeper
+> re-modelling of the domain `UiEvent` semantics, and publishing-related renames
+> (§8).
 > The goal is twofold: (a) a reusable agent core (comparable
 > to the Claude Code Agent SDK) that `code-assistant` uses as one of several consumers,
 > and (b) breaking up the monolithic `code_assistant` crate into independent, layered
@@ -1468,6 +1473,36 @@ in between:
    `AgentUiEvent`, replacing the `UiEvent::from_agent` translation; and breaking the
    headless build's transitive gpui dependency by splitting `StyledLine` out of the
    gpui-based `terminal` crate (or feature-gating gpui there).
+
+   **Embed part re-evaluated and dropped (Phase 6).** The §3.8 embed was sketched
+   before the Phase 4 adapter existed, when the worry was `Custom(Box<dyn Any>)`
+   downcasts spreading through the frontends. As built, that goal is already met
+   without it: the frontends consume one concrete domain enum with zero downcasts,
+   and the two vocabularies meet in exactly one place (`AgentUiAdapter` +
+   `UiEvent::from_agent`, ~70 lines). Embedding would have made things *worse*,
+   because three of the overlapping events carry domain context the core cannot
+   know — `UpdateToolStatus` gains `styled_output` (and is also sent by the
+   sub-agent UI adapter), `DisplayUserInput` gains `attachments` (also sent by the
+   backend), `ActivityChanged` needs the session id stamped in. Those domain
+   variants would have had to stay alongside `UiEvent::Agent(…)`, splitting every
+   frontend match across two vocabularies. `from_agent` is therefore kept as the
+   deliberate anti-corruption layer between the core and domain event vocabularies.
+   A deeper re-modelling of the domain event semantics themselves (e.g. the
+   overlapping streaming sub-vocabularies inside `UiEvent`) remains a candidate for
+   a separate, post-migration effort.
+
+   **gpui part done.** `StyledLine`/`StyledSpan` (plus the whitespace-trim and
+   ANSI-color helpers) moved into the new gpui-free Layer-0 crate
+   `terminal_output`; the `terminal` crate depends on it and re-exports the types,
+   so the rendering-side consumers (`ui_gpui`, `terminal_view`) are unchanged.
+   `code_assistant_core` now depends on `terminal_output` instead of `terminal`
+   (the event payloads were its only use), and the unused `terminal` dependencies
+   in `code_assistant` and `ui_terminal` were dropped. A
+   `--no-default-features` build of the binary — and the entire domain layer —
+   no longer compiles gpui (`terminal_output` still carries the
+   `alacritty_terminal` dependency for the raw `Color` type; dropping that too
+   would need an own color enum and a re-mapping in `terminal_view`, which wasn't
+   worth it).
 
 ### Test migration (cross-cutting concern across all phases)
 

@@ -1,14 +1,8 @@
 [package]
-name = "terminal"
+name = "terminal_output"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "9d9640d4" }
-terminal_output = { path = "../terminal_output" }
-gpui = "0.2.2"
-anyhow = "1"
-futures = "0.3"
-log = "0.4"
-parking_lot = "0.12"

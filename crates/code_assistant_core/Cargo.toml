@@ -17,7 +17,7 @@ fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
 llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
-terminal = { path = "../terminal" }
+terminal_output = { path = "../terminal_output" }
 tools_core = { path = "../tools_core" }
 web = { path = "../web" }
 
