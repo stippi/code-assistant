@@ -1,9 +1,10 @@
 # Agent Core Extraction — Analysis & Vision
 
 > Status: Phases 1–3 implemented (hooks + plugins in place, registries injectable,
-> capabilities replace scope data); Phase 4 steps 1 and 2 implemented (`tools_core`
-> and `agent_core` crates extracted). Next up: Phase 4 step 3, reorganizing the
-> XML/Caret machinery into `tool_dialects/` vertical slices.
+> capabilities replace scope data); Phase 4 implemented (`tools_core` and
+> `agent_core` crates extracted; XML/Caret machinery reorganized into
+> `tool_dialects/` vertical slices — see the per-step notes below and the
+> annotations in §6). Next up: Phase 5, the domain layer and frontend crates.
 > The goal is twofold: (a) a reusable agent core (comparable
 > to the Claude Code Agent SDK) that `code-assistant` uses as one of several consumers,
 > and (b) breaking up the monolithic `code_assistant` crate into independent, layered
@@ -1317,7 +1318,7 @@ in between:
    implementations*. (See the Phase 4 step 2 notes at the top for the as-built
    state; `Agent` remains in `code_assistant` as a thin wrapper around the
    extracted `AgentRuntime`.)
-3. `code_assistant` (interim — the content moves on to `code_assistant_core` in
+3. **Done.** `code_assistant` (interim — the content moves on to `code_assistant_core` in
    Phase 5):
    - Moves `tools/{parse, formatter, parser_registry, system_message}.rs` and
      `ui/streaming/{xml,caret}_processor.rs` into an internal module `tool_dialects/` —
@@ -1327,11 +1328,22 @@ in between:
      implementation, see step 2.) The associated tests (`*_processor_tests.rs`, the
      `tools/tests.rs` portions, parser tests from `agent/tests.rs`) move along. These
      implementations stay application-internal.
+     (As built: each dialect directory holds `mod.rs` — the `XmlDialect`/`CaretDialect`
+     impl with its prompt docs — plus `parser.rs`, `formatter.rs` (free functions, the
+     `ToolFormatter` trait is gone), `stream.rs`, and the tests. `tool_dialects/mod.rs`
+     holds `dialect_for(ToolSyntax)` — replacing `ParserRegistry` ahead of the Phase 6
+     schedule — the moved `system_message.rs`, the shared schema-driven parameter
+     conversion (`convert_params_to_json`, previously misnamed
+     `convert_xml_params_to_json`: Caret used it too), and cross-dialect tests.
+     `tools/parse.rs` keeps only the tool-input helpers — `PathWithLineRange`,
+     search/replace blocks.)
    - `tool_use_filter.rs` (`SmartToolFilter`) — after the refactoring it evaluates
-     capability tags instead of tool names (cf. Phase 3).
-   - Implements `AgentExtensions` (`CaExt`, snapshot, ToolExt).
+     capability tags instead of tool names (cf. Phase 3). *(Already done in Phase 3.)*
+   - Implements `AgentExtensions` (`CaExt`, snapshot, ToolExt). *(As built in step 2:
+     `AgentAppState`, `SessionStateAdapter`, `ToolServices` — dyn-Any, no generics.)*
    - Switches the MCP handler to the registry instance and the new `ToolContext`
-     (with `CaExt`) — it is the second in-process consumer (§2.12).
+     (with `CaExt`) — it is the second in-process consumer (§2.12). *(Already done in
+     step 1; it still reads the global registry, which Phase 6 removes.)*
    - Keeps branching, sub-agents, sessions, persistence files.
 4. Optional: extract `agent_persistence` with a JSON file adapter.
 
