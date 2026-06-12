@@ -13,7 +13,10 @@ Additional documentation is available in the `docs` folder if needed.
 - `cargo clippy --all-targets --all-features -- -D warnings` - Run linter
 
 ### Testing Specific Components
-- `cargo test --package code-assistant` - Test main crate
+- `cargo test --package code-assistant` - Test wiring binary
+- `cargo test --package code-assistant-core` - Test domain layer
+- `cargo test --package agent-core` - Test agent core
+- `cargo test --package tools-core` - Test tool framework
 - `cargo test --package llm` - Test LLM integration
 - `cargo test --package web` - Test web functionality
 
@@ -21,30 +24,43 @@ Additional documentation is available in the `docs` folder if needed.
 
 This is a Rust-based tool for AI-assisted code tasks with multiple operational modes.
 
-### Core Structure
-- **Workspace Layout**: Multi-crate workspace with 3 main crates:
-  - `crates/code_assistant/` - Main application logic
-  - `crates/llm/` - LLM provider integrations (Anthropic, OpenAI, Vertex, Ollama, etc.)
-  - `crates/web/` - Web-related functionality (Perplexity, web fetches)
+### Crate Layers
 
-### Key Components
-- **Agent System** (`src/agent/`): Core AI agent logic with persistence and tool execution
-- **Tool System** (`src/tools/`): Extensible tool framework with implementations for file operations, command execution, and web searches
-- **UI Framework** (`src/ui/`): Dual interface support:
-  - Terminal UI with rustyline
-  - GUI using Zed's GPUI framework
-- **Session Management** (`src/session/`): Multi-session support with persistence
-- **MCP Server** (`src/mcp/`): Model Context Protocol server implementation
+```
+Layer 0 (generic):    llm  command_executor  fs_explorer  sandbox  web  git  terminal  terminal_output
+Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
+Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
+Layer 3 (domain):     code_assistant_core — sessions, persistence, UiEvent, tool impls,
+                                           dialects (xml/caret), plugins, sub-agents, backend
+Layer 4 (frontends):  ui_gpui  ui_terminal  (acp/ and mcp/ remain as modules in the binary)
+Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend wiring
+```
+
+The binary feature-gates `gpui-frontend` and `terminal-frontend` (both default).
+A `--no-default-features` build produces a headless binary without gpui.
+
+### Key Entry Points
+- **Agent loop**: `crates/agent_core/src/runtime.rs`
+- **Domain agent wrapper**: `crates/code_assistant_core/src/agent/runner.rs`
+- **Tool trait & registry**: `crates/tools_core/src/`
+- **Tool implementations**: `crates/code_assistant_core/src/tools/`
+- **Tool dialects (xml/caret)**: `crates/code_assistant_core/src/tool_dialects/`
+- **Plugins/hooks**: `crates/code_assistant_core/src/plugins/`
+- **Session management**: `crates/code_assistant_core/src/session/`
+- **GPUI frontend**: `crates/ui_gpui/src/`
+- **Terminal frontend**: `crates/ui_terminal/src/`
+- **MCP server**: `crates/code_assistant/src/mcp/`
+- **ACP server**: `crates/code_assistant/src/acp/`
 
 ### Tool Architecture
-- **Core Framework** (`src/tools/core/`): Dynamic tool registry and execution system
-- **Tool Implementations** (`src/tools/impls/`): File operations, command execution, search, web fetch
-- **Tool Modes**:
-  - `native` - Uses LLM provider's native tool calling
-  - `xml` - Custom XML-based tool syntax in system messages
-  - `caret` - Custom triple-caret-fenced tool syntax in system messages
+- **Core framework** (`tools_core`): `DynTool` trait, `ToolRegistry` (instance, not singleton), `ToolSpec` with capability tags
+- **Tool implementations** live in `code_assistant_core::tools`
+- **Tool modes** (configured per agent instance via `ToolDialect`):
+  - `native` — LLM provider's native tool calling (default in `agent_core`)
+  - `xml` — XML-based tool syntax in system messages
+  - `caret` — triple-caret-fenced tool syntax in system messages
 
-### LLM Integration
+### LLM Integration (`crates/llm/`)
 - Multi-provider support: Anthropic, OpenAI, Google Vertex, Ollama, OpenRouter, AI Core
 - Recording/playback system for debugging and testing
 - Configurable context windows and model selection
@@ -55,26 +71,25 @@ This is a Rust-based tool for AI-assisted code tasks with multiple operational m
 - Integrates with Claude Desktop as MCP server
 
 ### Agent Mode
-- Supports both terminal, Agent Client Protocol, and GUI interfaces
+- Supports terminal, Agent Client Protocol, and GPUI interfaces
 - State persistence for continuing sessions
 
 ## Development Notes
 
 ### Testing
-- Unit tests distributed across modules
-- Integration tests in `src/tests/`
-- Mock implementations for testing (`src/tests/mocks.rs`)
+- Unit tests distributed across modules; integration tests in `crates/code_assistant/src/tests/`
+- Mock implementations in `code_assistant_core` behind the `test-utils` feature
+- Use `tools::test_registry()` (exported under `test-utils`) for deterministic tool tests
 
 ### UI Development
-- GUI based on Zed's gpui and gpui-component with custom components
-- Streaming JSON/XML/Caret processors for real-time updates
+- GPUI frontend based on Zed's gpui and gpui-component with custom components
+- Streaming processors per dialect in `code_assistant_core::tool_dialects/{xml,caret}/stream.rs`
 - Theme support
 
 ### Tool Development
-- Implement `DynTool` trait for new tools
-- Register in tool registry
-- Support both sync and async operations
-- Follow existing patterns in `src/tools/impls/`
+- Implement `DynTool` / `Tool` traits from `tools_core`
+- Register in a `ToolRegistry` instance via `register_default_tools()` in `code_assistant_core`
+- Capability tags (e.g. `read_only`, `edits_files`) replace the old `ToolScope` enum
 
 ## UI Communication Architecture
 
@@ -89,7 +104,7 @@ There are **two main communication patterns** between components and the UI:
 
 2. **Backend thread communication** (session management):
    - Used for session management operations (create, delete, list sessions)
-   - Has separate `BackendEvent`/`BackendResponse` types and channels
+   - Has separate `BackendEvent`/`BackendResponse` types and channels (`code_assistant_core::backend`)
    - Handled by a second task running concurrently
    - Operations: `LoadSession`, `CreateNewSession`, `ListSessions`, etc.
 
