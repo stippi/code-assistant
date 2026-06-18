@@ -1,3 +1,4 @@
+use crate::slash_popup::PopupStack;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::types::PlanState;
@@ -24,12 +25,8 @@ pub struct AppState {
     pub current_model: Option<String>,
     pub info_message: Option<String>,
     pub current_sandbox_policy: Option<SandboxPolicy>,
-    /// Whether the slash-command autocomplete popup is currently visible.
-    pub autocomplete_active: bool,
-    /// The text the user has typed after the leading `/` on the current line.
-    pub autocomplete_query: String,
-    /// Index of the currently highlighted entry in the filtered command list.
-    pub autocomplete_selected: usize,
+    /// Slash-command popup stack. Empty stack ↔ no popup visible.
+    pub popup_stack: PopupStack,
 }
 
 impl AppState {
@@ -48,9 +45,7 @@ impl AppState {
             current_model: None,
             info_message: None,
             current_sandbox_policy: None,
-            autocomplete_active: false,
-            autocomplete_query: String::new(),
-            autocomplete_selected: 0,
+            popup_stack: PopupStack::new(),
         }
     }
 
@@ -113,35 +108,5 @@ impl AppState {
 
     pub fn is_overlay_active(&self) -> bool {
         !matches!(self.overlay_state, OverlayState::None)
-    }
-
-    /// Open (or update) the autocomplete popup with a new query string.
-    ///
-    /// `query` is the text after the leading `/` on the current input line.
-    /// Calling this resets the selection to the first item.
-    pub fn open_autocomplete(&mut self, query: String) {
-        self.autocomplete_active = true;
-        self.autocomplete_query = query;
-        self.autocomplete_selected = 0;
-    }
-
-    /// Close the autocomplete popup and reset all related state.
-    pub fn close_autocomplete(&mut self) {
-        self.autocomplete_active = false;
-        self.autocomplete_query.clear();
-        self.autocomplete_selected = 0;
-    }
-
-    /// Move the selection by `delta` rows (positive = down, negative = up),
-    /// wrapping around within `[0, item_count)`.
-    ///
-    /// Does nothing when `item_count` is zero.
-    pub fn move_autocomplete_selection(&mut self, delta: i32, item_count: usize) {
-        if item_count == 0 {
-            return;
-        }
-        let current = self.autocomplete_selected as i32;
-        let next = (current + delta).rem_euclid(item_count as i32) as usize;
-        self.autocomplete_selected = next;
     }
 }

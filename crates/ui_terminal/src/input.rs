@@ -38,15 +38,16 @@ pub enum KeyEventResult {
     ClearContext,
     /// Compact (summarise) conversation context
     CompactContext,
-    /// Update (or close) the autocomplete popup.
+    /// The slash-prefix on the current input line changed.
     ///
-    /// `query` contains the text after `/` on the current input line.
-    /// `None` means the current line no longer starts with `/` — close the popup.
-    UpdateAutocomplete { query: Option<String> },
-    /// Move the autocomplete selection up (-1) or down (+1).
-    MoveAutocomplete(i32),
-    /// Accept the currently highlighted autocomplete entry.
-    SelectAutocomplete,
+    /// `Some("")` means the user just typed `/` (open the popup at root).
+    /// `Some("cl")` means the line is `/cl…` (filter root popup by "cl").
+    /// `None` means the current line no longer starts with `/` (close the
+    /// popup if it was open).
+    SlashPrefixChanged(Option<String>),
+    /// A key event that should be routed to the active popup (Up / Down /
+    /// Enter / Tab / Esc while the popup is open).
+    PopupKey(KeyEvent),
 }
 
 /// Manages the input area using the custom TextArea widget
@@ -61,11 +62,12 @@ pub struct InputManager {
     pending_pastes: Vec<(String, String)>,
     /// Counters for generating unique large-paste placeholders (keyed by char_count).
     large_paste_counters: HashMap<usize, usize>,
-    /// Whether the autocomplete popup is currently visible.
+    /// Whether a slash-command popup is currently visible.
     ///
-    /// When `true`, Up/Down arrows navigate the popup instead of moving the
-    /// textarea cursor, and Tab/Enter accept the highlighted suggestion.
-    pub autocomplete_active: bool,
+    /// When `true`, Up / Down / Enter / Tab / Esc are intercepted and routed
+    /// to the popup stack as [`KeyEventResult::PopupKey`] events. The flag is
+    /// set/cleared by the app event loop based on the popup-stack depth.
+    pub popup_active: bool,
 }
 
 impl InputManager {
@@ -78,7 +80,7 @@ impl InputManager {
             image_counter: 0,
             pending_pastes: Vec::new(),
             large_paste_counters: HashMap::new(),
-            autocomplete_active: false,
+            popup_active: false,
         }
     }
 
@@ -103,35 +105,35 @@ impl InputManager {
                 }
                 KeyEventResult::Continue
             }
-            // Escape: close autocomplete popup if open, otherwise bubble up.
+            // Escape: close popup if open, otherwise bubble up.
             KeyEvent {
                 code: KeyCode::Esc,
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                if self.autocomplete_active {
-                    KeyEventResult::UpdateAutocomplete { query: None }
+                if self.popup_active {
+                    KeyEventResult::PopupKey(key_event)
                 } else {
                     KeyEventResult::Escape
                 }
             }
-            // Up/Down: navigate the autocomplete list when the popup is open.
+            // Up/Down: navigate the popup when it is open.
             KeyEvent {
                 code: KeyCode::Up,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } if self.autocomplete_active => KeyEventResult::MoveAutocomplete(-1),
+            } if self.popup_active => KeyEventResult::PopupKey(key_event),
             KeyEvent {
                 code: KeyCode::Down,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } if self.autocomplete_active => KeyEventResult::MoveAutocomplete(1),
-            // Tab: accept the highlighted autocomplete suggestion.
+            } if self.popup_active => KeyEventResult::PopupKey(key_event),
+            // Tab: route to popup (e.g. accept root suggestion).
             KeyEvent {
                 code: KeyCode::Tab,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } if self.autocomplete_active => KeyEventResult::SelectAutocomplete,
+            } if self.popup_active => KeyEventResult::PopupKey(key_event),
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::SHIFT,
@@ -139,10 +141,16 @@ impl InputManager {
             } => {
                 self.textarea.insert_str("\n");
                 // A newline on the current line means no slash-command on this line anymore.
-                KeyEventResult::UpdateAutocomplete {
-                    query: self.slash_prefix(),
-                }
+                KeyEventResult::SlashPrefixChanged(self.slash_prefix())
             }
+            // Plain Enter while popup is open: route to popup so the highlighted
+            // row can be activated. The popup stack decides whether this commits
+            // a command, pushes a sub-popup, or is a no-op.
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } if self.popup_active => KeyEventResult::PopupKey(key_event),
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
@@ -195,9 +203,7 @@ impl InputManager {
                 // Forward the key event directly to our custom TextArea, then check
                 // whether the current line now starts with a slash command.
                 self.textarea.input(key_event);
-                KeyEventResult::UpdateAutocomplete {
-                    query: self.slash_prefix(),
-                }
+                KeyEventResult::SlashPrefixChanged(self.slash_prefix())
             }
         }
     }
@@ -343,20 +349,14 @@ mod tests {
         // Test initial state
         assert_eq!(input_manager.textarea.text(), "");
 
-        // Test character input: normal text returns UpdateAutocomplete with no query.
+        // Test character input: normal text returns SlashPrefixChanged(None).
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert!(matches!(
-            result,
-            KeyEventResult::UpdateAutocomplete { query: None }
-        ));
+        assert!(matches!(result, KeyEventResult::SlashPrefixChanged(None)));
 
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(matches!(
-            result,
-            KeyEventResult::UpdateAutocomplete { query: None }
-        ));
+        assert!(matches!(result, KeyEventResult::SlashPrefixChanged(None)));
 
         // Content should contain the typed characters
         let content = input_manager.textarea.text();
@@ -406,10 +406,10 @@ mod tests {
         input_manager.handle_key_event(create_key_event(KeyCode::Char('h'), KeyModifiers::NONE));
         input_manager.handle_key_event(create_key_event(KeyCode::Char('i'), KeyModifiers::NONE));
 
-        // Shift+Enter should add newline without submitting; returns UpdateAutocomplete.
+        // Shift+Enter should add newline without submitting; returns SlashPrefixChanged.
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::SHIFT));
-        assert!(matches!(result, KeyEventResult::UpdateAutocomplete { .. }));
+        assert!(matches!(result, KeyEventResult::SlashPrefixChanged(_)));
 
         // Add more text
         input_manager.handle_key_event(create_key_event(KeyCode::Char('b'), KeyModifiers::NONE));
@@ -502,19 +502,19 @@ mod tests {
     fn test_slash_prefix_detected() {
         let mut input_manager = InputManager::new();
 
-        // Typing '/' should emit UpdateAutocomplete with an empty query string.
+        // Typing '/' should emit SlashPrefixChanged with an empty query string.
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('/'), KeyModifiers::NONE));
         assert!(
-            matches!(result, KeyEventResult::UpdateAutocomplete { query: Some(ref q) } if q.is_empty()),
-            "Expected UpdateAutocomplete with empty query, got {result:?}"
+            matches!(result, KeyEventResult::SlashPrefixChanged(Some(ref q)) if q.is_empty()),
+            "Expected SlashPrefixChanged with empty query, got {result:?}"
         );
 
         // Typing 'm' after '/' should emit query "m".
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('m'), KeyModifiers::NONE));
         assert!(
-            matches!(result, KeyEventResult::UpdateAutocomplete { query: Some(ref q) } if q == "m"),
+            matches!(result, KeyEventResult::SlashPrefixChanged(Some(ref q)) if q == "m"),
             "Expected query 'm', got {result:?}"
         );
     }
@@ -525,54 +525,109 @@ mod tests {
         let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('h'), KeyModifiers::NONE));
         assert!(
-            matches!(result, KeyEventResult::UpdateAutocomplete { query: None }),
-            "Expected no autocomplete for normal text, got {result:?}"
+            matches!(result, KeyEventResult::SlashPrefixChanged(None)),
+            "Expected no slash prefix for normal text, got {result:?}"
         );
     }
 
     #[test]
-    fn test_escape_closes_autocomplete_when_active() {
+    fn test_escape_routes_to_popup_when_active() {
         let mut input_manager = InputManager::new();
-        input_manager.autocomplete_active = true;
+        input_manager.popup_active = true;
 
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Esc, KeyModifiers::NONE));
-        // When popup is open, Escape should close it, not propagate as Escape.
+        // When popup is open, Escape becomes a PopupKey so the stack can decide
+        // whether to pop one level or close entirely.
         assert!(
-            matches!(result, KeyEventResult::UpdateAutocomplete { query: None }),
-            "Expected autocomplete close on Escape, got {result:?}"
+            matches!(
+                result,
+                KeyEventResult::PopupKey(KeyEvent {
+                    code: KeyCode::Esc,
+                    ..
+                })
+            ),
+            "Expected PopupKey(Esc) when popup is open, got {result:?}"
         );
     }
 
     #[test]
-    fn test_arrow_keys_navigate_autocomplete_when_active() {
+    fn test_escape_propagates_when_popup_inactive() {
         let mut input_manager = InputManager::new();
-        input_manager.autocomplete_active = true;
+        let result =
+            input_manager.handle_key_event(create_key_event(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            matches!(result, KeyEventResult::Escape),
+            "Expected Escape when popup is closed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_arrow_keys_route_to_popup_when_active() {
+        let mut input_manager = InputManager::new();
+        input_manager.popup_active = true;
 
         let down =
             input_manager.handle_key_event(create_key_event(KeyCode::Down, KeyModifiers::NONE));
         assert!(
-            matches!(down, KeyEventResult::MoveAutocomplete(1)),
-            "Expected MoveAutocomplete(1), got {down:?}"
+            matches!(
+                down,
+                KeyEventResult::PopupKey(KeyEvent {
+                    code: KeyCode::Down,
+                    ..
+                })
+            ),
+            "Expected PopupKey(Down), got {down:?}"
         );
 
         let up = input_manager.handle_key_event(create_key_event(KeyCode::Up, KeyModifiers::NONE));
         assert!(
-            matches!(up, KeyEventResult::MoveAutocomplete(-1)),
-            "Expected MoveAutocomplete(-1), got {up:?}"
+            matches!(
+                up,
+                KeyEventResult::PopupKey(KeyEvent {
+                    code: KeyCode::Up,
+                    ..
+                })
+            ),
+            "Expected PopupKey(Up), got {up:?}"
         );
     }
 
     #[test]
-    fn test_tab_selects_autocomplete_when_active() {
+    fn test_tab_routes_to_popup_when_active() {
         let mut input_manager = InputManager::new();
-        input_manager.autocomplete_active = true;
+        input_manager.popup_active = true;
 
         let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Tab, KeyModifiers::NONE));
         assert!(
-            matches!(result, KeyEventResult::SelectAutocomplete),
-            "Expected SelectAutocomplete on Tab, got {result:?}"
+            matches!(
+                result,
+                KeyEventResult::PopupKey(KeyEvent {
+                    code: KeyCode::Tab,
+                    ..
+                })
+            ),
+            "Expected PopupKey(Tab), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_enter_routes_to_popup_when_active() {
+        let mut input_manager = InputManager::new();
+        input_manager.popup_active = true;
+
+        let result =
+            input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(
+                result,
+                KeyEventResult::PopupKey(KeyEvent {
+                    code: KeyCode::Enter,
+                    ..
+                })
+            ),
+            "Expected PopupKey(Enter) while popup active, got {result:?}"
         );
     }
 }

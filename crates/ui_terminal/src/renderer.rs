@@ -111,11 +111,23 @@ pub struct TerminalRenderer {
     needs_paragraph_break_after_hidden_tool: bool,
     /// Last known terminal width (updated in prepare(), used for history rendering).
     last_known_width: u16,
-    /// Filtered list of (name, description) pairs to show in the autocomplete popup.
-    /// Empty when the popup is hidden.
-    autocomplete_items: Vec<(&'static str, &'static str)>,
-    /// Index of the highlighted row in `autocomplete_items`.
-    autocomplete_selected: usize,
+    /// Snapshot of the active slash-command popup, or `None` when the stack
+    /// is empty. Set by the app event loop right before each draw via
+    /// [`Self::set_popup_snapshot`].
+    popup: Option<PopupSnapshot>,
+}
+
+/// Snapshot of a [`SlashPopup`] taken at draw time.
+#[derive(Debug, Clone)]
+pub struct PopupSnapshot {
+    /// Breadcrumb of titles, root first, top last (e.g. `["Slash commands", "Choose model"]`).
+    pub breadcrumb: Vec<String>,
+    /// Rows of the top-of-stack popup, already filtered.
+    pub rows: Vec<crate::slash_popup::PopupRow>,
+    /// Highlighted row index in `rows`.
+    pub selected: usize,
+    /// Depth of the stack. `> 1` enables the "Esc/← back" hint in the footer.
+    pub stack_depth: usize,
 }
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -149,8 +161,7 @@ impl TerminalRenderer {
             last_block_type_for_hidden_tool: None,
             needs_paragraph_break_after_hidden_tool: false,
             last_known_width: 80,
-            autocomplete_items: Vec::new(),
-            autocomplete_selected: 0,
+            popup: None,
         })
     }
 
@@ -305,19 +316,10 @@ impl TerminalRenderer {
         self.overlay_active = active;
     }
 
-    /// Update the autocomplete popup contents.
-    ///
-    /// `items` is the pre-filtered list of (name, description) pairs to display.
-    /// `selected` is the index of the highlighted row.
-    pub fn set_autocomplete(&mut self, items: Vec<(&'static str, &'static str)>, selected: usize) {
-        self.autocomplete_items = items;
-        self.autocomplete_selected = selected;
-    }
-
-    /// Hide the autocomplete popup.
-    pub fn clear_autocomplete(&mut self) {
-        self.autocomplete_items.clear();
-        self.autocomplete_selected = 0;
+    /// Set or clear the popup snapshot. Called by the app event loop right
+    /// before each draw to mirror the current state of the popup stack.
+    pub fn set_popup_snapshot(&mut self, snapshot: Option<PopupSnapshot>) {
+        self.popup = snapshot;
     }
 
     /// Append text to the last block in the current message
@@ -743,13 +745,18 @@ impl TerminalRenderer {
         content_height.saturating_add(input_height)
     }
 
-    /// Height reserved for the autocomplete popup (0 when inactive).
+    /// Height reserved for the slash-command popup (0 when no popup is active).
     fn measure_autocomplete_height(&self) -> u16 {
         const MAX_POPUP_ROWS: u16 = 8;
-        if self.autocomplete_items.is_empty() {
-            0
-        } else {
-            (self.autocomplete_items.len() as u16).min(MAX_POPUP_ROWS)
+        const HEADER_ROWS: u16 = 1; // breadcrumb header
+        const FOOTER_ROWS: u16 = 1; // hint footer
+        const GAP_ROWS: u16 = 1; // visual gap between scrollback and popup
+        match &self.popup {
+            None => 0,
+            Some(snap) => {
+                let row_count = (snap.rows.len() as u16).clamp(1, MAX_POPUP_ROWS);
+                HEADER_ROWS + row_count + FOOTER_ROWS + GAP_ROWS
+            }
         }
     }
 
@@ -972,16 +979,11 @@ impl TerminalRenderer {
         // Render input area (block + textarea)
         self.composer.render(f, input_area, textarea);
 
-        // Render autocomplete popup in its dedicated layout slice (just above
-        // the input area). The slice has zero height when no items are active.
-        if !self.autocomplete_items.is_empty() && popup_area.height > 0 {
-            Self::render_autocomplete_popup(
-                f,
-                popup_area,
-                input_area,
-                &self.autocomplete_items,
-                self.autocomplete_selected,
-            );
+        // Render slash-command popup (above the composer) when a snapshot is set.
+        if let Some(snap) = self.popup.clone() {
+            if popup_area.height > 0 {
+                Self::render_popup(f, popup_area, input_area, &snap);
+            }
         }
     }
 
@@ -1250,93 +1252,170 @@ impl TerminalRenderer {
     /// anchored to the top-left of `input_area` and extends upward (i.e. it
     /// sits between the scroll-back content and the composer).  If `input_area`
     /// is not tall enough to fit the popup it is clamped to the available space.
-    fn render_autocomplete_popup(
+    fn render_popup(
         f: &mut custom_terminal::Frame,
         popup_area: Rect,
         input_area: Rect,
-        items: &[(&'static str, &'static str)],
-        selected: usize,
+        snap: &PopupSnapshot,
     ) {
         const MAX_POPUP_ROWS: u16 = 8;
 
-        if items.is_empty() || popup_area.height == 0 {
+        if popup_area.height == 0 {
             return;
         }
 
-        // Width: prefer fitting the longest "  /name  —  description  " row,
-        // but never exceed the popup slice width.
-        let max_text_width = items
+        // Compute the textual width budget. Reserve room for the longest item
+        // and for header / footer text.
+        let header_text = format_breadcrumb(&snap.breadcrumb);
+        let footer_text = format_footer(snap.stack_depth);
+        let longest_row = snap
+            .rows
             .iter()
-            .map(|(name, desc)| {
-                // "  /name  —  description  "
-                2 + 1 + name.len() + 2 + 3 + 2 + desc.len() + 2
-            })
+            .map(|r| 2 + r.label.chars().count() + 4 + r.description.chars().count() + 2)
             .max()
-            .unwrap_or(20) as u16;
-        let popup_width = max_text_width.max(20).min(popup_area.width);
+            .unwrap_or(20);
+        let min_width = longest_row
+            .max(header_text.chars().count() + 4)
+            .max(footer_text.chars().count() + 4) as u16;
+        let popup_width = min_width.max(24).min(popup_area.width);
 
-        // Horizontally align the popup with the "› " prefix of the composer
-        // (two columns indent), but clamp to the popup slice bounds.
+        // Horizontal indent under the "› " composer prefix.
         let popup_x = (input_area.x + 2)
             .max(popup_area.x)
             .min(popup_area.x + popup_area.width.saturating_sub(popup_width));
-        let popup_height = popup_area.height.min(MAX_POPUP_ROWS);
 
-        let popup_area = Rect {
+        // Layout inside the slice: 1 row gap, 1 row header, n rows list, 1 row footer.
+        let total_height = popup_area.height;
+        if total_height < 3 {
+            return;
+        }
+        let rows_height = total_height.saturating_sub(3); // gap + header + footer
+        let rows_height = rows_height.min(MAX_POPUP_ROWS);
+
+        let header_y = popup_area.y + 1; // skip the gap row
+        let list_y = header_y + 1;
+        let footer_y = list_y + rows_height;
+
+        // Background fill: header + list + footer rows.
+        let bg = Color::Reset;
+        for y in [header_y]
+            .into_iter()
+            .chain((0..rows_height).map(|i| list_y + i))
+            .chain([footer_y])
+        {
+            let area = Rect {
+                x: popup_x,
+                y,
+                width: popup_width,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new(Line::raw(" ".repeat(popup_width as usize)))
+                    .style(Style::default().bg(bg)),
+                area,
+            );
+        }
+
+        // Header: " ▍ /model > Choose model "  (cyan accent + breadcrumb)
+        let header_area = Rect {
             x: popup_x,
-            y: popup_area.y,
+            y: header_y,
             width: popup_width,
-            height: popup_height,
+            height: 1,
         };
+        let header = Line::from(vec![
+            Span::styled(
+                " ▍ ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                header_text.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(header), header_area);
 
-        // Determine which items are visible (top `MAX_POPUP_ROWS` items starting
-        // from the window that keeps `selected` in view).
-        let window_start = if selected >= MAX_POPUP_ROWS as usize {
-            selected + 1 - MAX_POPUP_ROWS as usize
+        // List rows. Keep selection in view with a sliding window.
+        let selected = snap.selected.min(snap.rows.len().saturating_sub(1));
+        let window_start = if rows_height == 0 {
+            0
+        } else if selected >= rows_height as usize {
+            selected + 1 - rows_height as usize
         } else {
             0
         };
-        let visible: Vec<_> = items
-            .iter()
+        for (row_idx, item_idx) in (window_start..)
+            .take(rows_height as usize)
             .enumerate()
-            .skip(window_start)
-            .take(MAX_POPUP_ROWS as usize)
-            .collect();
-
-        for (row_idx, (item_idx, (name, desc))) in visible.iter().enumerate() {
-            let row_y = popup_area.y + row_idx as u16;
-            // Defensive: never render past the popup slice.
-            if row_y >= popup_area.y + popup_area.height {
-                break;
-            }
+            .filter(|(_, i)| *i < snap.rows.len())
+        {
+            let row = &snap.rows[item_idx];
+            let row_y = list_y + row_idx as u16;
             let row_area = Rect {
-                x: popup_area.x,
+                x: popup_x,
                 y: row_y,
-                width: popup_area.width,
+                width: popup_width,
                 height: 1,
             };
 
-            let is_selected = *item_idx == selected;
-            let (bg, fg, name_fg) = if is_selected {
-                (Color::DarkGray, Color::White, Color::Cyan)
+            let is_selected = item_idx == selected;
+            let (row_bg, label_fg, desc_fg) = if is_selected {
+                (Color::DarkGray, Color::Cyan, Color::White)
             } else {
-                (Color::Reset, Color::DarkGray, Color::Gray)
+                (Color::Reset, Color::Gray, Color::DarkGray)
             };
+            let bg_style = Style::default().bg(row_bg);
+            f.render_widget(
+                Paragraph::new(Line::raw(" ".repeat(popup_width as usize))).style(bg_style),
+                row_area,
+            );
 
-            // Fill the whole row background first.
-            let bg_style = Style::default().bg(bg);
-            let fill = Line::raw(" ".repeat(popup_area.width as usize));
-            f.render_widget(Paragraph::new(fill).style(bg_style), row_area);
-
-            // Render "  /name  —  description" over the background.
-            let line = Line::from(vec![
-                Span::styled("  ", Style::default().bg(bg)),
-                Span::styled(format!("/{name}"), Style::default().fg(name_fg).bg(bg)),
-                Span::styled("  —  ", Style::default().fg(fg).bg(bg)),
-                Span::styled(*desc, Style::default().fg(fg).bg(bg)),
-            ]);
-            f.render_widget(Paragraph::new(line), row_area);
+            let mut spans: Vec<Span> = Vec::with_capacity(6);
+            spans.push(Span::styled("  ", Style::default().bg(row_bg)));
+            spans.push(Span::styled(
+                row.label.clone(),
+                Style::default().fg(label_fg).bg(row_bg),
+            ));
+            if !row.description.is_empty() {
+                spans.push(Span::styled(
+                    "  —  ",
+                    Style::default().fg(desc_fg).bg(row_bg),
+                ));
+                spans.push(Span::styled(
+                    row.description.clone(),
+                    Style::default().fg(desc_fg).bg(row_bg),
+                ));
+            }
+            if row.has_submenu {
+                spans.push(Span::styled(
+                    "  ›",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(row_bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            f.render_widget(Paragraph::new(Line::from(spans)), row_area);
         }
+
+        // Footer hint.
+        let footer_area = Rect {
+            x: popup_x,
+            y: footer_y,
+            width: popup_width,
+            height: 1,
+        };
+        let footer = Line::from(vec![Span::styled(
+            footer_text,
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+        )]);
+        f.render_widget(Paragraph::new(footer), footer_area);
     }
 
     /// Set an error message to display
@@ -1385,6 +1464,21 @@ impl TerminalRenderer {
 }
 
 /// Apply Yellow+Italic style to thinking lines while preserving per-span markdown styling.
+/// Format the breadcrumb of a popup stack as `"Slash commands › Choose model"`.
+fn format_breadcrumb(crumbs: &[String]) -> String {
+    crumbs.join(" › ")
+}
+
+/// Footer hint shown beneath the popup. The hint changes based on stack depth:
+/// at the root level the user can dismiss with Esc, deeper levels offer "back".
+fn format_footer(stack_depth: usize) -> String {
+    if stack_depth > 1 {
+        "  ↵ select   ←/Esc back".to_string()
+    } else {
+        "  ↵ select   Tab complete   Esc dismiss".to_string()
+    }
+}
+
 fn style_thinking_lines(thinking: Vec<Line<'static>>) -> Vec<Line<'static>> {
     thinking
         .into_iter()
