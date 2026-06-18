@@ -733,11 +733,24 @@ impl TerminalRenderer {
         // Status/error height
         content_height = content_height.saturating_add(self.measure_status_height(screen_width));
 
+        // Autocomplete popup height (rendered just above the composer).
+        content_height = content_height.saturating_add(self.measure_autocomplete_height());
+
         // Always reserve at least 1 row so there's a visible gap between
         // scrollback and the composer when no live content is displayed.
         content_height = content_height.max(1);
 
         content_height.saturating_add(input_height)
+    }
+
+    /// Height reserved for the autocomplete popup (0 when inactive).
+    fn measure_autocomplete_height(&self) -> u16 {
+        const MAX_POPUP_ROWS: u16 = 8;
+        if self.autocomplete_items.is_empty() {
+            0
+        } else {
+            (self.autocomplete_items.len() as u16).min(MAX_POPUP_ROWS)
+        }
     }
 
     fn measure_status_height(&self, width: u16) -> u16 {
@@ -903,9 +916,12 @@ impl TerminalRenderer {
         // Composed content occupies rows [cursor_y .. scratch_height)
         let total_height = scratch_height.saturating_sub(cursor_y);
 
-        let [content_area, status_area, input_area] = Layout::vertical([
+        let popup_height = self.measure_autocomplete_height();
+
+        let [content_area, status_area, popup_area, input_area] = Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(status_height),
+            Constraint::Length(popup_height),
             Constraint::Length(input_height),
         ])
         .areas(full);
@@ -956,10 +972,12 @@ impl TerminalRenderer {
         // Render input area (block + textarea)
         self.composer.render(f, input_area, textarea);
 
-        // Render autocomplete popup on top of the input area if items are present.
-        if !self.autocomplete_items.is_empty() {
+        // Render autocomplete popup in its dedicated layout slice (just above
+        // the input area). The slice has zero height when no items are active.
+        if !self.autocomplete_items.is_empty() && popup_area.height > 0 {
             Self::render_autocomplete_popup(
                 f,
+                popup_area,
                 input_area,
                 &self.autocomplete_items,
                 self.autocomplete_selected,
@@ -1234,18 +1252,19 @@ impl TerminalRenderer {
     /// is not tall enough to fit the popup it is clamped to the available space.
     fn render_autocomplete_popup(
         f: &mut custom_terminal::Frame,
+        popup_area: Rect,
         input_area: Rect,
         items: &[(&'static str, &'static str)],
         selected: usize,
     ) {
         const MAX_POPUP_ROWS: u16 = 8;
-        const H_PADDING: u16 = 1; // spaces on each side of the text
 
-        if items.is_empty() || input_area.height == 0 {
+        if items.is_empty() || popup_area.height == 0 {
             return;
         }
 
-        // How wide should each row be?
+        // Width: prefer fitting the longest "  /name  —  description  " row,
+        // but never exceed the popup slice width.
         let max_text_width = items
             .iter()
             .map(|(name, desc)| {
@@ -1254,23 +1273,18 @@ impl TerminalRenderer {
             })
             .max()
             .unwrap_or(20) as u16;
-        let popup_width = max_text_width
-            .max(20)
-            .min(input_area.width.saturating_sub(H_PADDING * 2));
+        let popup_width = max_text_width.max(20).min(popup_area.width);
 
-        let popup_height = (items.len() as u16).min(MAX_POPUP_ROWS);
-
-        // Position the popup directly above the input area, left-aligned with
-        // a small horizontal indent so it visually aligns with the "› " prefix.
-        let popup_x = input_area.x + 2; // indent under the "› " prefix
-        let popup_y = input_area.y.saturating_sub(popup_height);
-
-        // Clamp to screen bounds.
-        let popup_x = popup_x.min(f.area().width.saturating_sub(popup_width));
+        // Horizontally align the popup with the "› " prefix of the composer
+        // (two columns indent), but clamp to the popup slice bounds.
+        let popup_x = (input_area.x + 2)
+            .max(popup_area.x)
+            .min(popup_area.x + popup_area.width.saturating_sub(popup_width));
+        let popup_height = popup_area.height.min(MAX_POPUP_ROWS);
 
         let popup_area = Rect {
             x: popup_x,
-            y: popup_y,
+            y: popup_area.y,
             width: popup_width,
             height: popup_height,
         };
@@ -1290,9 +1304,14 @@ impl TerminalRenderer {
             .collect();
 
         for (row_idx, (item_idx, (name, desc))) in visible.iter().enumerate() {
+            let row_y = popup_area.y + row_idx as u16;
+            // Defensive: never render past the popup slice.
+            if row_y >= popup_area.y + popup_area.height {
+                break;
+            }
             let row_area = Rect {
                 x: popup_area.x,
-                y: popup_area.y + row_idx as u16,
+                y: row_y,
                 width: popup_area.width,
                 height: 1,
             };
