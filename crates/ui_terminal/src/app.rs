@@ -490,6 +490,22 @@ async fn event_loop(
                                     )
                                     .await;
                                 }
+                                KeyEventResult::PopupQueryChanged(text) => {
+                                    let mut state = app_state.lock().await;
+                                    // For the root popup the user typed "/cl",
+                                    // so the query is the part after the leading "/".
+                                    // For sub-popups the composer is the query verbatim.
+                                    let query: String = if state.popup_stack.depth() == 1
+                                        && text.starts_with('/')
+                                    {
+                                        text[1..].to_string()
+                                    } else {
+                                        text
+                                    };
+                                    state.popup_stack.set_query(&query);
+                                    input_manager.popup_active =
+                                        state.popup_stack.is_active();
+                                }
                                 KeyEventResult::PopupKey(key) => {
                                     let outcome = {
                                         let mut state = app_state.lock().await;
@@ -500,17 +516,41 @@ async fn event_loop(
                                             key.code,
                                             crossterm::event::KeyCode::Esc
                                         ) && state.popup_stack.depth() == 1;
+                                        let depth_before = state.popup_stack.depth();
                                         let result = state.popup_stack.handle_key(key);
+                                        let depth_after = state.popup_stack.depth();
                                         let still_active = state.popup_stack.is_active();
-                                        (result, was_root_esc, still_active)
+                                        (
+                                            result,
+                                            was_root_esc,
+                                            still_active,
+                                            depth_before,
+                                            depth_after,
+                                        )
                                     };
-                                    let (committed, was_root_esc, still_active) = outcome;
+                                    let (
+                                        committed,
+                                        was_root_esc,
+                                        still_active,
+                                        depth_before,
+                                        depth_after,
+                                    ) = outcome;
                                     input_manager.popup_active = still_active;
 
                                     if was_root_esc && !still_active {
                                         // Drop a leading "/" from the current composer line so
                                         // the popup does not re-open on the next keystroke.
                                         delete_leading_slash(&mut input_manager.textarea);
+                                    }
+
+                                    // If a sub-popup was just pushed, clear the composer so
+                                    // the user can type a fresh query for the new popup
+                                    // (e.g. "/mo<Enter>" -> empty composer that filters models).
+                                    if depth_after > depth_before {
+                                        input_manager.clear();
+                                        // Reset the new popup's query to empty.
+                                        let mut state = app_state.lock().await;
+                                        state.popup_stack.set_query("");
                                     }
 
                                     if let Some(cmd) = committed {

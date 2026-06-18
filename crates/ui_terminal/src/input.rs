@@ -45,6 +45,10 @@ pub enum KeyEventResult {
     /// `None` means the current line no longer starts with `/` (close the
     /// popup if it was open).
     SlashPrefixChanged(Option<String>),
+    /// The user typed (or backspaced) while a popup was already open.
+    /// The string is the entire current composer line, used as the query
+    /// for the top-of-stack popup (no leading slash strip).
+    PopupQueryChanged(String),
     /// A key event that should be routed to the active popup (Up / Down /
     /// Enter / Tab / Esc while the popup is open).
     PopupKey(KeyEvent),
@@ -200,10 +204,17 @@ impl InputManager {
                 }
             }
             _ => {
-                // Forward the key event directly to our custom TextArea, then check
-                // whether the current line now starts with a slash command.
+                // Forward the key event directly to our custom TextArea.
                 self.textarea.input(key_event);
-                KeyEventResult::SlashPrefixChanged(self.slash_prefix())
+                if self.popup_active {
+                    // While a popup is open, the entire composer line acts as
+                    // the popup query (the leading slash, if any, is stripped
+                    // for root popups by the app event loop).
+                    KeyEventResult::PopupQueryChanged(self.textarea.text().to_string())
+                } else {
+                    // No popup open: detect the start of a slash command.
+                    KeyEventResult::SlashPrefixChanged(self.slash_prefix())
+                }
             }
         }
     }
@@ -628,6 +639,56 @@ mod tests {
                 })
             ),
             "Expected PopupKey(Enter) while popup active, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_typing_while_popup_active_emits_popup_query_changed() {
+        let mut input_manager = InputManager::new();
+        input_manager.popup_active = true;
+
+        // Composer is empty (e.g. just after a sub-popup was pushed).
+        // Typing 'c' should NOT close the popup — it should report the
+        // composer's current text as a query update.
+        let result = input_manager
+            .handle_key_event(create_key_event(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(
+            matches!(result, KeyEventResult::PopupQueryChanged(ref q) if q == "c"),
+            "Expected PopupQueryChanged(\"c\") while popup active, got {result:?}"
+        );
+
+        let result = input_manager
+            .handle_key_event(create_key_event(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert!(
+            matches!(result, KeyEventResult::PopupQueryChanged(ref q) if q == "cl"),
+            "Expected PopupQueryChanged(\"cl\"), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_backspace_while_popup_active_emits_popup_query_changed() {
+        let mut input_manager = InputManager::new();
+        input_manager.textarea.insert_str("cl");
+        input_manager.popup_active = true;
+
+        let result = input_manager
+            .handle_key_event(create_key_event(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(
+            matches!(result, KeyEventResult::PopupQueryChanged(ref q) if q == "c"),
+            "Expected PopupQueryChanged(\"c\") after Backspace, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_typing_while_popup_inactive_still_emits_slash_prefix_changed() {
+        // Regression: popup_active=false must keep the existing slash-prefix
+        // detection behaviour (used by the root popup trigger via "/").
+        let mut input_manager = InputManager::new();
+        let result = input_manager
+            .handle_key_event(create_key_event(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(
+            matches!(result, KeyEventResult::SlashPrefixChanged(None)),
+            "Expected SlashPrefixChanged(None) when popup inactive, got {result:?}"
         );
     }
 }

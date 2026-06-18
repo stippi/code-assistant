@@ -67,10 +67,9 @@ impl SlashPopup for ModelPickerPopup {
     }
 
     fn set_query(&mut self, query: &str) {
-        // Sub-popups currently ignore composer-line query: the user navigates
-        // with arrow keys. We still honour the contract by re-applying a
-        // (case-insensitive) substring filter when a query is supplied via the
-        // future "type-to-filter inside popup" feature.
+        // While the popup is open the composer text becomes the popup query.
+        // Substring match (case-insensitive) so partial mid-string typos still
+        // surface results (e.g. "sonnet" finds "Claude Sonnet 4.5").
         if query.is_empty() {
             self.visible_rows = self.all_rows.clone();
         } else {
@@ -175,5 +174,22 @@ mod tests {
         popup.set_query("claude");
         let labels: Vec<&str> = popup.rows().iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels, vec!["Claude Sonnet 4.5", "Claude Haiku"]);
+    }
+
+    #[test]
+    fn substring_filter_is_case_insensitive() {
+        let mut popup = fake_popup_with_models(&["Claude Sonnet 4.5", "GPT-5"]);
+        popup.set_query("CLA");
+        let labels: Vec<&str> = popup.rows().iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["Claude Sonnet 4.5"]);
+    }
+
+    #[test]
+    fn substring_filter_matches_mid_string() {
+        // "sonnet" appears mid-string in "Claude Sonnet 4.5" — should still match.
+        let mut popup = fake_popup_with_models(&["Claude Sonnet 4.5", "GPT-5"]);
+        popup.set_query("sonnet");
+        let labels: Vec<&str> = popup.rows().iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["Claude Sonnet 4.5"]);
     }
 }
