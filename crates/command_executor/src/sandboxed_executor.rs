@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+#[cfg(target_os = "macos")]
+use anyhow::bail;
 use async_trait::async_trait;
 use sandbox::{SandboxContext, SandboxPolicy};
 #[cfg(not(target_os = "macos"))]
