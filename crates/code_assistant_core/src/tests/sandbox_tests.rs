@@ -90,6 +90,6 @@ mod sandbox_tests_placeholder {
     #[test]
     fn sandbox_tests_skip_on_non_macos() {
         // Seatbelt enforcement is macOS-specific, so these tests are skipped elsewhere.
-        assert!(true);
+        // Intentionally empty body; presence of this test documents the platform skip.
     }
 }
