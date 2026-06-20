@@ -1,7 +1,10 @@
 use crate::{
+    commands::CommandProcessor,
     input::{InputManager, KeyEventResult},
     renderer::ProductionTerminalRenderer,
+    slash_popup::CommandListPopup,
     state::AppState,
+    textarea::TextArea,
     tui,
     ui::TerminalUI,
 };
@@ -26,6 +29,174 @@ use std::sync::{
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::debug;
+
+/// Update the popup stack to reflect a new slash-prefix on the current input line.
+///
+/// - `query == None` → user just deleted the leading `/`; close the popup.
+/// - `query == Some(q)` → ensure a [`CommandListPopup`] is on the stack and
+///   forward the query so the visible rows are filtered.
+async fn handle_slash_prefix_changed(
+    query: Option<String>,
+    app_state: &Arc<Mutex<AppState>>,
+    input_manager: &mut InputManager,
+) {
+    let mut state = app_state.lock().await;
+    match query {
+        None => {
+            state.popup_stack.clear();
+        }
+        Some(q) => {
+            // If the stack is empty (or the top is not the root command list),
+            // open the root command list popup. Sub-popups remain on the stack
+            // and ignore the prefix change (the top-of-stack popup decides).
+            if state.popup_stack.depth() == 0 {
+                state.popup_stack.push(Box::new(CommandListPopup::new()));
+            }
+            state.popup_stack.set_query(&q);
+        }
+    }
+    input_manager.popup_active = state.popup_stack.is_active();
+}
+
+/// Delete a leading `/` from the current line of `textarea`, if any. Used
+/// when the user dismisses the root popup with Esc so the next keystroke
+/// does not immediately reopen it.
+fn delete_leading_slash(textarea: &mut TextArea) {
+    let cursor = textarea.cursor();
+    let text = textarea.text().to_string();
+    let line_start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    if text[line_start..].starts_with('/') {
+        textarea.replace_range(line_start..line_start + 1, "");
+    }
+}
+
+/// When a popup commits a final command, the leading "/word" the user typed
+/// is no longer needed in the composer (it has been consumed). Remove the
+/// "/" plus everything up to the next whitespace.
+fn clear_slash_command_word(textarea: &mut TextArea) {
+    let cursor = textarea.cursor();
+    let text = textarea.text().to_string();
+    let line_start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    if !text[line_start..].starts_with('/') {
+        return;
+    }
+    // Find end of the slash-word: first whitespace or end of line.
+    let mut end = line_start + 1;
+    for (idx, ch) in text[line_start + 1..].char_indices() {
+        let abs = line_start + 1 + idx;
+        if ch.is_whitespace() {
+            end = abs;
+            break;
+        }
+        end = abs + ch.len_utf8();
+    }
+    textarea.replace_range(line_start..end, "");
+}
+
+/// Run the side-effects for a [`CommandResult`] produced by either an inline
+/// `/cmd<Enter>` submission or a popup commit. Returns an optional
+/// [`BackendEvent`] the caller should send.
+async fn handle_command_result(
+    cmd: crate::commands::CommandResult,
+    app_state: &Arc<Mutex<AppState>>,
+    renderer: &Arc<Mutex<ProductionTerminalRenderer>>,
+    backend_event_tx: &async_channel::Sender<BackendEvent>,
+) -> Option<BackendEvent> {
+    use crate::commands::CommandResult;
+    match cmd {
+        CommandResult::Continue => None,
+        CommandResult::Help(_) => {
+            let processor = CommandProcessor::new().ok();
+            let text = processor
+                .map(|p| match p.process_command("/help") {
+                    CommandResult::Help(t) => t,
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            app_state.lock().await.set_info_message(Some(text));
+            None
+        }
+        CommandResult::ListModels => {
+            if let Ok(p) = CommandProcessor::new() {
+                app_state
+                    .lock()
+                    .await
+                    .set_info_message(Some(p.get_models_list()));
+            }
+            None
+        }
+        CommandResult::ListProviders => {
+            if let Ok(p) = CommandProcessor::new() {
+                app_state
+                    .lock()
+                    .await
+                    .set_info_message(Some(p.get_providers_list()));
+            }
+            None
+        }
+        CommandResult::SwitchModel(model_name) => {
+            let session_id = {
+                let state = app_state.lock().await;
+                state.current_session_id.clone()
+            };
+            if let Some(session_id) = session_id {
+                let mut state = app_state.lock().await;
+                state.update_current_model(Some(model_name.clone()));
+                state.set_info_message(Some(format!("Switched to model: {model_name}")));
+                Some(BackendEvent::SwitchModel {
+                    session_id,
+                    model_name,
+                })
+            } else {
+                app_state
+                    .lock()
+                    .await
+                    .set_info_message(Some("No active session to switch model".to_string()));
+                None
+            }
+        }
+        CommandResult::ShowCurrentModel => {
+            let current_model = app_state.lock().await.current_model.clone();
+            let message = match current_model {
+                Some(model) => format!("Current model: {model}"),
+                None => "No model selected".to_string(),
+            };
+            app_state.lock().await.set_info_message(Some(message));
+            None
+        }
+        CommandResult::TogglePlan => {
+            let (plan_state, expanded, overlay_active) = {
+                let mut state = app_state.lock().await;
+                let expanded = state.toggle_plan_expanded();
+                (state.plan.clone(), expanded, state.is_overlay_active())
+            };
+            let mut renderer_guard = renderer.lock().await;
+            if let Some(plan_state) = plan_state {
+                renderer_guard.set_plan_state(Some(plan_state));
+            }
+            renderer_guard.set_plan_expanded(expanded);
+            renderer_guard.set_overlay_active(overlay_active);
+            None
+        }
+        CommandResult::ClearContext => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            session_id.map(|session_id| BackendEvent::ClearContext { session_id })
+        }
+        CommandResult::CompactContext => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            session_id.map(|session_id| BackendEvent::CompactContext { session_id })
+        }
+        CommandResult::InvalidCommand(error) => {
+            app_state
+                .lock()
+                .await
+                .set_info_message(Some(format!("Error: {error}")));
+            // Suppress unused warning in this branch.
+            let _ = backend_event_tx;
+            None
+        }
+    }
+}
 
 /// Main event loop for handling terminal events
 async fn event_loop(
@@ -60,6 +231,25 @@ async fn event_loop(
                 }
                 renderer_guard.set_plan_expanded(state.plan_expanded);
                 renderer_guard.set_overlay_active(state.is_overlay_active());
+
+                // Sync popup snapshot from the popup stack.
+                let snap = if state.popup_stack.is_active() {
+                    let top = state.popup_stack.top().unwrap();
+                    Some(crate::renderer::PopupSnapshot {
+                        breadcrumb: state
+                            .popup_stack
+                            .breadcrumb()
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                        rows: top.rows().to_vec(),
+                        selected: top.selected(),
+                        stack_depth: state.popup_stack.depth(),
+                    })
+                } else {
+                    None
+                };
+                renderer_guard.set_popup_snapshot(snap);
 
                 drop(state); // Release the lock before rendering
 
@@ -270,6 +460,117 @@ async fn event_loop(
                                     renderer_guard.set_plan_expanded(expanded);
                                     renderer_guard.set_overlay_active(overlay_active);
                                 }
+                                KeyEventResult::ClearContext => {
+                                    let current_session_id = {
+                                        let state = app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
+                                    if let Some(session_id) = current_session_id {
+                                        let _ = backend_event_tx
+                                            .send(BackendEvent::ClearContext { session_id })
+                                            .await;
+                                    }
+                                }
+                                KeyEventResult::CompactContext => {
+                                    let current_session_id = {
+                                        let state = app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
+                                    if let Some(session_id) = current_session_id {
+                                        let _ = backend_event_tx
+                                            .send(BackendEvent::CompactContext { session_id })
+                                            .await;
+                                    }
+                                }
+                                KeyEventResult::SlashPrefixChanged(query) => {
+                                    handle_slash_prefix_changed(
+                                        query,
+                                        &app_state,
+                                        &mut input_manager,
+                                    )
+                                    .await;
+                                }
+                                KeyEventResult::PopupQueryChanged(text) => {
+                                    let mut state = app_state.lock().await;
+                                    // For the root popup the user typed "/cl",
+                                    // so the query is the part after the leading "/".
+                                    // For sub-popups the composer is the query verbatim.
+                                    let query: String = if state.popup_stack.depth() == 1
+                                        && text.starts_with('/')
+                                    {
+                                        text[1..].to_string()
+                                    } else {
+                                        text
+                                    };
+                                    state.popup_stack.set_query(&query);
+                                    input_manager.popup_active =
+                                        state.popup_stack.is_active();
+                                }
+                                KeyEventResult::PopupKey(key) => {
+                                    let outcome = {
+                                        let mut state = app_state.lock().await;
+                                        // Capture root-Esc *before* dispatch so we can also
+                                        // delete the leading "/" from the composer when the
+                                        // user dismisses the root popup.
+                                        let was_root_esc = matches!(
+                                            key.code,
+                                            crossterm::event::KeyCode::Esc
+                                        ) && state.popup_stack.depth() == 1;
+                                        let depth_before = state.popup_stack.depth();
+                                        let result = state.popup_stack.handle_key(key);
+                                        let depth_after = state.popup_stack.depth();
+                                        let still_active = state.popup_stack.is_active();
+                                        (
+                                            result,
+                                            was_root_esc,
+                                            still_active,
+                                            depth_before,
+                                            depth_after,
+                                        )
+                                    };
+                                    let (
+                                        committed,
+                                        was_root_esc,
+                                        still_active,
+                                        depth_before,
+                                        depth_after,
+                                    ) = outcome;
+                                    input_manager.popup_active = still_active;
+
+                                    if was_root_esc && !still_active {
+                                        // Drop a leading "/" from the current composer line so
+                                        // the popup does not re-open on the next keystroke.
+                                        delete_leading_slash(&mut input_manager.textarea);
+                                    }
+
+                                    // If a sub-popup was just pushed, clear the composer so
+                                    // the user can type a fresh query for the new popup
+                                    // (e.g. "/mo<Enter>" -> empty composer that filters models).
+                                    if depth_after > depth_before {
+                                        input_manager.clear();
+                                        // Reset the new popup's query to empty.
+                                        let mut state = app_state.lock().await;
+                                        state.popup_stack.set_query("");
+                                    }
+
+                                    if let Some(cmd) = committed {
+                                        // The popup committed a final command; clear the
+                                        // composer line (the slash word) and dispatch the
+                                        // command via the same path as inline /commands.
+                                        clear_slash_command_word(&mut input_manager.textarea);
+                                        if let Some(next_event) = handle_command_result(
+                                            cmd,
+                                            &app_state,
+                                            &renderer,
+                                            &backend_event_tx,
+                                        )
+                                        .await
+                                        {
+                                            // Forward any backend event the command produced.
+                                            let _ = backend_event_tx.send(next_event).await;
+                                        }
+                                    }
+                                }
                             }
                             needs_redraw = true;
                         }
@@ -278,6 +579,10 @@ async fn event_loop(
                             // normalize before processing.
                             let pasted = pasted.replace('\r', "\n");
                             input_manager.handle_paste(pasted);
+                            // Update autocomplete: pasting may introduce or clear a slash prefix.
+                            let prefix = input_manager.slash_prefix();
+                            handle_slash_prefix_changed(prefix, &app_state, &mut input_manager)
+                                .await;
                             needs_redraw = true;
                         }
                         Event::Resize(_, _) => {

@@ -1,3 +1,4 @@
+use crate::slash_popup::PopupStack;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::types::PlanState;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub current_model: Option<String>,
     pub info_message: Option<String>,
     pub current_sandbox_policy: Option<SandboxPolicy>,
+    /// Slash-command popup stack. Empty stack ↔ no popup visible.
+    pub popup_stack: PopupStack,
 }
 
 impl AppState {
@@ -42,6 +45,7 @@ impl AppState {
             current_model: None,
             info_message: None,
             current_sandbox_policy: None,
+            popup_stack: PopupStack::new(),
         }
     }
 

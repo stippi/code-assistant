@@ -6,6 +6,7 @@ pub mod history_insert;
 pub mod input;
 pub mod message;
 pub mod renderer;
+pub mod slash_popup;
 pub mod state;
 pub mod streaming;
 pub mod terminal_color;
