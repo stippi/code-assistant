@@ -38,6 +38,7 @@ impl MessageWriter for StdoutWriter {
 
 /// A mock writer implementation for testing.
 #[cfg(any(test, feature = "test-utils"))]
+#[derive(Default)]
 pub struct MockWriter {
     /// Stores all messages written to this writer
     pub messages: Arc<TokioMutex<Vec<String>>>,
@@ -46,9 +47,7 @@ pub struct MockWriter {
 #[cfg(any(test, feature = "test-utils"))]
 impl MockWriter {
     pub fn new() -> Self {
-        Self {
-            messages: Arc::new(TokioMutex::new(Vec::new())),
-        }
+        Self::default()
     }
 
     /// Get a clone of all messages that have been written

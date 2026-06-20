@@ -8,7 +8,7 @@ use super::tool_widget::{is_full_width_parameter, should_hide_parameter, ToolWid
 use code_assistant_core::ui::ToolStatus;
 
 /// A complete message containing multiple blocks
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LiveMessage {
     pub blocks: Vec<MessageBlock>,
     pub finalized: bool,
@@ -19,14 +19,6 @@ pub struct LiveMessage {
 }
 
 impl LiveMessage {
-    pub fn new() -> Self {
-        Self {
-            blocks: Vec::new(),
-            finalized: false,
-            streamed_to_scrollback: false,
-        }
-    }
-
     /// Add a new block to this message
     pub fn add_block(&mut self, block: MessageBlock) {
         self.blocks.push(block);
@@ -262,16 +254,14 @@ impl Widget for MessageBlock {
 }
 
 /// Plain text block for regular assistant responses
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlainTextBlock {
     pub content: String,
 }
 
 impl PlainTextBlock {
     pub fn new() -> Self {
-        Self {
-            content: String::new(),
-        }
+        Self::default()
     }
 }
 
@@ -283,6 +273,7 @@ pub struct ThinkingBlock {
 }
 
 impl ThinkingBlock {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             content: String::new(),

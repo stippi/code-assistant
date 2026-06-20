@@ -40,17 +40,12 @@ pub trait ToolRenderer: Send + Sync {
 
 static GLOBAL_REGISTRY: OnceLock<Arc<ToolRendererRegistry>> = OnceLock::new();
 
+#[derive(Default)]
 pub struct ToolRendererRegistry {
     renderers: HashMap<String, Arc<dyn ToolRenderer>>,
 }
 
 impl ToolRendererRegistry {
-    pub fn new() -> Self {
-        Self {
-            renderers: HashMap::new(),
-        }
-    }
-
     /// Register a renderer for all tools it declares via `supported_tools()`.
     pub fn register(&mut self, renderer: Arc<dyn ToolRenderer>) {
         for &tool_name in renderer.supported_tools() {
@@ -189,7 +184,7 @@ pub fn push_error_history_line(tool_block: &ToolUseBlock, lines: &mut Vec<Line<'
 
 /// Create and install the global tool renderer registry with all built-in renderers.
 pub fn init_registry() {
-    let mut registry = ToolRendererRegistry::new();
+    let mut registry = ToolRendererRegistry::default();
     registry.register(Arc::new(compact_renderer::CompactToolRenderer));
     registry.register(Arc::new(diff_renderer::DiffToolRenderer));
     registry.register(Arc::new(command_renderer::CommandToolRenderer));

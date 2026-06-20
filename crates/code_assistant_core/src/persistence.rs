@@ -582,6 +582,7 @@ pub struct FileSessionPersistence {
 }
 
 impl FileSessionPersistence {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let root_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))

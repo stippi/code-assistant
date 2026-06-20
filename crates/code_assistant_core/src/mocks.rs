@@ -975,6 +975,12 @@ pub struct ToolTestFixture {
     services: crate::tools::ToolServices,
 }
 
+impl Default for ToolTestFixture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolTestFixture {
     fn from_parts(
         project_manager: MockProjectManager,

@@ -11,7 +11,6 @@ pub mod sidebar;
 pub mod terminal;
 pub mod tool_cards;
 
-use async_channel;
 use blocks::MessageContainer;
 use code_assistant_core::backend::{BackendEvent, BackendResponse};
 use code_assistant_core::persistence::{ChatMetadata, DraftStorage};
@@ -313,6 +312,7 @@ impl Gpui {
         *self.current_session_last_usage.lock().unwrap() = None;
     }
 
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
@@ -323,7 +323,7 @@ impl Gpui {
         // Initialize tool block renderer registry
         {
             use tool_cards::{InlineToolRenderer, ToolBlockRendererRegistry};
-            let mut tbr_registry = ToolBlockRendererRegistry::new();
+            let mut tbr_registry = ToolBlockRendererRegistry::default();
             tbr_registry.register(Arc::new(InlineToolRenderer::new()));
             tbr_registry.register(Arc::new(tool_cards::terminal_card::TerminalCardRenderer));
             tbr_registry.register(Arc::new(tool_cards::diff_card::DiffCardRenderer));

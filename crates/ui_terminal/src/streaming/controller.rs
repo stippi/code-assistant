@@ -25,6 +25,7 @@ pub struct StreamingController {
 }
 
 impl StreamingController {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             text_state: StreamState::new(None),

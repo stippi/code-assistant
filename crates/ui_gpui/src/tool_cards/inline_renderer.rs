@@ -28,6 +28,7 @@ pub struct InlineToolRenderer {
 }
 
 impl InlineToolRenderer {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let templates = vec![
             DescribeTemplate {

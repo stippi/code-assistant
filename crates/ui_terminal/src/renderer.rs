@@ -143,7 +143,7 @@ pub type ProductionTerminalRenderer = TerminalRenderer;
 impl TerminalRenderer {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            transcript: TranscriptState::new(),
+            transcript: TranscriptState::default(),
             pending_user_message: None,
             current_error: None,
             info_message: None,
@@ -483,7 +483,7 @@ impl TerminalRenderer {
         self.flush_new_finalized_messages(self.last_known_width);
 
         // Create a finalized message with a UserText block for proper styling
-        let mut user_message = LiveMessage::new();
+        let mut user_message = LiveMessage::default();
         let mut text_block = PlainTextBlock::new();
         text_block.content = content.to_string();
         user_message.add_block(MessageBlock::UserText(text_block));
@@ -497,7 +497,7 @@ impl TerminalRenderer {
     /// Add an instruction/informational message as a finalized message
     /// This is for system messages, welcome text, etc.
     pub fn add_instruction_message(&mut self, content: &str) -> Result<()> {
-        let mut instruction_message = LiveMessage::new();
+        let mut instruction_message = LiveMessage::default();
         let mut text_block = PlainTextBlock::new();
         text_block.content = content.to_string();
         instruction_message.add_block(MessageBlock::PlainText(text_block));
@@ -1696,7 +1696,7 @@ mod tests {
 
     /// Helper to create a simple text message
     fn create_text_message(content: &str) -> LiveMessage {
-        let mut message = LiveMessage::new();
+        let mut message = LiveMessage::default();
         let mut text_block = PlainTextBlock::new();
         text_block.content = content.to_string();
         message.add_block(MessageBlock::PlainText(text_block));

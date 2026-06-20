@@ -44,6 +44,7 @@ pub trait Render: Send + Sync + 'static {
 }
 
 /// Tracks resources that have been included in tool outputs to prevent redundant display
+#[derive(Default)]
 pub struct ResourcesTracker {
     /// Set of already rendered resource identifiers
     rendered_resources: HashSet<String>,
@@ -52,9 +53,7 @@ pub struct ResourcesTracker {
 impl ResourcesTracker {
     /// Create a new empty resources tracker
     pub fn new() -> Self {
-        Self {
-            rendered_resources: HashSet::new(),
-        }
+        Self::default()
     }
 
     /// Check if a resource has already been rendered

@@ -75,6 +75,7 @@ pub struct InputManager {
 }
 
 impl InputManager {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let command_processor = CommandProcessor::new().ok();
         Self {
@@ -226,11 +227,7 @@ impl InputManager {
     /// autocomplete popup.
     pub fn slash_prefix(&self) -> Option<String> {
         let line = self.textarea.current_line();
-        if line.starts_with('/') {
-            Some(line[1..].to_string())
-        } else {
-            None
-        }
+        line.strip_prefix('/').map(|s| s.to_string())
     }
 
     /// Handle a terminal paste event (from bracketed paste).

@@ -42,7 +42,7 @@ struct TextElement {
     range: Range<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TextArea {
     text: String,
     cursor_pos: usize,
@@ -60,14 +60,7 @@ struct WrapCache {
 
 impl TextArea {
     pub fn new() -> Self {
-        Self {
-            text: String::new(),
-            cursor_pos: 0,
-            wrap_cache: RefCell::new(None),
-            preferred_col: None,
-            kill_buffer: String::new(),
-            elements: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn clear(&mut self) {

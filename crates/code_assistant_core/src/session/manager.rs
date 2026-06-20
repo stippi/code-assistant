@@ -135,7 +135,7 @@ impl SessionManager {
             session_config_template,
             default_model_name,
             force_diff_format,
-            sleep_inhibitor: Arc::new(SleepInhibitor::new()),
+            sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
         }
     }

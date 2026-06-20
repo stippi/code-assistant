@@ -9,6 +9,7 @@ use tracing::{debug, warn};
 /// finishes. The struct is cheaply cloneable (all state behind `Arc` in the
 /// caller) and safe to share between the `SessionManager` and spawned agent
 /// tasks.
+#[derive(Default)]
 pub struct SleepInhibitor {
     /// Number of currently running agents.
     running_count: AtomicUsize,
@@ -17,13 +18,6 @@ pub struct SleepInhibitor {
 }
 
 impl SleepInhibitor {
-    pub fn new() -> Self {
-        Self {
-            running_count: AtomicUsize::new(0),
-            wake_lock: Mutex::new(None),
-        }
-    }
-
     /// Called when an agent starts running. Acquires the system wake lock
     /// if this is the first active agent.
     pub fn agent_started(&self) {

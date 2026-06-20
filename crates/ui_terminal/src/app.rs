@@ -618,13 +618,10 @@ async fn event_loop(
     Ok(())
 }
 
+#[derive(Default)]
 pub struct TerminalTuiApp {}
 
 impl TerminalTuiApp {
-    pub fn new() -> Self {
-        Self {}
-    }
-
     pub async fn run(
         &self,
         config: &AgentRunConfig,

@@ -100,15 +100,14 @@ impl ProjectManager for SandboxAwareProjectManager {
 }
 
 // Default implementation of ProjectManager that loads from config file
+#[derive(Default)]
 pub struct DefaultProjectManager {
     temp_projects: std::sync::Mutex<HashMap<String, Project>>,
 }
 
 impl DefaultProjectManager {
     pub fn new() -> Self {
-        Self {
-            temp_projects: std::sync::Mutex::new(HashMap::new()),
-        }
+        Self::default()
     }
 }
 

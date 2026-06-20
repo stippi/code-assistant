@@ -9,6 +9,7 @@ use super::terminal_color;
 use super::tool_renderers::ToolRendererRegistry;
 use code_assistant_core::ui::ToolStatus;
 
+#[derive(Default)]
 pub struct TranscriptState {
     committed_messages: Vec<LiveMessage>,
     committed_rendered_count: usize,
@@ -16,14 +17,6 @@ pub struct TranscriptState {
 }
 
 impl TranscriptState {
-    pub fn new() -> Self {
-        Self {
-            committed_messages: Vec::new(),
-            committed_rendered_count: 0,
-            active_message: None,
-        }
-    }
-
     pub fn active_message(&self) -> Option<&LiveMessage> {
         self.active_message.as_ref()
     }
@@ -34,7 +27,7 @@ impl TranscriptState {
 
     pub fn start_active_message(&mut self) {
         self.finalize_active_if_content();
-        self.active_message = Some(LiveMessage::new());
+        self.active_message = Some(LiveMessage::default());
     }
 
     /// Discard the current active message without finalizing it.

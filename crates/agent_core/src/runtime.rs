@@ -420,12 +420,12 @@ impl AgentRuntime {
                 && truncated_response.content != llm_response.content
             {
                 // Replace the last message with the truncated version
-                if let Some(last_msg) = self.message_history.last_mut() {
-                    if last_msg.role == MessageRole::Assistant {
-                        last_msg.content =
-                            MessageContent::Structured(truncated_response.content.clone());
-                        last_msg.usage = Some(truncated_response.usage.clone());
-                    }
+                if let Some(last_msg) = self.message_history.last_mut()
+                    && last_msg.role == MessageRole::Assistant
+                {
+                    last_msg.content =
+                        MessageContent::Structured(truncated_response.content.clone());
+                    last_msg.usage = Some(truncated_response.usage.clone());
                 }
             }
 
@@ -1390,10 +1390,9 @@ impl AgentRuntime {
                             is_error,
                             ..
                         } = block
+                            && replaced_ids.contains(tool_use_id.as_str())
                         {
-                            if replaced_ids.contains(tool_use_id.as_str()) {
-                                *is_error = Some(true);
-                            }
+                            *is_error = Some(true);
                         }
                     }
                 }
@@ -1413,16 +1412,14 @@ impl AgentRuntime {
         let mut tool_result_idx = None;
         for i in (0..self.message_history.len()).rev() {
             let msg = &self.message_history[i];
-            if msg.role == MessageRole::User {
-                if let MessageContent::Structured(blocks) = &msg.content {
-                    if blocks
-                        .iter()
-                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
-                    {
-                        tool_result_idx = Some(i);
-                        break;
-                    }
-                }
+            if msg.role == MessageRole::User
+                && let MessageContent::Structured(blocks) = &msg.content
+                && blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            {
+                tool_result_idx = Some(i);
+                break;
             }
         }
 
@@ -1840,7 +1837,7 @@ impl AgentRuntime {
         self.services_provider
             .end(self.extensions.as_mut(), services);
 
-        let result = match invoke_result {
+        match invoke_result {
             Ok(result) => {
                 let execution_duration = Some(execution_start.elapsed().as_secs_f64());
 
@@ -1961,9 +1958,7 @@ impl AgentRuntime {
                 // Return the error to be handled by manage_tool_execution
                 Err(e)
             }
-        };
-
-        result
+        }
     }
 
     async fn notify_tool_parameter_updates(
@@ -2025,12 +2020,12 @@ impl AgentRuntime {
                             if let ContentBlock::ToolUse {
                                 id, name, input, ..
                             } = block
+                                && *id == updated_request.id
+                                && *name == updated_request.name
                             {
-                                if *id == updated_request.id && *name == updated_request.name {
-                                    *input = updated_request.input.clone();
-                                    debug!("Updated tool call {} in message history", id);
-                                    return Ok(());
-                                }
+                                *input = updated_request.input.clone();
+                                debug!("Updated tool call {} in message history", id);
+                                return Ok(());
                             }
                         }
                     }

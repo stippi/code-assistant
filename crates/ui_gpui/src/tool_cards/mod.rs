@@ -121,6 +121,7 @@ pub trait ToolBlockRenderer: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Global registry mapping tool names → renderers.
+#[derive(Default)]
 pub struct ToolBlockRendererRegistry {
     renderers: HashMap<String, Arc<dyn ToolBlockRenderer>>,
 }
@@ -128,12 +129,6 @@ pub struct ToolBlockRendererRegistry {
 static GLOBAL_REGISTRY: OnceLock<Mutex<Option<Arc<ToolBlockRendererRegistry>>>> = OnceLock::new();
 
 impl ToolBlockRendererRegistry {
-    pub fn new() -> Self {
-        Self {
-            renderers: HashMap::new(),
-        }
-    }
-
     /// Register a renderer for all tools it declares.
     pub fn register(&mut self, renderer: Arc<dyn ToolBlockRenderer>) {
         for tool_name in renderer.supported_tools() {
@@ -197,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_registry_lookup() {
-        let mut registry = ToolBlockRendererRegistry::new();
+        let mut registry = ToolBlockRendererRegistry::default();
         registry.register(Arc::new(InlineToolRenderer::new()));
         registry.register(Arc::new(code_card::CodeCardRenderer));
         assert!(registry.get("read_files").is_some());

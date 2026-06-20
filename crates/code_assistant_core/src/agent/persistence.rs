@@ -65,6 +65,7 @@ impl SnapshotPersistence for SessionStateAdapter {
 
 /// Mock implementation for testing
 #[cfg(test)]
+#[derive(Default)]
 pub struct MockStatePersistence {
     pub save_count: usize,
     pub last_saved_messages: Option<Vec<Message>>,
@@ -75,12 +76,7 @@ pub struct MockStatePersistence {
 #[cfg(test)]
 impl MockStatePersistence {
     pub fn new() -> Self {
-        Self {
-            save_count: 0,
-            last_saved_messages: None,
-            last_saved_tool_executions: None,
-            last_saved_plan: None,
-        }
+        Self::default()
     }
 }
 
