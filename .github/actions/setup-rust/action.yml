@@ -1,0 +1,63 @@
+name: Setup Rust toolchain
+description: >-
+  Installs the Rust toolchain, sets up cargo caching, and installs the minimal
+  Linux build dependencies required for the workspace (gpui in particular).
+inputs:
+  toolchain:
+    description: Rust toolchain to install (e.g. stable, 1.79.0)
+    required: false
+    default: stable
+  target:
+    description: Optional rustup target triple to add (e.g. x86_64-unknown-linux-gnu)
+    required: false
+    default: ""
+  components:
+    description: Comma-separated list of rustup components (e.g. rustfmt,clippy)
+    required: false
+    default: ""
+  cache-key:
+    description: Shared cache key used by Swatinem/rust-cache
+    required: false
+    default: default
+  cache-save-if:
+    description: Whether to write back to the cache (set to "false" on PRs to avoid bloat)
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        target: ${{ inputs.target }}
+        components: ${{ inputs.components }}
+        override: true
+
+    - name: Cache cargo registry and target
+      uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        save-if: ${{ inputs.cache-save-if }}
+
+    # Minimal set of system libraries required to build the workspace on
+    # Linux. Mirrors the dependencies gpui pulls in (Wayland, X11/XCB,
+    # xkbcommon, fontconfig, alsa, vulkan loader) plus the few generic
+    # libraries used by other crates in the workspace (openssl, zstd).
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config \
+          build-essential \
+          libssl-dev \
+          libzstd-dev \
+          libfontconfig-dev \
+          libwayland-dev \
+          libx11-xcb-dev \
+          libxkbcommon-x11-dev \
+          libasound2-dev \
+          libvulkan1

@@ -12,7 +12,58 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  test-linux:
+    name: Test workspace (Linux, excl. ui_gpui)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt,clippy
+          cache-key: workspace-linux
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (workspace, excl. ui_gpui)
+        run: |
+          cargo clippy \
+            --workspace --exclude ui_gpui --all-targets --locked \
+            -- -D warnings
+
+      - name: cargo test (workspace, excl. ui_gpui)
+        run: cargo test --workspace --exclude ui_gpui --locked
+
+  test-gpui:
+    name: Test ui_gpui (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+          - os: macos-latest
+            name: macos-aarch64
+          - os: macos-13
+            name: macos-x86_64
+          - os: windows-latest
+            name: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ui-gpui-${{ matrix.name }}
+
+      - name: cargo test -p ui_gpui
+        run: cargo test -p ui_gpui --locked
+
   prepare-version:
+    needs: [test-linux, test-gpui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -165,60 +216,13 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           target: ${{ matrix.target }}
-          override: true
-
-      - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-
-          # Install X11 and XCB development libraries
-          sudo apt-get install -y \
-            build-essential \
-            pkg-config \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxcb-render0-dev \
-            libxcb-render-util0-dev \
-            libxcb-randr0-dev \
-            libxcb-image0-dev \
-            libxcb-util-dev \
-            libxcb-cursor-dev \
-            libxcb-keysyms1-dev \
-            libxcb-icccm4-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
-            libxrandr-dev \
-            libxinerama-dev \
-            libxcursor-dev \
-            libxi-dev
-
-          # Debug output
-          echo "=== Checking X11-xcb availability ==="
-          pkg-config --exists x11-xcb && echo "✓ x11-xcb pkg-config found" || echo "✗ x11-xcb pkg-config missing"
-          pkg-config --libs x11-xcb 2>/dev/null && echo "✓ x11-xcb libs available" || echo "✗ x11-xcb libs not found"
-
-          echo "=== Library search ==="
-          find /usr -name "*X11-xcb*" 2>/dev/null | head -5 || echo "No X11-xcb files found"
-          ldconfig -p | grep -i x11 | grep -i xcb || echo "X11-xcb not in ldconfig"
-
-          echo "=== Environment for build ==="
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig:$PKG_CONFIG_PATH"
-          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          cache-key: build-${{ matrix.name }}
 
       - name: Build
         uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        env:
-          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
         with:
           command: build
           args: --locked --release --target ${{ matrix.target }}
