@@ -48,8 +48,6 @@ jobs:
             name: linux-x86_64
           - os: macos-latest
             name: macos-aarch64
-          - os: macos-13
-            name: macos-x86_64
           - os: windows-latest
             name: windows-x86_64
     runs-on: ${{ matrix.os }}
