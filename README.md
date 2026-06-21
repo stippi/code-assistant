@@ -27,7 +27,11 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 # On macOS or Linux, install Rust tool chain via rustup:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# On Linux, install libxkbcommon‑dev and libxkbcommon‑x11‑dev
+# On Linux (Debian/Ubuntu), install the system libraries gpui needs:
+sudo apt-get install -y --no-install-recommends \
+    pkg-config build-essential libssl-dev libzstd-dev \
+    libfontconfig-dev libwayland-dev libx11-xcb-dev \
+    libxkbcommon-x11-dev libasound2-dev libvulkan1
 
 # On macOS, you need the metal tool chain:
 xcodebuild -downloadComponent MetalToolchain
