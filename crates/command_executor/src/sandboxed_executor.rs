@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+#[cfg(target_os = "macos")]
+use anyhow::bail;
 use async_trait::async_trait;
 use sandbox::{SandboxContext, SandboxPolicy};
 #[cfg(not(target_os = "macos"))]
@@ -325,34 +327,20 @@ impl SandboxedCommandExecutor {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn shell_command(command_line: &str, redirect_stderr: bool) -> (String, Vec<String>) {
-    #[cfg(target_family = "unix")]
-    {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let mut args = Vec::new();
-        args.push("-c".to_string());
-        if redirect_stderr {
-            args.push(format!("{command_line} 2>&1"));
-        } else {
-            args.push(command_line.to_string());
-        }
-        (shell, args)
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let mut args = Vec::new();
+    args.push("-c".to_string());
+    if redirect_stderr {
+        args.push(format!("{command_line} 2>&1"));
+    } else {
+        args.push(command_line.to_string());
     }
-
-    #[cfg(target_family = "windows")]
-    {
-        let shell = "cmd".to_string();
-        let mut args = Vec::new();
-        args.push("/C".to_string());
-        if redirect_stderr {
-            args.push(format!("{command_line} 2>&1"));
-        } else {
-            args.push(command_line.to_string());
-        }
-        (shell, args)
-    }
+    (shell, args)
 }
 
+#[cfg(target_os = "macos")]
 fn canonical_working_dir(working_dir: Option<&PathBuf>) -> Result<PathBuf> {
     match working_dir {
         Some(dir) => {
