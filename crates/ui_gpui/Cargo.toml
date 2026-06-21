@@ -45,6 +45,15 @@ base64 = "0.22"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-text = "=21.0.0"
 
+# On Linux/FreeBSD gpui_platform must be told to enable its `wayland` and
+# `x11` features. Those features pass through to gpui_linux, which in turn
+# decides which backend(s) the produced binary can talk to. Without them,
+# gpui_linux::current_platform compiles in only the `Headless` arm, so the
+# moment gpui::guess_compositor sees WAYLAND_DISPLAY or DISPLAY at runtime
+# it returns "Wayland"/"X11" and we hit `unreachable!()`. See #139.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_platform = { version = "0.1", features = ["wayland", "x11"] }
+
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
 tempfile = "3.23"
