@@ -22,7 +22,6 @@ pub fn render_pending_message(
 
     let pending_card = div()
         .w_full()
-        .m_3()
         .bg(cx.theme().muted)
         .border_1()
         .border_color(cx.theme().warning)
@@ -61,7 +60,9 @@ pub fn render_pending_message(
                 ),
         );
 
-    pending_card.into_any_element()
+    // Wrap the card in a padding container so its border + shadow sit inset
+    // from the max-width boundary without overflowing via margin.
+    div().w_full().p_3().child(pending_card).into_any_element()
 }
 
 /// Render the inline activity indicator (braille spinner or rate-limit text).
