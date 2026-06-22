@@ -1,4 +1,4 @@
-use agent_client_protocol as acp;
+use agent_client_protocol::schema as acp;
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -12,6 +12,14 @@ use crate::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
 use code_assistant_core::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 use tools_core::ToolRegistry;
 
+/// A queued ACP session notification together with an acknowledgement channel.
+///
+/// The application's notification-forwarding task reads from the receiver side
+/// of this channel and forwards each notification to the client via
+/// `ConnectionTo::send_notification`, then signals the ack so callers that need
+/// ordering/backpressure (`send_session_update`) can await delivery.
+pub type SessionUpdateMessage = (acp::SessionNotification, oneshot::Sender<()>);
+
 /// Tracks the last type of content for paragraph breaks after hidden tools
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum LastContentType {
@@ -23,7 +31,7 @@ enum LastContentType {
 /// UserInterface implementation that sends session/update notifications via ACP
 pub struct ACPUserUI {
     session_id: acp::SessionId,
-    session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+    session_update_tx: mpsc::UnboundedSender<SessionUpdateMessage>,
     // Track tool calls for status updates
     tool_calls: Arc<Mutex<HashMap<String, ToolCallState>>>,
     base_path: Option<PathBuf>,
@@ -36,6 +44,13 @@ pub struct ACPUserUI {
     needs_paragraph_break_after_hidden_tool: Arc<Mutex<bool>>,
     // Registry for tool title templates
     tool_registry: Arc<ToolRegistry>,
+    /// Maximum context window (in tokens) for the active model, used to compute
+    /// the `UsageUpdate` ratio reported to the client. `None` disables usage
+    /// reporting for this UI instance.
+    context_token_limit: Option<u64>,
+    /// Dedup state so we don't spam the client with identical title/usage updates.
+    last_reported_title: Arc<Mutex<Option<String>>>,
+    last_reported_usage: Arc<Mutex<Option<(u64, u64)>>>,
 }
 
 #[derive(Default, Clone)]
@@ -447,9 +462,10 @@ fn resolve_path(path: &str, base_path: Option<&Path>) -> PathBuf {
 impl ACPUserUI {
     pub fn new(
         session_id: acp::SessionId,
-        session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+        session_update_tx: mpsc::UnboundedSender<SessionUpdateMessage>,
         base_path: Option<PathBuf>,
         tool_registry: Arc<ToolRegistry>,
+        context_token_limit: Option<u64>,
     ) -> Self {
         Self {
             session_id,
@@ -461,6 +477,9 @@ impl ACPUserUI {
             last_content_type: Arc::new(Mutex::new(LastContentType::None)),
             needs_paragraph_break_after_hidden_tool: Arc::new(Mutex::new(false)),
             tool_registry,
+            context_token_limit,
+            last_reported_title: Arc::new(Mutex::new(None)),
+            last_reported_usage: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -540,6 +559,38 @@ impl ACPUserUI {
             tracing::error!("ACPUserUI: Failed to send queued update: {:?}", e);
         } else {
             tracing::trace!("ACPUserUI: Queued session update");
+        }
+    }
+
+    /// Emit a `SessionInfoUpdate` (title) and `UsageUpdate` (context window
+    /// occupancy) derived from the latest session metadata. Deduplicates so we
+    /// only send when values actually change.
+    fn report_session_metadata(&self, metadata: &code_assistant_core::persistence::ChatMetadata) {
+        // Title -> SessionInfoUpdate
+        let title = metadata.name.trim();
+        if !title.is_empty() {
+            let mut last = self.last_reported_title.lock().unwrap();
+            if last.as_deref() != Some(title) {
+                *last = Some(title.to_string());
+                drop(last);
+                let info = acp::SessionInfoUpdate::new().title(title.to_string());
+                self.queue_session_update(acp::SessionUpdate::SessionInfoUpdate(info));
+            }
+        }
+
+        // Context window usage -> UsageUpdate
+        if let Some(limit) = self.context_token_limit.filter(|l| *l > 0) {
+            let used = metadata.last_usage.input_tokens as u64
+                + metadata.last_usage.cache_read_input_tokens as u64;
+            if used > 0 {
+                let mut last = self.last_reported_usage.lock().unwrap();
+                if *last != Some((used, limit)) {
+                    *last = Some((used, limit));
+                    drop(last);
+                    let usage = acp::UsageUpdate::new(used, limit);
+                    self.queue_session_update(acp::SessionUpdate::UsageUpdate(usage));
+                }
+            }
         }
     }
 
@@ -731,7 +782,6 @@ impl UserInterface for ACPUserUI {
                     project,
                     path.display()
                 );
-                // TODO: Could emit follow mode updates here
             }
             UiEvent::ResourceWritten { project, path } => {
                 tracing::trace!(
@@ -753,6 +803,12 @@ impl UserInterface for ACPUserUI {
                     project,
                     path.display()
                 );
+            }
+
+            // Session metadata: forward the (LLM-generated) session title and
+            // the current context-window occupancy to the client.
+            UiEvent::UpdateSessionMetadata { metadata } => {
+                self.report_session_metadata(&metadata);
             }
 
             UiEvent::AppendMessages {
@@ -840,7 +896,6 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateChatList { .. }
             | UiEvent::ClearMessages
             | UiEvent::SendUserMessage { .. }
-            | UiEvent::UpdateSessionMetadata { .. }
             | UiEvent::UpdateSessionActivityState { .. }
             | UiEvent::QueueUserMessage { .. }
             | UiEvent::RequestPendingMessageEdit { .. }
@@ -1073,6 +1128,7 @@ mod tests {
             tx,
             None,
             code_assistant_core::tools::test_registry(),
+            None,
         );
         (ui, rx)
     }
@@ -1227,7 +1283,6 @@ mod tests {
             .build_content(None)
             .expect("content should be emitted");
 
-        // Should contain the full output, not just parameters
         assert_eq!(content.len(), 1);
         match &content[0] {
             acp::ToolCallContent::Content(content) => {
@@ -1273,7 +1328,6 @@ mod tests {
             .build_content(None)
             .expect("content should be emitted");
 
-        // Should contain diff content, not output
         assert_eq!(content.len(), 1);
         match &content[0] {
             acp::ToolCallContent::Diff(diff) => {
@@ -1289,21 +1343,17 @@ mod tests {
     fn tool_title_updates_from_template() {
         let mut state = ToolCallState::new("tool-1");
 
-        // Initially should have no title
         assert_eq!(state.title, None);
 
-        // Set tool name - should get default title
         state.set_tool_name("read_files");
         assert_eq!(state.title, Some("read_files".to_string()));
 
-        // Add parameter that should update title
         state.append_parameter(
             "paths",
             r#"["src/main.rs", "src/lib.rs"]"#,
             &code_assistant_core::tools::test_registry(),
         );
 
-        // Title should now be updated with the paths
         assert!(state.title.as_ref().unwrap().contains("src/main.rs"));
         assert!(state.title.as_ref().unwrap().starts_with("Reading"));
     }
@@ -1313,7 +1363,6 @@ mod tests {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("search_files");
 
-        // Add parameter in chunks (simulating streaming)
         state.append_parameter("regex", "fn", &code_assistant_core::tools::test_registry());
         state.append_parameter(
             "regex",
@@ -1322,7 +1371,6 @@ mod tests {
         );
         state.append_parameter("regex", "\\(", &code_assistant_core::tools::test_registry());
 
-        // Should have meaningful title even with partial parameter
         if let Some(title) = &state.title {
             assert!(title.contains("fn main\\("));
             assert!(title.starts_with("Searching for"));
@@ -1334,14 +1382,12 @@ mod tests {
         let mut state = ToolCallState::new("tool-1");
         state.set_tool_name("read_files");
 
-        // Add JSON array parameter
         state.append_parameter(
             "paths",
             r#"["file1.txt", "file2.txt", "file3.txt"]"#,
             &code_assistant_core::tools::test_registry(),
         );
 
-        // Should format array nicely
         if let Some(title) = &state.title {
             assert!(title.contains("file1.txt and 2 more") || title.contains("file1.txt"));
             assert!(title.starts_with("Reading"));
@@ -1385,7 +1431,6 @@ mod tests {
             panic!("expected plan update, got {:?}", notification.update);
         };
 
-        // Convert expected meta values to the format ACP uses (Object maps, not arbitrary Values)
         let expected_plan_meta = expected_plan.meta.and_then(|v| v.as_object().cloned());
         assert_eq!(acp_plan.meta, expected_plan_meta);
         assert_eq!(acp_plan.entries.len(), expected_plan.entries.len());
@@ -1409,5 +1454,64 @@ mod tests {
         assert_eq!(second.priority, acp::PlanEntryPriority::Low);
         assert_eq!(second.status, acp::PlanEntryStatus::Completed);
         assert_eq!(second.meta, expected_second_meta);
+    }
+
+    #[tokio::test]
+    async fn update_session_metadata_emits_title_and_usage() {
+        use code_assistant_core::persistence::ChatMetadata;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ui = ACPUserUI::new(
+            acp::SessionId::new("session-1"),
+            tx,
+            None,
+            code_assistant_core::tools::test_registry(),
+            Some(10_000),
+        );
+
+        let mut usage = llm::Usage::zero();
+        usage.input_tokens = 1_500;
+        usage.cache_read_input_tokens = 500;
+
+        let metadata = ChatMetadata {
+            id: "session-1".to_string(),
+            name: "My Session".to_string(),
+            created_at: std::time::SystemTime::now(),
+            updated_at: std::time::SystemTime::now(),
+            message_count: 1,
+            total_usage: usage.clone(),
+            last_usage: usage,
+            tokens_limit: None,
+            tool_syntax: code_assistant_core::types::ToolSyntax::Native,
+            initial_project: String::new(),
+            plan_collapsed: false,
+            is_resumable: false,
+        };
+
+        ui.send_event(UiEvent::UpdateSessionMetadata { metadata })
+            .await
+            .unwrap();
+
+        let mut saw_title = false;
+        let mut saw_usage = false;
+        while let Ok((notification, _ack)) = rx.try_recv() {
+            match notification.update {
+                acp::SessionUpdate::SessionInfoUpdate(info) => {
+                    saw_title = true;
+                    assert!(matches!(
+                        info.title,
+                        acp::MaybeUndefined::Value(ref t) if t == "My Session"
+                    ));
+                }
+                acp::SessionUpdate::UsageUpdate(update) => {
+                    saw_usage = true;
+                    assert_eq!(update.used, 2_000);
+                    assert_eq!(update.size, 10_000);
+                }
+                other => panic!("unexpected update: {other:?}"),
+            }
+        }
+        assert!(saw_title, "expected a SessionInfoUpdate");
+        assert!(saw_usage, "expected a UsageUpdate");
     }
 }

@@ -54,3 +54,12 @@ ACP solves this by providing a standardized protocol for agent-editor communicat
 The protocol is still under development but complete enough to build interesting user experiences. Agents that implement ACP work with any compatible editor, and editors that support ACP gain access to the entire ecosystem of ACP-compatible agents.
 
 Note: Full support for remote agents is a work in progress.
+
+### Rust SDK version in code-assistant
+
+The `agent-client-protocol` Rust SDK was redesigned at `0.11.0` (Role/Component
+connection builder instead of the `AgentSideConnection` + `Agent` trait model).
+code-assistant's ACP frontend (`crates/ui_acp`) targets `0.14.0` — the version
+Zed ships. See [11-rust-implementation.md](./11-rust-implementation.md) for the
+current API and the notes on model selection (session config options),
+context-window usage (`UsageUpdate`) and session titles (`SessionInfoUpdate`).

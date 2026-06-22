@@ -4,8 +4,8 @@ pub use tools_core::permissions::{
     PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
 };
 
-use crate::ACPUserUI;
-use agent_client_protocol::{self as acp, Client};
+use crate::{ACPUserUI, ClientConn};
+use agent_client_protocol::schema as acp;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::json;
@@ -13,7 +13,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tokio::{runtime::Handle, task::block_in_place};
 
 const ALLOW_ALWAYS_OPTION_ID: &str = "allow-always";
 const ALLOW_OPTION_ID: &str = "allow-once";
@@ -21,20 +20,16 @@ const DENY_OPTION_ID: &str = "deny-once";
 
 pub struct AcpPermissionMediator {
     session_id: acp::SessionId,
-    connection: Arc<acp::AgentSideConnection>,
+    conn: ClientConn,
     ui: Arc<ACPUserUI>,
     allow_execute_command_always: AtomicBool,
 }
 
 impl AcpPermissionMediator {
-    pub fn new(
-        session_id: acp::SessionId,
-        connection: Arc<acp::AgentSideConnection>,
-        ui: Arc<ACPUserUI>,
-    ) -> Self {
+    pub fn new(session_id: acp::SessionId, conn: ClientConn, ui: Arc<ACPUserUI>) -> Self {
         Self {
             session_id,
-            connection,
+            conn,
             ui,
             allow_execute_command_always: AtomicBool::new(false),
         }
@@ -132,11 +127,14 @@ impl PermissionMediator for AcpPermissionMediator {
         let acp_request =
             acp::RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
 
-        let connection = self.connection.clone();
-        let handle = Handle::current();
-        let response = block_in_place(|| {
-            handle.block_on(async move { connection.request_permission(acp_request).await })
-        })?;
+        // The SDK connection is `Send`, so we can simply await the request from
+        // the agent task (no `block_in_place` needed).
+        let response = self
+            .conn
+            .send_request(acp_request)
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("Failed to request permission: {e}"))?;
 
         let decision = match response.outcome {
             acp::RequestPermissionOutcome::Cancelled => PermissionDecision::Denied,

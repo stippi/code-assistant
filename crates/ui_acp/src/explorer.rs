@@ -1,9 +1,10 @@
-use agent_client_protocol::{self as acp, Client};
+use agent_client_protocol::schema as acp;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
+use crate::ClientConn;
 use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use code_assistant_core::types::Project;
 use command_executor::CommandExecutor;
@@ -19,97 +20,46 @@ use fs_explorer::{
     is_path_gitignored, CodeExplorer, Explorer, FileEncoding, FileFormat, FileReplacement,
     FileTreeEntry, SearchOptions, SearchResult,
 };
-use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_blocking;
 
-static FS_WORKER: OnceLock<mpsc::UnboundedSender<FsWorkerRequest>> = OnceLock::new();
-
-enum FsWorkerRequest {
-    Read {
-        request: acp::ReadTextFileRequest,
-        reply_tx: oneshot::Sender<Result<acp::ReadTextFileResponse>>,
-    },
-    Write {
-        request: acp::WriteTextFileRequest,
-        reply_tx: oneshot::Sender<Result<acp::WriteTextFileResponse>>,
-    },
-}
-
-fn fs_worker_sender() -> Option<mpsc::UnboundedSender<FsWorkerRequest>> {
-    FS_WORKER.get().cloned()
-}
-
-async fn fs_read_text_file(request: acp::ReadTextFileRequest) -> Result<acp::ReadTextFileResponse> {
-    let sender = fs_worker_sender().ok_or_else(|| anyhow!("ACP FS worker not registered"))?;
-    let (tx, rx) = oneshot::channel();
-    sender
-        .send(FsWorkerRequest::Read {
-            request,
-            reply_tx: tx,
-        })
-        .map_err(|_| anyhow!("ACP FS worker unavailable"))?;
-    rx.await.map_err(|_| anyhow!("ACP FS worker dropped"))?
+/// Filesystem access proxied through the connected ACP client.
+///
+/// The SDK connection is `Send + Clone`, so we just hold a
+/// `ConnectionTo<Client>` and issue `fs/read_text_file` / `fs/write_text_file`
+/// requests directly from the agent task.
+async fn fs_read_text_file(
+    conn: &ClientConn,
+    request: acp::ReadTextFileRequest,
+) -> Result<acp::ReadTextFileResponse> {
+    conn.send_request(request)
+        .block_task()
+        .await
+        .map_err(|e| anyhow!("Failed to read file via ACP: {e}"))
 }
 
 async fn fs_write_text_file(
+    conn: &ClientConn,
     request: acp::WriteTextFileRequest,
 ) -> Result<acp::WriteTextFileResponse> {
-    let sender = fs_worker_sender().ok_or_else(|| anyhow!("ACP FS worker not registered"))?;
-    let (tx, rx) = oneshot::channel();
-    sender
-        .send(FsWorkerRequest::Write {
-            request,
-            reply_tx: tx,
-        })
-        .map_err(|_| anyhow!("ACP FS worker unavailable"))?;
-    rx.await.map_err(|_| anyhow!("ACP FS worker dropped"))?
-}
-
-pub fn register_fs_worker(connection: Arc<acp::AgentSideConnection>) {
-    if FS_WORKER.get().is_some() {
-        tracing::warn!("ACP FS worker already registered");
-        return;
-    }
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    if FS_WORKER.set(tx).is_err() {
-        tracing::warn!("ACP FS worker registration raced");
-        return;
-    }
-
-    tokio::task::spawn_local(async move {
-        while let Some(message) = rx.recv().await {
-            match message {
-                FsWorkerRequest::Read { request, reply_tx } => {
-                    let result = connection
-                        .read_text_file(request)
-                        .await
-                        .map_err(|e| anyhow!("Failed to read file via ACP: {e}"));
-                    let _ = reply_tx.send(result);
-                }
-                FsWorkerRequest::Write { request, reply_tx } => {
-                    let result = connection
-                        .write_text_file(request)
-                        .await
-                        .map_err(|e| anyhow!("Failed to write file via ACP: {e}"));
-                    let _ = reply_tx.send(result);
-                }
-            }
-        }
-    });
+    conn.send_request(request)
+        .block_task()
+        .await
+        .map_err(|e| anyhow!("Failed to write file via ACP: {e}"))
 }
 
 pub struct AcpCodeExplorer {
     session_id: acp::SessionId,
+    conn: ClientConn,
     root_dir: PathBuf,
     delegate: Explorer,
     file_formats: Arc<RwLock<HashMap<PathBuf, FileFormat>>>,
 }
 
 impl AcpCodeExplorer {
-    pub fn new(root_dir: PathBuf, session_id: acp::SessionId) -> Self {
+    pub fn new(root_dir: PathBuf, session_id: acp::SessionId, conn: ClientConn) -> Self {
         Self {
             session_id,
+            conn,
             delegate: Explorer::new(root_dir.clone()),
             root_dir,
             file_formats: Arc::new(RwLock::new(HashMap::new())),
@@ -161,10 +111,10 @@ impl AcpCodeExplorer {
 
     async fn read_entire(&self, path: &Path) -> Result<(String, PathBuf)> {
         let abs = self.ensure_allowed(path)?;
-        let response = fs_read_text_file(acp::ReadTextFileRequest::new(
-            self.session_id.clone(),
-            abs.clone(),
-        ))
+        let response = fs_read_text_file(
+            &self.conn,
+            acp::ReadTextFileRequest::new(self.session_id.clone(), abs.clone()),
+        )
         .await?;
 
         let line_ending = detect_line_ending(&response.content);
@@ -190,16 +140,15 @@ impl AcpCodeExplorer {
         let abs = self.ensure_allowed(path)?;
         let format = self.format_for_path(&abs);
         let formatted = apply_file_format(content, &format);
-        fs_write_text_file(acp::WriteTextFileRequest::new(
-            self.session_id.clone(),
-            abs.clone(),
-            formatted,
-        ))
+        fs_write_text_file(
+            &self.conn,
+            acp::WriteTextFileRequest::new(self.session_id.clone(), abs.clone(), formatted),
+        )
         .await?;
-        let response = fs_read_text_file(acp::ReadTextFileRequest::new(
-            self.session_id.clone(),
-            abs.clone(),
-        ))
+        let response = fs_read_text_file(
+            &self.conn,
+            acp::ReadTextFileRequest::new(self.session_id.clone(), abs.clone()),
+        )
         .await?;
 
         let line_ending = detect_line_ending(&response.content);
@@ -226,6 +175,7 @@ impl CodeExplorer for AcpCodeExplorer {
     fn clone_box(&self) -> Box<dyn CodeExplorer> {
         Box::new(AcpCodeExplorer {
             session_id: self.session_id.clone(),
+            conn: self.conn.clone(),
             root_dir: self.root_dir.clone(),
             delegate: self.delegate.clone(),
             file_formats: self.file_formats.clone(),
@@ -355,6 +305,7 @@ impl CodeExplorer for AcpCodeExplorer {
 pub struct AcpProjectManager {
     inner: DefaultProjectManager,
     session_id: acp::SessionId,
+    conn: ClientConn,
     /// The root directory of the ACP session (i.e., the project opened in Zed).
     /// Only projects with a path matching this root will use the ACP explorer.
     acp_root: Option<PathBuf>,
@@ -364,12 +315,14 @@ impl AcpProjectManager {
     pub fn new(
         inner: DefaultProjectManager,
         session_id: acp::SessionId,
+        conn: ClientConn,
         acp_root: Option<PathBuf>,
     ) -> Self {
         let acp_root = acp_root.and_then(|p| p.canonicalize().ok());
         Self {
             inner,
             session_id,
+            conn,
             acp_root,
         }
     }
@@ -413,6 +366,7 @@ impl ProjectManager for AcpProjectManager {
             Ok(Box::new(AcpCodeExplorer::new(
                 project.path,
                 self.session_id.clone(),
+                self.conn.clone(),
             )))
         } else {
             tracing::debug!(

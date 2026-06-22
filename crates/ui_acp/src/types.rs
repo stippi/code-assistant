@@ -1,4 +1,4 @@
-use agent_client_protocol as acp;
+use agent_client_protocol::schema as acp;
 use code_assistant_core::ui::streaming::DisplayFragment;
 
 /// Convert a DisplayFragment to an ACP ContentBlock
@@ -221,7 +221,6 @@ mod tests {
 
     #[test]
     fn prompt_conversion_handles_embedded_resources_without_base_path() {
-        // TextResourceContents::new takes (text, uri)
         let text_resource = acp::TextResourceContents::new(
             "fn main() {\n    println!(\"Hello\");\n}",
             "file:///path/to/file.rs#L10:20",
@@ -231,12 +230,10 @@ mod tests {
         );
         let prompt = vec![acp::ContentBlock::Resource(embedded)];
 
-        // Without base_path, uses absolute path
         let blocks = convert_prompt_to_content_blocks(prompt, None);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             llm::ContentBlock::Text { text, .. } => {
-                // Format: "Content from `path:start-end`:\n```\n<code>\n```"
                 assert_eq!(
                     text,
                     "Content from `/path/to/file.rs:10-20`:\n```\nfn main() {\n    println!(\"Hello\");\n}\n```"
@@ -257,7 +254,6 @@ mod tests {
         );
         let prompt = vec![acp::ContentBlock::Resource(embedded)];
 
-        // With base_path, produces relative path (consistent with read_files tool)
         let base = std::path::Path::new("/workspace/project");
         let blocks = convert_prompt_to_content_blocks(prompt, Some(base));
         assert_eq!(blocks.len(), 1);

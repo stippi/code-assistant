@@ -11,10 +11,18 @@ fs_explorer = { path = "../fs_explorer" }
 llm = { path = "../llm" }
 
 # Agent Client Protocol
-agent-client-protocol = { version = "0.9", features = ["unstable"] }
+#
+# Pinned to the version Zed currently ships (`=0.14.0`) so the Role/Component
+# based SDK matches the client we test against exactly.
+#
+# We deliberately compile against the stable surface (no `unstable` feature):
+# everything we need — session config options (model selector), `UsageUpdate`,
+# `SessionInfoUpdate`, session listing — is stable in this release, and the wire
+# format stays compatible with Zed's `unstable` build.
+agent-client-protocol = { version = "=0.14.0" }
 
 tokio = { version = "1.48", features = ["full"] }
-tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
 async-channel = "2.5.0"
 async-trait = "0.1"
 
