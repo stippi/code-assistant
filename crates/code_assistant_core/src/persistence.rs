@@ -1001,6 +1001,13 @@ pub struct SessionDraft {
     pub message: String,
     /// Additional attachments (images, files, etc.)
     pub attachments: Vec<DraftAttachment>,
+    /// When editing an existing message, this is the parent node where the new
+    /// branch will be created. `Some(_)` means the draft is in "edit mode" and
+    /// the UI should restore the editing banner and truncated transcript when
+    /// the session is connected. Defaults to `None` for backward compatibility
+    /// with drafts written before this field existed.
+    #[serde(default)]
+    pub editing_branch_parent_id: Option<NodeId>,
 }
 
 impl SessionDraft {
@@ -1012,6 +1019,7 @@ impl SessionDraft {
             updated_at: now,
             message: String::new(),
             attachments: Vec::new(),
+            editing_branch_parent_id: None,
         }
     }
 
@@ -1070,6 +1078,7 @@ impl DraftStorage {
         session_id: &str,
         text_content: &str,
         attachments: &[DraftAttachment],
+        editing_branch_parent_id: Option<NodeId>,
     ) -> Result<()> {
         // Acquire session-specific lock to prevent concurrent writes
         let session_lock = self.get_session_lock(session_id);
@@ -1077,7 +1086,11 @@ impl DraftStorage {
 
         let file_path = self.draft_file_path(session_id);
 
-        if text_content.is_empty() && attachments.is_empty() {
+        // A draft is considered empty only when it carries no text, no
+        // attachments AND no edit state. An in-progress edit (even with empty
+        // text) must persist so the editing banner/truncated view can be
+        // restored when reconnecting to the session.
+        if text_content.is_empty() && attachments.is_empty() && editing_branch_parent_id.is_none() {
             // Remove the draft file if it exists
             if file_path.exists() {
                 std::fs::remove_file(&file_path)?;
@@ -1094,6 +1107,7 @@ impl DraftStorage {
         // Update message content and attachments
         draft.set_message(text_content.to_string());
         draft.attachments = attachments.to_vec();
+        draft.editing_branch_parent_id = editing_branch_parent_id;
 
         // Serialize and save atomically
         atomic_write_json(&file_path, &draft)?;

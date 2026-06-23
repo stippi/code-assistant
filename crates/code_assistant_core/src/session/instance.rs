@@ -292,12 +292,20 @@ impl SessionInstance {
 
     /// Generate UI events for connecting to this session.
     /// Returns SetMessages event with all session messages including incomplete streaming message.
-    pub fn generate_session_connect_events(&self) -> Result<Vec<UiEvent>, anyhow::Error> {
+    ///
+    /// If `until_node_id` is `Some(_)`, the transcript is truncated to messages
+    /// up to and including that node. This is used to restore the "edit mode"
+    /// view (truncated to the branch parent) directly when connecting to a
+    /// session whose draft is in edit mode, avoiding a full-then-truncate flash.
+    pub fn generate_session_connect_events(
+        &self,
+        until_node_id: Option<crate::persistence::NodeId>,
+    ) -> Result<Vec<UiEvent>, anyhow::Error> {
         let mut events = Vec::new();
 
-        // Convert session messages to UI data
+        // Convert session messages to UI data (optionally truncated for edit mode)
         let mut messages_data =
-            self.convert_messages_to_ui_data(self.session.config.tool_syntax)?;
+            self.convert_messages_to_ui_data_until(self.session.config.tool_syntax, until_node_id)?;
         let mut tool_results = self.convert_tool_executions_to_ui_data()?;
 
         // Drain any UpdateToolStatus events that arrived while we were

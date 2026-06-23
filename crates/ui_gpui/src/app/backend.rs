@@ -19,7 +19,10 @@ impl Gpui {
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::ListSessions);
                     // Load the newly created session to connect it to the UI
-                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                    let _ = sender.try_send(BackendEvent::LoadSession {
+                        session_id,
+                        edit_until_node_id: None,
+                    });
                 }
             }
 
@@ -321,7 +324,10 @@ impl Gpui {
                 // Refresh the session list and load the new session
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::ListSessions);
-                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                    let _ = sender.try_send(BackendEvent::LoadSession {
+                        session_id,
+                        edit_until_node_id: None,
+                    });
                 }
             }
             BackendResponse::ProjectPersisted { project_name } => {

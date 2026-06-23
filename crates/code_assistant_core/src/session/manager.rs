@@ -245,10 +245,17 @@ impl SessionManager {
         Ok(messages)
     }
 
-    /// Set the UI-active session and return events for UI update
+    /// Set the UI-active session and return events for UI update.
+    ///
+    /// When `edit_until_node_id` is `Some(_)`, the emitted `SetMessages` event
+    /// is truncated to messages up to and including that node. This lets the
+    /// UI restore an in-progress message edit (banner + truncated transcript)
+    /// in a single event when connecting to a session whose draft is in edit
+    /// mode, rather than loading the full transcript and then truncating it.
     pub async fn set_active_session(
         &mut self,
         session_id: String,
+        edit_until_node_id: Option<crate::persistence::NodeId>,
     ) -> Result<Vec<crate::ui::ui_events::UiEvent>> {
         // Deactivate old session
         if let Some(old_id) = &self.active_session_id {
@@ -305,7 +312,7 @@ impl SessionManager {
         // Generate UI events for connecting to this session
         let mut ui_events = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            let events = session_instance.generate_session_connect_events()?;
+            let events = session_instance.generate_session_connect_events(edit_until_node_id)?;
             // Mark what the UI now knows about (baseline for future incremental diffs)
             session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
             session_instance.last_ui_synced_tool_count =
@@ -460,7 +467,7 @@ impl SessionManager {
 
         // Case 3: Paths diverged → full reload
         debug!("Incremental refresh for {session_id}: paths diverged, full reload");
-        let ui_events = session_instance.generate_session_connect_events()?;
+        let ui_events = session_instance.generate_session_connect_events(None)?;
         session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
         session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
         Ok(ui_events)

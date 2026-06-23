@@ -159,7 +159,12 @@ impl InputArea {
         self.rebuild_attachment_views(cx);
     }
 
-    /// Set content for editing a message (creates a branch)
+    /// Set content for editing a message (creates a branch).
+    ///
+    /// `branch_parent_id` doubles as the edit-mode flag: `Some(_)` shows the
+    /// editing banner, `None` clears edit mode. It is set *before* the text so
+    /// that the `Change` event emitted by `set_content` saves the draft with
+    /// the correct edit anchor.
     pub fn set_content_for_edit(
         &mut self,
         text: String,
@@ -168,9 +173,15 @@ impl InputArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_content(text, attachments, window, cx);
         self.branch_parent_id = branch_parent_id;
+        self.set_content(text, attachments, window, cx);
         cx.notify();
+    }
+
+    /// The branch parent node when editing an existing message, if any.
+    /// `Some(_)` indicates the input is currently in edit mode.
+    pub fn branch_parent_id(&self) -> Option<NodeId> {
+        self.branch_parent_id
     }
 
     /// Clear the edit mode state

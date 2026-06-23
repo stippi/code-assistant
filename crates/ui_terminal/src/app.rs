@@ -706,9 +706,11 @@ impl TerminalTuiApp {
 
             if let Some(existing_session_id) = latest_session_id {
                 debug!("Continuing from latest session: {}", existing_session_id);
+
                 backend_event_tx
                     .send(BackendEvent::LoadSession {
                         session_id: existing_session_id.clone(),
+                        edit_until_node_id: None,
                     })
                     .await?;
                 session_id = Some(existing_session_id);
@@ -733,9 +735,11 @@ impl TerminalTuiApp {
                     session_id: new_session_id,
                 } => {
                     debug!("Created new session: {}", new_session_id);
+
                     backend_event_tx
                         .send(BackendEvent::LoadSession {
                             session_id: new_session_id.clone(),
+                            edit_until_node_id: None,
                         })
                         .await?;
                     session_id = Some(new_session_id);

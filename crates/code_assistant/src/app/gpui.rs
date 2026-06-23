@@ -78,7 +78,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 let ui_events = {
                     let mut manager = multi_session_manager.lock().await;
                     manager
-                        .set_active_session(session_id.clone())
+                        .set_active_session(session_id.clone(), None)
                         .await
                         .unwrap_or_else(|e| {
                             error!("Failed to set active session: {}", e);
@@ -137,10 +137,17 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 if let Some(session_id) = latest_session_id {
                     debug!("Connecting to existing session: {}", session_id);
 
+                    // If the session's draft is in edit mode, connect with the
+                    // transcript already truncated to the branch parent so the
+                    // edit view is restored directly on startup.
+                    let edit_until_node_id = gui_for_thread
+                        .load_draft_for_session(&session_id)
+                        .and_then(|(_, _, anchor)| anchor);
+
                     let ui_events = {
                         let mut manager = multi_session_manager.lock().await;
                         manager
-                            .set_active_session(session_id.clone())
+                            .set_active_session(session_id.clone(), edit_until_node_id)
                             .await
                             .unwrap_or_else(|e| {
                                 error!("Failed to set active session: {}", e);

@@ -20,6 +20,11 @@ pub enum BackendEvent {
     // Session management
     LoadSession {
         session_id: String,
+        /// When `Some(_)`, the session's draft is in "edit mode" and the
+        /// transcript should be truncated to messages up to and including this
+        /// node (the branch parent of the message being edited), so the edit
+        /// view is restored in a single event.
+        edit_until_node_id: Option<crate::persistence::NodeId>,
     },
 
     CreateNewSession {
@@ -289,8 +294,12 @@ pub async fn handle_backend_events(
                 initial_project,
             } => Some(handle_create_session(&multi_session_manager, name, initial_project).await),
 
-            BackendEvent::LoadSession { session_id } => {
-                handle_load_session(&multi_session_manager, &session_id, &ui).await
+            BackendEvent::LoadSession {
+                session_id,
+                edit_until_node_id,
+            } => {
+                handle_load_session(&multi_session_manager, &session_id, edit_until_node_id, &ui)
+                    .await
             }
 
             BackendEvent::DeleteSession { session_id } => {
@@ -536,13 +545,16 @@ async fn handle_create_session(
 async fn handle_load_session(
     multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
+    edit_until_node_id: Option<crate::persistence::NodeId>,
     ui: &Arc<dyn UserInterface>,
 ) -> Option<BackendResponse> {
     debug!("LoadSession requested: {}", session_id);
 
     let ui_events_result = {
         let mut manager = multi_session_manager.lock().await;
-        manager.set_active_session(session_id.to_string()).await
+        manager
+            .set_active_session(session_id.to_string(), edit_until_node_id)
+            .await
     };
 
     match ui_events_result {
@@ -611,7 +623,7 @@ async fn handle_refresh_session(
         Err(e) => {
             warn!("Incremental refresh failed for {session_id}, falling back: {e}");
             // Fall back to full reload
-            handle_load_session(multi_session_manager, session_id, ui).await
+            handle_load_session(multi_session_manager, session_id, None, ui).await
         }
     }
 }

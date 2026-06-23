@@ -456,12 +456,22 @@ impl MainScreen {
                     );
                 }
             }
+
             InputAreaEvent::ContentChanged {
                 content,
                 attachments,
             } => {
-                if let Some(session_id) = &self.current_session_id {
-                    self.save_draft_for_session(session_id, content, attachments, cx);
+                if let Some(session_id) = self.current_session_id.clone() {
+                    // Persist the edit anchor alongside the text so the editing
+                    // banner/truncated view can be restored on reconnect.
+                    let editing_branch_parent_id = self.input_area.read(cx).branch_parent_id();
+                    self.save_draft_for_session(
+                        &session_id,
+                        content,
+                        attachments,
+                        editing_branch_parent_id,
+                        cx,
+                    );
                 }
             }
             InputAreaEvent::FocusRequested => {
@@ -660,8 +670,15 @@ impl MainScreen {
         if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
             match event {
                 SessionSidebarEvent::SessionSelected { session_id } => {
+                    // If the session's draft is in edit mode, load it already
+                    // truncated to the branch parent so the edit view is
+                    // restored in a single event (no full-then-truncate flash).
+                    let edit_until_node_id = gpui
+                        .load_draft_for_session(session_id)
+                        .and_then(|(_, _, anchor)| anchor);
                     let _ = sender.try_send(BackendEvent::LoadSession {
                         session_id: session_id.clone(),
+                        edit_until_node_id,
                     });
                 }
                 SessionSidebarEvent::NewSessionRequested {
@@ -790,10 +807,11 @@ impl MainScreen {
         session_id: &str,
         content: &str,
         attachments: &[code_assistant_core::persistence::DraftAttachment],
+        editing_branch_parent_id: Option<code_assistant_core::persistence::NodeId>,
         cx: &mut Context<Self>,
     ) {
         if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.save_draft_for_session(session_id, content, attachments);
+            gpui.save_draft_for_session(session_id, content, attachments, editing_branch_parent_id);
         }
     }
 
@@ -941,27 +959,33 @@ impl MainScreen {
         }
 
         // Read everything we need from Gpui in a scoped borrow, then drop the ref
-        let (input_value, attachments, backend_sender) = {
+        let (input_value, attachments, editing_branch_parent_id, backend_sender) = {
             let gpui = cx.try_global::<Gpui>();
 
-            let (input_value, attachments) = if let (Some(new_id), Some(gpui)) =
+            let (input_value, attachments, editing_branch_parent_id) = if let (
+                Some(new_id),
+                Some(gpui),
+            ) =
                 (new_session_id.as_ref(), &gpui)
             {
-                if let Some((draft_text, draft_attachments)) = gpui.load_draft_for_session(new_id) {
+                if let Some((draft_text, draft_attachments, anchor)) =
+                    gpui.load_draft_for_session(new_id)
+                {
                     debug!(
-                        "Loading draft for new session {}: {} characters, {} attachments",
-                        new_id,
-                        draft_text.len(),
-                        draft_attachments.len()
-                    );
-                    (draft_text, draft_attachments)
+                            "Loading draft for new session {}: {} characters, {} attachments, editing: {:?}",
+                            new_id,
+                            draft_text.len(),
+                            draft_attachments.len(),
+                            anchor
+                        );
+                    (draft_text, draft_attachments, anchor)
                 } else {
                     debug!("No draft found for new session: {}", new_id);
-                    ("".to_string(), Vec::new())
+                    ("".to_string(), Vec::new(), None)
                 }
             } else {
                 debug!("No new session, clearing text input and attachments");
-                ("".to_string(), Vec::new())
+                ("".to_string(), Vec::new(), None)
             };
 
             // Extract the backend sender and clear worktree data while we hold the ref
@@ -972,13 +996,28 @@ impl MainScreen {
                 None
             };
 
-            (input_value, attachments, backend_sender)
+            (
+                input_value,
+                attachments,
+                editing_branch_parent_id,
+                backend_sender,
+            )
             // `gpui` borrow of `cx` dropped here
         };
 
-        // Update the input area with the new content
+        // Update the input area with the new content. Using `set_content_for_edit`
+        // restores the editing banner when the draft is in edit mode and clears
+        // it otherwise — so switching to a different session never leaves a stale
+        // banner behind. The truncated transcript itself is produced directly by
+        // the (edit-aware) `LoadSession` request.
         self.input_area.update(cx, |input_area, cx| {
-            input_area.set_content(input_value, attachments, window, cx);
+            input_area.set_content_for_edit(
+                input_value,
+                attachments,
+                editing_branch_parent_id,
+                window,
+                cx,
+            );
         });
 
         // Request fresh worktree listing for the new session
