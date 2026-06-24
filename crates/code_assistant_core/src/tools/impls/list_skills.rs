@@ -1,4 +1,4 @@
-use crate::skills::discover_skills;
+use crate::skills::discover_project_skills;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -124,7 +124,7 @@ impl Tool for ListSkillsTool {
         let root = explorer.root_dir();
 
         let query = input.query.as_deref().map(str::to_lowercase);
-        let skills = discover_skills(&root)
+        let skills = discover_project_skills(&root)
             .into_iter()
             .filter(|s| match &query {
                 Some(q) => {

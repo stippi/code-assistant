@@ -1,4 +1,4 @@
-use crate::skills::{discover_skills, parse_skill_content};
+use crate::skills::{discover_project_skills, parse_skill_content};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -123,7 +123,7 @@ impl Tool for ReadSkillTool {
             })?;
         let root = explorer.root_dir();
 
-        let skill = discover_skills(&root)
+        let skill = discover_project_skills(&root)
             .into_iter()
             .find(|s| s.name == input.name)
             .ok_or_else(|| {

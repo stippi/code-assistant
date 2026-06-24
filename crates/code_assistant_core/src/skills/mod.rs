@@ -14,6 +14,6 @@ pub mod loader;
 pub mod manifest;
 pub mod render;
 
-pub use loader::{discover_skills, Skill};
+pub use loader::{discover_all_skills, discover_project_skills, Skill, SkillScope};
 pub use manifest::{parse_skill_content, SkillManifest};
 pub use render::render_skills_section;

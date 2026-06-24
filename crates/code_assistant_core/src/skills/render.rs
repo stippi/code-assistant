@@ -56,6 +56,7 @@ mod tests {
             description: description.to_string(),
             skill_md: PathBuf::from(format!(".agents/skills/{name}/SKILL.md")),
             dir: PathBuf::from(format!(".agents/skills/{name}")),
+            scope: crate::skills::SkillScope::Project,
         }
     }
 

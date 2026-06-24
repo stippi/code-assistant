@@ -49,7 +49,7 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
         // Append the skills catalog for the initial project (progressive
         // disclosure: metadata only; bodies load on demand via `read_skill`).
         if let Some(project_root) = state.session_config.effective_project_path() {
-            let skills = crate::skills::discover_skills(project_root);
+            let skills = crate::skills::discover_project_skills(project_root);
             if let Some(section) = crate::skills::render_skills_section(initial_project, &skills) {
                 system_message.push_str("\n\n");
                 system_message.push_str(&section);
