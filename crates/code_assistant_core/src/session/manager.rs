@@ -650,7 +650,9 @@ impl SessionManager {
                     .iter()
                     .map(|se| se.deserialize(self.tool_registry.as_ref()))
                     .collect::<Result<Vec<_>>>()?,
+
                 plan: session_instance.session.plan.clone(),
+                active_skills: session_instance.session.active_skills.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
                 model_config: session_instance.session.model_config.clone(),
@@ -1296,6 +1298,7 @@ impl SessionManager {
             .map(|te| te.serialize())
             .collect::<Result<Vec<_>>>()?;
         session.plan = state.plan;
+        session.active_skills = state.active_skills;
         session.config = state.config;
         session.config.use_diff_blocks = persisted_use_diff_blocks;
         session.model_config = persisted_model_config;

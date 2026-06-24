@@ -95,6 +95,8 @@ pub struct SessionState {
 
     pub tool_executions: Vec<ToolExecution>,
     pub plan: PlanState,
+    /// Names of skills activated on the active path (progressive disclosure).
+    pub active_skills: Vec<String>,
     pub config: SessionConfig,
     pub next_request_id: Option<u64>,
     pub model_config: Option<SessionModelConfig>,
@@ -203,6 +205,7 @@ impl SessionState {
             messages,
             tool_executions: Vec::new(),
             plan: PlanState::default(),
+            active_skills: Vec::new(),
             config,
             next_request_id: Some(max_request_id + 1),
             model_config: None,
