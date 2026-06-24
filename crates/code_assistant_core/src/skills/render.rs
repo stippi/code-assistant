@@ -23,18 +23,24 @@ pub fn render_skills_section(project: &str, skills: &[Skill]) -> Option<String> 
 
     let mut out = String::from("# Available Skills\n\n");
     out.push_str(&format!(
-        "The following skills are available in project `{project}`. Each entry shows the skill's \
-         name and a short description. To use a skill, call the `read_skill` tool with this \
-         project name and the skill's name to load its full instructions into the conversation.\n\n",
+        "The following skills are available. Each entry shows the skill's name, its scope (in \
+         parentheses), and a short description. To load a skill's full instructions, call the \
+         `read_skill` tool with the skill's name and its scope: pass the project name `{project}` \
+         for `project` skills, `:config:` for `user` skills, and `:system:` for `system` skills.\n\n",
     ));
     out.push_str(
         "Use a skill only when the user's task clearly matches its description. Do not load \
-         skills speculatively. Skills in other projects can be browsed with `list_skills`.\n\n",
+         skills speculatively. Skills can also be browsed with `list_skills`.\n\n",
     );
     out.push_str("Available skills:\n");
 
     for skill in skills.iter().take(MAX_SHOWN) {
-        out.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+        out.push_str(&format!(
+            "- {} ({}): {}\n",
+            skill.name,
+            skill.scope.label(),
+            skill.description
+        ));
     }
 
     let overflow = skills.len().saturating_sub(MAX_SHOWN);
@@ -75,8 +81,19 @@ mod tests {
         assert!(rendered.contains("# Available Skills"));
         assert!(rendered.contains("read_skill"));
         assert!(rendered.contains("`my-project`"));
-        assert!(rendered.contains("- alpha: First skill."));
-        assert!(rendered.contains("- beta: Second skill."));
+        assert!(rendered.contains("- alpha (project): First skill."));
+        assert!(rendered.contains("- beta (project): Second skill."));
+    }
+
+    #[test]
+    fn renders_scope_label() {
+        let mut user_skill = skill("security-review", "Audit auth.");
+        user_skill.scope = crate::skills::SkillScope::User;
+        let rendered = render_skills_section("my-project", &[user_skill]).expect("should render");
+        assert!(rendered.contains("- security-review (user): Audit auth."));
+        // The legend explains how to address each scope.
+        assert!(rendered.contains(":config:"));
+        assert!(rendered.contains(":system:"));
     }
 
     #[test]

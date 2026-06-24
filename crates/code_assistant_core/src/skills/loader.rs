@@ -8,6 +8,7 @@
 //! On a name collision the higher-precedence scope wins (project > user >
 //! system).
 
+use crate::config::{explorer_for_scope, ProjectManager, SCOPE_CONFIG, SCOPE_SYSTEM};
 use crate::skills::manifest::parse_skill_content;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -63,12 +64,40 @@ pub struct Skill {
     pub scope: SkillScope,
 }
 
-/// Discover project-scoped skills under `<project_root>/.agents/skills/`.
-pub fn discover_project_skills(project_root: &Path) -> Vec<Skill> {
-    discover_skills_in(
-        &project_root.join(".agents").join("skills"),
-        SkillScope::Project,
-    )
+/// The skills found in a single scope, with the sandbox root `read_files`
+/// would use for that scope (resource paths in [`Skill::dir`] are relative to
+/// it).
+pub struct ScopeSkills {
+    pub skills: Vec<Skill>,
+    pub sandbox_root: PathBuf,
+    pub scope: SkillScope,
+}
+
+/// Resolve a scope token to the skills it contains and the sandbox root that
+/// `read_files` uses for that scope:
+/// - a project name → the project's `.agents/skills`, sandbox root = project root
+/// - [`SCOPE_CONFIG`] (`:config:`) → `<config_dir>/skills`
+/// - [`SCOPE_SYSTEM`] (`:system:`) → `<config_dir>/skills/.system`
+pub fn discover_scope_skills(
+    project_manager: &dyn ProjectManager,
+    token: &str,
+) -> Result<ScopeSkills> {
+    let explorer = explorer_for_scope(project_manager, token)?;
+    let sandbox_root = explorer.root_dir();
+    let (skills_root, scope) = match token {
+        SCOPE_CONFIG => (sandbox_root.clone(), SkillScope::User),
+        SCOPE_SYSTEM => (sandbox_root.clone(), SkillScope::System),
+        _ => (
+            sandbox_root.join(".agents").join("skills"),
+            SkillScope::Project,
+        ),
+    };
+    let skills = discover_skills_in(&skills_root, scope);
+    Ok(ScopeSkills {
+        skills,
+        sandbox_root,
+        scope,
+    })
 }
 
 /// Discover skills across all scopes for `project_root`, applying precedence
@@ -285,5 +314,32 @@ mod tests {
         ]);
         let shared = skills.iter().find(|s| s.name == "shared").unwrap();
         assert_eq!(shared.scope, SkillScope::User);
+    }
+
+    #[test]
+    fn discover_scope_skills_resolves_a_project_token() {
+        use std::collections::HashMap;
+
+        let dir = tempdir().unwrap();
+        write_skill(
+            &dir.path().join(".agents").join("skills"),
+            "demo",
+            "demo",
+            "Demo skill.",
+        );
+
+        let explorer = crate::mocks::MockExplorer::new(HashMap::new(), None)
+            .with_root(dir.path().to_path_buf());
+        let pm = crate::mocks::MockProjectManager::default().with_project_path(
+            "proj",
+            dir.path().to_path_buf(),
+            Box::new(explorer),
+        );
+
+        let resolved = discover_scope_skills(&pm, "proj").expect("resolves project token");
+        assert_eq!(resolved.scope, SkillScope::Project);
+        assert_eq!(resolved.sandbox_root, dir.path());
+        let names: Vec<_> = resolved.skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["demo"]);
     }
 }

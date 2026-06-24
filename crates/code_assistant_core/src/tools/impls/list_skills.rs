@@ -1,4 +1,4 @@
-use crate::skills::discover_project_skills;
+use crate::skills::discover_scope_skills;
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -10,6 +10,8 @@ use serde_json::json;
 // Input type for the list_skills tool
 #[derive(Deserialize, Serialize)]
 pub struct ListSkillsInput {
+    /// Scope to list: a project name, or `:config:` / `:system:` for user /
+    /// bundled skills.
     pub project: String,
     /// Optional case-insensitive substring filter on name and description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -26,28 +28,36 @@ pub struct SkillEntry {
 #[derive(Serialize, Deserialize)]
 pub struct ListSkillsOutput {
     pub project: String,
+    pub scope_label: String,
     pub skills: Vec<SkillEntry>,
 }
 
 impl Render for ListSkillsOutput {
     fn status(&self) -> String {
         format!(
-            "Found {} skill(s) in project '{}'",
+            "Found {} {} skill(s) in `{}`",
             self.skills.len(),
+            self.scope_label,
             self.project
         )
     }
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if self.skills.is_empty() {
-            return format!("No skills found in project `{}`.", self.project);
+            return format!("No skills found in scope `{}`.", self.project);
         }
 
-        let mut out = format!("Skills in project `{}`:\n", self.project);
+        let mut out = format!(
+            "Skills in scope `{}` ({}):\n",
+            self.project, self.scope_label
+        );
         for skill in &self.skills {
             out.push_str(&format!("- {}: {}\n", skill.name, skill.description));
         }
-        out.push_str("\nLoad a skill's full instructions with `read_skill`.");
+        out.push_str(&format!(
+            "\nLoad a skill's full instructions with `read_skill` (project `{}`).",
+            self.project
+        ));
         out
     }
 }
@@ -68,10 +78,11 @@ impl Tool for ListSkillsTool {
 
     fn spec(&self) -> ToolSpec {
         let description = concat!(
-            "List the skills available in a project. Skills are reusable, task-specific playbooks ",
-            "discovered under a project's `.agents/skills/` directory. The current project's skills ",
-            "are already shown in the system prompt; use this to browse a different project's skills ",
-            "or to filter by a query. Load a skill's full instructions with `read_skill`."
+            "List the skills available in a given scope. Skills are reusable, task-specific ",
+            "playbooks. The current project's skills are already shown in the system prompt; use ",
+            "this to browse a different project's skills (by name), the shared user skills ",
+            "(`:config:`), or the bundled skills (`:system:`), optionally filtered by a query. ",
+            "Load a skill's full instructions with `read_skill`."
         );
         ToolSpec {
             name: "list_skills",
@@ -81,8 +92,8 @@ impl Tool for ListSkillsTool {
                 "properties": {
                     "project": {
                         "type": "string",
-                        "description": "Name of the project whose skills should be listed",
-                        "examples": ["project-name"]
+                        "description": "Scope to list: a project name, or `:config:` / `:system:` for user / bundled skills",
+                        "examples": ["project-name", ":config:", ":system:"]
                     },
                     "query": {
                         "type": "string",
@@ -111,20 +122,12 @@ impl Tool for ListSkillsTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        let explorer = context
-            .project_manager()
-            .get_explorer_for_project(&input.project)
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to get explorer for project {}: {}",
-                    input.project,
-                    e
-                )
-            })?;
-        let root = explorer.root_dir();
+        let resolved = discover_scope_skills(context.project_manager(), &input.project)
+            .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
 
         let query = input.query.as_deref().map(str::to_lowercase);
-        let skills = discover_project_skills(&root)
+        let skills = resolved
+            .skills
             .into_iter()
             .filter(|s| match &query {
                 Some(q) => {
@@ -140,6 +143,7 @@ impl Tool for ListSkillsTool {
 
         Ok(ListSkillsOutput {
             project: input.project.clone(),
+            scope_label: resolved.scope.label().to_string(),
             skills,
         })
     }

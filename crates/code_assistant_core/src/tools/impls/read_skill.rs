@@ -1,4 +1,4 @@
-use crate::skills::{discover_project_skills, parse_skill_content};
+use crate::skills::{discover_scope_skills, parse_skill_content};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -14,6 +14,8 @@ const MAX_BODY_LEN: usize = 64 * 1024;
 // Input type for the read_skill tool
 #[derive(Deserialize, Serialize)]
 pub struct ReadSkillInput {
+    /// The scope to load the skill from: a project name, or `:config:` /
+    /// `:system:` for user / bundled skills (as shown in the skills catalog).
     pub project: String,
     pub name: String,
 }
@@ -21,10 +23,14 @@ pub struct ReadSkillInput {
 // Output type
 #[derive(Serialize, Deserialize)]
 pub struct ReadSkillOutput {
-    pub project: String,
+    /// The scope token the skill was loaded from (a project name, or
+    /// `:config:` / `:system:`) — pass it back to `read_files` for resources.
+    pub scope: String,
+    /// Human-readable scope label (`project` / `user` / `system`).
+    pub scope_label: String,
     pub name: String,
-    /// The skill's directory, relative to the project root, so the paths
-    /// referenced in the body resolve directly with `read_files`.
+    /// The skill's directory, relative to the scope's sandbox root, so the
+    /// paths referenced in the body resolve directly with `read_files`.
     pub dir: PathBuf,
     pub body: String,
 }
@@ -37,15 +43,16 @@ impl Render for ReadSkillOutput {
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         let dir = self.dir.to_string_lossy().replace('\\', "/");
         format!(
-            "# Skill: {name} (project: {project})\n\n\
+            "# Skill: {name} ({scope_label})\n\n\
              Bundled resources live under `{dir}/`; the paths referenced below are relative to \
-             that directory. Read a resource with `read_files` (project `{project}`, path \
+             that directory. Read a resource with `read_files` (project `{scope}`, path \
              `{dir}/<resource>`) or run a bundled script with `execute_command`.\n\n\
              ---\n\n\
              {body}",
             name = self.name,
-            project = self.project,
+            scope_label = self.scope_label,
             dir = dir,
+            scope = self.scope,
             body = self.body,
         )
     }
@@ -68,9 +75,8 @@ impl Tool for ReadSkillTool {
     fn spec(&self) -> ToolSpec {
         let description = concat!(
             "Load a skill's full instructions into the conversation. Skills are reusable, ",
-            "task-specific playbooks discovered under a project's `.agents/skills/` directory and ",
-            "advertised in the system prompt. Call this when the user's task clearly matches a ",
-            "skill's description."
+            "task-specific playbooks advertised in the system prompt. Call this when the user's ",
+            "task clearly matches a skill's description."
         );
         ToolSpec {
             name: "read_skill",
@@ -80,8 +86,8 @@ impl Tool for ReadSkillTool {
                 "properties": {
                     "project": {
                         "type": "string",
-                        "description": "Name of the project that owns the skill",
-                        "examples": ["project-name"]
+                        "description": "Scope of the skill: a project name, or `:config:` / `:system:` for user / bundled skills (as shown after the skill name in the catalog)",
+                        "examples": ["project-name", ":config:", ":system:"]
                     },
                     "name": {
                         "type": "string",
@@ -110,35 +116,29 @@ impl Tool for ReadSkillTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        // Resolve the project's root directory the same way file tools do.
-        let explorer = context
-            .project_manager()
-            .get_explorer_for_project(&input.project)
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to get explorer for project {}: {}",
-                    input.project,
-                    e
-                )
-            })?;
-        let root = explorer.root_dir();
+        // Resolve the requested scope (project name or :config:/:system:) to
+        // its skills and sandbox root.
+        let resolved = discover_scope_skills(context.project_manager(), &input.project)
+            .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
 
-        let skill = discover_project_skills(&root)
+        let skill = resolved
+            .skills
             .into_iter()
             .find(|s| s.name == input.name)
             .ok_or_else(|| {
                 anyhow!(
-                    "No skill named `{}` was found in project `{}`",
+                    "No skill named `{}` was found in scope `{}`",
                     input.name,
                     input.project
                 )
             })?;
 
-        // Express the skill directory relative to the project root so the
-        // body's relative resource references resolve directly via read_files.
+        // Express the skill directory relative to the scope's sandbox root so
+        // the body's relative resource references resolve directly via
+        // read_files with the same scope token.
         let dir = skill
             .dir
-            .strip_prefix(&root)
+            .strip_prefix(&resolved.sandbox_root)
             .unwrap_or(skill.dir.as_path())
             .to_path_buf();
 
@@ -157,7 +157,8 @@ impl Tool for ReadSkillTool {
         }
 
         Ok(ReadSkillOutput {
-            project: input.project.clone(),
+            scope: input.project.clone(),
+            scope_label: resolved.scope.label().to_string(),
             name: skill.name,
             dir,
             body,
@@ -217,8 +218,10 @@ mod tests {
         let output = result.as_render().render(&mut tracker);
 
         assert!(result.is_success());
-        assert!(output.contains("# Skill: pdf-extraction (project: my-project)"));
+        assert!(output.contains("# Skill: pdf-extraction (project)"));
         assert!(output.contains(".agents/skills/pdf-extraction/"));
+        // The resource line names the scope token to pass back to read_files.
+        assert!(output.contains("project `my-project`"));
         assert!(output.contains("Step 1. Do it."));
         Ok(())
     }
