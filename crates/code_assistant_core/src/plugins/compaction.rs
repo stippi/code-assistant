@@ -60,11 +60,54 @@ impl CompactionPolicy for TokenRatioCompaction {
     fn compaction_prompt(&self) -> &str {
         self.prompt
     }
+
+    fn post_compaction_summary_addendum(&self, extensions: &(dyn Any + Send)) -> Option<String> {
+        let state = AgentAppState::of_ref(extensions);
+        if state.active_skills.is_empty() {
+            return None;
+        }
+
+        let list = state
+            .active_skills
+            .iter()
+            .map(|name| format!("- {name}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Some(format!(
+            "<system_reminder>\n\
+             Before this summary you had loaded the following skills via `read_skill`, but their \
+             full instructions were dropped during compaction:\n\
+             {list}\n\
+             Reload any skill that is still relevant to the current task with `read_skill` before \
+             proceeding.\n\
+             </system_reminder>"
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_addendum_reminds_about_active_skills() {
+        let policy = TokenRatioCompaction::new(0.8);
+        let mut state = AgentAppState::new(crate::session::SessionConfig::default());
+
+        // No active skills → no addendum.
+        assert!(policy.post_compaction_summary_addendum(&state).is_none());
+
+        state.active_skills = vec!["pdf-extraction".to_string(), "security-review".to_string()];
+        let addendum = policy
+            .post_compaction_summary_addendum(&state)
+            .expect("addendum expected when skills are active");
+
+        assert!(addendum.contains("<system_reminder>"));
+        assert!(addendum.contains("read_skill"));
+        assert!(addendum.contains("- pdf-extraction"));
+        assert!(addendum.contains("- security-review"));
+    }
 
     #[test]
     fn compacts_at_threshold() {
