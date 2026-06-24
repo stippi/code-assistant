@@ -25,7 +25,7 @@ pub fn render_skills_section(project: &str, skills: &[Skill]) -> Option<String> 
     ));
     out.push_str(
         "Use a skill only when the user's task clearly matches its description. Do not load \
-         skills speculatively.\n\n",
+         skills speculatively. Skills in other projects can be browsed with `list_skills`.\n\n",
     );
     out.push_str("Available skills:\n");
 

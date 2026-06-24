@@ -23,6 +23,8 @@ pub struct ReadSkillInput {
 pub struct ReadSkillOutput {
     pub project: String,
     pub name: String,
+    /// The skill's directory, relative to the project root, so the paths
+    /// referenced in the body resolve directly with `read_files`.
     pub dir: PathBuf,
     pub body: String,
 }
@@ -33,15 +35,17 @@ impl Render for ReadSkillOutput {
     }
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
+        let dir = self.dir.to_string_lossy().replace('\\', "/");
         format!(
-            "# Skill: {name}\n\n\
-             Resources for this skill live under `{dir}`. Read them with `read_files` in project \
-             `{project}` (relative paths), or run bundled scripts with `execute_command`.\n\n\
+            "# Skill: {name} (project: {project})\n\n\
+             Bundled resources live under `{dir}/`; the paths referenced below are relative to \
+             that directory. Read a resource with `read_files` (project `{project}`, path \
+             `{dir}/<resource>`) or run a bundled script with `execute_command`.\n\n\
              ---\n\n\
              {body}",
             name = self.name,
-            dir = self.dir.display(),
             project = self.project,
+            dir = dir,
             body = self.body,
         )
     }
@@ -90,7 +94,11 @@ impl Tool for ReadSkillTool {
                 "readOnlyHint": true,
                 "idempotentHint": true
             })),
-            capabilities: &[capabilities::SCOPE_AGENT, capabilities::SCOPE_AGENT_DIFF],
+            capabilities: &[
+                capabilities::SCOPE_MCP,
+                capabilities::SCOPE_AGENT,
+                capabilities::SCOPE_AGENT_DIFF,
+            ],
             multiline_params: &[],
             hidden: false,
             title_template: Some("Loading skill {name}"),
@@ -126,6 +134,14 @@ impl Tool for ReadSkillTool {
                 )
             })?;
 
+        // Express the skill directory relative to the project root so the
+        // body's relative resource references resolve directly via read_files.
+        let dir = skill
+            .dir
+            .strip_prefix(&root)
+            .unwrap_or(skill.dir.as_path())
+            .to_path_buf();
+
         let content = std::fs::read_to_string(&skill.skill_md)
             .map_err(|e| anyhow!("Failed to read skill `{}`: {}", input.name, e))?;
         let (_manifest, mut body) = parse_skill_content(&content)?;
@@ -143,7 +159,7 @@ impl Tool for ReadSkillTool {
         Ok(ReadSkillOutput {
             project: input.project.clone(),
             name: skill.name,
-            dir: skill.dir,
+            dir,
             body,
         })
     }
@@ -201,7 +217,8 @@ mod tests {
         let output = result.as_render().render(&mut tracker);
 
         assert!(result.is_success());
-        assert!(output.contains("# Skill: pdf-extraction"));
+        assert!(output.contains("# Skill: pdf-extraction (project: my-project)"));
+        assert!(output.contains(".agents/skills/pdf-extraction/"));
         assert!(output.contains("Step 1. Do it."));
         Ok(())
     }
