@@ -41,10 +41,19 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
                 project_info.push_str(&format!("- {project}\n"));
             }
         }
-
         // Append project information to base prompt if available
         if !project_info.is_empty() {
             system_message = format!("{system_message}\n{project_info}");
+        }
+
+        // Append the skills catalog for the initial project (progressive
+        // disclosure: metadata only; bodies load on demand via `read_skill`).
+        if let Some(project_root) = state.session_config.effective_project_path() {
+            let skills = crate::skills::discover_skills(project_root);
+            if let Some(section) = crate::skills::render_skills_section(initial_project, &skills) {
+                system_message.push_str("\n\n");
+                system_message.push_str(&section);
+            }
         }
 
         // Append guidance files if present. Global AGENTS.md is loaded first so

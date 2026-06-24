@@ -310,12 +310,26 @@ impl MockUI {
 }
 
 // Mock Explorer
-#[derive(Default, Clone)]
+
+#[derive(Clone)]
 pub struct MockExplorer {
     files: Arc<Mutex<HashMap<PathBuf, String>>>,
     file_tree: Arc<Mutex<Option<FileTreeEntry>>>,
     // Optional map of formatted results to apply after a formatting command runs
     formatted_after: Arc<Mutex<HashMap<PathBuf, String>>>,
+    // The directory reported by `root_dir()`.
+    root: PathBuf,
+}
+
+impl Default for MockExplorer {
+    fn default() -> Self {
+        Self {
+            files: Arc::new(Mutex::new(HashMap::new())),
+            file_tree: Arc::new(Mutex::new(None)),
+            formatted_after: Arc::new(Mutex::new(HashMap::new())),
+            root: PathBuf::from("./root"),
+        }
+    }
 }
 
 impl MockExplorer {
@@ -324,7 +338,14 @@ impl MockExplorer {
             files: Arc::new(Mutex::new(files)),
             file_tree: Arc::new(Mutex::new(file_tree)),
             formatted_after: Arc::new(Mutex::new(HashMap::new())),
+            root: PathBuf::from("./root"),
         }
+    }
+
+    /// Override the directory reported by `root_dir()` (defaults to `./root`).
+    pub fn with_root(mut self, root: PathBuf) -> Self {
+        self.root = root;
+        self
     }
 
     /// Create a MockExplorer that simulates formatting by applying provided formatted content
@@ -340,6 +361,7 @@ impl MockExplorer {
             files: Arc::new(Mutex::new(initial_files)),
             file_tree: Arc::new(Mutex::new(file_tree)),
             formatted_after: Arc::new(Mutex::new(formatted_files)),
+            root: PathBuf::from("./root"),
         }
     }
 
@@ -361,11 +383,12 @@ impl CodeExplorer for MockExplorer {
             files: self.files.clone(),
             file_tree: self.file_tree.clone(),
             formatted_after: self.formatted_after.clone(),
+            root: self.root.clone(),
         })
     }
 
     fn root_dir(&self) -> PathBuf {
-        PathBuf::from("./root")
+        self.root.clone()
     }
 
     async fn read_file(&self, path: &Path) -> Result<String, anyhow::Error> {
@@ -1001,6 +1024,11 @@ impl ToolTestFixture {
     /// Create a new test fixture with default mocks
     pub fn new() -> Self {
         Self::from_parts(MockProjectManager::new(), MockCommandExecutor::new(vec![]))
+    }
+
+    /// Create a test fixture backed by a custom project manager.
+    pub fn with_project_manager(project_manager: MockProjectManager) -> Self {
+        Self::from_parts(project_manager, MockCommandExecutor::new(vec![]))
     }
 
     /// Create a test fixture with specific files in the default project
