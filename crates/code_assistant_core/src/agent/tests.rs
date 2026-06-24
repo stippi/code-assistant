@@ -638,6 +638,128 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_compaction_reminds_about_active_skills() -> Result<()> {
+    // A skill on disk so the real `read_skill` tool can load it.
+    let dir = tempdir()?;
+    let skill_dir = dir.path().join(".agents").join("skills").join("demo-skill");
+    std::fs::create_dir_all(&skill_dir)?;
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: demo-skill\ndescription: Demo skill.\n---\nStep 1.",
+    )?;
+
+    // Responses are served as a stack (popped from the end):
+    //   1. assistant calls read_skill (high usage → triggers compaction next)
+    //   2. the compaction summary
+    //   3. an idle turn with no tool calls → ends the iteration
+    let read_skill_response = LLMResponse {
+        content: vec![
+            ContentBlock::new_text("Loading the skill"),
+            ContentBlock::new_tool_use(
+                "tool-1",
+                "read_skill",
+                serde_json::json!({ "project": "demo", "name": "demo-skill" }),
+            ),
+        ],
+        usage: Usage {
+            input_tokens: 85,
+            output_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text("Summary of recent work")],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(idle_response),
+        Ok(summary_response),
+        Ok(read_skill_response),
+    ]);
+
+    let explorer =
+        crate::mocks::MockExplorer::new(HashMap::new(), None).with_root(dir.path().to_path_buf());
+    let project_manager = MockProjectManager::default().with_project_path(
+        "demo",
+        dir.path().to_path_buf(),
+        Box::new(explorer),
+    );
+
+    let ui = Arc::new(MockUI::default());
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(project_manager),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(dir.path().to_path_buf()),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    agent.append_message(Message::new_user("Please use the demo skill"))?;
+
+    agent.run_single_iteration().await?;
+
+    // The compaction summary must carry a <system_reminder> naming the skill
+    // that was loaded before compaction dropped its tool result.
+    let summary_message = agent
+        .message_history_for_tests()
+        .iter()
+        .find(|message| message.is_compaction_summary)
+        .cloned()
+        .expect("Expected compaction summary in history");
+    let summary_text = match &summary_message.content {
+        MessageContent::Text(text) => text.clone(),
+        MessageContent::Structured(_) => panic!("Summary should be stored as text"),
+    };
+    assert!(
+        summary_text.contains("Summary of recent work"),
+        "summary should retain the generated summary text"
+    );
+    assert!(
+        summary_text.contains("<system_reminder>"),
+        "summary should carry a system reminder, got: {summary_text}"
+    );
+    assert!(
+        summary_text.contains("demo-skill"),
+        "reminder should name the loaded skill, got: {summary_text}"
+    );
+    assert!(
+        summary_text.contains("read_skill"),
+        "reminder should tell the model to reload via read_skill, got: {summary_text}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
     let summary_text = "Summary to store after compaction";
     let summary_response = LLMResponse {
