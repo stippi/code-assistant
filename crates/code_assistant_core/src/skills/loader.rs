@@ -121,7 +121,7 @@ pub fn discover_all_skills(project_root: &Path) -> Vec<Skill> {
 /// containing a `SKILL.md` — tagging them with `scope`. Skills that fail to
 /// parse (or whose `name` does not match the directory name) are skipped with
 /// a warning. Results are sorted by name.
-fn discover_skills_in(skills_root: &Path, scope: SkillScope) -> Vec<Skill> {
+pub(crate) fn discover_skills_in(skills_root: &Path, scope: SkillScope) -> Vec<Skill> {
     let entries = match fs::read_dir(skills_root) {
         Ok(entries) => entries,
         // A missing skills directory is the common case, not an error.

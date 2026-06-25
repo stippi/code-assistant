@@ -10,10 +10,12 @@
 //! on-demand loading. User/system scopes, bundled skills, configuration, and
 //! session-level activation tracking are deferred.
 
+pub mod bundled;
 pub mod loader;
 pub mod manifest;
 pub mod render;
 
+pub use bundled::install_system_skills;
 pub use loader::{discover_all_skills, discover_scope_skills, ScopeSkills, Skill, SkillScope};
 pub use manifest::{parse_skill_content, SkillManifest};
 pub use render::render_skills_section;
