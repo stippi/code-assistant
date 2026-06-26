@@ -45,7 +45,11 @@ pub fn render_skills_section(project: &str, skills: &[Skill]) -> Option<String> 
 
     let overflow = skills.len().saturating_sub(MAX_SHOWN);
     if overflow > 0 {
-        out.push_str(&format!("- (+{overflow} more available)\n"));
+        out.push_str(&format!(
+            "\n{overflow} more skill(s) are not shown here. Use `list_skills` (with a scope — \
+             this project's name, `:config:`, or `:system:` — and an optional query) to browse \
+             the rest.\n"
+        ));
     }
 
     Some(out)
@@ -102,6 +106,8 @@ mod tests {
             .map(|i| skill(&format!("skill-{i:02}"), "desc"))
             .collect();
         let rendered = render_skills_section("p", &skills).expect("should render");
-        assert!(rendered.contains("(+3 more available)"));
+        // Overflow is reported with a count and points at list_skills.
+        assert!(rendered.contains("3 more skill(s) are not shown"));
+        assert!(rendered.contains("list_skills"));
     }
 }
