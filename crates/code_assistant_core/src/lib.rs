@@ -13,6 +13,7 @@ pub mod config_dir;
 pub mod persistence;
 pub mod plugins;
 pub mod session;
+pub mod skills;
 pub mod tool_dialects;
 pub mod tools;
 pub mod types;

@@ -191,6 +191,7 @@ impl Agent {
         {
             let state = self.app_state_mut();
             state.plan = session_state.plan.clone();
+            state.active_skills = session_state.active_skills.clone();
             state.session_config = session_state.config;
         }
         let session_config = self.app_state().session_config.clone();

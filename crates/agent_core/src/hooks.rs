@@ -87,6 +87,15 @@ pub trait CompactionPolicy: Send + Sync {
     fn context_limit(&self, extensions: &(dyn Any + Send)) -> Result<Option<u32>>;
     fn should_compact(&self, snapshot: &ContextSnapshot) -> bool;
     fn compaction_prompt(&self) -> &str;
+
+    /// Optional text appended to the freshly generated compaction summary
+    /// message. Lets the application carry application-specific state across
+    /// the compaction boundary — e.g. a reminder of which skills were loaded,
+    /// whose tool results the compaction just dropped. `extensions` is the
+    /// agent's loop state (see [`LoopCtx::extensions`]).
+    fn post_compaction_summary_addendum(&self, _extensions: &(dyn Any + Send)) -> Option<String> {
+        None
+    }
 }
 
 /// How the agent recovers from a failed LLM request.

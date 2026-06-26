@@ -54,8 +54,10 @@ impl SnapshotPersistence for SessionStateAdapter {
             active_path: snapshot.active_path,
             next_node_id: snapshot.next_node_id,
             messages: snapshot.messages,
+
             tool_executions: snapshot.tool_executions,
             plan: state.plan.clone(),
+            active_skills: state.active_skills.clone(),
             config: state.session_config.clone(),
             next_request_id: Some(snapshot.next_request_id),
             model_config: state.model_config.clone(),

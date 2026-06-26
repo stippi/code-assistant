@@ -55,9 +55,9 @@ pub fn test_registry() -> Arc<ToolRegistry> {
 pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig) {
     use impls::{
         DeleteFilesTool, EditTool, ExecuteCommandTool, GlobFilesTool, ListFilesTool,
-        ListProjectsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool,
-        SearchFilesTool, SpawnAgentTool, UpdatePlanTool, ViewDocumentsTool, ViewImagesTool,
-        WebFetchTool, WebSearchTool, WriteFileTool,
+        ListProjectsTool, ListSkillsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool,
+        ReadSkillTool, ReplaceInFileTool, SearchFilesTool, SpawnAgentTool, UpdatePlanTool,
+        ViewDocumentsTool, ViewImagesTool, WebFetchTool, WebSearchTool, WriteFileTool,
     };
 
     registry.register(Box::new(DeleteFilesTool));
@@ -65,7 +65,9 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
     registry.register(Box::new(ExecuteCommandTool));
     registry.register(Box::new(GlobFilesTool));
     registry.register(Box::new(ListFilesTool));
+
     registry.register(Box::new(ListProjectsTool));
+    registry.register(Box::new(ListSkillsTool));
     registry.register(Box::new(NameSessionTool));
     if let Some(perplexity) = PerplexityAskTool::from_config(config) {
         registry.register(Box::new(perplexity));
@@ -73,6 +75,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
         tracing::debug!("Tool 'perplexity_ask' is not available (missing configuration)");
     }
     registry.register(Box::new(ReadFilesTool));
+    registry.register(Box::new(ReadSkillTool));
     registry.register(Box::new(ReplaceInFileTool));
     registry.register(Box::new(SearchFilesTool));
     registry.register(Box::new(SpawnAgentTool));

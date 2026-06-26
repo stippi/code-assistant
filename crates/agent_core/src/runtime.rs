@@ -1483,9 +1483,26 @@ impl AgentRuntime {
         let (response, _) = response_result?;
 
         let summary_text = Self::extract_compaction_summary_text(&response.content);
+
+        // The compaction policy may contribute an addendum to the summary
+        // message — e.g. reminding the model which skills it had loaded, since
+        // those tool results are now gone from the trimmed history. It is kept
+        // inside the summary message (not a separate message) to avoid two
+        // consecutive user messages, but is excluded from the UI divider.
+        let addendum = self
+            .hooks
+            .compaction
+            .post_compaction_summary_addendum(self.extensions.as_ref());
+        let summary_content = match &addendum {
+            Some(addendum) if !addendum.trim().is_empty() => {
+                format!("{summary_text}\n\n{addendum}")
+            }
+            _ => summary_text.clone(),
+        };
+
         let summary_message = Message {
             role: MessageRole::User,
-            content: MessageContent::Text(summary_text.clone()),
+            content: MessageContent::Text(summary_content),
             is_compaction_summary: true,
             ..Default::default()
         };

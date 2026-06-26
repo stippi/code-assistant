@@ -19,24 +19,78 @@ use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 // use alongside the session persistence types.
 pub use agent_core::{ConversationPath, MessageNode, NodeId};
 
-/// Typed access to the plan snapshot riding on a message node's
-/// application-extension slot (only set if the plan changed in this
-/// message's response; used for plan reconstruction when switching
-/// branches).
+/// The structured application snapshot riding on a message node's
+/// `extension` slot. Holds the plan and the set of active skills as they
+/// stood after this message's response — used to reconstruct that state when
+/// switching branches.
+///
+/// Legacy session files stored a bare [`PlanState`] in `extension`; the
+/// accessors below transparently read that older shape.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct NodeExtension {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan: Option<PlanState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_skills: Option<Vec<String>>,
+}
+
+/// Typed access to the per-node application snapshots (plan + active skills)
+/// riding on a message node's `extension` slot. A field is only set when it
+/// changed in this message's response; used for reconstruction when switching
+/// branches.
 pub trait MessageNodeExt {
     fn plan_snapshot(&self) -> Option<PlanState>;
     fn set_plan_snapshot(&mut self, plan: PlanState);
+    fn active_skills_snapshot(&self) -> Option<Vec<String>>;
+    fn set_active_skills_snapshot(&mut self, active_skills: Vec<String>);
 }
 
 impl MessageNodeExt for MessageNode {
     fn plan_snapshot(&self) -> Option<PlanState> {
-        self.extension
-            .as_ref()
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
+        let value = self.extension.as_ref()?;
+        // New combined shape: { "plan": {...}, "active_skills": [...] }.
+        if let Ok(ext) = serde_json::from_value::<NodeExtension>(value.clone()) {
+            if ext.plan.is_some() || ext.active_skills.is_some() {
+                return ext.plan;
+            }
+        }
+        // Legacy shape: a bare PlanState.
+        serde_json::from_value::<PlanState>(value.clone()).ok()
     }
 
     fn set_plan_snapshot(&mut self, plan: PlanState) {
-        self.extension = serde_json::to_value(plan).ok();
+        let mut ext = self.node_extension();
+        ext.plan = Some(plan);
+        self.extension = serde_json::to_value(ext).ok();
+    }
+
+    fn active_skills_snapshot(&self) -> Option<Vec<String>> {
+        let value = self.extension.as_ref()?;
+        serde_json::from_value::<NodeExtension>(value.clone())
+            .ok()
+            .and_then(|ext| ext.active_skills)
+    }
+
+    fn set_active_skills_snapshot(&mut self, active_skills: Vec<String>) {
+        let mut ext = self.node_extension();
+        ext.active_skills = Some(active_skills);
+        self.extension = serde_json::to_value(ext).ok();
+    }
+}
+
+/// Private helper to read the current node extension, normalizing the legacy
+/// bare-`PlanState` shape into the combined [`NodeExtension`] so updates to
+/// one field preserve the other.
+trait NodeExtensionAccess {
+    fn node_extension(&self) -> NodeExtension;
+}
+
+impl NodeExtensionAccess for MessageNode {
+    fn node_extension(&self) -> NodeExtension {
+        NodeExtension {
+            plan: self.plan_snapshot(),
+            active_skills: self.active_skills_snapshot(),
+        }
     }
 }
 
@@ -107,6 +161,10 @@ pub struct ChatSession {
     /// Current session plan (for the active path)
     #[serde(default)]
     pub plan: PlanState,
+    /// Names of skills activated on the active path (for progressive
+    /// disclosure). Reconstructed from per-node snapshots on branch switch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_skills: Vec<String>,
     /// Whether the plan UI is collapsed for this session
     #[serde(default)]
     pub plan_collapsed: bool,
@@ -219,6 +277,7 @@ impl ChatSession {
             tool_executions: Vec::new(),
 
             plan: PlanState::default(),
+            active_skills: Vec::new(),
             plan_collapsed: false,
             config,
             next_request_id: 1,
@@ -346,6 +405,19 @@ impl ChatSession {
         PlanState::default()
     }
 
+    /// Find the active skills for the active path by walking backwards to the
+    /// most recent active-skills snapshot.
+    pub fn get_active_skills_for_active_path(&self) -> Vec<String> {
+        for &node_id in self.active_path.iter().rev() {
+            if let Some(node) = self.message_nodes.get(&node_id) {
+                if let Some(active_skills) = node.active_skills_snapshot() {
+                    return active_skills;
+                }
+            }
+        }
+        Vec::new()
+    }
+
     // ========================================================================
     // Tree Modification
     // ========================================================================
@@ -424,8 +496,9 @@ impl ChatSession {
         // Extend path from new node to deepest descendant
         self.extend_active_path_from(new_node_id);
 
-        // Update the plan to match the new active path
+        // Update the plan and active skills to match the new active path
         self.plan = self.get_plan_for_active_path();
+        self.active_skills = self.get_active_skills_for_active_path();
 
         Ok(())
     }
@@ -1407,6 +1480,73 @@ mod tests {
     }
 
     #[test]
+    fn test_node_extension_backward_compat_and_combined() {
+        // Legacy session files stored a bare PlanState in the extension slot.
+        let legacy_plan = PlanState {
+            entries: Vec::new(),
+            meta: None,
+        };
+        let mut node = MessageNode {
+            id: 1,
+            message: Message::new_assistant("hi"),
+            parent_id: None,
+            created_at: SystemTime::now(),
+            extension: Some(serde_json::to_value(&legacy_plan).unwrap()),
+        };
+        assert!(node.plan_snapshot().is_some());
+        assert!(node.active_skills_snapshot().is_none());
+
+        // Setting active skills must preserve the existing plan.
+        node.set_active_skills_snapshot(vec!["pdf".to_string()]);
+        assert_eq!(node.active_skills_snapshot(), Some(vec!["pdf".to_string()]));
+        assert!(node.plan_snapshot().is_some());
+
+        // Setting the plan must preserve the active skills.
+        node.set_plan_snapshot(PlanState::default());
+        assert_eq!(node.active_skills_snapshot(), Some(vec!["pdf".to_string()]));
+    }
+
+    #[test]
+    fn test_switch_branch_reconstructs_active_skills() {
+        let mut session = ChatSession::new_empty(
+            "test".to_string(),
+            "Test".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        session.add_message(Message::new_user("Hello")); // node 1
+        session.add_message(Message::new_assistant("Hi!")); // node 2
+        session
+            .message_nodes
+            .get_mut(&2)
+            .unwrap()
+            .set_active_skills_snapshot(vec!["alpha".to_string()]);
+        session.add_message(Message::new_user("Original followup")); // node 3
+
+        // Branch from node 1 with a different active skill.
+        session.add_message_with_parent(Message::new_user("Alternative"), Some(1)); // node 4
+        session.add_message(Message::new_assistant("Alt response")); // node 5
+        session
+            .message_nodes
+            .get_mut(&5)
+            .unwrap()
+            .set_active_skills_snapshot(vec!["beta".to_string()]);
+        session.active_skills = session.get_active_skills_for_active_path();
+        assert_eq!(session.active_skills, vec!["beta".to_string()]);
+
+        // Switching to the original branch restores its active skills.
+        session.switch_branch(3).expect("switch branch");
+        assert_eq!(session.active_path, vec![1, 2, 3]);
+        assert_eq!(session.active_skills, vec!["alpha".to_string()]);
+
+        // Switching back to the alternative branch restores its skills.
+        session.switch_branch(5).expect("switch branch");
+        assert_eq!(session.active_path, vec![1, 4, 5]);
+        assert_eq!(session.active_skills, vec!["beta".to_string()]);
+    }
+
+    #[test]
     fn test_get_branch_info() {
         let mut session = ChatSession::new_empty(
             "test".to_string(),
@@ -1455,6 +1595,7 @@ mod tests {
             ],
             tool_executions: Vec::new(),
             plan: PlanState::default(),
+            active_skills: Vec::new(),
             plan_collapsed: false,
             config: SessionConfig::default(),
             next_request_id: 1,

@@ -3,7 +3,7 @@ use anyhow::Result;
 use fs_explorer::{CodeExplorer, Explorer};
 use sandbox::SandboxContext;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Configuration for running the agent in either terminal or GPUI mode
@@ -38,6 +38,43 @@ pub trait ProjectManager: Send + Sync {
     fn get_projects(&self) -> Result<HashMap<String, Project>>;
     fn get_project(&self, name: &str) -> Result<Option<Project>>;
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>>;
+}
+
+/// Reserved scope token addressing the user skills directory.
+pub const SCOPE_CONFIG: &str = ":config:";
+/// Reserved scope token addressing the bundled (system) skills directory.
+pub const SCOPE_SYSTEM: &str = ":system:";
+
+/// Resolve a reserved skills-scope token to its sandboxed root directory,
+/// relative to `config_dir`. Returns `None` for ordinary project names.
+///
+/// - [`SCOPE_CONFIG`] (`:config:`) → `<config_dir>/skills` (user skills)
+/// - [`SCOPE_SYSTEM`] (`:system:`) → `<config_dir>/skills/.system` (bundled skills)
+///
+/// The roots are deliberately the `skills` subtree, never `config_dir` itself —
+/// the config directory also holds secrets (e.g. `providers.json`), which must
+/// stay unreachable through file tools.
+pub fn skills_scope_root(scope: &str, config_dir: &Path) -> Option<PathBuf> {
+    match scope {
+        SCOPE_CONFIG => Some(config_dir.join("skills")),
+        SCOPE_SYSTEM => Some(config_dir.join("skills").join(".system")),
+        _ => None,
+    }
+}
+
+/// Resolve a scope reference to a sandboxed explorer.
+///
+/// A reserved token ([`SCOPE_CONFIG`]/[`SCOPE_SYSTEM`]) resolves to an explorer
+/// rooted at the corresponding skills directory; any other value is treated as
+/// a project name and delegated to the [`ProjectManager`].
+pub fn explorer_for_scope(
+    project_manager: &dyn ProjectManager,
+    scope: &str,
+) -> Result<Box<dyn CodeExplorer>> {
+    if let Some(root) = skills_scope_root(scope, &crate::config_dir::config_dir()) {
+        return Ok(Box::new(Explorer::new(root)));
+    }
+    project_manager.get_explorer_for_project(scope)
 }
 
 pub struct SandboxAwareProjectManager {
@@ -192,4 +229,50 @@ pub fn save_project(name: &str, project: &Project) -> Result<()> {
 
     crate::utils::file_utils::atomic_write_json(&config_path, &projects)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn skills_scope_root_maps_reserved_tokens_only() {
+        let cfg = Path::new("/cfg");
+        assert_eq!(
+            skills_scope_root(SCOPE_CONFIG, cfg),
+            Some(PathBuf::from("/cfg/skills"))
+        );
+        assert_eq!(
+            skills_scope_root(SCOPE_SYSTEM, cfg),
+            Some(PathBuf::from("/cfg/skills/.system"))
+        );
+        // Ordinary project names are not scope tokens.
+        assert_eq!(skills_scope_root("my-project", cfg), None);
+        assert_eq!(skills_scope_root("config", cfg), None);
+    }
+
+    #[tokio::test]
+    async fn config_scope_cannot_escape_to_config_secrets() {
+        // Lay out a config dir with secrets next to the skills subtree.
+        let config_dir = tempdir().unwrap();
+        std::fs::write(
+            config_dir.path().join("providers.json"),
+            "{\"api_key\":\"super-secret\"}",
+        )
+        .unwrap();
+
+        let skills_root = skills_scope_root(SCOPE_CONFIG, config_dir.path()).unwrap();
+        std::fs::create_dir_all(&skills_root).unwrap();
+
+        let explorer = Explorer::new(skills_root.clone());
+
+        // A traversal attempt to the sibling secrets file must be rejected.
+        let escape = skills_root.join("..").join("providers.json");
+        let result = explorer.read_file(&escape).await;
+        assert!(
+            result.is_err(),
+            "config scope must not be able to read outside the skills subtree"
+        );
+    }
 }

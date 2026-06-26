@@ -7,8 +7,8 @@ mod logging;
 // historical module paths so call sites keep using `crate::session::…` etc.
 #[allow(unused_imports)]
 pub(crate) use code_assistant_core::{
-    agent, config, config_dir, persistence, plugins, session, tool_dialects, tools, types, ui,
-    utils,
+    agent, config, config_dir, persistence, plugins, session, skills, tool_dialects, tools, types,
+    ui, utils,
 };
 
 use crate::cli::{Args, Mode};
@@ -27,6 +27,12 @@ async fn main() -> Result<()> {
     // Handle list commands first
     if args.handle_list_commands()? {
         return Ok(());
+    }
+
+    // Extract bundled system skills into <config_dir>/skills/.system. Idempotent
+    // (fingerprint-gated); best-effort so a failure never blocks startup.
+    if let Err(e) = skills::install_system_skills() {
+        tracing::warn!("Failed to install bundled system skills: {e:#}");
     }
 
     match args.mode {

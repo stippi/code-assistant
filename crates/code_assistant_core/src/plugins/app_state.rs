@@ -19,6 +19,9 @@ pub struct AgentAppState {
     pub naming_reminders_enabled: bool,
     /// State of the `update_plan` tool.
     pub plan: PlanState,
+    /// Names of skills activated in this session, in activation order. Used to
+    /// render the "Active skills" section and persisted with the session.
+    pub active_skills: Vec<String>,
     /// Which tool selection the agent runs with.
     pub tool_scope: ToolScope,
     /// Static configuration stored with the session.
@@ -42,8 +45,10 @@ impl AgentAppState {
         };
         Self {
             session_name: String::new(),
+
             naming_reminders_enabled: true,
             plan: PlanState::default(),
+            active_skills: Vec::new(),
             tool_scope,
             session_config,
             model_config: None,
