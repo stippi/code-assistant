@@ -78,10 +78,11 @@ impl Tool for ListSkillsTool {
 
     fn spec(&self) -> ToolSpec {
         let description = concat!(
-            "List the skills available in a given scope. Skills are reusable, task-specific ",
-            "playbooks. The current project's skills are already shown in the system prompt; use ",
-            "this to browse a different project's skills (by name), the shared user skills ",
-            "(`:config:`), or the bundled skills (`:system:`), optionally filtered by a query. ",
+            "List skills in a given scope. Skills are reusable, task-specific playbooks. The ",
+            "skills relevant to the current project — its own project skills plus the shared user ",
+            "(`:config:`) and bundled system (`:system:`) skills — are already listed in the ",
+            "system prompt, so you normally do not need this tool. Use it to browse a *different* ",
+            "project's skills (pass that project's name), or to filter a long catalog by query. ",
             "Load a skill's full instructions with `read_skill`."
         );
         ToolSpec {

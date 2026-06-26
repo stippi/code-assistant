@@ -46,8 +46,10 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
             system_message = format!("{system_message}\n{project_info}");
         }
 
-        // Append the skills catalog for the initial project (progressive
-        // disclosure: metadata only; bodies load on demand via `read_skill`).
+        // Append the skills catalog (progressive disclosure: metadata only;
+        // bodies load on demand via `read_skill`). Covers the initial project's
+        // skills plus the shared user (`:config:`) and bundled system
+        // (`:system:`) scopes.
         if let Some(project_root) = state.session_config.effective_project_path() {
             let skills = crate::skills::discover_all_skills(project_root);
             if let Some(section) = crate::skills::render_skills_section(initial_project, &skills) {
