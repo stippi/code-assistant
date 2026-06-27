@@ -139,6 +139,9 @@ impl Tool for ListSkillsTool {
         let skills = resolved
             .skills
             .into_iter()
+            // Skills flagged `disable-model-invocation` are hidden from the
+            // model-facing catalog; they remain loadable via `read_skill`.
+            .filter(|s| s.is_model_invocable())
             .filter(|s| match &query {
                 Some(q) => {
                     s.name.to_lowercase().contains(q) || s.description.to_lowercase().contains(q)
@@ -187,6 +190,19 @@ mod tests {
         .unwrap();
     }
 
+    fn write_model_disabled_skill(root: &std::path::Path, name: &str, description: &str) {
+        let dir = root.join(".agents").join("skills").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: {description}\n\
+                 disable-model-invocation: true\n---\nbody"
+            ),
+        )
+        .unwrap();
+    }
+
     async fn run(fixture: &mut ToolTestFixture, params: serde_json::Value) -> String {
         let mut context = fixture.context();
         let registry = crate::tools::test_registry();
@@ -225,6 +241,19 @@ mod tests {
 
         assert!(output.contains("pdf-extraction"));
         assert!(!output.contains("security-review"));
+    }
+
+    #[tokio::test]
+    async fn hides_model_invocation_disabled_skills() {
+        let dir = tempdir().unwrap();
+        write_skill(dir.path(), "visible", "Shown to the model.");
+        write_model_disabled_skill(dir.path(), "internal-only", "Hidden from the model.");
+
+        let mut fixture = fixture_for_root("my-project", dir.path());
+        let output = run(&mut fixture, json!({ "project": "my-project" })).await;
+
+        assert!(output.contains("- visible: Shown to the model."));
+        assert!(!output.contains("internal-only"));
     }
 
     #[tokio::test]

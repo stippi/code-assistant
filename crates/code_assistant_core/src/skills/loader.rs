@@ -63,6 +63,31 @@ pub struct Skill {
     pub dir: PathBuf,
     /// The scope this skill was discovered in.
     pub scope: SkillScope,
+    /// When `true`, the skill is hidden from the model-facing catalog and the
+    /// `list_skills` tool (the model must not auto-invoke it), but it remains
+    /// loadable via `read_skill` and visible in the settings UI. Maps to the
+    /// `disable-model-invocation` frontmatter field.
+    pub disable_model_invocation: bool,
+}
+
+impl Skill {
+    /// Whether this skill should be advertised to the model (system-prompt
+    /// catalog and the `list_skills` tool). Skills with
+    /// `disable-model-invocation: true` are hidden from the model but stay
+    /// loadable via `read_skill`.
+    pub fn is_model_invocable(&self) -> bool {
+        !self.disable_model_invocation
+    }
+}
+
+/// Filter a slice of skills down to those that may be advertised to the model,
+/// preserving order. Skills flagged `disable-model-invocation` are dropped.
+pub fn model_invocable(skills: &[Skill]) -> Vec<Skill> {
+    skills
+        .iter()
+        .filter(|s| s.is_model_invocable())
+        .cloned()
+        .collect()
 }
 
 /// The skills found in a single scope, with the sandbox root `read_files`
@@ -239,6 +264,7 @@ fn load_skill(dir: &Path, skill_md: &Path, scope: SkillScope) -> Result<Skill> {
         skill_md: skill_md.to_path_buf(),
         dir: dir.to_path_buf(),
         scope,
+        disable_model_invocation: manifest.disable_model_invocation,
     })
 }
 

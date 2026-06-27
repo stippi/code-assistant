@@ -236,6 +236,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loads_model_invocation_disabled_skill() -> Result<()> {
+        // A skill hidden from the model catalog must still be loadable via
+        // read_skill (e.g. when the user explicitly activates it).
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join(".agents").join("skills").join("internal");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: internal\ndescription: Hidden.\ndisable-model-invocation: true\n---\nBody here.",
+        )
+        .unwrap();
+
+        let mut fixture = fixture_for_root("my-project", dir.path());
+        let mut context = fixture.context();
+
+        let registry = crate::tools::test_registry();
+        let tool = registry.get("read_skill").expect("read_skill registered");
+
+        let mut params = json!({ "project": "my-project", "name": "internal" });
+        let result = tool.invoke(&mut context, &mut params).await?;
+
+        assert!(result.is_success());
+        let mut tracker = ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+        assert!(output.contains("# Skill: internal (project)"));
+        assert!(output.contains("Body here."));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn errors_when_skill_missing() -> Result<()> {
         let dir = tempdir().unwrap();
         write_skill(dir.path(), "existing", "Present.", "body");

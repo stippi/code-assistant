@@ -17,6 +17,9 @@ const MAX_SHOWN: usize = 20;
 /// reflect which skills have been loaded), so the system prompt stays stable
 /// across turns and remains eligible for provider prompt caching.
 pub fn render_skills_section(project: &str, skills: &[Skill]) -> Option<String> {
+    // Skills flagged `disable-model-invocation` are never advertised to the
+    // model; they remain loadable via `read_skill` (e.g. user-initiated).
+    let skills = crate::skills::model_invocable(skills);
     if skills.is_empty() {
         return None;
     }
@@ -67,6 +70,7 @@ mod tests {
             skill_md: PathBuf::from(format!(".agents/skills/{name}/SKILL.md")),
             dir: PathBuf::from(format!(".agents/skills/{name}")),
             scope: crate::skills::SkillScope::Project,
+            disable_model_invocation: false,
         }
     }
 
@@ -98,6 +102,39 @@ mod tests {
         // The legend explains how to address each scope.
         assert!(rendered.contains(":config:"));
         assert!(rendered.contains(":system:"));
+    }
+
+    #[test]
+    fn hides_model_invocation_disabled_skills() {
+        let mut hidden = skill("internal-only", "User-invocable only.");
+        hidden.disable_model_invocation = true;
+        let visible = skill("public", "Normal skill.");
+
+        let rendered = render_skills_section("p", &[hidden, visible]).expect("should render");
+        assert!(rendered.contains("- public (project): Normal skill."));
+        assert!(!rendered.contains("internal-only"));
+    }
+
+    #[test]
+    fn renders_nothing_when_all_skills_are_model_disabled() {
+        let mut hidden = skill("internal-only", "User-invocable only.");
+        hidden.disable_model_invocation = true;
+        assert!(render_skills_section("p", &[hidden]).is_none());
+    }
+
+    #[test]
+    fn overflow_counts_only_visible_skills() {
+        // One hidden skill plus exactly MAX_SHOWN visible ones must not report
+        // overflow (the hidden one is filtered before counting).
+        let mut skills: Vec<Skill> = (0..MAX_SHOWN)
+            .map(|i| skill(&format!("skill-{i:02}"), "desc"))
+            .collect();
+        let mut hidden = skill("hidden", "desc");
+        hidden.disable_model_invocation = true;
+        skills.push(hidden);
+
+        let rendered = render_skills_section("p", &skills).expect("should render");
+        assert!(!rendered.contains("more skill(s) are not shown"));
     }
 
     #[test]
