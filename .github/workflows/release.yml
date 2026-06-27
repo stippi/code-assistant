@@ -150,7 +150,11 @@ jobs:
             cat "$crate_toml" | grep "^version = "
           done
 
-          # Update Cargo.lock for the entire workspace
+          # Refresh only the workspace crate versions in Cargo.lock. A bare
+          # `cargo update` would also re-resolve the unpinned git dependencies
+          # (gpui / gpui-component) to the latest default-branch commit, which
+          # drifts them out of sync (gpui-component pins a different gpui rev)
+          # and pulls a second copy of gpui into the graph, breaking the build.
           cargo update --workspace
 
       - name: Commit and push version update

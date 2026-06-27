@@ -6,12 +6,16 @@ resolver = "2"
 [patch.crates-io]
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
-# Pin to the exact zed commit that gpui-component depends on. Without a rev,
-# these patches resolve to the zed default-branch HEAD, which drifts away from
-# the commit gpui-component pins internally and pulls a *second* copy of gpui
-# into the graph (causing E0053/E0277/E0599 type mismatches between the two
-# gpui versions).
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "063e55bbc4fb13907a988111e3581595cbcaefde" }
+# These patches are intentionally left unpinned (no `rev`). gpui-component
+# itself depends on gpui via an unpinned `git = ".../zed"` dependency, so it
+# always resolves to the zed default-branch HEAD. The workspace must resolve to
+# that same commit, otherwise two copies of gpui end up in the graph and cause
+# E0053/E0277/E0599 type mismatches. The exact commit is locked in Cargo.lock,
+# and CI builds with `--locked`, so the resolved versions stay stable. Only an
+# explicit `cargo update` re-resolves them; the release workflow therefore uses
+# `cargo update --workspace` (not a bare `cargo update`) when bumping versions,
+# to avoid drifting these git dependencies. See .github/workflows/release.yml.
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed" }
+gpui_macros = { git = "https://github.com/zed-industries/zed" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
