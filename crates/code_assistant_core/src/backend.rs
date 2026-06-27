@@ -1,9 +1,8 @@
-use crate::config::{save_project, DefaultProjectManager, SCOPE_CONFIG, SCOPE_SYSTEM};
+use crate::config::{save_project, DefaultProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::skills::{
-    discover_scope_skills_filtered, load_skill_payload, render_skill_invocation_message,
-    SkillsConfig,
+    discover_session_catalog, load_skill_payload, render_skill_invocation_message, SkillsConfig,
 };
 use crate::types::Project;
 use crate::ui::UserInterface;
@@ -1066,29 +1065,15 @@ async fn handle_list_skills(
     let config = SkillsConfig::load();
     let pm = DefaultProjectManager::new();
 
-    let mut seen = std::collections::HashSet::new();
-    let mut skills: Vec<SkillCatalogEntry> = Vec::new();
-    for token in [project_name.as_str(), SCOPE_CONFIG, SCOPE_SYSTEM] {
-        let resolved = match discover_scope_skills_filtered(&pm, token, &config) {
-            Ok(resolved) => resolved,
-            Err(e) => {
-                debug!("Skipping skill scope `{token}` for {session_id}: {e}");
-                continue;
-            }
-        };
-        for skill in resolved.skills {
-            // First scope to define a name wins (precedence: project/user/system).
-            if seen.insert(skill.name.clone()) {
-                skills.push(SkillCatalogEntry {
-                    name: skill.name,
-                    description: skill.description,
-                    scope_token: token.to_string(),
-                    scope_label: skill.scope.label().to_string(),
-                });
-            }
-        }
-    }
-    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    let skills: Vec<SkillCatalogEntry> = discover_session_catalog(&pm, &project_name, &config)
+        .into_iter()
+        .map(|(skill, scope_token)| SkillCatalogEntry {
+            name: skill.name,
+            description: skill.description,
+            scope_label: skill.scope.label().to_string(),
+            scope_token,
+        })
+        .collect();
 
     BackendResponse::SkillsListed {
         session_id: session_id.to_string(),

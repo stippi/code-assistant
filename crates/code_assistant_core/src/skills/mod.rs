@@ -25,8 +25,8 @@ pub use invoke::{
 };
 pub use loader::{
     discover_all_skills, discover_all_skills_filtered, discover_config_and_system_skills,
-    discover_scope_skills, discover_scope_skills_filtered, model_invocable, ScopeSkills, Skill,
-    SkillScope,
+    discover_scope_skills, discover_scope_skills_filtered, discover_session_catalog,
+    model_invocable, ScopeSkills, Skill, SkillScope,
 };
 pub use manifest::{parse_skill_content, SkillManifest};
 pub use render::render_skills_section;

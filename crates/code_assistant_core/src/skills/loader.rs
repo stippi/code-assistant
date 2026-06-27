@@ -152,6 +152,38 @@ pub fn discover_all_skills(project_root: &Path) -> Vec<Skill> {
     discover_all_skills_filtered(project_root, &SkillsConfig::load())
 }
 
+/// Discover the skills available to a session as `(skill, scope_token)` pairs,
+/// where `scope_token` is what callers pass back to load the skill (the
+/// `project_name`, or `:config:` / `:system:`). Deduped across scopes with the
+/// same precedence as the catalog (project > user > system) and sorted by name.
+///
+/// Unlike [`discover_all_skills`] (which takes a path), this resolves each
+/// scope through the `project_manager`, so it agrees with how `read_skill` and
+/// the invocation path resolve scope tokens. Includes skills flagged
+/// `disable-model-invocation`, since a user may explicitly invoke any of them.
+pub fn discover_session_catalog(
+    project_manager: &dyn ProjectManager,
+    project_name: &str,
+    config: &SkillsConfig,
+) -> Vec<(Skill, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<(Skill, String)> = Vec::new();
+    for token in [project_name, SCOPE_CONFIG, SCOPE_SYSTEM] {
+        let resolved = match discover_scope_skills_filtered(project_manager, token, config) {
+            Ok(resolved) => resolved,
+            Err(_) => continue,
+        };
+        for skill in resolved.skills {
+            // First scope to define a name wins (project > user > system).
+            if seen.insert(skill.name.clone()) {
+                out.push((skill, token.to_string()));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+    out
+}
+
 /// Discover the shared user (`:config:`) and bundled system (`:system:`)
 /// skills across both roots, **unfiltered** and deduped by precedence.
 ///
