@@ -154,6 +154,7 @@ jobs:
           cargo update
 
       - name: Commit and push version update
+        id: commit
         run: |
           # Stage all changes
           git add crates/*/Cargo.toml Cargo.lock
@@ -165,6 +166,11 @@ jobs:
             git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
             git push
           fi
+
+          # Record the commit that carries the bumped version so the build
+          # job checks out exactly this source instead of the (older) commit
+          # that triggered the workflow.
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Create Release
         id: create_release
@@ -182,6 +188,7 @@ jobs:
       release_id: ${{ steps.create_release.outputs.id }}
       release_url: ${{ steps.create_release.outputs.url }}
       new_version: ${{ steps.release_version.outputs.new_version }}
+      commit_sha: ${{ steps.commit.outputs.sha }}
 
   build:
     needs: prepare-version
@@ -212,6 +219,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Check out the commit that carries the version bump produced by the
+          # prepare-version job. Without this we would build from the trigger
+          # commit, which still has the old version, causing the bundle zip
+          # name to mismatch the expected new_version.
+          ref: ${{ needs.prepare-version.outputs.commit_sha }}
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
