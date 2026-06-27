@@ -151,7 +151,7 @@ jobs:
           done
 
           # Update Cargo.lock for the entire workspace
-          cargo update
+          cargo update --workspace
 
       - name: Commit and push version update
         id: commit
