@@ -1,6 +1,6 @@
 [package]
 name = "ui_acp"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2021"
 
 [dependencies]
