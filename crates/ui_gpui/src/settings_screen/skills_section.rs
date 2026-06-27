@@ -71,13 +71,13 @@ impl SkillsSection {
     fn render_toggle_row(
         &self,
         id: &'static str,
-        label: &str,
-        description: &str,
+        text: (&str, &str),
         checked: bool,
         disabled: bool,
         cx: &mut Context<Self>,
         on_toggle: impl Fn(&mut Self, bool, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
+        let (label, description) = text;
         let view = cx.entity();
         let on_toggle = std::rc::Rc::new(on_toggle);
         div()
@@ -112,7 +112,7 @@ impl SkillsSection {
                     .on_click(move |new_value, _window, app| {
                         let new_value = *new_value;
                         let on_toggle = on_toggle.clone();
-                        let _ = view.update(app, |this, cx| {
+                        view.update(app, |this, cx| {
                             on_toggle(this, new_value, cx);
                         });
                     }),
@@ -180,7 +180,7 @@ impl SkillsSection {
                     .with_size(Size::Small)
                     .on_click(move |_new_value, _window, app| {
                         let skill = skill_for_click.clone();
-                        let _ = view.update(app, |this, cx| {
+                        view.update(app, |this, cx| {
                             this.toggle_skill(&skill, cx);
                         });
                     }),
@@ -227,9 +227,11 @@ impl Render for SkillsSection {
                     .bg(cx.theme().secondary)
                     .child(self.render_toggle_row(
                         "skills-enabled",
-                        "Enable skills",
-                        "Advertise skills in the system prompt and allow the read_skill / \
-                         list_skills tools.",
+                        (
+                            "Enable skills",
+                            "Advertise skills in the system prompt and allow the read_skill / \
+                             list_skills tools.",
+                        ),
                         enabled,
                         false,
                         cx,
@@ -237,8 +239,10 @@ impl Render for SkillsSection {
                     ))
                     .child(self.render_toggle_row(
                         "skills-bundled",
-                        "Use bundled skills",
-                        "Extract and advertise the skills shipped with the app (system scope).",
+                        (
+                            "Use bundled skills",
+                            "Extract and advertise the skills shipped with the app (system scope).",
+                        ),
                         bundled_enabled,
                         !enabled,
                         cx,
