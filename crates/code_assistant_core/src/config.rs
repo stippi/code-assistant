@@ -71,7 +71,16 @@ pub fn explorer_for_scope(
     project_manager: &dyn ProjectManager,
     scope: &str,
 ) -> Result<Box<dyn CodeExplorer>> {
-    if let Some(root) = skills_scope_root(scope, &crate::config_dir::config_dir()) {
+    explorer_for_scope_in(project_manager, scope, &crate::config_dir::config_dir())
+}
+
+/// Testable core of [`explorer_for_scope`] that takes an explicit `config_dir`.
+pub fn explorer_for_scope_in(
+    project_manager: &dyn ProjectManager,
+    scope: &str,
+    config_dir: &Path,
+) -> Result<Box<dyn CodeExplorer>> {
+    if let Some(root) = skills_scope_root(scope, config_dir) {
         return Ok(Box::new(Explorer::new(root)));
     }
     project_manager.get_explorer_for_project(scope)
@@ -250,6 +259,37 @@ mod tests {
         // Ordinary project names are not scope tokens.
         assert_eq!(skills_scope_root("my-project", cfg), None);
         assert_eq!(skills_scope_root("config", cfg), None);
+    }
+
+    #[test]
+    fn explorer_for_scope_in_resolves_reserved_tokens() {
+        let config_dir = tempdir().unwrap();
+        let pm = crate::mocks::MockProjectManager::default();
+
+        let system = explorer_for_scope_in(&pm, SCOPE_SYSTEM, config_dir.path()).unwrap();
+        assert_eq!(
+            system.root_dir(),
+            config_dir.path().join("skills").join(".system")
+        );
+
+        let user = explorer_for_scope_in(&pm, SCOPE_CONFIG, config_dir.path()).unwrap();
+        assert_eq!(user.root_dir(), config_dir.path().join("skills"));
+    }
+
+    #[test]
+    fn explorer_for_scope_in_falls_back_to_project_manager() {
+        let project = tempdir().unwrap();
+        let config_dir = tempdir().unwrap();
+        let explorer = crate::mocks::MockExplorer::new(HashMap::new(), None)
+            .with_root(project.path().to_path_buf());
+        let pm = crate::mocks::MockProjectManager::default().with_project_path(
+            "proj",
+            project.path().to_path_buf(),
+            Box::new(explorer),
+        );
+
+        let resolved = explorer_for_scope_in(&pm, "proj", config_dir.path()).unwrap();
+        assert_eq!(resolved.root_dir(), project.path());
     }
 
     #[tokio::test]

@@ -138,7 +138,7 @@ impl Tool for ExecuteCommandTool {
                     "project": {
                         "examples": ["project-name"],
                         "type": "string",
-                        "description": "Name of the project context for the command/script"
+                        "description": "Name of the project context for the command/script. The reserved values `:config:` and `:system:` instead address the shared user and bundled skill directories (used to run bundled skill scripts)."
                     },
                     "command_line": {
                         "type": "string",
@@ -179,17 +179,11 @@ impl Tool for ExecuteCommandTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        // Get explorer for the specified project
-        let explorer = context
-            .project_manager()
-            .get_explorer_for_project(&input.project)
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to get explorer for project {}: {}",
-                    input.project,
-                    e
-                )
-            })?;
+        // Resolve the scope (a project name, or a reserved skills-scope token
+        // such as `:config:` / `:system:`) to a sandboxed explorer. This lets
+        // bundled skill scripts under `:config:` / `:system:` be executed.
+        let explorer = crate::config::explorer_for_scope(context.project_manager(), &input.project)
+            .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
 
         let project_root = explorer.root_dir();
 
