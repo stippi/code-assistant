@@ -1,4 +1,4 @@
-use crate::skills::discover_scope_skills;
+use crate::skills::{discover_scope_skills_filtered, SkillsConfig};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -123,8 +123,17 @@ impl Tool for ListSkillsTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        let resolved = discover_scope_skills(context.project_manager(), &input.project)
-            .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
+        let config = SkillsConfig::load();
+        if !config.enabled {
+            return Err(anyhow!(
+                "Skills are disabled in this configuration (skills.json). \
+                 Enable them to list skills."
+            ));
+        }
+
+        let resolved =
+            discover_scope_skills_filtered(context.project_manager(), &input.project, &config)
+                .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
 
         let query = input.query.as_deref().map(str::to_lowercase);
         let skills = resolved

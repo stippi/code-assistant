@@ -1,4 +1,4 @@
-use crate::skills::{discover_scope_skills, parse_skill_content};
+use crate::skills::{discover_scope_skills_filtered, parse_skill_content, SkillsConfig};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
@@ -116,10 +116,19 @@ impl Tool for ReadSkillTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
+        let config = SkillsConfig::load();
+        if !config.enabled {
+            return Err(anyhow!(
+                "Skills are disabled in this configuration (skills.json). \
+                 Enable them to load skills."
+            ));
+        }
+
         // Resolve the requested scope (project name or :config:/:system:) to
         // its skills and sandbox root.
-        let resolved = discover_scope_skills(context.project_manager(), &input.project)
-            .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
+        let resolved =
+            discover_scope_skills_filtered(context.project_manager(), &input.project, &config)
+                .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
 
         let skill = resolved
             .skills

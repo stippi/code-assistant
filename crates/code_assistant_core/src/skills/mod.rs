@@ -18,6 +18,9 @@ pub mod render;
 
 pub use bundled::install_system_skills;
 pub use config::{skills_config_path, SkillsConfig};
-pub use loader::{discover_all_skills, discover_scope_skills, ScopeSkills, Skill, SkillScope};
+pub use loader::{
+    discover_all_skills, discover_all_skills_filtered, discover_scope_skills,
+    discover_scope_skills_filtered, ScopeSkills, Skill, SkillScope,
+};
 pub use manifest::{parse_skill_content, SkillManifest};
 pub use render::render_skills_section;

@@ -100,14 +100,18 @@ impl SkillsConfig {
             .any(|entry| entry == &skill.name || Path::new(entry) == skill.skill_md.as_path())
     }
 
-    /// Filter a list of discovered skills by the `disabled` list, consuming the
-    /// input. When the feature is disabled altogether the result is empty.
+    /// Filter a list of discovered skills by configuration, consuming the
+    /// input:
+    /// - when the feature is disabled altogether, the result is empty;
+    /// - when bundled skills are disabled, `system`-scoped skills are dropped;
+    /// - skills named (or located) in `disabled` are dropped.
     pub fn filter_skills(&self, skills: Vec<Skill>) -> Vec<Skill> {
         if !self.enabled {
             return Vec::new();
         }
         skills
             .into_iter()
+            .filter(|s| self.bundled_skills_enabled || s.scope != crate::skills::SkillScope::System)
             .filter(|s| !self.is_skill_disabled(s))
             .collect()
     }
@@ -214,6 +218,23 @@ mod tests {
             .map(|s| s.name)
             .collect();
         assert_eq!(kept, vec!["alpha".to_string(), "gamma".to_string()]);
+    }
+
+    #[test]
+    fn filter_skills_drops_system_when_bundled_disabled() {
+        let config = SkillsConfig {
+            bundled_skills_enabled: false,
+            ..Default::default()
+        };
+        let mut system_skill = skill("bundled", "/s/bundled/SKILL.md");
+        system_skill.scope = SkillScope::System;
+        let skills = vec![skill("project-one", "/s/p/SKILL.md"), system_skill];
+        let kept: Vec<_> = config
+            .filter_skills(skills)
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(kept, vec!["project-one".to_string()]);
     }
 
     #[test]

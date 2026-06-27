@@ -9,6 +9,7 @@
 //! system).
 
 use crate::config::{explorer_for_scope, ProjectManager, SCOPE_CONFIG, SCOPE_SYSTEM};
+use crate::skills::config::SkillsConfig;
 use crate::skills::manifest::parse_skill_content;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -82,6 +83,16 @@ pub fn discover_scope_skills(
     project_manager: &dyn ProjectManager,
     token: &str,
 ) -> Result<ScopeSkills> {
+    discover_scope_skills_filtered(project_manager, token, &SkillsConfig::load())
+}
+
+/// Like [`discover_scope_skills`], but using an explicit [`SkillsConfig`] for
+/// filtering (master switch, bundled toggle, disabled list).
+pub fn discover_scope_skills_filtered(
+    project_manager: &dyn ProjectManager,
+    token: &str,
+    config: &SkillsConfig,
+) -> Result<ScopeSkills> {
     let explorer = explorer_for_scope(project_manager, token)?;
     let sandbox_root = explorer.root_dir();
     let (skills_root, scope) = match token {
@@ -92,7 +103,7 @@ pub fn discover_scope_skills(
             SkillScope::Project,
         ),
     };
-    let skills = discover_skills_in(&skills_root, scope);
+    let skills = config.filter_skills(discover_skills_in(&skills_root, scope));
     Ok(ScopeSkills {
         skills,
         sandbox_root,
@@ -103,8 +114,14 @@ pub fn discover_scope_skills(
 /// Discover skills across all scopes for `project_root`, applying precedence
 /// (project > user > system) on name collisions. Sorted by name.
 pub fn discover_all_skills(project_root: &Path) -> Vec<Skill> {
+    discover_all_skills_filtered(project_root, &SkillsConfig::load())
+}
+
+/// Like [`discover_all_skills`], but using an explicit [`SkillsConfig`] for
+/// filtering (master switch, bundled toggle, disabled list).
+pub fn discover_all_skills_filtered(project_root: &Path, config: &SkillsConfig) -> Vec<Skill> {
     let config_dir = crate::config_dir::config_dir();
-    discover_across_roots(&[
+    let discovered = discover_across_roots(&[
         (
             project_root.join(".agents").join("skills"),
             SkillScope::Project,
@@ -114,7 +131,8 @@ pub fn discover_all_skills(project_root: &Path) -> Vec<Skill> {
             config_dir.join("skills").join(".system"),
             SkillScope::System,
         ),
-    ])
+    ]);
+    config.filter_skills(discovered)
 }
 
 /// Discover skills directly under `skills_root` — each immediate subdirectory
@@ -314,6 +332,56 @@ mod tests {
         ]);
         let shared = skills.iter().find(|s| s.name == "shared").unwrap();
         assert_eq!(shared.scope, SkillScope::User);
+    }
+
+    #[test]
+    fn discover_scope_skills_filtered_applies_disabled_list() {
+        use std::collections::HashMap;
+
+        let dir = tempdir().unwrap();
+        let skills_root = dir.path().join(".agents").join("skills");
+        write_skill(&skills_root, "alpha", "alpha", "Keep me.");
+        write_skill(&skills_root, "beta", "beta", "Hide me.");
+
+        let explorer = crate::mocks::MockExplorer::new(HashMap::new(), None)
+            .with_root(dir.path().to_path_buf());
+        let pm = crate::mocks::MockProjectManager::default().with_project_path(
+            "proj",
+            dir.path().to_path_buf(),
+            Box::new(explorer),
+        );
+
+        let config = SkillsConfig {
+            disabled: vec!["beta".to_string()],
+            ..Default::default()
+        };
+        let resolved = discover_scope_skills_filtered(&pm, "proj", &config).unwrap();
+        let names: Vec<_> = resolved.skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha"]);
+    }
+
+    #[test]
+    fn discover_scope_skills_filtered_master_switch_hides_all() {
+        use std::collections::HashMap;
+
+        let dir = tempdir().unwrap();
+        let skills_root = dir.path().join(".agents").join("skills");
+        write_skill(&skills_root, "alpha", "alpha", "Keep me.");
+
+        let explorer = crate::mocks::MockExplorer::new(HashMap::new(), None)
+            .with_root(dir.path().to_path_buf());
+        let pm = crate::mocks::MockProjectManager::default().with_project_path(
+            "proj",
+            dir.path().to_path_buf(),
+            Box::new(explorer),
+        );
+
+        let config = SkillsConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let resolved = discover_scope_skills_filtered(&pm, "proj", &config).unwrap();
+        assert!(resolved.skills.is_empty());
     }
 
     #[test]

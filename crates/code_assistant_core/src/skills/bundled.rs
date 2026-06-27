@@ -22,15 +22,30 @@ const SALT: &str = "v1";
 
 /// Extract the bundled system skills into `<config_dir>/skills/.system`,
 /// skipping the work when the installed fingerprint already matches.
+///
+/// Honors [`SkillsConfig::bundled_skills_enabled`]: when bundled skills are
+/// disabled, any previously-extracted tree is removed instead.
 pub fn install_system_skills() -> Result<()> {
     let system_root = crate::config_dir::config_dir()
         .join("skills")
         .join(".system");
-    install_system_skills_into(&system_root)
+    let config = crate::skills::SkillsConfig::load();
+    install_system_skills_into(&system_root, config.bundled_skills_enabled)
 }
 
 /// Testable core of [`install_system_skills`] that targets an explicit root.
-fn install_system_skills_into(system_root: &Path) -> Result<()> {
+///
+/// When `bundled_enabled` is false, the system skills directory is removed (if
+/// present) and nothing is extracted.
+fn install_system_skills_into(system_root: &Path, bundled_enabled: bool) -> Result<()> {
+    if !bundled_enabled {
+        if system_root.exists() {
+            fs::remove_dir_all(system_root)
+                .with_context(|| format!("Failed to clear {}", system_root.display()))?;
+        }
+        return Ok(());
+    }
+
     let fingerprint = compute_fingerprint();
     let fingerprint_path = system_root.join(FINGERPRINT_FILE);
 
@@ -103,7 +118,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let system_root = dir.path().join(".system");
 
-        install_system_skills_into(&system_root).unwrap();
+        install_system_skills_into(&system_root, true).unwrap();
         let skill_md = system_root.join("skill-creator").join("SKILL.md");
         assert!(skill_md.is_file());
         assert!(system_root.join(FINGERPRINT_FILE).is_file());
@@ -114,22 +129,40 @@ mod tests {
         assert!(skills.iter().all(|s| s.scope == SkillScope::System));
 
         // A second run is a no-op (fingerprint matches) and still succeeds.
-        install_system_skills_into(&system_root).unwrap();
+        install_system_skills_into(&system_root, true).unwrap();
         assert!(skill_md.is_file());
+    }
+
+    #[test]
+    fn disabling_bundled_skills_removes_the_tree() {
+        let dir = tempdir().unwrap();
+        let system_root = dir.path().join(".system");
+
+        // First install with bundled skills enabled.
+        install_system_skills_into(&system_root, true).unwrap();
+        assert!(system_root.join("skill-creator").join("SKILL.md").is_file());
+
+        // Disabling clears the previously-extracted tree.
+        install_system_skills_into(&system_root, false).unwrap();
+        assert!(!system_root.exists());
+
+        // And is a no-op when nothing is installed.
+        install_system_skills_into(&system_root, false).unwrap();
+        assert!(!system_root.exists());
     }
 
     #[test]
     fn reextracts_when_fingerprint_differs() {
         let dir = tempdir().unwrap();
         let system_root = dir.path().join(".system");
-        install_system_skills_into(&system_root).unwrap();
+        install_system_skills_into(&system_root, true).unwrap();
 
         let skill_md = system_root.join("skill-creator").join("SKILL.md");
         // Tamper with the installed content and stale the fingerprint.
         fs::write(&skill_md, "corrupted").unwrap();
         fs::write(system_root.join(FINGERPRINT_FILE), "stale").unwrap();
 
-        install_system_skills_into(&system_root).unwrap();
+        install_system_skills_into(&system_root, true).unwrap();
 
         let restored = fs::read_to_string(&skill_md).unwrap();
         assert!(restored.contains("name: skill-creator"));
