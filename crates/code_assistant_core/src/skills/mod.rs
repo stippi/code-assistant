@@ -12,12 +12,17 @@
 
 pub mod bundled;
 pub mod config;
+pub mod invoke;
 pub mod loader;
 pub mod manifest;
 pub mod render;
 
 pub use bundled::install_system_skills;
 pub use config::{skills_config_path, SkillsConfig};
+pub use invoke::{
+    load_skill_payload, render_skill_body_with_header, render_skill_invocation_message,
+    SkillPayload, MAX_BODY_LEN,
+};
 pub use loader::{
     discover_all_skills, discover_all_skills_filtered, discover_config_and_system_skills,
     discover_scope_skills, discover_scope_skills_filtered, model_invocable, ScopeSkills, Skill,

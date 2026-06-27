@@ -1,15 +1,14 @@
-use crate::skills::{discover_scope_skills_filtered, parse_skill_content, SkillsConfig};
+use crate::skills::{
+    load_skill_payload, render_skill_body_with_header, SkillPayload, SkillsConfig,
+};
 use crate::tools::core::{
     capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use crate::tools::ToolServicesAccess;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
-
-/// Cap on the returned skill body to keep context size reasonable.
-const MAX_BODY_LEN: usize = 64 * 1024;
 
 // Input type for the read_skill tool
 #[derive(Deserialize, Serialize)]
@@ -35,26 +34,25 @@ pub struct ReadSkillOutput {
     pub body: String,
 }
 
+impl ReadSkillOutput {
+    fn payload(&self) -> SkillPayload {
+        SkillPayload {
+            scope_token: self.scope.clone(),
+            scope_label: self.scope_label.clone(),
+            name: self.name.clone(),
+            dir: self.dir.clone(),
+            body: self.body.clone(),
+        }
+    }
+}
+
 impl Render for ReadSkillOutput {
     fn status(&self) -> String {
         format!("Loaded skill '{}'", self.name)
     }
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
-        let dir = self.dir.to_string_lossy().replace('\\', "/");
-        format!(
-            "# Skill: {name} ({scope_label})\n\n\
-             Bundled resources live under `{dir}/`; the paths referenced below are relative to \
-             that directory. Read a resource with `read_files` (project `{scope}`, path \
-             `{dir}/<resource>`) or run a bundled script with `execute_command`.\n\n\
-             ---\n\n\
-             {body}",
-            name = self.name,
-            scope_label = self.scope_label,
-            dir = dir,
-            scope = self.scope,
-            body = self.body,
-        )
+        render_skill_body_with_header(&self.payload())
     }
 }
 
@@ -117,60 +115,19 @@ impl Tool for ReadSkillTool {
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
         let config = SkillsConfig::load();
-        if !config.enabled {
-            return Err(anyhow!(
-                "Skills are disabled in this configuration (skills.json). \
-                 Enable them to load skills."
-            ));
-        }
-
-        // Resolve the requested scope (project name or :config:/:system:) to
-        // its skills and sandbox root.
-        let resolved =
-            discover_scope_skills_filtered(context.project_manager(), &input.project, &config)
-                .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
-
-        let skill = resolved
-            .skills
-            .into_iter()
-            .find(|s| s.name == input.name)
-            .ok_or_else(|| {
-                anyhow!(
-                    "No skill named `{}` was found in scope `{}`",
-                    input.name,
-                    input.project
-                )
-            })?;
-
-        // Express the skill directory relative to the scope's sandbox root so
-        // the body's relative resource references resolve directly via
-        // read_files with the same scope token.
-        let dir = skill
-            .dir
-            .strip_prefix(&resolved.sandbox_root)
-            .unwrap_or(skill.dir.as_path())
-            .to_path_buf();
-
-        let content = std::fs::read_to_string(&skill.skill_md)
-            .map_err(|e| anyhow!("Failed to read skill `{}`: {}", input.name, e))?;
-        let (_manifest, mut body) = parse_skill_content(&content)?;
-
-        if body.len() > MAX_BODY_LEN {
-            // Truncate on a char boundary to avoid panicking on multi-byte text.
-            let mut end = MAX_BODY_LEN;
-            while end > 0 && !body.is_char_boundary(end) {
-                end -= 1;
-            }
-            body.truncate(end);
-            body.push_str("\n\n[... skill truncated to keep context size reasonable ...]");
-        }
+        let payload = load_skill_payload(
+            context.project_manager(),
+            &input.project,
+            &input.name,
+            &config,
+        )?;
 
         Ok(ReadSkillOutput {
-            scope: input.project.clone(),
-            scope_label: resolved.scope.label().to_string(),
-            name: skill.name,
-            dir,
-            body,
+            scope: payload.scope_token,
+            scope_label: payload.scope_label,
+            name: payload.name,
+            dir: payload.dir,
+            body: payload.body,
         })
     }
 }
