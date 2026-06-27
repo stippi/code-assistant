@@ -118,6 +118,11 @@ pub struct Gpui {
     /// Incremented each time config files (providers.json / models.json) change on disk.
     /// Components compare their locally cached generation with this to know when to reload.
     config_generation: Arc<std::sync::atomic::AtomicU64>,
+
+    /// Skills available to the current session, cached for the `/skill`
+    /// input-area completion and submit-time invocation. Refreshed on session
+    /// load via `BackendEvent::ListSkills` / `BackendResponse::SkillsListed`.
+    skills: Arc<Mutex<Vec<code_assistant_core::backend::SkillCatalogEntry>>>,
 }
 
 /// State for a pending message edit (for branching)
@@ -416,6 +421,8 @@ impl Gpui {
             )),
 
             config_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+
+            skills: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -662,6 +669,11 @@ impl Gpui {
 
         // Return the backend ends
         (event_rx, response_tx)
+    }
+
+    /// Snapshot of the skills available to the current session.
+    pub(crate) fn skills(&self) -> Vec<code_assistant_core::backend::SkillCatalogEntry> {
+        self.skills.lock().unwrap().clone()
     }
 
     // Helper to add an event to the queue

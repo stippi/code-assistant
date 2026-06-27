@@ -1,6 +1,7 @@
 pub mod attachment;
 pub mod model_selector;
 pub mod sandbox_selector;
+pub mod skill_completion;
 pub mod worktree_selector;
 
 use super::shared::file_icons;
@@ -28,6 +29,9 @@ pub enum InputAreaEvent {
         /// If set, this message creates a new branch from this parent node
         branch_parent_id: Option<NodeId>,
     },
+    /// User submitted a bare `/<skill-name>` that matches a known skill.
+    /// Carries the scope token and skill name to activate.
+    SkillInvoked { scope: String, name: String },
     /// Content changed (for draft saving)
     ContentChanged {
         content: String,
@@ -98,6 +102,13 @@ impl InputArea {
                 .multi_line(true)
                 .auto_grow(1, 8)
                 .placeholder("Type your message...")
+        });
+
+        // Wire the `/skill` autocomplete provider onto the input's LSP slot.
+        text_input.update(cx, |state, _cx| {
+            state.lsp.completion_provider = Some(std::rc::Rc::new(
+                skill_completion::SkillCompletionProvider::new(),
+            ));
         });
 
         // Subscribe to text input events
@@ -297,6 +308,19 @@ impl InputArea {
             // Don't submit empty messages
             if current_text.trim().is_empty() && self.attachments.is_empty() {
                 // Stop propagation so InputState::enter() doesn't insert a newline
+                cx.stop_propagation();
+                return;
+            }
+
+            // A lone `/<skill-name>` matching a known skill is a skill
+            // activation, not a chat message. Translate it before submitting.
+            let skills = cx.global::<crate::Gpui>().skills();
+            if let Some((scope, name)) =
+                skill_completion::skill_invocation_from_input(&current_text, &skills)
+            {
+                cx.emit(InputAreaEvent::ClearDraftRequested);
+                cx.emit(InputAreaEvent::SkillInvoked { scope, name });
+                self.clear(window, cx);
                 cx.stop_propagation();
                 return;
             }

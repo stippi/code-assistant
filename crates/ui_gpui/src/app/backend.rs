@@ -20,9 +20,11 @@ impl Gpui {
                     let _ = sender.try_send(BackendEvent::ListSessions);
                     // Load the newly created session to connect it to the UI
                     let _ = sender.try_send(BackendEvent::LoadSession {
-                        session_id,
+                        session_id: session_id.clone(),
                         edit_until_node_id: None,
                     });
+                    // Refresh the skill catalog for the `/skill` picker.
+                    let _ = sender.try_send(BackendEvent::ListSkills { session_id });
                 }
             }
 
@@ -59,6 +61,15 @@ impl Gpui {
                 debug!("Received BackendResponse::SessionsListed");
                 *self.chat_sessions.lock().unwrap() = sessions.clone();
                 self.push_event(UiEvent::UpdateChatList { sessions });
+            }
+            BackendResponse::SkillsListed { session_id, skills } => {
+                debug!(
+                    "Received BackendResponse::SkillsListed for {} ({} skills)",
+                    session_id,
+                    skills.len()
+                );
+                // Cache for the `/skill` input-area completion + invocation.
+                *self.skills.lock().unwrap() = skills;
             }
             BackendResponse::Error { message } => {
                 warn!("Backend error: {}", message);
@@ -325,9 +336,10 @@ impl Gpui {
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::ListSessions);
                     let _ = sender.try_send(BackendEvent::LoadSession {
-                        session_id,
+                        session_id: session_id.clone(),
                         edit_until_node_id: None,
                     });
+                    let _ = sender.try_send(BackendEvent::ListSkills { session_id });
                 }
             }
             BackendResponse::ProjectPersisted { project_name } => {
