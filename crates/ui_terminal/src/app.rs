@@ -49,8 +49,12 @@ async fn handle_slash_prefix_changed(
             // If the stack is empty (or the top is not the root command list),
             // open the root command list popup. Sub-popups remain on the stack
             // and ignore the prefix change (the top-of-stack popup decides).
+
             if state.popup_stack.depth() == 0 {
-                state.popup_stack.push(Box::new(CommandListPopup::new()));
+                let skills = state.skills.clone();
+                state
+                    .popup_stack
+                    .push(Box::new(CommandListPopup::with_skills(skills)));
             }
             state.popup_stack.set_query(&q);
         }
@@ -185,6 +189,67 @@ async fn handle_command_result(
         CommandResult::CompactContext => {
             let session_id = app_state.lock().await.current_session_id.clone();
             session_id.map(|session_id| BackendEvent::CompactContext { session_id })
+        }
+
+        CommandResult::OpenSkillPicker => {
+            // Open the skill picker built from the cached catalog. If no skills
+            // are available, show an informational message instead.
+            let mut state = app_state.lock().await;
+            if state.skills.is_empty() {
+                state.set_info_message(Some(
+                    "No skills are available for this session.".to_string(),
+                ));
+            } else {
+                let skills = state.skills.clone();
+                state.popup_stack.push(Box::new(
+                    crate::slash_popup::SkillPickerPopup::from_entries(skills),
+                ));
+            }
+            None
+        }
+        CommandResult::InvokeSkill { scope, name } => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            let Some(session_id) = session_id else {
+                app_state
+                    .lock()
+                    .await
+                    .set_info_message(Some("No active session to activate a skill".to_string()));
+                return None;
+            };
+
+            // Resolve the scope token: use the explicit one from the picker, or
+            // look it up in the cached catalog by name (inline `/skill <name>`).
+            let resolved_scope = match scope {
+                Some(scope) => Some(scope),
+                None => app_state
+                    .lock()
+                    .await
+                    .skills
+                    .iter()
+                    .find(|s| s.name == name)
+                    .map(|s| s.scope_token.clone()),
+            };
+
+            match resolved_scope {
+                Some(scope) => {
+                    app_state
+                        .lock()
+                        .await
+                        .set_info_message(Some(format!("Activating skill: {name}")));
+                    Some(BackendEvent::InvokeSkill {
+                        session_id,
+                        scope,
+                        name,
+                    })
+                }
+                None => {
+                    app_state
+                        .lock()
+                        .await
+                        .set_info_message(Some(format!("No skill named '{name}' was found")));
+                    None
+                }
+            }
         }
         CommandResult::InvalidCommand(error) => {
             app_state
@@ -482,6 +547,30 @@ async fn event_loop(
                                             .await;
                                     }
                                 }
+
+                                KeyEventResult::OpenSkillPicker => {
+                                    // Inline `/skill` (popup not active): reuse the
+                                    // command-result handler to open the picker.
+                                    let _ = handle_command_result(
+                                        crate::commands::CommandResult::OpenSkillPicker,
+                                        &app_state,
+                                        &renderer,
+                                        &backend_event_tx,
+                                    )
+                                    .await;
+                                }
+                                KeyEventResult::InvokeSkill { scope, name } => {
+                                    if let Some(event) = handle_command_result(
+                                        crate::commands::CommandResult::InvokeSkill { scope, name },
+                                        &app_state,
+                                        &renderer,
+                                        &backend_event_tx,
+                                    )
+                                    .await
+                                    {
+                                        let _ = backend_event_tx.send(event).await;
+                                    }
+                                }
                                 KeyEventResult::SlashPrefixChanged(query) => {
                                     handle_slash_prefix_changed(
                                         query,
@@ -766,6 +855,11 @@ impl TerminalTuiApp {
         // Kick off a session list refresh (optional but useful)
         let _ = backend_event_tx.try_send(BackendEvent::ListSessions);
 
+        // Fetch the skill catalog for the `/skill` picker.
+        let _ = backend_event_tx.try_send(BackendEvent::ListSkills {
+            session_id: session_id.clone(),
+        });
+
         // Spawn a background task to process UI events from display fragments
         {
             let terminal_ui_clone = terminal_ui.clone();
@@ -789,6 +883,13 @@ impl TerminalTuiApp {
                                     sessions,
                                 })
                                 .await;
+                        }
+                        BackendResponse::SkillsListed {
+                            session_id: _,
+                            skills,
+                        } => {
+                            // Cache the catalog for the `/skill` picker.
+                            app_state_clone.lock().await.skills = skills;
                         }
                         BackendResponse::PendingMessageUpdated {
                             session_id: _,

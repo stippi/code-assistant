@@ -50,6 +50,11 @@ pub fn all_commands() -> &'static [SlashCommand] {
             aliases: &[],
             description: "Summarize and compact the conversation context",
         },
+        SlashCommand {
+            name: "skill",
+            aliases: &[],
+            description: "Activate a skill: /skill <name> (or pick from the list)",
+        },
     ]
 }
 
@@ -72,10 +77,17 @@ pub enum CommandResult {
     InvalidCommand(String),
     /// Toggle plan rendering mode
     TogglePlan,
+
     /// Clear conversation context
     ClearContext,
     /// Compact (summarise) conversation context
     CompactContext,
+    /// Open the skill picker popup.
+    OpenSkillPicker,
+    /// Activate a skill by name. `scope` is the scope token (project name, or
+    /// `:config:` / `:system:`); `None` means resolve it from the cached
+    /// catalog by name.
+    InvokeSkill { scope: Option<String>, name: String },
 }
 
 /// Process slash commands in terminal UI
@@ -110,6 +122,16 @@ impl CommandProcessor {
             "plan" => CommandResult::TogglePlan,
             "clear" => CommandResult::ClearContext,
             "compact" => CommandResult::CompactContext,
+            "skill" => {
+                if parts.len() > 1 {
+                    CommandResult::InvokeSkill {
+                        scope: None,
+                        name: parts[1..].join(" "),
+                    }
+                } else {
+                    CommandResult::OpenSkillPicker
+                }
+            }
             _ => CommandResult::InvalidCommand(format!("Unknown command: /{}", parts[0])),
         }
     }
