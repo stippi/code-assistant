@@ -305,22 +305,30 @@ impl InputArea {
     fn on_enter(&mut self, action: &Enter, window: &mut Window, cx: &mut Context<Self>) {
         if !action.secondary {
             let current_text = self.text_input.read(cx).value().to_string();
+
+            // Slash-command handling: classify the input against the skill
+            // catalog so Enter does the intuitive thing.
+            let skills = cx.global::<crate::Gpui>().skills();
+            match skill_completion::slash_completion_state(&current_text, &skills) {
+                skill_completion::SlashState::MenuOpen => {
+                    // The completion menu is open. Let Enter propagate to the
+                    // inner input so it confirms the highlighted skill (which
+                    // inserts `/<name>`); do not submit or insert a newline.
+                    return;
+                }
+                skill_completion::SlashState::Invoke { scope, name } => {
+                    cx.emit(InputAreaEvent::ClearDraftRequested);
+                    cx.emit(InputAreaEvent::SkillInvoked { scope, name });
+                    self.clear(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                skill_completion::SlashState::None => {}
+            }
+
             // Don't submit empty messages
             if current_text.trim().is_empty() && self.attachments.is_empty() {
                 // Stop propagation so InputState::enter() doesn't insert a newline
-                cx.stop_propagation();
-                return;
-            }
-
-            // A lone `/<skill-name>` matching a known skill is a skill
-            // activation, not a chat message. Translate it before submitting.
-            let skills = cx.global::<crate::Gpui>().skills();
-            if let Some((scope, name)) =
-                skill_completion::skill_invocation_from_input(&current_text, &skills)
-            {
-                cx.emit(InputAreaEvent::ClearDraftRequested);
-                cx.emit(InputAreaEvent::SkillInvoked { scope, name });
-                self.clear(window, cx);
                 cx.stop_propagation();
                 return;
             }

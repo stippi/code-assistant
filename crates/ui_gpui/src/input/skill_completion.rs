@@ -107,22 +107,55 @@ impl gpui_component::input::CompletionProvider for SkillCompletionProvider {
     }
 }
 
-/// If `input` is a lone `/<skill-name>` that matches one of `skills`, return
-/// the `(scope_token, name)` to invoke. Returns `None` for ordinary messages.
-pub fn skill_invocation_from_input(
-    input: &str,
-    skills: &[SkillCatalogEntry],
-) -> Option<(String, String)> {
+/// What pressing Enter on the composer should do, given the current input and
+/// the available skills.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlashState {
+    /// The input is a complete `/<skill-name>` — activate it.
+    Invoke { scope: String, name: String },
+    /// The input is a `/<query>` for which the completion menu is showing at
+    /// least one entry. Enter should confirm the highlighted entry (handled by
+    /// the inner input's completion menu), not submit the message.
+    MenuOpen,
+    /// Not a slash-completion context — submit as an ordinary message.
+    None,
+}
+
+/// Whether a `/<query>` line would show at least one completion entry. Mirrors
+/// the filter in [`SkillCompletionProvider::completions`] so callers can tell
+/// when the completion menu is open.
+fn query_matches(query: &str, skills: &[SkillCatalogEntry]) -> bool {
+    let q = query.to_lowercase();
+    skills.iter().any(|s| {
+        q.is_empty()
+            || s.name.to_lowercase().contains(&q)
+            || s.description.to_lowercase().contains(&q)
+    })
+}
+
+/// Classify the composer input for Enter handling (see [`SlashState`]).
+pub fn slash_completion_state(input: &str, skills: &[SkillCatalogEntry]) -> SlashState {
     let trimmed = input.trim();
-    let name = trimmed.strip_prefix('/')?;
-    // A skill invocation is a single bare name (no spaces / extra text).
-    if name.is_empty() || name.contains(char::is_whitespace) {
-        return None;
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return SlashState::None;
+    };
+    // A slash command is a single bare token (skill names never contain spaces).
+    if rest.contains(char::is_whitespace) {
+        return SlashState::None;
     }
-    skills
-        .iter()
-        .find(|s| s.name == name)
-        .map(|s| (s.scope_token.clone(), s.name.clone()))
+    // A fully-typed, known skill name activates immediately.
+    if let Some(s) = skills.iter().find(|s| s.name == rest) {
+        return SlashState::Invoke {
+            scope: s.scope_token.clone(),
+            name: s.name.clone(),
+        };
+    }
+    // Otherwise, if the menu is showing matches, Enter belongs to the menu.
+    if query_matches(rest, skills) {
+        SlashState::MenuOpen
+    } else {
+        SlashState::None
+    }
 }
 
 #[cfg(test)]
@@ -139,15 +172,34 @@ mod tests {
     }
 
     #[test]
-    fn resolves_known_skill_token() {
+    fn exact_name_invokes() {
         let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
         assert_eq!(
-            skill_invocation_from_input("/review", &skills),
-            Some((":config:".to_string(), "review".to_string()))
+            slash_completion_state("/review", &skills),
+            SlashState::Invoke {
+                scope: ":config:".to_string(),
+                name: "review".to_string()
+            }
         );
         assert_eq!(
-            skill_invocation_from_input("  /pdf-extraction  ", &skills),
-            Some(("proj".to_string(), "pdf-extraction".to_string()))
+            slash_completion_state("  /pdf-extraction  ", &skills),
+            SlashState::Invoke {
+                scope: "proj".to_string(),
+                name: "pdf-extraction".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn prefix_query_keeps_menu_open() {
+        let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
+        // A bare slash shows all skills.
+        assert_eq!(slash_completion_state("/", &skills), SlashState::MenuOpen);
+        // A partial token that matches at least one skill keeps the menu open.
+        assert_eq!(slash_completion_state("/pd", &skills), SlashState::MenuOpen);
+        assert_eq!(
+            slash_completion_state("/rev", &skills),
+            SlashState::MenuOpen
         );
     }
 
@@ -155,16 +207,17 @@ mod tests {
     fn ignores_non_skill_input() {
         let skills = vec![entry("pdf-extraction", "proj")];
         // Ordinary message.
-        assert_eq!(skill_invocation_from_input("hello there", &skills), None);
-        // Slash but unknown name.
-        assert_eq!(skill_invocation_from_input("/unknown", &skills), None);
+        assert_eq!(
+            slash_completion_state("hello there", &skills),
+            SlashState::None
+        );
+        // Slash but no matching skill → submit as a normal message.
+        assert_eq!(slash_completion_state("/zzz", &skills), SlashState::None);
         // Slash with trailing text is not a bare skill token.
         assert_eq!(
-            skill_invocation_from_input("/pdf-extraction now", &skills),
-            None
+            slash_completion_state("/pdf-extraction now", &skills),
+            SlashState::None
         );
-        // Bare slash.
-        assert_eq!(skill_invocation_from_input("/", &skills), None);
     }
 
     #[test]
