@@ -66,6 +66,16 @@ impl InlineToolRenderer {
                 template: "View {paths}",
                 fallback: "View",
             },
+            DescribeTemplate {
+                tool_name: "read_skill",
+                template: "Load skill {name}",
+                fallback: "Load skill",
+            },
+            DescribeTemplate {
+                tool_name: "list_skills",
+                template: "List skills in {project}",
+                fallback: "List skills",
+            },
         ];
 
         let tools: Vec<String> = templates.iter().map(|t| t.tool_name.to_string()).collect();

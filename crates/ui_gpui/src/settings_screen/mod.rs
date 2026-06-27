@@ -5,6 +5,7 @@ mod models_section;
 pub(crate) mod provider_forms;
 pub(crate) mod provider_suggestions;
 mod providers_section;
+mod skills_section;
 
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, SharedString,
@@ -19,6 +20,7 @@ pub enum SettingsSection {
     General,
     Providers,
     Models,
+    Skills,
 }
 
 /// Events emitted by the settings screen.
@@ -33,16 +35,20 @@ impl gpui::EventEmitter<SettingsScreenEvent> for SettingsScreen {}
 pub struct SettingsScreen {
     focus_handle: FocusHandle,
     active_section: SettingsSection,
+
     providers_section: Entity<providers_section::ProvidersSection>,
     models_section: Entity<models_section::ModelsSection>,
     general_section: Entity<general_section::GeneralSection>,
+    skills_section: Entity<skills_section::SkillsSection>,
 }
 
 impl SettingsScreen {
     pub fn new(window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
         let providers_section = cx.new(|cx| providers_section::ProvidersSection::new(window, cx));
         let models_section = cx.new(|cx| models_section::ModelsSection::new(window, cx));
+
         let general_section = cx.new(|cx| general_section::GeneralSection::new(window, cx));
+        let skills_section = cx.new(|cx| skills_section::SkillsSection::new(window, cx));
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -50,6 +56,7 @@ impl SettingsScreen {
             providers_section,
             models_section,
             general_section,
+            skills_section,
         }
     }
 
@@ -85,6 +92,9 @@ impl SettingsScreen {
             }
             SettingsSection::Models => {
                 self.models_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::Skills => {
+                self.skills_section.update(cx, |s, _cx| s.reload());
             }
             SettingsSection::General => {}
         }
@@ -248,6 +258,12 @@ impl Render for SettingsScreen {
                                         "Models",
                                         "icons/brain.svg",
                                         cx,
+                                    ))
+                                    .child(self.render_nav_item(
+                                        SettingsSection::Skills,
+                                        "Skills",
+                                        "icons/library.svg",
+                                        cx,
                                     )),
                             ),
                     )
@@ -260,8 +276,12 @@ impl Render for SettingsScreen {
                             SettingsSection::Providers => {
                                 self.providers_section.clone().into_any_element()
                             }
+
                             SettingsSection::Models => {
                                 self.models_section.clone().into_any_element()
+                            }
+                            SettingsSection::Skills => {
+                                self.skills_section.clone().into_any_element()
                             }
                         },
                     )),

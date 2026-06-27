@@ -199,6 +199,26 @@ mod tests {
         assert!(registry.get("search_files").is_some());
         assert!(registry.get("list_files").is_some());
         assert!(registry.get("execute_command").is_none());
+        // Skills tools render inline.
+        assert!(registry.get("read_skill").is_some());
+        assert!(registry.get("list_skills").is_some());
+    }
+
+    #[test]
+    fn test_describe_read_skill() {
+        let renderer = InlineToolRenderer::new();
+        let tool = make_tool("read_skill", &[("name", "release-notes")]);
+        assert_eq!(renderer.describe(&tool), "Load skill release-notes");
+        // Before params stream in, the stable fallback is shown.
+        let bare = make_tool("read_skill", &[]);
+        assert_eq!(renderer.describe(&bare), "Load skill");
+    }
+
+    #[test]
+    fn test_describe_list_skills() {
+        let renderer = InlineToolRenderer::new();
+        let tool = make_tool("list_skills", &[("project", ":system:")]);
+        assert_eq!(renderer.describe(&tool), "List skills in :system:");
     }
 
     #[test]
