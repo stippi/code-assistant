@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. "v0.1.6" (optional, will auto-increment if not provided)'
+        description: 'Version to release, e.g. "v0.1.6". If empty, the current version from Cargo.toml is released.'
         required: false
         type: string
 
@@ -60,138 +60,73 @@ jobs:
       - name: cargo test -p ui_gpui
         run: cargo test -p ui_gpui --locked
 
-  prepare-version:
+  # Determine the version to release. This job is intentionally read-only: it
+  # must not commit, push, tag, or create a release. Any repository mutation is
+  # deferred to the `publish` job, which only runs after the build matrix is
+  # green. That way a failed build can never leave a dangling version bump,
+  # tag, or release behind.
+  prepare:
     needs: [test-linux, test-gpui]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          token: ${{ secrets.GH_PUSH_TOKEN }}
 
-      - name: Set up Git
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-
-      - name: Parse version from main crate
-        id: cargo_version
+      - name: Determine versions
+        id: versions
         run: |
           CURRENT_VERSION=$(grep -m 1 "^version = " crates/code_assistant/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          echo "Current version: $CURRENT_VERSION"
+          echo "Current version in tree: $CURRENT_VERSION"
 
-      - name: Determine release version
-        id: release_version
-        run: |
-          if [ -z "${{ github.event.inputs.version }}" ]; then
-            # Auto-increment the patch version
-            MAJOR=$(echo ${{ steps.cargo_version.outputs.current_version }} | cut -d. -f1)
-            MINOR=$(echo ${{ steps.cargo_version.outputs.current_version }} | cut -d. -f2)
-            PATCH=$(echo ${{ steps.cargo_version.outputs.current_version }} | cut -d. -f3)
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-            echo "Used auto-incremented version"
+          INPUT="${{ github.event.inputs.version }}"
+          if [ -z "$INPUT" ]; then
+            # No version supplied: release exactly what is in the tree.
+            RELEASE_VERSION="$CURRENT_VERSION"
+            echo "No version supplied; releasing current version $RELEASE_VERSION"
           else
-            # Use provided version, strip 'v' prefix if present
-            NEW_VERSION=$(echo "${{ github.event.inputs.version }}" | sed 's/^v//')
+            # Use the provided version, stripping a leading 'v' if present.
+            RELEASE_VERSION=$(echo "$INPUT" | sed 's/^v//')
 
-            # Version validation
-            CURRENT_VERSION="${{ steps.cargo_version.outputs.current_version }}"
-
-            if [[ "$NEW_VERSION" == "$CURRENT_VERSION" ]]; then
-              echo "Re-releasing same version ($NEW_VERSION). Will delete existing tag/release if present."
-
-              # Check if tag exists and delete it
-              if git ls-remote --tags origin | grep -q "refs/tags/v$NEW_VERSION"; then
-                echo "Deleting existing tag v$NEW_VERSION"
-                git push origin --delete "v$NEW_VERSION" || true
-              fi
-
-              # Check if release exists and delete it
-              EXISTING_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GH_PUSH_TOKEN }}" \
-                "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$NEW_VERSION" | \
-                grep -o '"id":[0-9]*' | cut -d: -f2 || echo "")
-
-              if [[ -n "$EXISTING_RELEASE" && "$EXISTING_RELEASE" != "null" ]]; then
-                echo "Deleting existing release for v$NEW_VERSION (ID: $EXISTING_RELEASE)"
-                curl -s -X DELETE -H "Authorization: Bearer ${{ secrets.GH_PUSH_TOKEN }}" \
-                  "https://api.github.com/repos/${{ github.repository }}/releases/$EXISTING_RELEASE"
-              fi
-            else
-              # Only validate if it's a different version
-              CURRENT_MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
-              CURRENT_MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
-              CURRENT_PATCH=$(echo $CURRENT_VERSION | cut -d. -f3)
-              NEW_MAJOR=$(echo $NEW_VERSION | cut -d. -f1)
-              NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
-              NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
-
-              if [[ $NEW_MAJOR -lt $CURRENT_MAJOR ||
-                    ($NEW_MAJOR -eq $CURRENT_MAJOR && $NEW_MINOR -lt $CURRENT_MINOR) ||
-                    ($NEW_MAJOR -eq $CURRENT_MAJOR && $NEW_MINOR -eq $CURRENT_MINOR && $NEW_PATCH -lt $CURRENT_PATCH) ]]; then
-                echo "Error: Provided version ($NEW_VERSION) is less than current version ($CURRENT_VERSION)"
+            # Reject downgrades (equal is allowed and means "re-release").
+            if [ "$RELEASE_VERSION" != "$CURRENT_VERSION" ]; then
+              CUR_MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+              CUR_MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+              CUR_PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+              NEW_MAJOR=$(echo "$RELEASE_VERSION" | cut -d. -f1)
+              NEW_MINOR=$(echo "$RELEASE_VERSION" | cut -d. -f2)
+              NEW_PATCH=$(echo "$RELEASE_VERSION" | cut -d. -f3)
+              if [[ $NEW_MAJOR -lt $CUR_MAJOR ||
+                    ($NEW_MAJOR -eq $CUR_MAJOR && $NEW_MINOR -lt $CUR_MINOR) ||
+                    ($NEW_MAJOR -eq $CUR_MAJOR && $NEW_MINOR -eq $CUR_MINOR && $NEW_PATCH -lt $CUR_PATCH) ]]; then
+                echo "Error: provided version ($RELEASE_VERSION) is lower than current version ($CURRENT_VERSION)"
                 exit 1
               fi
             fi
-            echo "Used provided version"
+            echo "Releasing provided version $RELEASE_VERSION"
           fi
 
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "Release version: $NEW_VERSION"
+          # The post-release development version is the released version with an
+          # incremented patch component. main is bumped to this *after* a
+          # successful release so that subsequent (in-progress) builds carry the
+          # next number.
+          R_MAJOR=$(echo "$RELEASE_VERSION" | cut -d. -f1)
+          R_MINOR=$(echo "$RELEASE_VERSION" | cut -d. -f2)
+          R_PATCH=$(echo "$RELEASE_VERSION" | cut -d. -f3)
+          NEXT_VERSION="$R_MAJOR.$R_MINOR.$((R_PATCH + 1))"
 
-      - name: Update Cargo.toml files in all crates
-        run: |
-          # Update version in all crates
-          for crate_toml in crates/*/Cargo.toml; do
-            echo "Updating version in $crate_toml"
-            sed -i "s/^version = \"${{ steps.cargo_version.outputs.current_version }}\"/version = \"${{ steps.release_version.outputs.new_version }}\"/" "$crate_toml"
-            cat "$crate_toml" | grep "^version = "
-          done
-
-          # Update Cargo.lock for the entire workspace
-          cargo update
-
-      - name: Commit and push version update
-        id: commit
-        run: |
-          # Stage all changes
-          git add crates/*/Cargo.toml Cargo.lock
-
-          # Check if there are any changes to commit
-          if git diff --staged --quiet; then
-            echo "No version changes to commit (version already up to date)"
-          else
-            git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
-            git push
-          fi
-
-          # Record the commit that carries the bumped version so the build
-          # job checks out exactly this source instead of the (older) commit
-          # that triggered the workflow.
-          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
-        with:
-          token: ${{ secrets.GH_PUSH_TOKEN }}
-          tag_name: v${{ steps.release_version.outputs.new_version }}
-          name: Release v${{ steps.release_version.outputs.new_version }}
-          draft: true
-          prerelease: false
-
-      - name: Output Release URL
-        run: echo "Created release at ${{ steps.create_release.outputs.url }}"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $RELEASE_VERSION, next development version: $NEXT_VERSION"
     outputs:
-      release_id: ${{ steps.create_release.outputs.id }}
-      release_url: ${{ steps.create_release.outputs.url }}
-      new_version: ${{ steps.release_version.outputs.new_version }}
-      commit_sha: ${{ steps.commit.outputs.sha }}
+      current_version: ${{ steps.versions.outputs.current_version }}
+      release_version: ${{ steps.versions.outputs.release_version }}
+      next_version: ${{ steps.versions.outputs.next_version }}
 
+  # Build the release artifacts for every target. Nothing here is published:
+  # each job uploads its artifacts as workflow artifacts which the `publish`
+  # job collects once all builds have succeeded.
   build:
-    needs: prepare-version
+    needs: prepare
     strategy:
       fail-fast: false  # Don't cancel other builds if one fails
       matrix:
@@ -214,23 +149,34 @@ jobs:
             extension: ".exe"
 
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          # Check out the commit that carries the version bump produced by the
-          # prepare-version job. Without this we would build from the trigger
-          # commit, which still has the old version, causing the bundle zip
-          # name to mismatch the expected new_version.
-          ref: ${{ needs.prepare-version.outputs.commit_sha }}
+        # Build from the commit that triggered the workflow. The release version
+        # is applied below via a working-tree edit (not a commit), so the build
+        # produces the right version without mutating the repository.
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
           target: ${{ matrix.target }}
           cache-key: build-${{ matrix.name }}
+
+      - name: Set release version
+        shell: bash
+        run: |
+          CURRENT="${{ needs.prepare.outputs.current_version }}"
+          RELEASE="${{ needs.prepare.outputs.release_version }}"
+          for crate_toml in crates/*/Cargo.toml; do
+            sed -i.bak "s/^version = \"$CURRENT\"/version = \"$RELEASE\"/" "$crate_toml" && rm -f "$crate_toml.bak"
+          done
+          # Refresh only the workspace crate versions in Cargo.lock. A bare
+          # `cargo update` would re-resolve the unpinned git dependencies
+          # (gpui / gpui-component) and pull a second, incompatible copy of gpui
+          # into the graph. --workspace keeps those git deps at their locked
+          # commit so the subsequent `--locked` build stays reproducible.
+          cargo update --workspace
+          grep -m1 "^version = " crates/code_assistant/Cargo.toml
 
       - name: Build
         uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
@@ -271,29 +217,122 @@ jobs:
 
           # Move the produced zip into the release/ directory with a name
           # that matches the rest of the release artifacts.
-          mv "target/macos-bundle/Code-Assistant-${{ needs.prepare-version.outputs.new_version }}-$ARCH.zip" \
+          mv "target/macos-bundle/Code-Assistant-${{ needs.prepare.outputs.release_version }}-$ARCH.zip" \
              "release/Code-Assistant-${{ matrix.name }}.app.zip"
 
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          token: ${{ secrets.GH_PUSH_TOKEN }}
-          tag_name: v${{ needs.prepare-version.outputs.new_version }}
-          files: |
-            release/code-assistant-${{ matrix.name }}.zip
-            release/Code-Assistant-${{ matrix.name }}.app.zip
+          name: dist-${{ matrix.name }}
+          path: release/*.zip
+          if-no-files-found: error
+          retention-days: 7
 
-  finalize-release:
-    needs: [prepare-version, build]
+  # Everything that mutates the repository or the releases page happens here,
+  # and only if the whole build matrix succeeded. Order:
+  #   1. tag the released version and create the GitHub release with the
+  #      already-built artifacts,
+  #   2. bump main to the next development version (last, so a failure above
+  #      never leaves a bump behind).
+  publish:
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     if: success()
-
+    env:
+      GH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+      CURRENT_VERSION: ${{ needs.prepare.outputs.current_version }}
+      NEXT_VERSION: ${{ needs.prepare.outputs.next_version }}
     steps:
-      - name: Publish Release
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.GH_PUSH_TOKEN }}
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Delete existing tag/release (re-release of same version)
+        run: |
+          TAG="v$RELEASE_VERSION"
+          # Remove a previously published release for this tag (also removes the
+          # tag via --cleanup-tag) so a re-release starts from a clean slate.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Deleting existing release $TAG"
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          # Defensively delete an orphan remote tag without an associated release.
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
+            echo "Deleting existing tag $TAG"
+            git push origin --delete "$TAG" || true
+          fi
+
+      - name: Create release commit and tag
+        id: tag
+        run: |
+          TAG="v$RELEASE_VERSION"
+
+          # Apply the release version to the tree. For a "release current
+          # version" run this is a no-op; for an explicit version it produces a
+          # dedicated commit that the tag will point at.
+          for crate_toml in crates/*/Cargo.toml; do
+            sed -i "s/^version = \"$CURRENT_VERSION\"/version = \"$RELEASE_VERSION\"/" "$crate_toml"
+          done
+          cargo update --workspace
+
+          if git diff --quiet; then
+            # Tree already carries the release version: tag the trigger commit.
+            TAG_SHA=$(git rev-parse HEAD)
+          else
+            git add crates/*/Cargo.toml Cargo.lock
+            git commit -m "Release $TAG"
+            git push origin "HEAD:${{ github.ref_name }}"
+            TAG_SHA=$(git rev-parse HEAD)
+          fi
+
+          # Drop a stale local tag (e.g. fetched for a re-release) before
+          # recreating it.
+          git tag -d "$TAG" 2>/dev/null || true
+          git tag "$TAG" "$TAG_SHA"
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Tagged $TAG at $TAG_SHA"
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           token: ${{ secrets.GH_PUSH_TOKEN }}
-          tag_name: v${{ needs.prepare-version.outputs.new_version }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
           draft: false
+          prerelease: false
+          files: dist/*.zip
+
+      - name: Bump to next development version
+        run: |
+          # This is the final step on purpose: main is only advanced once the
+          # release has been built, tagged, and published.
+          for crate_toml in crates/*/Cargo.toml; do
+            sed -i "s/^version = \"$RELEASE_VERSION\"/version = \"$NEXT_VERSION\"/" "$crate_toml"
+          done
+          cargo update --workspace
+
+          if git diff --quiet; then
+            echo "No version change to commit (already at $NEXT_VERSION)"
+          else
+            git add crates/*/Cargo.toml Cargo.lock
+            git commit -m "Start $NEXT_VERSION development cycle"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
