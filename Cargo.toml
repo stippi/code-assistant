@@ -6,7 +6,12 @@ resolver = "2"
 [patch.crates-io]
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed" }
-gpui_macros = { git = "https://github.com/zed-industries/zed" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+# Pin to the exact zed commit that gpui-component depends on. Without a rev,
+# these patches resolve to the zed default-branch HEAD, which drifts away from
+# the commit gpui-component pins internally and pulls a *second* copy of gpui
+# into the graph (causing E0053/E0277/E0599 type mismatches between the two
+# gpui versions).
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "063e55bbc4fb13907a988111e3581595cbcaefde" }
