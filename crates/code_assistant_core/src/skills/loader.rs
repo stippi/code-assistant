@@ -117,6 +117,23 @@ pub fn discover_all_skills(project_root: &Path) -> Vec<Skill> {
     discover_all_skills_filtered(project_root, &SkillsConfig::load())
 }
 
+/// Discover the shared user (`:config:`) and bundled system (`:system:`)
+/// skills across both roots, **unfiltered** and deduped by precedence.
+///
+/// Unlike [`discover_all_skills`], this does not apply [`SkillsConfig`]
+/// filtering, so disabled skills are still returned. Intended for settings UIs
+/// that need to show every skill alongside its enabled/disabled state.
+pub fn discover_config_and_system_skills() -> Vec<Skill> {
+    let config_dir = crate::config_dir::config_dir();
+    discover_across_roots(&[
+        (config_dir.join("skills"), SkillScope::User),
+        (
+            config_dir.join("skills").join(".system"),
+            SkillScope::System,
+        ),
+    ])
+}
+
 /// Like [`discover_all_skills`], but using an explicit [`SkillsConfig`] for
 /// filtering (master switch, bundled toggle, disabled list).
 pub fn discover_all_skills_filtered(project_root: &Path, config: &SkillsConfig) -> Vec<Skill> {
