@@ -92,6 +92,9 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                     }
                 }
 
+                // Populate the skill catalog for the `/skill` input-area popup.
+                gui_for_thread.refresh_skills(session_id.clone());
+
                 let project_manager = Box::new(DefaultProjectManager::new());
                 let command_executor =
                     Box::new(GpuiTerminalCommandExecutor::new(session_id.clone()));
@@ -160,6 +163,9 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                             error!("Failed to send UI event: {}", e);
                         }
                     }
+
+                    // Populate the skill catalog for the `/skill` input-area popup.
+                    gui_for_thread.refresh_skills(session_id.clone());
                 } else {
                     info!("No existing sessions found - showing empty state (no session view)");
                     // In GPUI mode, don't auto-create a session. The user can

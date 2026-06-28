@@ -676,6 +676,16 @@ impl Gpui {
         self.skills.lock().unwrap().clone()
     }
 
+    /// Request the skill catalog for `session_id` from the backend. The
+    /// response (`BackendResponse::SkillsListed`) populates the cached catalog
+    /// used by the `/skill` input-area completion. Used by startup paths that
+    /// connect a session without going through the in-app `LoadSession` flow.
+    pub fn refresh_skills(&self, session_id: String) {
+        if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+            let _ = sender.try_send(BackendEvent::ListSkills { session_id });
+        }
+    }
+
     // Helper to add an event to the queue
     fn push_event(&self, event: UiEvent) {
         let sender = self.event_sender.lock().unwrap().clone();
