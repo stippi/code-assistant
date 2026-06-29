@@ -45,19 +45,46 @@ pub const SCOPE_CONFIG: &str = ":config:";
 /// Reserved scope token addressing the bundled (system) skills directory.
 pub const SCOPE_SYSTEM: &str = ":system:";
 
-/// Resolve a reserved skills-scope token to its sandboxed root directory,
-/// relative to `config_dir`. Returns `None` for ordinary project names.
+/// Environment variable that overrides the user (global) skills root. Primarily
+/// for tests and power users who want a non-default location.
+pub const USER_SKILLS_DIR_ENV: &str = "CODE_ASSISTANT_USER_SKILLS_DIR";
+
+/// The shared, cross-harness **user** skills root: `~/.agents/skills` by
+/// default (the same convention codex and Claude Code use), so user-authored
+/// skills can be shared across agent harnesses. Deliberately **not** under the
+/// config directory. Overridable via [`USER_SKILLS_DIR_ENV`].
 ///
-/// - [`SCOPE_CONFIG`] (`:config:`) → `<config_dir>/skills` (user skills)
-/// - [`SCOPE_SYSTEM`] (`:system:`) → `<config_dir>/skills/.system` (bundled skills)
+/// Note: we never create this directory; it is only scanned when it exists.
+pub fn user_skills_root() -> PathBuf {
+    if let Ok(dir) = std::env::var(USER_SKILLS_DIR_ENV) {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".agents").join("skills"))
+        .unwrap_or_else(|| PathBuf::from(".agents").join("skills"))
+}
+
+/// The bundled (system) skills root: `<config_dir>/skills/.system`. This tree
+/// is managed by us — the bundled skills are extracted here on startup.
+pub fn system_skills_root(config_dir: &Path) -> PathBuf {
+    config_dir.join("skills").join(".system")
+}
+
+/// Resolve a reserved skills-scope token to its sandboxed root directory.
+/// Returns `None` for ordinary project names.
 ///
-/// The roots are deliberately the `skills` subtree, never `config_dir` itself —
-/// the config directory also holds secrets (e.g. `providers.json`), which must
-/// stay unreachable through file tools.
+/// - [`SCOPE_CONFIG`] (`:config:`) → [`user_skills_root`] (`~/.agents/skills`)
+/// - [`SCOPE_SYSTEM`] (`:system:`) → `<config_dir>/skills/.system` (bundled)
+///
+/// The system root is deliberately the `skills/.system` subtree, never
+/// `config_dir` itself — the config directory also holds secrets (e.g.
+/// `providers.json`), which must stay unreachable through file tools.
 pub fn skills_scope_root(scope: &str, config_dir: &Path) -> Option<PathBuf> {
     match scope {
-        SCOPE_CONFIG => Some(config_dir.join("skills")),
-        SCOPE_SYSTEM => Some(config_dir.join("skills").join(".system")),
+        SCOPE_CONFIG => Some(user_skills_root()),
+        SCOPE_SYSTEM => Some(system_skills_root(config_dir)),
         _ => None,
     }
 }
@@ -245,13 +272,31 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Serializes tests that mutate the process-global user-skills env var.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Set the user-skills override for the duration of `f`, restoring it after.
+    fn with_user_skills_root<R>(path: &Path, f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var(USER_SKILLS_DIR_ENV).ok();
+        std::env::set_var(USER_SKILLS_DIR_ENV, path);
+        let result = f();
+        match previous {
+            Some(value) => std::env::set_var(USER_SKILLS_DIR_ENV, value),
+            None => std::env::remove_var(USER_SKILLS_DIR_ENV),
+        }
+        result
+    }
+
     #[test]
     fn skills_scope_root_maps_reserved_tokens_only() {
         let cfg = Path::new("/cfg");
-        assert_eq!(
-            skills_scope_root(SCOPE_CONFIG, cfg),
-            Some(PathBuf::from("/cfg/skills"))
-        );
+        with_user_skills_root(Path::new("/user-skills"), || {
+            assert_eq!(
+                skills_scope_root(SCOPE_CONFIG, cfg),
+                Some(PathBuf::from("/user-skills"))
+            );
+        });
         assert_eq!(
             skills_scope_root(SCOPE_SYSTEM, cfg),
             Some(PathBuf::from("/cfg/skills/.system"))
@@ -264,6 +309,7 @@ mod tests {
     #[test]
     fn explorer_for_scope_in_resolves_reserved_tokens() {
         let config_dir = tempdir().unwrap();
+        let user_skills = tempdir().unwrap();
         let pm = crate::mocks::MockProjectManager::default();
 
         let system = explorer_for_scope_in(&pm, SCOPE_SYSTEM, config_dir.path()).unwrap();
@@ -272,8 +318,12 @@ mod tests {
             config_dir.path().join("skills").join(".system")
         );
 
-        let user = explorer_for_scope_in(&pm, SCOPE_CONFIG, config_dir.path()).unwrap();
-        assert_eq!(user.root_dir(), config_dir.path().join("skills"));
+        with_user_skills_root(user_skills.path(), || {
+            let user = explorer_for_scope_in(&pm, SCOPE_CONFIG, config_dir.path()).unwrap();
+            // The explorer canonicalizes its root; compare canonicalized paths.
+            let expected = user_skills.path().canonicalize().unwrap();
+            assert_eq!(user.root_dir(), expected);
+        });
     }
 
     #[test]
@@ -293,16 +343,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_scope_cannot_escape_to_config_secrets() {
-        // Lay out a config dir with secrets next to the skills subtree.
-        let config_dir = tempdir().unwrap();
+    async fn skills_scope_cannot_escape_its_root() {
+        // Lay out a directory with a secret next to the skills root.
+        let base = tempdir().unwrap();
         std::fs::write(
-            config_dir.path().join("providers.json"),
+            base.path().join("providers.json"),
             "{\"api_key\":\"super-secret\"}",
         )
         .unwrap();
-
-        let skills_root = skills_scope_root(SCOPE_CONFIG, config_dir.path()).unwrap();
+        let skills_root = base.path().join("skills");
         std::fs::create_dir_all(&skills_root).unwrap();
 
         let explorer = Explorer::new(skills_root.clone());
@@ -312,7 +361,7 @@ mod tests {
         let result = explorer.read_file(&escape).await;
         assert!(
             result.is_err(),
-            "config scope must not be able to read outside the skills subtree"
+            "a skills scope must not be able to read outside its sandboxed root"
         );
     }
 }

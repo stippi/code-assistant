@@ -26,9 +26,7 @@ const SALT: &str = "v1";
 /// Honors [`SkillsConfig::bundled_skills_enabled`]: when bundled skills are
 /// disabled, any previously-extracted tree is removed instead.
 pub fn install_system_skills() -> Result<()> {
-    let system_root = crate::config_dir::config_dir()
-        .join("skills")
-        .join(".system");
+    let system_root = crate::config::system_skills_root(&crate::config_dir::config_dir());
     let config = crate::skills::SkillsConfig::load();
     install_system_skills_into(&system_root, config.bundled_skills_enabled)
 }

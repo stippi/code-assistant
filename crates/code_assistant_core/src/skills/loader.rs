@@ -2,13 +2,16 @@
 //!
 //! Skills are found under three roots, in precedence order:
 //! - **Project**: `<project_root>/.agents/skills/<name>/SKILL.md`
-//! - **User**:    `<config_dir>/skills/<name>/SKILL.md`
+//! - **User**:    `~/.agents/skills/<name>/SKILL.md` (shared across harnesses)
 //! - **System**:  `<config_dir>/skills/.system/<name>/SKILL.md` (bundled)
 //!
 //! On a name collision the higher-precedence scope wins (project > user >
 //! system).
 
-use crate::config::{explorer_for_scope, ProjectManager, SCOPE_CONFIG, SCOPE_SYSTEM};
+use crate::config::{
+    explorer_for_scope, system_skills_root, user_skills_root, ProjectManager, SCOPE_CONFIG,
+    SCOPE_SYSTEM,
+};
 use crate::skills::config::SkillsConfig;
 use crate::skills::manifest::parse_skill_content;
 
@@ -112,7 +115,7 @@ pub struct ScopeSkills {
 /// Resolve a scope token to the skills it contains and the sandbox root that
 /// `read_files` uses for that scope:
 /// - a project name → the project's `.agents/skills`, sandbox root = project root
-/// - [`SCOPE_CONFIG`] (`:config:`) → `<config_dir>/skills`
+/// - [`SCOPE_CONFIG`] (`:config:`) → `~/.agents/skills`
 /// - [`SCOPE_SYSTEM`] (`:system:`) → `<config_dir>/skills/.system`
 pub fn discover_scope_skills(
     project_manager: &dyn ProjectManager,
@@ -193,11 +196,8 @@ pub fn discover_session_catalog(
 pub fn discover_config_and_system_skills() -> Vec<Skill> {
     let config_dir = crate::config_dir::config_dir();
     discover_across_roots(&[
-        (config_dir.join("skills"), SkillScope::User),
-        (
-            config_dir.join("skills").join(".system"),
-            SkillScope::System,
-        ),
+        (user_skills_root(), SkillScope::User),
+        (system_skills_root(&config_dir), SkillScope::System),
     ])
 }
 
@@ -210,11 +210,8 @@ pub fn discover_all_skills_filtered(project_root: &Path, config: &SkillsConfig) 
             project_root.join(".agents").join("skills"),
             SkillScope::Project,
         ),
-        (config_dir.join("skills"), SkillScope::User),
-        (
-            config_dir.join("skills").join(".system"),
-            SkillScope::System,
-        ),
+        (user_skills_root(), SkillScope::User),
+        (system_skills_root(&config_dir), SkillScope::System),
     ]);
     config.filter_skills(discovered)
 }
