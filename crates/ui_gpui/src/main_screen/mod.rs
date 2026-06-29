@@ -457,6 +457,21 @@ impl MainScreen {
                 }
             }
 
+            InputAreaEvent::SkillInvoked { scope, name } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::InvokeSkill {
+                            session_id: session_id.clone(),
+                            scope: scope.clone(),
+                            name: name.clone(),
+                        });
+                    }
+                }
+            }
+
             InputAreaEvent::ContentChanged {
                 content,
                 attachments,
@@ -679,6 +694,10 @@ impl MainScreen {
                     let _ = sender.try_send(BackendEvent::LoadSession {
                         session_id: session_id.clone(),
                         edit_until_node_id,
+                    });
+                    // Refresh the skill catalog for the `/skill` picker.
+                    let _ = sender.try_send(BackendEvent::ListSkills {
+                        session_id: session_id.clone(),
                     });
                 }
                 SessionSidebarEvent::NewSessionRequested {

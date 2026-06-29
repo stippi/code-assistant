@@ -130,6 +130,7 @@ mod tests {
             skill_md: PathBuf::from(skill_md),
             dir: PathBuf::from(skill_md).parent().unwrap().to_path_buf(),
             scope: SkillScope::Project,
+            disable_model_invocation: false,
         }
     }
 

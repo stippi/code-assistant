@@ -48,7 +48,13 @@ Frontmatter rules (enforced by the loader):
   at most 64 characters, and must **equal the directory name**.
 - `description` is required, at most 1024 characters. Write it as a routing
   signal: say *when* to use the skill, not just what it does.
-- Other keys (license, etc.) are allowed and ignored for now.
+- `disable-model-invocation` (optional, default `false`): when `true`, the
+  skill is hidden from the model-facing catalog and the `list_skills` tool so
+  the model never auto-invokes it. It stays loadable via `read_skill` (e.g.
+  when a user explicitly activates it) and visible in the settings UI. Use this
+  for skills that should only run on explicit user request.
+- Other keys (license, allowed-tools, metadata, etc.) are allowed and ignored
+  for now.
 
 ## 3. Add resources (optional)
 

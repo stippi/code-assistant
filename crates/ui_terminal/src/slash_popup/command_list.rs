@@ -1,7 +1,9 @@
 //! Root popup that lists all known slash commands.
 
 use crate::commands::{all_commands, CommandResult};
+use crate::slash_popup::skill_picker::SkillPickerPopup;
 use crate::slash_popup::{PopupAction, PopupRow, SlashPopup};
+use code_assistant_core::backend::SkillCatalogEntry;
 
 pub struct CommandListPopup {
     /// All rows the popup knows about, before filtering.
@@ -14,6 +16,8 @@ pub struct CommandListPopup {
     visible_indices: Vec<usize>,
     /// Highlighted row inside `visible_rows`.
     selected: usize,
+    /// Cached skill catalog used to build the `/skill` sub-popup.
+    skills: Vec<SkillCatalogEntry>,
 }
 
 impl Default for CommandListPopup {
@@ -24,6 +28,12 @@ impl Default for CommandListPopup {
 
 impl CommandListPopup {
     pub fn new() -> Self {
+        Self::with_skills(Vec::new())
+    }
+
+    /// Construct the command list with a cached skill catalog so activating
+    /// `/skill` can open a populated picker without a backend round-trip.
+    pub fn with_skills(skills: Vec<SkillCatalogEntry>) -> Self {
         let mut all_rows = Vec::new();
         let mut all_names = Vec::new();
         for cmd in all_commands() {
@@ -42,6 +52,7 @@ impl CommandListPopup {
             visible_rows,
             visible_indices,
             selected: 0,
+            skills,
         }
     }
 
@@ -55,7 +66,7 @@ impl CommandListPopup {
 /// Returns true if the command should open a sub-popup when activated without
 /// arguments (instead of running immediately).
 fn command_has_submenu(name: &str) -> bool {
-    matches!(name, "model")
+    matches!(name, "model" | "skill")
 }
 
 /// Build the [`PopupAction`] for activating a slash command by name.
@@ -119,6 +130,12 @@ impl SlashPopup for CommandListPopup {
 
     fn activate(&self) -> PopupAction {
         match self.selected_name() {
+            // The skill picker needs the session-scoped catalog, which the
+            // static `dispatch_command` table can't provide; build it here from
+            // the cached entries instead.
+            Some("skill") => PopupAction::Push(Box::new(SkillPickerPopup::from_entries(
+                self.skills.clone(),
+            ))),
             Some(name) => dispatch_command(name),
             None => PopupAction::Continue,
         }
@@ -190,7 +207,7 @@ mod tests {
     fn non_submenu_commands_are_not_marked() {
         let popup = CommandListPopup::new();
         for row in popup.rows() {
-            if row.label != "/model" {
+            if row.label != "/model" && row.label != "/skill" {
                 assert!(
                     !row.has_submenu,
                     "{} should not be marked as having a sub-menu",
@@ -198,6 +215,13 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn skill_command_opens_a_submenu() {
+        let popup = CommandListPopup::new();
+        let skill_row = popup.rows().iter().find(|r| r.label == "/skill").unwrap();
+        assert!(skill_row.has_submenu);
     }
 
     #[test]

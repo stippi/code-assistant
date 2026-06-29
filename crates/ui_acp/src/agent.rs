@@ -11,15 +11,33 @@ use crate::{ACPTerminalCommandExecutor, ACPUserUI, AcpProjectManager, ClientConn
 use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use code_assistant_core::persistence::SessionModelConfig;
 use code_assistant_core::session::{SessionConfig, SessionManager};
+use code_assistant_core::skills::{
+    discover_session_catalog, load_skill_payload, render_skill_invocation_message, SkillsConfig,
+};
 use code_assistant_core::ui::UserInterface;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Config option id used for the model selector exposed via session config
 /// options. This is what the client echoes back in `session/set_config_option`.
 const MODEL_CONFIG_ID: &str = "model";
+
+/// If the prompt is a bare `/<token>` slash command (the form clients send when
+/// the user runs an advertised command), return `<token>`. Only the first text
+/// block is considered, and only when it is a single `/word` with no extra text.
+fn slash_command_token(prompt: &[acp::ContentBlock]) -> Option<String> {
+    let text = prompt.iter().find_map(|block| match block {
+        acp::ContentBlock::Text(t) => Some(t.text.trim().to_string()),
+        _ => None,
+    })?;
+    let rest = text.strip_prefix('/')?;
+    if rest.is_empty() || rest.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.to_string())
+}
 
 /// Pending session that hasn't been persisted yet (deferred until first prompt).
 #[derive(Clone)]
@@ -238,6 +256,39 @@ impl AgentState {
         Ok(acp::AuthenticateResponse::new())
     }
 
+    /// Build the ACP `AvailableCommand`s advertising the session's skills, so
+    /// clients (e.g. Zed) can expose them as slash commands. Resolved through
+    /// `project_manager` so project/user/system scopes are deduped consistently.
+    fn skill_commands(
+        project_manager: &dyn ProjectManager,
+        project_name: &str,
+    ) -> Vec<acp::AvailableCommand> {
+        let config = SkillsConfig::load();
+        discover_session_catalog(project_manager, project_name, &config)
+            .into_iter()
+            .map(|(skill, _scope_token)| {
+                acp::AvailableCommand::new(
+                    skill.name.clone(),
+                    format!("[{}] {}", skill.scope.label(), skill.description),
+                )
+            })
+            .collect()
+    }
+
+    /// Push an `available_commands_update` for `session_id` to the client.
+    fn send_available_commands(
+        &self,
+        session_id: &acp::SessionId,
+        commands: Vec<acp::AvailableCommand>,
+    ) {
+        let update = acp::SessionUpdate::AvailableCommandsUpdate(
+            acp::AvailableCommandsUpdate::new(commands),
+        );
+        let notification = acp::SessionNotification::new(session_id.clone(), update);
+        let (ack_tx, _ack_rx) = oneshot::channel();
+        let _ = self.session_update_tx.send((notification, ack_tx));
+    }
+
     pub async fn handle_new_session(
         &self,
         arguments: acp::NewSessionRequest,
@@ -258,6 +309,8 @@ impl AgentState {
 
         let session_model_config = SessionModelConfig::new(selected_model_name);
 
+        let initial_project = session_config.initial_project.clone();
+
         {
             let mut pending = self.pending_sessions.lock().await;
             pending.insert(
@@ -267,6 +320,15 @@ impl AgentState {
                     model_config: session_model_config,
                 },
             );
+        }
+
+        // Advertise the available skills as slash commands. Project-scoped
+        // resolution is best-effort here (the session isn't materialized yet);
+        // user/system skills always resolve, and run_prompt re-advertises with
+        // full project resolution on the first turn.
+        let commands = Self::skill_commands(&DefaultProjectManager::new(), &initial_project);
+        if !commands.is_empty() {
+            self.send_available_commands(&acp::SessionId::new(session_id.clone()), commands);
         }
 
         tracing::info!("ACP: Created pending session: {}", session_id);
@@ -301,7 +363,7 @@ impl AgentState {
         }
 
         // Replay message history as session/update events
-        let (tool_syntax, messages, base_path, stored_model_config) = {
+        let (tool_syntax, messages, base_path, stored_model_config, initial_project) = {
             let manager = self.session_manager.lock().await;
             let session_instance = manager
                 .get_session(&arguments.session_id.0)
@@ -312,8 +374,15 @@ impl AgentState {
                 session_instance.session.get_active_messages_cloned(),
                 session_instance.session.config.init_path.clone(),
                 session_instance.session.model_config.clone(),
+                session_instance.session.config.initial_project.clone(),
             )
         };
+
+        // Advertise the session's skills as slash commands.
+        let commands = Self::skill_commands(&DefaultProjectManager::new(), &initial_project);
+        if !commands.is_empty() {
+            self.send_available_commands(&arguments.session_id, commands);
+        }
 
         let context_limit = stored_model_config
             .as_ref()
@@ -673,6 +742,14 @@ impl AgentState {
                 .and_then(|session| session.session.config.init_path.clone())
         };
 
+        let initial_project = {
+            let manager = self.session_manager.lock().await;
+            manager
+                .get_session(&arguments.session_id.0)
+                .map(|session| session.session.config.initial_project.clone())
+                .unwrap_or_default()
+        };
+
         // Resolve model config first so we can compute the context-window limit
         // before building the UI.
         let session_model_config = {
@@ -709,7 +786,11 @@ impl AgentState {
 
         let ui: Arc<dyn UserInterface> = acp_ui.clone();
 
-        let content_blocks =
+        // Detect a `/skill` slash command before converting (clients send the
+        // advertised command name as prompt text).
+        let skill_command = slash_command_token(&arguments.prompt);
+
+        let mut content_blocks =
             convert_prompt_to_content_blocks(arguments.prompt, base_path.as_deref());
 
         // Create LLM client
@@ -750,6 +831,53 @@ impl AgentState {
         } else {
             Box::new(DefaultProjectManager::new())
         };
+
+        // Refresh the advertised skill commands using the real project manager
+        // (so project-scoped skills resolve), then translate an explicit
+        // `/skill` invocation into a synthetic user message with the body
+        // inlined — no `read_skill` round-trip needed.
+        {
+            let commands = Self::skill_commands(project_manager.as_ref(), &initial_project);
+            if !commands.is_empty() {
+                self.send_available_commands(&arguments.session_id, commands);
+            }
+        }
+        if let Some(name) = skill_command {
+            let config = SkillsConfig::load();
+            if let Some((skill, scope_token)) =
+                discover_session_catalog(project_manager.as_ref(), &initial_project, &config)
+                    .into_iter()
+                    .find(|(s, _)| s.name == name)
+            {
+                match load_skill_payload(
+                    project_manager.as_ref(),
+                    &scope_token,
+                    &skill.name,
+                    &config,
+                ) {
+                    Ok(payload) => {
+                        let message = render_skill_invocation_message(&payload);
+                        content_blocks = vec![llm::ContentBlock::new_text(message)];
+                        // Record the activation so compaction can remind the model.
+                        let mut manager = self.session_manager.lock().await;
+                        if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
+                            if !session
+                                .session
+                                .active_skills
+                                .iter()
+                                .any(|s| s == &skill.name)
+                            {
+                                session.session.active_skills.push(skill.name.clone());
+                            }
+                        }
+                        let _ = manager.save_session(&arguments.session_id.0);
+                    }
+                    Err(e) => {
+                        tracing::warn!("ACP: failed to load skill `{name}`: {e}");
+                    }
+                }
+            }
+        }
 
         let command_executor: Box<dyn CommandExecutor> = if terminal_supported {
             tracing::info!(
@@ -916,5 +1044,48 @@ impl AgentState {
         if let Some(session) = manager.get_session_mut(session_id) {
             session.set_ui_connected(false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_bare_slash_command() {
+        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
+            "/pdf-extraction",
+        ))];
+        assert_eq!(
+            slash_command_token(&prompt),
+            Some("pdf-extraction".to_string())
+        );
+    }
+
+    #[test]
+    fn trims_whitespace_around_command() {
+        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
+            "  /review  ",
+        ))];
+        assert_eq!(slash_command_token(&prompt), Some("review".to_string()));
+    }
+
+    #[test]
+    fn ignores_non_command_prompts() {
+        // Ordinary message.
+        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
+            "hello there",
+        ))];
+        assert_eq!(slash_command_token(&prompt), None);
+        // Slash with trailing text is not a bare command token.
+        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
+            "/skill do it",
+        ))];
+        assert_eq!(slash_command_token(&prompt), None);
+        // Bare slash.
+        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new("/"))];
+        assert_eq!(slash_command_token(&prompt), None);
+        // Empty prompt.
+        assert_eq!(slash_command_token(&[]), None);
     }
 }

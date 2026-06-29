@@ -118,6 +118,11 @@ pub struct Gpui {
     /// Incremented each time config files (providers.json / models.json) change on disk.
     /// Components compare their locally cached generation with this to know when to reload.
     config_generation: Arc<std::sync::atomic::AtomicU64>,
+
+    /// Skills available to the current session, cached for the `/skill`
+    /// input-area completion and submit-time invocation. Refreshed on session
+    /// load via `BackendEvent::ListSkills` / `BackendResponse::SkillsListed`.
+    skills: Arc<Mutex<Vec<code_assistant_core::backend::SkillCatalogEntry>>>,
 }
 
 /// State for a pending message edit (for branching)
@@ -416,6 +421,8 @@ impl Gpui {
             )),
 
             config_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+
+            skills: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -662,6 +669,21 @@ impl Gpui {
 
         // Return the backend ends
         (event_rx, response_tx)
+    }
+
+    /// Snapshot of the skills available to the current session.
+    pub(crate) fn skills(&self) -> Vec<code_assistant_core::backend::SkillCatalogEntry> {
+        self.skills.lock().unwrap().clone()
+    }
+
+    /// Request the skill catalog for `session_id` from the backend. The
+    /// response (`BackendResponse::SkillsListed`) populates the cached catalog
+    /// used by the `/skill` input-area completion. Used by startup paths that
+    /// connect a session without going through the in-app `LoadSession` flow.
+    pub fn refresh_skills(&self, session_id: String) {
+        if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+            let _ = sender.try_send(BackendEvent::ListSkills { session_id });
+        }
     }
 
     // Helper to add an event to the queue

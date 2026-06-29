@@ -19,6 +19,12 @@ const MAX_DESCRIPTION_LEN: usize = 1024;
 pub struct SkillManifest {
     pub name: String,
     pub description: String,
+    /// When `true`, the skill is hidden from the model-facing catalog and the
+    /// `list_skills` tool: the model must not auto-invoke it. It remains
+    /// loadable via `read_skill` (e.g. when a user explicitly activates it)
+    /// and visible in the settings UI. Maps to the Anthropic Agent Skills
+    /// `disable-model-invocation` frontmatter field.
+    pub disable_model_invocation: bool,
 }
 
 /// Raw frontmatter shape. All fields are optional so deserialization never
@@ -30,6 +36,9 @@ struct SkillFrontmatter {
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    /// Anthropic spec: when set, the model must not auto-invoke this skill.
+    #[serde(default, rename = "disable-model-invocation")]
+    disable_model_invocation: Option<bool>,
 }
 
 /// Parse the contents of a `SKILL.md` file into its validated [`SkillManifest`]
@@ -43,11 +52,19 @@ pub fn parse_skill_content(content: &str) -> Result<(SkillManifest, String)> {
 
     let name = parsed.name.unwrap_or_default().trim().to_string();
     let description = parsed.description.unwrap_or_default().trim().to_string();
+    let disable_model_invocation = parsed.disable_model_invocation.unwrap_or(false);
 
     validate_name(&name)?;
     validate_description(&description)?;
 
-    Ok((SkillManifest { name, description }, body))
+    Ok((
+        SkillManifest {
+            name,
+            description,
+            disable_model_invocation,
+        },
+        body,
+    ))
 }
 
 /// Split a `SKILL.md` into its frontmatter and body.
@@ -122,6 +139,29 @@ mod tests {
             "---\nname: my-skill\ndescription: |-\n  A multi-line\n  description.\n---\nbody";
         let (manifest, _body) = parse_skill_content(content).expect("should parse");
         assert_eq!(manifest.description, "A multi-line\ndescription.");
+    }
+
+    #[test]
+    fn disable_model_invocation_defaults_to_false() {
+        let content = "---\nname: my-skill\ndescription: ok\n---\nbody";
+        let (manifest, _body) = parse_skill_content(content).expect("should parse");
+        assert!(!manifest.disable_model_invocation);
+    }
+
+    #[test]
+    fn parses_disable_model_invocation_true() {
+        let content =
+            "---\nname: my-skill\ndescription: ok\ndisable-model-invocation: true\n---\nbody";
+        let (manifest, _body) = parse_skill_content(content).expect("should parse");
+        assert!(manifest.disable_model_invocation);
+    }
+
+    #[test]
+    fn parses_disable_model_invocation_false() {
+        let content =
+            "---\nname: my-skill\ndescription: ok\ndisable-model-invocation: false\n---\nbody";
+        let (manifest, _body) = parse_skill_content(content).expect("should parse");
+        assert!(!manifest.disable_model_invocation);
     }
 
     #[test]

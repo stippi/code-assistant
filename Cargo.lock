@@ -10464,6 +10464,7 @@ dependencies = [
  "gpui_platform",
  "image",
  "llm",
+ "lsp-types",
  "open",
  "rust-embed",
  "sandbox",

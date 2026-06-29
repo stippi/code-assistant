@@ -11,11 +11,21 @@
 use crate::config::{explorer_for_scope, ProjectManager, SCOPE_CONFIG, SCOPE_SYSTEM};
 use crate::skills::config::SkillsConfig;
 use crate::skills::manifest::parse_skill_content;
+
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::warn;
+
+/// Deepest a `SKILL.md`-containing directory may sit below a skills root. A
+/// skill normally lives at depth 1 (a direct child of the root); we tolerate a
+/// few levels of organizational nesting (e.g. `<root>/category/<name>/`).
+const MAX_SKILL_DEPTH: usize = 4;
+
+/// Upper bound on directories visited per root, guarding against pathological
+/// trees (and symlink cycles, alongside the depth cap).
+const MAX_DIRS_PER_ROOT: usize = 2000;
 
 /// The file name that marks a directory as a skill.
 const SKILL_FILE: &str = "SKILL.md";
@@ -63,6 +73,31 @@ pub struct Skill {
     pub dir: PathBuf,
     /// The scope this skill was discovered in.
     pub scope: SkillScope,
+    /// When `true`, the skill is hidden from the model-facing catalog and the
+    /// `list_skills` tool (the model must not auto-invoke it), but it remains
+    /// loadable via `read_skill` and visible in the settings UI. Maps to the
+    /// `disable-model-invocation` frontmatter field.
+    pub disable_model_invocation: bool,
+}
+
+impl Skill {
+    /// Whether this skill should be advertised to the model (system-prompt
+    /// catalog and the `list_skills` tool). Skills with
+    /// `disable-model-invocation: true` are hidden from the model but stay
+    /// loadable via `read_skill`.
+    pub fn is_model_invocable(&self) -> bool {
+        !self.disable_model_invocation
+    }
+}
+
+/// Filter a slice of skills down to those that may be advertised to the model,
+/// preserving order. Skills flagged `disable-model-invocation` are dropped.
+pub fn model_invocable(skills: &[Skill]) -> Vec<Skill> {
+    skills
+        .iter()
+        .filter(|s| s.is_model_invocable())
+        .cloned()
+        .collect()
 }
 
 /// The skills found in a single scope, with the sandbox root `read_files`
@@ -117,6 +152,38 @@ pub fn discover_all_skills(project_root: &Path) -> Vec<Skill> {
     discover_all_skills_filtered(project_root, &SkillsConfig::load())
 }
 
+/// Discover the skills available to a session as `(skill, scope_token)` pairs,
+/// where `scope_token` is what callers pass back to load the skill (the
+/// `project_name`, or `:config:` / `:system:`). Deduped across scopes with the
+/// same precedence as the catalog (project > user > system) and sorted by name.
+///
+/// Unlike [`discover_all_skills`] (which takes a path), this resolves each
+/// scope through the `project_manager`, so it agrees with how `read_skill` and
+/// the invocation path resolve scope tokens. Includes skills flagged
+/// `disable-model-invocation`, since a user may explicitly invoke any of them.
+pub fn discover_session_catalog(
+    project_manager: &dyn ProjectManager,
+    project_name: &str,
+    config: &SkillsConfig,
+) -> Vec<(Skill, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<(Skill, String)> = Vec::new();
+    for token in [project_name, SCOPE_CONFIG, SCOPE_SYSTEM] {
+        let resolved = match discover_scope_skills_filtered(project_manager, token, config) {
+            Ok(resolved) => resolved,
+            Err(_) => continue,
+        };
+        for skill in resolved.skills {
+            // First scope to define a name wins (project > user > system).
+            if seen.insert(skill.name.clone()) {
+                out.push((skill, token.to_string()));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+    out
+}
+
 /// Discover the shared user (`:config:`) and bundled system (`:system:`)
 /// skills across both roots, **unfiltered** and deduped by precedence.
 ///
@@ -152,46 +219,84 @@ pub fn discover_all_skills_filtered(project_root: &Path, config: &SkillsConfig) 
     config.filter_skills(discovered)
 }
 
-/// Discover skills directly under `skills_root` — each immediate subdirectory
-/// containing a `SKILL.md` — tagging them with `scope`. Skills that fail to
-/// parse (or whose `name` does not match the directory name) are skipped with
-/// a warning. Results are sorted by name.
+/// Discover skills under `skills_root`, tagging them with `scope`. A directory
+/// is a skill when it contains a `SKILL.md`; discovery recurses through
+/// non-skill directories (bounded by [`MAX_SKILL_DEPTH`] and
+/// [`MAX_DIRS_PER_ROOT`]) so skills may be organized one or more levels deep
+/// (e.g. `<root>/category/<name>/SKILL.md`).
+///
+/// Once a `SKILL.md` is found, that subtree is not descended into further (a
+/// skill's bundled `references/`, `scripts/`, etc. may themselves contain a
+/// `SKILL.md` that is not a separate skill). Hidden directories (e.g. the
+/// `.system` cache under the user root) are skipped at every level. Skills that
+/// fail to parse (or whose `name` does not match the directory name) are
+/// skipped with a warning. Results are sorted by name.
 pub(crate) fn discover_skills_in(skills_root: &Path, scope: SkillScope) -> Vec<Skill> {
-    let entries = match fs::read_dir(skills_root) {
-        Ok(entries) => entries,
-        // A missing skills directory is the common case, not an error.
-        Err(_) => return Vec::new(),
-    };
-
     let mut skills = Vec::new();
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
+    let mut visited = 0usize;
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+
+    // Seed with the immediate children of the root (depth 1).
+    enqueue_subdirs(skills_root, 1, &mut queue);
+
+    while let Some((dir, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > MAX_DIRS_PER_ROOT {
+            warn!(
+                "Reached the skill scan cap ({}) under {}; some skills may be skipped",
+                MAX_DIRS_PER_ROOT,
+                skills_root.display()
+            );
+            break;
         }
-        // Skip hidden directories (e.g. the `.system` cache under the user root).
-        let is_hidden = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with('.'))
-            .unwrap_or(true);
-        if is_hidden {
+
+        // Skip hidden directories at any level (e.g. the `.system` cache under
+        // the user root, or VCS/metadata dirs nested under an org folder).
+        if is_hidden_dir(&dir) {
             continue;
         }
 
         let skill_md = dir.join(SKILL_FILE);
-        if !skill_md.is_file() {
+        if skill_md.is_file() {
+            match load_skill(&dir, &skill_md, scope) {
+                Ok(skill) => skills.push(skill),
+                Err(e) => warn!("Skipping skill at {}: {:#}", dir.display(), e),
+            }
+            // Do not descend into a skill's own subtree.
             continue;
         }
 
-        match load_skill(&dir, &skill_md, scope) {
-            Ok(skill) => skills.push(skill),
-            Err(e) => warn!("Skipping skill at {}: {:#}", dir.display(), e),
+        // Not a skill directory: descend, bounded by depth.
+        if depth < MAX_SKILL_DEPTH {
+            enqueue_subdirs(&dir, depth + 1, &mut queue);
         }
     }
 
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills
+}
+
+/// Whether `dir`'s file name starts with a dot (or cannot be read as UTF-8).
+fn is_hidden_dir(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with('.'))
+        .unwrap_or(true)
+}
+
+/// Push every immediate subdirectory of `parent` onto `queue` at `depth`.
+/// A missing/unreadable directory is treated as empty.
+fn enqueue_subdirs(parent: &Path, depth: usize, queue: &mut VecDeque<(PathBuf, usize)>) {
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            queue.push_back((path, depth));
+        }
+    }
 }
 
 /// Discover skills across the given `(root, scope)` pairs and resolve name
@@ -239,6 +344,7 @@ fn load_skill(dir: &Path, skill_md: &Path, scope: SkillScope) -> Result<Skill> {
         skill_md: skill_md.to_path_buf(),
         dir: dir.to_path_buf(),
         scope,
+        disable_model_invocation: manifest.disable_model_invocation,
     })
 }
 
@@ -297,6 +403,76 @@ mod tests {
         write_skill(dir.path(), "real", "real", "Fine.");
 
         let skills = discover_skills_in(dir.path(), SkillScope::User);
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn discovers_nested_skill_one_level_deep() {
+        let dir = tempdir().unwrap();
+        // <root>/category/my-skill/SKILL.md — one organizational level deep.
+        write_skill(
+            &dir.path().join("category"),
+            "my-skill",
+            "my-skill",
+            "Nested.",
+        );
+
+        let skills = discover_skills_in(dir.path(), SkillScope::Project);
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["my-skill"]);
+    }
+
+    #[test]
+    fn does_not_descend_into_a_skill_subtree() {
+        let dir = tempdir().unwrap();
+        // A real skill ...
+        write_skill(dir.path(), "outer", "outer", "Outer skill.");
+        // ... whose bundled resources happen to contain another SKILL.md must
+        // not surface as a second skill.
+        let nested = dir.path().join("outer").join("references").join("inner");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            nested.join(SKILL_FILE),
+            "---\nname: inner\ndescription: Not a real skill.\n---\nbody",
+        )
+        .unwrap();
+
+        let skills = discover_skills_in(dir.path(), SkillScope::Project);
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["outer"]);
+    }
+
+    #[test]
+    fn respects_max_scan_depth() {
+        let dir = tempdir().unwrap();
+        // Depth 4 (a/b/c/<skill>) is discovered; depth 5 is not.
+        write_skill(
+            &dir.path().join("a").join("b").join("c"),
+            "deep-ok",
+            "deep-ok",
+            "Reachable.",
+        );
+        write_skill(
+            &dir.path().join("a2").join("b").join("c").join("d"),
+            "too-deep",
+            "too-deep",
+            "Beyond the depth cap.",
+        );
+
+        let skills = discover_skills_in(dir.path(), SkillScope::Project);
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["deep-ok"]);
+    }
+
+    #[test]
+    fn skips_hidden_directories_when_recursing() {
+        let dir = tempdir().unwrap();
+        // A skill inside a hidden organizational directory is skipped at depth.
+        write_skill(&dir.path().join(".hidden"), "ghost", "ghost", "Hidden.");
+        write_skill(dir.path(), "real", "real", "Fine.");
+
+        let skills = discover_skills_in(dir.path(), SkillScope::Project);
         let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["real"]);
     }

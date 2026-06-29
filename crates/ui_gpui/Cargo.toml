@@ -17,6 +17,9 @@ terminal_view = { path = "../terminal_view" }
 gpui = "0.2.2"
 gpui_platform = { version = "0.1", features = ["font-kit"] }
 gpui-component = "0.5.2"
+# Must match the version gpui-component uses so CompletionProvider trait types
+# (CompletionItem, CompletionResponse, …) are identical.
+lsp-types = "0.97"
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
 tokio = { version = "1.48", features = ["full"] }

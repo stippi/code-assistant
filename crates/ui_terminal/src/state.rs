@@ -1,4 +1,5 @@
 use crate::slash_popup::PopupStack;
+use code_assistant_core::backend::SkillCatalogEntry;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::types::PlanState;
@@ -25,6 +26,8 @@ pub struct AppState {
     pub current_model: Option<String>,
     pub info_message: Option<String>,
     pub current_sandbox_policy: Option<SandboxPolicy>,
+    /// Skills available to the current session, cached for the `/skill` picker.
+    pub skills: Vec<SkillCatalogEntry>,
     /// Slash-command popup stack. Empty stack ↔ no popup visible.
     pub popup_stack: PopupStack,
 }
@@ -46,6 +49,7 @@ impl AppState {
             current_model: None,
             info_message: None,
             current_sandbox_policy: None,
+            skills: Vec::new(),
             popup_stack: PopupStack::new(),
         }
     }

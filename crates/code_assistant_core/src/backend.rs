@@ -1,6 +1,9 @@
 use crate::config::{save_project, DefaultProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::session::SessionManager;
+use crate::skills::{
+    discover_session_catalog, load_skill_payload, render_skill_invocation_message, SkillsConfig,
+};
 use crate::types::Project;
 use crate::ui::UserInterface;
 use crate::utils::content::content_blocks_from;
@@ -51,6 +54,23 @@ pub enum BackendEvent {
     },
     RequestPendingMessageEdit {
         session_id: String,
+    },
+
+    /// List the skills available to a session (across project / user / system
+    /// scopes), for the input-area skill picker. Includes skills flagged
+    /// `disable-model-invocation`, since a user may invoke any of them.
+    ListSkills {
+        session_id: String,
+    },
+
+    /// User-initiated ("explicit") skill activation: load the skill's body and
+    /// inject it directly as a synthetic user message, then run the agent. No
+    /// `read_skill` round-trip is needed.
+    InvokeSkill {
+        session_id: String,
+        /// Scope token: the session's project name, or `:config:` / `:system:`.
+        scope: String,
+        name: String,
     },
 
     // Model management
@@ -152,11 +172,29 @@ pub enum BackendEvent {
     },
 }
 
+/// A single entry in the input-area skill picker.
+#[derive(Debug, Clone)]
+pub struct SkillCatalogEntry {
+    pub name: String,
+    pub description: String,
+    /// Scope token to pass back in [`BackendEvent::InvokeSkill`] (the project
+    /// name, or `:config:` / `:system:`).
+    pub scope_token: String,
+    /// Human-readable scope label (`project` / `user` / `system`).
+    pub scope_label: String,
+}
+
 // Response from backend to UI
 #[derive(Debug, Clone)]
 pub enum BackendResponse {
     SessionCreated {
         session_id: String,
+    },
+
+    /// The skills available to a session, for the input-area picker.
+    SkillsListed {
+        session_id: String,
+        skills: Vec<SkillCatalogEntry>,
     },
     #[allow(dead_code)]
     SessionDeleted {
@@ -340,6 +378,26 @@ pub async fn handle_backend_events(
 
             BackendEvent::RequestPendingMessageEdit { session_id } => {
                 Some(handle_request_pending_message_edit(&multi_session_manager, &session_id).await)
+            }
+
+            BackendEvent::ListSkills { session_id } => {
+                Some(handle_list_skills(&multi_session_manager, &session_id).await)
+            }
+
+            BackendEvent::InvokeSkill {
+                session_id,
+                scope,
+                name,
+            } => {
+                handle_invoke_skill(
+                    &multi_session_manager,
+                    &session_id,
+                    &scope,
+                    &name,
+                    runtime_options.as_ref(),
+                    &ui,
+                )
+                .await
             }
 
             BackendEvent::SwitchModel {
@@ -983,6 +1041,98 @@ async fn handle_request_pending_message_edit(
             }
         }
     }
+}
+
+/// List the skills available to a session, deduped across scopes with the same
+/// precedence as the system-prompt catalog (project > user > system). Includes
+/// `disable-model-invocation` skills since a user may invoke any of them.
+async fn handle_list_skills(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+) -> BackendResponse {
+    let project_name = {
+        let manager = multi_session_manager.lock().await;
+        match manager.get_session(session_id) {
+            Some(session) => session.session.config.initial_project.clone(),
+            None => {
+                return BackendResponse::Error {
+                    message: format!("Session {session_id} not found"),
+                }
+            }
+        }
+    };
+
+    let config = SkillsConfig::load();
+    let pm = DefaultProjectManager::new();
+
+    let skills: Vec<SkillCatalogEntry> = discover_session_catalog(&pm, &project_name, &config)
+        .into_iter()
+        .map(|(skill, scope_token)| SkillCatalogEntry {
+            name: skill.name,
+            description: skill.description,
+            scope_label: skill.scope.label().to_string(),
+            scope_token,
+        })
+        .collect();
+
+    BackendResponse::SkillsListed {
+        session_id: session_id.to_string(),
+        skills,
+    }
+}
+
+/// Handle a user-initiated skill activation: load the body and inject it as a
+/// synthetic user message, then run the agent (reusing the normal user-message
+/// path). The activation is recorded in the session's `active_skills` so the
+/// compaction reminder can re-surface it if the body is later dropped.
+async fn handle_invoke_skill(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    scope: &str,
+    name: &str,
+    runtime_options: &BackendRuntimeOptions,
+    ui: &Arc<dyn UserInterface>,
+) -> Option<BackendResponse> {
+    debug!("InvokeSkill `{name}` (scope `{scope}`) for session {session_id}");
+
+    let config = SkillsConfig::load();
+    let pm = DefaultProjectManager::new();
+    let payload = match load_skill_payload(&pm, scope, name, &config) {
+        Ok(payload) => payload,
+        Err(e) => {
+            error!("Failed to load skill `{name}` for {session_id}: {e}");
+            return Some(BackendResponse::Error {
+                message: format!("Failed to load skill `{name}`: {e}"),
+            });
+        }
+    };
+
+    let message = render_skill_invocation_message(&payload);
+
+    // Record the activation (deduped) so compaction can remind the model if the
+    // injected body is summarised away.
+    {
+        let mut manager = multi_session_manager.lock().await;
+        if let Some(session) = manager.get_session_mut(session_id) {
+            if !session.session.active_skills.iter().any(|s| s == name) {
+                session.session.active_skills.push(name.to_string());
+            }
+        }
+        if let Err(e) = manager.save_session(session_id) {
+            warn!("Failed to persist active_skills for {session_id}: {e}");
+        }
+    }
+
+    handle_send_user_message(
+        multi_session_manager,
+        session_id,
+        &message,
+        &[],
+        None,
+        runtime_options,
+        ui,
+    )
+    .await
 }
 
 async fn handle_switch_model(

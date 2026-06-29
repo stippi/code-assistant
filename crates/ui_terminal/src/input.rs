@@ -34,10 +34,16 @@ pub enum KeyEventResult {
     ShowCurrentModel,
     /// Toggle plan rendering mode
     TogglePlan,
+
     /// Clear conversation context
     ClearContext,
     /// Compact (summarise) conversation context
     CompactContext,
+    /// Open the skill picker popup.
+    OpenSkillPicker,
+    /// Activate a skill. `scope` is the scope token, or `None` to resolve it
+    /// from the cached catalog by name.
+    InvokeSkill { scope: Option<String>, name: String },
     /// The slash-prefix on the current input line changed.
     ///
     /// `Some("")` means the user just typed `/` (open the popup at root).
@@ -189,6 +195,10 @@ impl InputManager {
                             CommandResult::TogglePlan => KeyEventResult::TogglePlan,
                             CommandResult::ClearContext => KeyEventResult::ClearContext,
                             CommandResult::CompactContext => KeyEventResult::CompactContext,
+                            CommandResult::OpenSkillPicker => KeyEventResult::OpenSkillPicker,
+                            CommandResult::InvokeSkill { scope, name } => {
+                                KeyEventResult::InvokeSkill { scope, name }
+                            }
                             CommandResult::InvalidCommand(error) => {
                                 KeyEventResult::ShowInfo(format!("Error: {error}"))
                             }
