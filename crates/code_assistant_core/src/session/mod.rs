@@ -10,11 +10,13 @@ use std::path::PathBuf;
 // New session management architecture
 pub mod instance;
 pub mod manager;
+pub mod service;
 pub mod sleep_inhibitor;
 pub mod watcher;
 
-// Main session manager
+// Main session manager and the UI→core command facade on top of it
 pub use manager::SessionManager;
+pub use service::SessionService;
 
 /// Static configuration stored with each session.
 #[derive(Debug, Clone, Serialize, Deserialize)]

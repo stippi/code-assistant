@@ -993,15 +993,19 @@ impl FileSessionPersistence {
 
 /// Generate a unique session ID
 pub fn generate_session_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Process-local counter so IDs generated within the same second (the
+    // timestamp's resolution) stay unique.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let pid_part = std::process::id() as u64 % 1000;
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // Simple random component using timestamp
-    let random_part = (timestamp % 10000) + (std::process::id() as u64 % 1000);
-
-    format!("chat_{timestamp:x}_{random_part:x}")
+    format!("chat_{timestamp:x}_{pid_part:x}_{counter:x}")
 }
 
 /// Calculate usage information from session messages.
@@ -1353,16 +1357,20 @@ mod tests {
         assert_eq!(remaining_sessions[0].id, "non_empty_session");
 
         // Verify the empty session file is gone
-        assert!(persistence
-            .load_chat_session("empty_session")
-            .expect("load")
-            .is_none());
+        assert!(
+            persistence
+                .load_chat_session("empty_session")
+                .expect("load")
+                .is_none()
+        );
 
         // Verify the non-empty session still exists
-        assert!(persistence
-            .load_chat_session("non_empty_session")
-            .expect("load")
-            .is_some());
+        assert!(
+            persistence
+                .load_chat_session("non_empty_session")
+                .expect("load")
+                .is_some()
+        );
     }
 
     #[test]
