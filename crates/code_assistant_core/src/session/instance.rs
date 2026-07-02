@@ -50,9 +50,9 @@ impl SessionActivityState {
 }
 
 /// Shared handle to a session's activity state that owns the transition
-/// rules. The [`ProxyUI`] reports streaming lifecycle moments through the
-/// `on_*` methods and broadcasts whatever state change they return — what a
-/// moment *means* for the state is decided here, not in the UI proxy.
+/// rules. The [`SessionEventPublisher`] reports streaming lifecycle moments
+/// through the `on_*` methods and publishes whatever state change they
+/// return — what a moment *means* for the state is decided here.
 #[derive(Clone, Default)]
 pub struct SessionActivity {
     state: Arc<Mutex<SessionActivityState>>,
@@ -147,20 +147,17 @@ pub struct SessionInstance {
     /// Task handle for the running agent (None if not running)
     pub task_handle: Option<JoinHandle<Result<()>>>,
 
-    /// Buffer for DisplayFragments from the current streaming message
-    /// This allows UI to connect mid-streaming and see buffered content
+    /// In-flight DisplayFragments of the currently streaming response.
+    /// Written by the [`SessionEventPublisher`]; included in snapshots so a
+    /// frontend connecting mid-stream sees the partial message.
     pub fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
 
-    /// Buffer for `UpdateToolStatus` events received while the session is
-    /// disconnected.  Shared with the session's [`ProxyUI`] which writes into
-    /// it; read (and drained) by [`generate_session_connect_events`] on
-    /// reconnect.  Only the latest status per tool-id is kept.
+    /// Latest live `UpdateToolStatus` per tool of the current agent run.
+    /// Written by the [`SessionEventPublisher`]; merged into snapshots
+    /// (persisted results take precedence). Cleared on agent start.
     pub tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
 
-    /// Whether this session is currently connected to the UI
-    pub is_ui_connected: Arc<Mutex<bool>>,
-
-    /// Current activity state of this session (shared with the ProxyUI)
+    /// Current activity state of this session (shared with the publisher)
     pub activity: SessionActivity,
 
     /// Set when a user requests the running agent to stop; checked by the
@@ -217,7 +214,6 @@ impl SessionInstance {
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
-            is_ui_connected: Arc::new(Mutex::new(false)),
             activity: SessionActivity::default(),
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_message: Arc::new(Mutex::new(None)),
@@ -376,26 +372,17 @@ impl SessionInstance {
         Ok(())
     }
 
-    /// Set UI active state for this session
-    pub fn set_ui_connected(&mut self, connected: bool) {
-        if let Ok(mut ui_connected) = self.is_ui_connected.lock() {
-            *ui_connected = connected;
-        }
-    }
-
-    /// Create a ProxyUI for this session that handles fragment buffering
-    /// and publishes everything to the core→UI broadcast stream.
-    pub fn create_proxy_ui(
+    /// Create the publisher this session's agent talks to: it records
+    /// in-flight state for snapshots and publishes everything session-tagged
+    /// to the core→UI broadcast stream.
+    pub fn create_publisher(
         &self,
-        real_ui: Arc<dyn UserInterface>,
         events: crate::session::event_stream::EventStream,
     ) -> Arc<dyn UserInterface> {
-        Arc::new(ProxyUI {
-            real_ui,
+        Arc::new(SessionEventPublisher {
             events,
             fragment_buffer: self.fragment_buffer.clone(),
             tool_status_buffer: self.tool_status_buffer.clone(),
-            is_session_connected: self.is_ui_connected.clone(),
             activity: self.activity.clone(),
             stop_requested: self.stop_requested.clone(),
             session_id: self.session.id.clone(),
@@ -520,9 +507,6 @@ impl SessionInstance {
             }
             fn notify_rate_limit(&self, _seconds_remaining: u64) {}
             fn clear_rate_limit(&self) {}
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
@@ -654,9 +638,6 @@ impl SessionInstance {
             }
             fn notify_rate_limit(&self, _seconds_remaining: u64) {}
             fn clear_rate_limit(&self) {}
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
@@ -827,41 +808,29 @@ impl SessionInstance {
     }
 }
 
-/// ProxyUI that buffers fragments and conditionally forwards to real UI.
+/// The session's publisher onto the core→UI broadcast stream, implementing
+/// [`UserInterface`] for the agent seam.
 ///
 /// It owns no state logic: activity transitions are decided by the shared
-/// [`SessionActivity`] handle; the proxy only reports lifecycle moments to
-/// it and broadcasts resulting changes.
-struct ProxyUI {
-    real_ui: Arc<dyn UserInterface>,
-    /// The core→UI broadcast stream; everything this session produces is
-    /// published here (session-tagged), in addition to the legacy
-    /// `real_ui` forwarding that remains during the frontend migration.
+/// [`SessionActivity`] handle; in-flight fragments and live tool statuses
+/// are recorded as session state so snapshots can include them. Which
+/// frontend (if any) renders the published events is not its concern.
+struct SessionEventPublisher {
     events: crate::session::event_stream::EventStream,
+    /// In-flight fragments of the currently streaming response, kept for
+    /// snapshots (the content is not persisted until the message completes).
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
-    /// Buffers `UpdateToolStatus` events received while disconnected so they
-    /// can be replayed on the next session reconnect.
+    /// Latest live status per tool of the current agent run, kept for
+    /// snapshots (persisted results take precedence when merging).
     tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
-    is_session_connected: Arc<Mutex<bool>>,
     activity: SessionActivity,
     stop_requested: Arc<std::sync::atomic::AtomicBool>,
     session_id: String,
 }
 
-impl ProxyUI {
-    /// Check if this session is currently connected to the real UI
-    fn is_connected(&self) -> bool {
-        self.is_session_connected
-            .lock()
-            .map(|active| *active)
-            .unwrap_or(false)
-    }
-
-    /// Broadcast an activity-state change produced by [`SessionActivity`].
-    ///
-    /// Broadcasts regardless of connection status so the chat sidebar shows
-    /// current activity for all sessions.
-    fn broadcast_activity_change(&self, change: Option<SessionActivityState>) {
+impl SessionEventPublisher {
+    /// Publish an activity-state change produced by [`SessionActivity`].
+    fn publish_activity_change(&self, change: Option<SessionActivityState>) {
         let Some(activity_state) = change else {
             return;
         };
@@ -869,26 +838,14 @@ impl ProxyUI {
             &self.session_id,
             UiEvent::UpdateSessionActivityState {
                 session_id: self.session_id.clone(),
-                activity_state: activity_state.clone(),
+                activity_state,
             },
         );
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let ui = self.real_ui.clone();
-            let session_id = self.session_id.clone();
-            handle.spawn(async move {
-                let _ = ui
-                    .send_event(UiEvent::UpdateSessionActivityState {
-                        session_id,
-                        activity_state,
-                    })
-                    .await;
-            });
-        }
     }
 }
 
 #[async_trait]
-impl UserInterface for ProxyUI {
+impl UserInterface for SessionEventPublisher {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         // Handle special events that need buffer management and activity state updates
         match &event {
@@ -897,7 +854,7 @@ impl UserInterface for ProxyUI {
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
-                self.broadcast_activity_change(self.activity.on_streaming_started());
+                self.publish_activity_change(self.activity.on_streaming_started());
             }
             UiEvent::StreamingStopped {
                 cancelled, error, ..
@@ -913,7 +870,7 @@ impl UserInterface for ProxyUI {
                         self.session_id, error_msg
                     );
                 }
-                self.broadcast_activity_change(
+                self.publish_activity_change(
                     self.activity
                         .on_streaming_stopped(*cancelled, error.is_some()),
                 );
@@ -928,25 +885,10 @@ impl UserInterface for ProxyUI {
                 session_id,
                 activity_state,
             } if session_id == &self.session_id => {
-                self.broadcast_activity_change(
-                    self.activity.try_transition(activity_state.clone()),
-                );
+                self.publish_activity_change(self.activity.try_transition(activity_state.clone()));
                 return Ok(());
             }
-            _ => {}
-        }
-
-        // Publish to the broadcast stream regardless of connection state —
-        // subscribers filter for themselves.
-        self.events.publish_ui(&self.session_id, event.clone());
-
-        if self.is_connected() {
-            self.real_ui.send_event(event).await
-        } else {
-            // Session is disconnected — buffer UpdateToolStatus events so that
-            // the latest state per tool can be replayed on reconnect.
-
-            if let UiEvent::UpdateToolStatus {
+            UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
                 message,
@@ -954,36 +896,36 @@ impl UserInterface for ProxyUI {
                 styled_output,
                 duration_seconds,
                 images,
-            } = event
-            {
+            } => {
+                // Record the latest status per tool so snapshots can include
+                // live tool state that isn't persisted yet.
                 if let Ok(mut buf) = self.tool_status_buffer.lock() {
                     buf.insert(
                         tool_id.clone(),
                         crate::ui::ui_events::ToolResultData {
-                            tool_id,
-                            status,
-                            message,
-                            output,
-                            styled_output,
-                            duration_seconds,
-                            images,
+                            tool_id: tool_id.clone(),
+                            status: *status,
+                            message: message.clone(),
+                            output: output.clone(),
+                            styled_output: styled_output.clone(),
+                            duration_seconds: *duration_seconds,
+                            images: images.clone(),
                         },
                     );
                 }
             }
-            Ok(())
+            _ => {}
         }
+
+        self.events.publish_ui(&self.session_id, event);
+        Ok(())
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Always buffer fragments
+        // Record the in-flight fragment for snapshots. Cleared on streaming
+        // start/stop/rollback, so the buffer is bounded by one response.
         if let Ok(mut buffer) = self.fragment_buffer.lock() {
             buffer.push_back(fragment.clone());
-
-            // Keep buffer size reasonable
-            while buffer.len() > 1000 {
-                buffer.pop_front();
-            }
         }
 
         self.events.publish(
@@ -1014,59 +956,30 @@ impl UserInterface for ProxyUI {
         };
 
         if has_visible_content {
-            self.broadcast_activity_change(self.activity.on_visible_output());
+            self.publish_activity_change(self.activity.on_visible_output());
         }
 
-        // Only forward to real UI if session is connected
-        if self.is_connected() {
-            self.real_ui.display_fragment(fragment)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn should_streaming_continue(&self) -> bool {
-        // A stop request works for any session, connected or not.
-        if self
+        !self
             .stop_requested
             .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return false;
-        }
-        if self.is_connected() {
-            self.real_ui.should_streaming_continue()
-        } else {
-            true // Don't interrupt streaming if session is not connected
-        }
     }
 
     fn notify_rate_limit(&self, seconds_remaining: u64) {
-        self.broadcast_activity_change(self.activity.on_rate_limited(seconds_remaining));
-
-        if self.is_connected() {
-            self.real_ui.notify_rate_limit(seconds_remaining);
-        }
-        // No-op if session not connected
+        self.publish_activity_change(self.activity.on_rate_limited(seconds_remaining));
     }
 
     fn clear_rate_limit(&self) {
-        self.broadcast_activity_change(self.activity.on_rate_limit_cleared());
-
-        if self.is_connected() {
-            self.real_ui.clear_rate_limit();
-        }
-        // No-op if session not connected
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+        self.publish_activity_change(self.activity.on_rate_limit_cleared());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::MockUI;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
@@ -1180,27 +1093,24 @@ mod tests {
         assert_eq!(activity.on_rate_limit_cleared(), None);
     }
 
+    fn test_publisher(activity: SessionActivity, session_id: &str) -> SessionEventPublisher {
+        SessionEventPublisher {
+            events: crate::session::event_stream::EventStream::new(),
+            fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
+            activity,
+            stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            session_id: session_id.to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_streaming_stopped_with_error_prevents_agent_running_state() {
-        let mock_ui = Arc::new(MockUI::default());
-        let fragment_buffer = Arc::new(Mutex::new(VecDeque::new()));
-        let is_session_connected = Arc::new(Mutex::new(true));
         let activity = activity_with(SessionActivityState::WaitingForResponse);
-        let session_id = "test-session".to_string();
-
-        let proxy_ui = ProxyUI {
-            real_ui: mock_ui.clone(),
-            events: crate::session::event_stream::EventStream::new(),
-            fragment_buffer,
-            tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
-            is_session_connected,
-            activity: activity.clone(),
-            stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            session_id,
-        };
+        let publisher = test_publisher(activity.clone(), "test-session");
 
         // Simulate StreamingStopped with error
-        let _ = proxy_ui
+        let _ = publisher
             .send_event(UiEvent::StreamingStopped {
                 id: 1,
                 cancelled: false,
@@ -1213,19 +1123,9 @@ mod tests {
 
         // Now test without error - should transition to AgentRunning
         let activity2 = activity_with(SessionActivityState::WaitingForResponse);
+        let publisher2 = test_publisher(activity2.clone(), "test-session-2");
 
-        let proxy_ui2 = ProxyUI {
-            real_ui: mock_ui.clone(),
-            events: crate::session::event_stream::EventStream::new(),
-            fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
-            tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
-            is_session_connected: Arc::new(Mutex::new(true)),
-            activity: activity2.clone(),
-            stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            session_id: "test-session-2".to_string(),
-        };
-
-        let _ = proxy_ui2
+        let _ = publisher2
             .send_event(UiEvent::StreamingStopped {
                 id: 2,
                 cancelled: false,

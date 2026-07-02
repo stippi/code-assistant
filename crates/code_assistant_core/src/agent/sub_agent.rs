@@ -811,8 +811,4 @@ impl UserInterface for SubAgentUiAdapter {
     fn notify_rate_limit(&self, _seconds_remaining: u64) {}
 
     fn clear_rate_limit(&self) {}
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }

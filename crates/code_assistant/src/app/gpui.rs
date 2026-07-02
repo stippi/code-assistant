@@ -1,7 +1,6 @@
 use super::AgentRunConfig;
 use crate::session::watcher::SessionWatcher;
 use crate::session::{SessionConfig, SessionManager};
-use crate::ui::UserInterface;
 use anyhow::Result;
 use code_assistant_core::session::event_stream::EventStream;
 use code_assistant_core::session::service::{AgentRuntimeOptions, SessionService};
@@ -42,8 +41,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
     // Create the session command service. The GUI gets the handle; the
     // worker runs on the backend tokio runtime below. The GUI consumes the
-    // broadcast stream, so the legacy push side gets a no-op UI.
-    let ui: Arc<dyn UserInterface> = Arc::new(code_assistant_core::ui::NullUserInterface);
+    // broadcast stream (see ui_gpui's event bridge).
     let (service, service_worker) = SessionService::new(
         multi_session_manager,
         Arc::new(AgentRuntimeOptions {
@@ -52,7 +50,6 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             fast_playback: config.fast_playback,
             command_executor_factory: super::session_command_executor_factory(),
         }),
-        ui,
         events,
     );
     gui.set_session_service(service.clone());

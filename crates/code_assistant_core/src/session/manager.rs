@@ -15,7 +15,6 @@ use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
-use crate::ui::UserInterface;
 use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
@@ -267,15 +266,6 @@ impl SessionManager {
         session_id: String,
         edit_until_node_id: Option<crate::persistence::NodeId>,
     ) -> Result<crate::session::SessionSnapshot> {
-        // Deactivate old session
-        if let Some(old_id) = &self.active_session_id {
-            if old_id != &session_id {
-                if let Some(old_session) = self.active_sessions.get_mut(old_id) {
-                    old_session.set_ui_connected(false);
-                }
-            }
-        }
-
         // Check if session exists
         let session_exists = self.active_sessions.contains_key(&session_id);
 
@@ -288,7 +278,6 @@ impl SessionManager {
         let mut needs_persist = false;
         {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            session_instance.set_ui_connected(true);
 
             // Reload session from persistence to get latest state
             // This ensures we see any changes made by agents since session was loaded
@@ -582,7 +571,6 @@ impl SessionManager {
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
         // Add the message first
@@ -594,7 +582,6 @@ impl SessionManager {
             llm_provider,
             project_manager,
             command_executor,
-            ui,
             permission_handler,
         )
         .await
@@ -608,7 +595,6 @@ impl SessionManager {
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
         // Acquire exclusive cross-process agent lock.
@@ -626,7 +612,7 @@ impl SessionManager {
         // Prepare session - need to scope the mutable borrow carefully
         let (
             session_config,
-            proxy_ui,
+            publisher,
             session_state,
             activity,
             pending_message_ref,
@@ -649,7 +635,7 @@ impl SessionManager {
             // previous run's live tool statuses.
             session_instance.begin_agent_run();
 
-            let proxy_ui = session_instance.create_proxy_ui(ui.clone(), self.events.clone());
+            let publisher = session_instance.create_publisher(self.events.clone());
             let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
 
@@ -680,7 +666,7 @@ impl SessionManager {
 
             (
                 session_config,
-                proxy_ui,
+                publisher,
                 session_state,
                 activity,
                 pending_message_ref,
@@ -699,12 +685,6 @@ impl SessionManager {
                 activity_state: crate::session::instance::SessionActivityState::AgentRunning,
             },
         );
-        let _ = ui
-            .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
-                session_id: session_id.to_string(),
-                activity_state: crate::session::instance::SessionActivityState::AgentRunning,
-            })
-            .await;
 
         // Create agent components
         let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
@@ -722,7 +702,7 @@ impl SessionManager {
         let state_storage = Box::new(
             crate::agent::persistence::MetadataNotifyingPersistence::new(
                 state_storage,
-                proxy_ui.clone(),
+                publisher.clone(),
             ),
         );
 
@@ -764,7 +744,7 @@ impl SessionManager {
                 session_config.clone(),
                 sandbox_context_clone,
                 sub_agent_cancellation_registry.clone(),
-                proxy_ui.clone(),
+                publisher.clone(),
                 permission_handler.clone(),
                 self.tool_registry.clone(),
             ));
@@ -773,7 +753,7 @@ impl SessionManager {
             llm_provider,
             project_manager: sandboxed_project_manager,
             command_executor: Arc::from(command_executor),
-            ui: proxy_ui.clone(),
+            ui: publisher.clone(),
             state_persistence: state_storage,
             permission_handler,
             tool_registry: self.tool_registry.clone(),
@@ -789,7 +769,7 @@ impl SessionManager {
         agent.load_from_session_state(session_state).await?;
 
         // Announce the restored plan to the UI
-        let _ = proxy_ui
+        let _ = publisher
             .send_event(UiEvent::UpdatePlan {
                 plan: agent.plan().clone(),
             })
@@ -801,7 +781,6 @@ impl SessionManager {
         // lock is held for exactly as long as the agent is running and released
         // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
-        let ui_clone = ui.clone();
         let events_clone = self.events.clone();
         let sleep_inhibitor = self.sleep_inhibitor.clone();
         sleep_inhibitor.agent_started();
@@ -853,12 +832,6 @@ impl SessionManager {
                             activity_state: crate::session::instance::SessionActivityState::Idle,
                         },
                     );
-                    let _ = ui_clone
-                        .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
-                            session_id: session_id_clone.clone(),
-                            activity_state: crate::session::instance::SessionActivityState::Idle,
-                        })
-                        .await;
                 }
                 Err(e) => {
                     error!("Agent failed for session {}: {}", session_id_clone, e);
@@ -877,29 +850,18 @@ impl SessionManager {
                     };
                     activity.set(errored_state.clone());
 
-                    // Broadcast Errored state to UI (sidebar update)
+                    // Broadcast Errored state (sidebar update). We do NOT
+                    // publish DisplayError here — frontends show the banner
+                    // only when the errored session is the one being viewed
+                    // (via the activity event or the snapshot's connect
+                    // sequence).
                     events_clone.publish_ui(
                         &session_id_clone,
                         crate::ui::UiEvent::UpdateSessionActivityState {
                             session_id: session_id_clone.clone(),
-                            activity_state: errored_state.clone(),
+                            activity_state: errored_state,
                         },
                     );
-                    let _ = ui_clone
-                        .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
-                            session_id: session_id_clone.clone(),
-                            activity_state: errored_state,
-                        })
-                        .await;
-
-                    // Note: we do NOT send DisplayError here because ui_clone is the
-                    // raw UI, not the session's ProxyUI — it would show the error
-                    // banner even if the user is looking at a different session.
-                    // Instead, the GPUI event handler for UpdateSessionActivityState
-                    // checks whether the errored session is the currently viewed one
-                    // and shows the banner only then.  When the user later switches
-                    // to this session, generate_session_connect_events emits
-                    // DisplayError from the stored Errored state.
                 }
             }
 

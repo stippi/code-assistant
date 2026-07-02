@@ -858,8 +858,7 @@ impl TerminalTuiApp {
         terminal_ui.set_event_sender(ui_event_tx);
 
         // Create the session command service and spawn its worker. This
-        // frontend consumes the broadcast stream (see the bridge task
-        // below), so the legacy push side gets a no-op UI.
+        // frontend consumes the broadcast stream (see the bridge task below).
         let (service, service_worker) = SessionService::new(
             multi_session_manager.clone(),
             Arc::new(AgentRuntimeOptions {
@@ -868,7 +867,6 @@ impl TerminalTuiApp {
                 fast_playback: config.fast_playback,
                 command_executor_factory,
             }),
-            Arc::new(code_assistant_core::ui::NullUserInterface),
             events,
         );
         let backend_task = tokio::spawn(service_worker);

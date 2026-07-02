@@ -24,37 +24,6 @@ pub trait UserInterface: Send + Sync {
 
     /// Clear rate limit notification
     fn clear_rate_limit(&self);
-
-    /// Downcast to Any for accessing concrete type methods
-    fn as_any(&self) -> &dyn std::any::Any;
-}
-
-/// Transitional no-op [`UserInterface`] for frontends that consume the
-/// broadcast event stream instead of the legacy push path. Removed together
-/// with that path once all frontends have migrated.
-pub struct NullUserInterface;
-
-#[async_trait]
-impl UserInterface for NullUserInterface {
-    async fn send_event(&self, _event: UiEvent) -> Result<(), UIError> {
-        Ok(())
-    }
-
-    fn display_fragment(&self, _fragment: &DisplayFragment) -> Result<(), UIError> {
-        Ok(())
-    }
-
-    fn should_streaming_continue(&self) -> bool {
-        true
-    }
-
-    fn notify_rate_limit(&self, _seconds_remaining: u64) {}
-
-    fn clear_rate_limit(&self) {}
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 /// Implements the agent core's UI boundary on top of a [`UserInterface`]:

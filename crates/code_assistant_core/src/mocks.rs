@@ -293,10 +293,6 @@ impl UserInterface for MockUI {
     fn clear_rate_limit(&self) {
         // Mock implementation does nothing with rate limit clearing
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 impl MockUI {

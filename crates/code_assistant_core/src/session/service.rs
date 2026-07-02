@@ -23,7 +23,7 @@ use crate::skills::{
 };
 use crate::types::{PlanState, Project};
 use crate::ui::ui_events::{MessageData, ToolResultData};
-use crate::ui::{UiEvent, UserInterface};
+use crate::ui::UiEvent;
 use crate::utils::content::content_blocks_from;
 use anyhow::{anyhow, bail, Context as _, Result};
 use command_executor::CommandExecutor;
@@ -133,16 +133,13 @@ pub enum AddProjectOutcome {
 struct ServiceCtx {
     manager: Arc<Mutex<SessionManager>>,
     runtime: Arc<AgentRuntimeOptions>,
-    ui: Arc<dyn UserInterface>,
     events: EventStream,
 }
 
 impl ServiceCtx {
-    /// Send a session-scoped notification to the broadcast stream and — for
-    /// the transition period — to the legacy attached UI.
-    async fn notify_session(&self, session_id: &str, event: UiEvent) {
-        self.events.publish_ui(session_id, event.clone());
-        send_ui_event(&self.ui, event).await;
+    /// Send a session-scoped notification to the broadcast stream.
+    fn notify_session(&self, session_id: &str, event: UiEvent) {
+        self.events.publish_ui(session_id, event);
     }
 }
 
@@ -167,14 +164,12 @@ impl SessionService {
     pub fn new(
         manager: Arc<Mutex<SessionManager>>,
         runtime: Arc<AgentRuntimeOptions>,
-        ui: Arc<dyn UserInterface>,
         events: EventStream,
     ) -> (Self, impl Future<Output = ()>) {
         let (tx, rx) = async_channel::unbounded::<Command>();
         let ctx = ServiceCtx {
             manager,
             runtime,
-            ui,
             events: events.clone(),
         };
         let worker = async move {
@@ -271,11 +266,6 @@ impl SessionService {
                     .set_active_session(session_id.clone(), edit_until_node_id)
                     .await?
             };
-            // Legacy push path: frontends that haven't migrated to the
-            // stream still receive the connect sequence as events.
-            for event in snapshot.connect_events() {
-                send_ui_event(&ctx.ui, event).await;
-            }
             Ok(snapshot)
         })
         .await
@@ -310,7 +300,7 @@ impl SessionService {
                         manager.refresh_session_incremental(&session_id)?
                     };
                     for event in ui_events {
-                        ctx.notify_session(&session_id, event).await;
+                        ctx.notify_session(&session_id, event);
                     }
                     Ok(())
                 }
@@ -346,8 +336,7 @@ impl SessionService {
                     session_id,
                     activity_state: crate::session::instance::SessionActivityState::Idle,
                 },
-            )
-            .await;
+            );
             Ok(())
         })
         .await
@@ -368,8 +357,7 @@ impl SessionService {
                     chat.plan = Default::default();
                 }
             }
-            ctx.notify_session(&session_id, UiEvent::ClearMessages)
-                .await;
+            ctx.notify_session(&session_id, UiEvent::ClearMessages);
             Ok(())
         })
         .await
@@ -881,14 +869,6 @@ impl SessionService {
     }
 }
 
-/// Send a notification, logging (not propagating) failures — a UI that went
-/// away must not fail the command that produced the notification.
-async fn send_ui_event(ui: &Arc<dyn UserInterface>, event: UiEvent) {
-    if let Err(e) = ui.send_event(event).await {
-        error!("Failed to send UI event: {}", e);
-    }
-}
-
 fn transcript_data(
     session_instance: &crate::session::instance::SessionInstance,
 ) -> Result<TranscriptData> {
@@ -958,8 +938,7 @@ async fn send_user_message_impl(
             attachments: attachments.to_vec(),
             node_id: Some(new_node_id),
         },
-    )
-    .await;
+    );
 
     // Send branch info updates for all siblings (so they show the branch
     // switcher).
@@ -970,8 +949,7 @@ async fn send_user_message_impl(
                 node_id: sibling_node_id,
                 branch_info,
             },
-        )
-        .await;
+        );
     }
 
     start_agent_impl(ctx, session_id).await
@@ -1040,7 +1018,6 @@ async fn start_agent_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
             llm_client,
             project_manager,
             command_executor,
-            ctx.ui.clone(),
             None,
         )
         .await
@@ -1052,11 +1029,10 @@ async fn start_agent_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::MockUI;
     use crate::persistence::FileSessionPersistence;
     use crate::session::SessionConfig;
 
-    fn test_service(root: &std::path::Path) -> (SessionService, MockUI) {
+    fn test_service(root: &std::path::Path) -> SessionService {
         let events = EventStream::new();
         let persistence = FileSessionPersistence::new_with_root_dir(root.to_path_buf());
         let manager = Arc::new(Mutex::new(SessionManager::new(
@@ -1074,16 +1050,15 @@ mod tests {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
         });
-        let ui = MockUI::default();
-        let (service, worker) = SessionService::new(manager, runtime, Arc::new(ui.clone()), events);
+        let (service, worker) = SessionService::new(manager, runtime, events);
         tokio::spawn(worker);
-        (service, ui)
+        service
     }
 
     #[tokio::test]
     async fn create_list_delete_session_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
 
         let id = service
             .create_session(Some("first".to_string()), None)
@@ -1100,29 +1075,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_session_emits_connect_events() {
+    async fn load_session_returns_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
 
         let id = service.create_session(None, None).await.unwrap();
-        service.load_session(id, None).await.unwrap();
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
 
-        let events = ui.events();
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, UiEvent::UpdateCurrentModel { model_name } if model_name == "test-model")),
-            "expected UpdateCurrentModel event, got: {events:?}"
-        );
-        assert!(events
+        assert_eq!(snapshot.session_id, id);
+        assert_eq!(snapshot.current_model, "test-model");
+        assert!(snapshot.messages.is_empty());
+        // The canonical connect sequence renders the snapshot state.
+        assert!(snapshot
+            .connect_events()
             .iter()
-            .any(|e| matches!(e, UiEvent::UpdateAllowedModels { .. })));
+            .any(|e| matches!(e, UiEvent::UpdateCurrentModel { model_name } if model_name == "test-model")));
     }
 
     #[tokio::test]
     async fn load_unknown_session_fails() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
         let err = service
             .load_session("does-not-exist".to_string(), None)
             .await
@@ -1133,7 +1106,7 @@ mod tests {
     #[tokio::test]
     async fn queue_and_take_pending_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
         let id = service.create_session(None, None).await.unwrap();
 
         let pending = service
@@ -1156,22 +1129,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_context_wipes_messages_and_notifies_ui() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (service, ui) = test_service(tmp.path());
-        let id = service.create_session(None, None).await.unwrap();
-
-        service.clear_context(id).await.unwrap();
-        assert!(ui
-            .events()
-            .iter()
-            .any(|e| matches!(e, UiEvent::ClearMessages)));
-    }
-
-    #[tokio::test]
     async fn command_notifications_reach_stream_subscribers() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
         let id = service.create_session(None, None).await.unwrap();
 
         let mut subscription = service.subscribe();
@@ -1194,7 +1154,7 @@ mod tests {
     #[tokio::test]
     async fn request_stop_sets_session_flag() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
         let id = service.create_session(None, None).await.unwrap();
 
         // Unknown session errors.
@@ -1206,7 +1166,7 @@ mod tests {
     #[tokio::test]
     async fn compact_context_reports_unimplemented() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
         let err = service
             .compact_context("any".to_string())
             .await
@@ -1217,7 +1177,7 @@ mod tests {
     #[tokio::test]
     async fn start_message_edit_unknown_session_fails() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
         let err = service
             .start_message_edit("nope".to_string(), 1)
             .await
@@ -1245,8 +1205,7 @@ mod tests {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
         });
-        let (service, worker) =
-            SessionService::new(manager, runtime, Arc::new(MockUI::default()), events);
+        let (service, worker) = SessionService::new(manager, runtime, events);
         drop(worker); // never spawned
 
         let err = service.list_sessions().await.unwrap_err();
@@ -1256,7 +1215,7 @@ mod tests {
     #[tokio::test]
     async fn commands_execute_in_submission_order() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _ui) = test_service(tmp.path());
+        let service = test_service(tmp.path());
 
         // Fire several creates concurrently and make sure each gets its own
         // typed reply (no cross-talk between concurrent callers).

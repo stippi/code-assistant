@@ -784,8 +784,6 @@ impl AgentState {
             uis.insert(arguments.session_id.0.to_string(), acp_ui.clone());
         }
 
-        let ui: Arc<dyn UserInterface> = acp_ui.clone();
-
         // Detect a `/skill` slash command before converting (clients send the
         // advertised command name as prompt text).
         let skill_command = slash_command_token(&arguments.prompt);
@@ -895,20 +893,6 @@ impl AgentState {
             Box::new(DefaultCommandExecutor)
         };
 
-        // Mark session as connected so ProxyUI forwards to our UI
-        {
-            let mut manager = self.session_manager.lock().await;
-            if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
-                session.set_ui_connected(true);
-                tracing::debug!("ACP: Marked session as UI-connected");
-            } else {
-                let error_msg = "Session not found when trying to mark as connected";
-                tracing::error!("{}", error_msg);
-                self.remove_active_ui(&arguments.session_id.0).await;
-                return Err(to_acp_error(&anyhow::anyhow!(error_msg)));
-            }
-        }
-
         let permission_handler: Option<Arc<dyn PermissionMediator>> = Some(Arc::new(
             AcpPermissionMediator::new(arguments.session_id.clone(), cx.clone(), acp_ui.clone()),
         )
@@ -930,7 +914,6 @@ impl AgentState {
                     llm_client,
                     project_manager,
                     command_executor,
-                    ui.clone(),
                     permission_handler,
                 )
                 .await
@@ -939,7 +922,6 @@ impl AgentState {
         {
             let error_msg = format!("Failed to start agent: {e}");
             tracing::error!("{}", error_msg);
-            self.set_disconnected(&arguments.session_id.0).await;
             self.remove_active_ui(&arguments.session_id.0).await;
             return Err(to_acp_error(&e.context(error_msg)));
         }
@@ -987,9 +969,13 @@ impl AgentState {
             if is_idle {
                 tracing::info!("ACP: Agent is idle, exiting wait loop");
 
+                // Give the stream router a moment to deliver the final
+                // events of the turn (tool statuses, errors) before the UI
+                // is deregistered from `active_uis`.
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
                 if let Some(Err(e)) = task_result {
                     tracing::error!("ACP: Agent task failed: {}", e);
-                    self.set_disconnected(&arguments.session_id.0).await;
                     self.remove_active_ui(&arguments.session_id.0).await;
                     return Err(to_acp_error(&e));
                 }
@@ -997,9 +983,8 @@ impl AgentState {
                 break;
             }
 
-            if !ui.should_streaming_continue() {
+            if !acp_ui.should_streaming_continue() {
                 tracing::info!("ACP: Streaming cancelled");
-                self.set_disconnected(&arguments.session_id.0).await;
                 self.remove_active_ui(&arguments.session_id.0).await;
                 return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
             }
@@ -1010,7 +995,6 @@ impl AgentState {
             arguments.session_id.0
         );
 
-        self.set_disconnected(&arguments.session_id.0).await;
         self.remove_active_ui(&arguments.session_id.0).await;
 
         if let Some(message) = acp_ui.take_last_error() {
@@ -1037,13 +1021,6 @@ impl AgentState {
     async fn remove_active_ui(&self, session_id: &str) {
         let mut uis = self.active_uis.lock().await;
         uis.remove(session_id);
-    }
-
-    async fn set_disconnected(&self, session_id: &str) {
-        let mut manager = self.session_manager.lock().await;
-        if let Some(session) = manager.get_session_mut(session_id) {
-            session.set_ui_connected(false);
-        }
     }
 }
 

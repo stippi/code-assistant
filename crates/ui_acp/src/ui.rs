@@ -1098,10 +1098,6 @@ impl UserInterface for ACPUserUI {
     fn clear_rate_limit(&self) {
         // No action needed
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 #[cfg(test)]
