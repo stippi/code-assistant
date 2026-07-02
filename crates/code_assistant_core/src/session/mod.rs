@@ -8,13 +8,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 // New session management architecture
+pub mod event_stream;
 pub mod instance;
 pub mod manager;
 pub mod service;
 pub mod sleep_inhibitor;
 pub mod watcher;
 
-// Main session manager and the UI→core command facade on top of it
+// Main session manager, the UI→core command facade on top of it, and the
+// core→UI broadcast stream
+pub use event_stream::{EventPayload, EventStream, SessionEvent, StreamError, Subscription};
 pub use manager::SessionManager;
 pub use service::SessionService;
 
