@@ -208,21 +208,6 @@ impl Gpui {
         });
     }
 
-    /// Take the queued message out of the pending slot (the user wants to
-    /// edit it). The input area currently only clears the pending display.
-    pub(crate) fn cmd_request_pending_message_edit(&self, session_id: String) {
-        let Some(service) = self.session_service() else {
-            return;
-        };
-        let gpui = self.clone();
-        self.dispatch(async move {
-            match service.take_pending_message(session_id).await {
-                Ok(_taken) => gpui.push_event(UiEvent::UpdatePendingMessage { message: None }),
-                Err(e) => gpui.display_error(format!("Failed to edit pending message: {e:#}")),
-            }
-        });
-    }
-
     /// Resume an errored/killed session against its existing history.
     pub(crate) fn cmd_resume_session(&self, session_id: String) {
         let Some(service) = self.session_service() else {

@@ -541,21 +541,6 @@ impl Gpui {
                 self.notify_messages_reset(cx);
             }
 
-            UiEvent::SendUserMessage {
-                message,
-                session_id,
-                attachments,
-                branch_parent_id,
-            } => {
-                debug!(
-                    "UI: SendUserMessage event for session {}: {} (with {} attachments, branch_parent: {:?})",
-                    session_id,
-                    message,
-                    attachments.len(),
-                    branch_parent_id
-                );
-                self.cmd_send_user_message(session_id, message, attachments, branch_parent_id);
-            }
             UiEvent::UpdateSessionMetadata { metadata } => {
                 debug!(
                     "UI: UpdateSessionMetadata event for session {}",
@@ -652,26 +637,6 @@ impl Gpui {
                         cx.refresh();
                     }
                 }
-            }
-            UiEvent::QueueUserMessage {
-                message,
-                session_id,
-                attachments,
-            } => {
-                debug!(
-                    "UI: QueueUserMessage event for session {}: {} (with {} attachments)",
-                    session_id,
-                    message,
-                    attachments.len()
-                );
-                self.cmd_queue_user_message(session_id, message, attachments);
-            }
-            UiEvent::RequestPendingMessageEdit { session_id } => {
-                debug!(
-                    "UI: RequestPendingMessageEdit event for session {}",
-                    session_id
-                );
-                self.cmd_request_pending_message_edit(session_id);
             }
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("UI: UpdatePendingMessage event with message: {:?}", message);
@@ -845,33 +810,7 @@ impl Gpui {
                 );
             }
 
-            UiEvent::CancelSubAgent { tool_id } => {
-                debug!("UI: CancelSubAgent event for tool_id: {}", tool_id);
-                self.cmd_cancel_sub_agent(tool_id);
-            }
-
             // === Session Branching Events ===
-            UiEvent::StartMessageEdit {
-                session_id,
-                node_id,
-            } => {
-                debug!(
-                    "UI: StartMessageEdit event for session {} node {}",
-                    session_id, node_id
-                );
-                self.cmd_start_message_edit(session_id, node_id);
-            }
-            UiEvent::SwitchBranch {
-                session_id,
-                new_node_id,
-            } => {
-                debug!(
-                    "UI: SwitchBranch event for session {} to node {}",
-                    session_id, new_node_id
-                );
-                self.cmd_switch_branch(session_id, new_node_id);
-            }
-
             UiEvent::MessageEditReady {
                 content,
                 attachments,
@@ -1004,30 +943,6 @@ impl Gpui {
                 // Refresh UI to trigger RootView to process the pending edit
                 cx.refresh();
             }
-            UiEvent::BranchSwitched {
-                session_id,
-                messages,
-                tool_results,
-                plan,
-            } => {
-                debug!(
-                    "UI: BranchSwitched event for session {} with {} messages",
-                    session_id,
-                    messages.len()
-                );
-                // TODO: Update messages display with new branch content
-                // For now, we can reuse the SetMessages logic
-                self.process_ui_event_async(
-                    UiEvent::SetMessages {
-                        messages,
-                        session_id: Some(session_id),
-                        tool_results,
-                    },
-                    cx,
-                );
-                self.process_ui_event_async(UiEvent::UpdatePlan { plan }, cx);
-            }
-
             UiEvent::UpdateBranchInfo {
                 node_id,
                 branch_info,

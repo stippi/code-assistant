@@ -14,17 +14,17 @@
 //! tokio. Core→UI notifications keep flowing through [`UiEvent`] and are
 //! not part of this API.
 
-use crate::config::{DefaultProjectManager, save_project};
+use crate::config::{save_project, DefaultProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::skills::{
-    SkillsConfig, discover_session_catalog, load_skill_payload, render_skill_invocation_message,
+    discover_session_catalog, load_skill_payload, render_skill_invocation_message, SkillsConfig,
 };
 use crate::types::{PlanState, Project};
 use crate::ui::ui_events::{MessageData, ToolResultData};
 use crate::ui::{UiEvent, UserInterface};
 use crate::utils::content::content_blocks_from;
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context as _, Result};
 use command_executor::CommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
@@ -1084,11 +1084,9 @@ mod tests {
                 .any(|e| matches!(e, UiEvent::UpdateCurrentModel { model_name } if model_name == "test-model")),
             "expected UpdateCurrentModel event, got: {events:?}"
         );
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, UiEvent::UpdateAllowedModels { .. }))
-        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, UiEvent::UpdateAllowedModels { .. })));
     }
 
     #[tokio::test]
@@ -1134,11 +1132,10 @@ mod tests {
         let id = service.create_session(None, None).await.unwrap();
 
         service.clear_context(id).await.unwrap();
-        assert!(
-            ui.events()
-                .iter()
-                .any(|e| matches!(e, UiEvent::ClearMessages))
-        );
+        assert!(ui
+            .events()
+            .iter()
+            .any(|e| matches!(e, UiEvent::ClearMessages)));
     }
 
     #[tokio::test]

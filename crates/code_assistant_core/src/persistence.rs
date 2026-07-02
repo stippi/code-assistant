@@ -1357,20 +1357,16 @@ mod tests {
         assert_eq!(remaining_sessions[0].id, "non_empty_session");
 
         // Verify the empty session file is gone
-        assert!(
-            persistence
-                .load_chat_session("empty_session")
-                .expect("load")
-                .is_none()
-        );
+        assert!(persistence
+            .load_chat_session("empty_session")
+            .expect("load")
+            .is_none());
 
         // Verify the non-empty session still exists
-        assert!(
-            persistence
-                .load_chat_session("non_empty_session")
-                .expect("load")
-                .is_some()
-        );
+        assert!(persistence
+            .load_chat_session("non_empty_session")
+            .expect("load")
+            .is_some());
     }
 
     #[test]

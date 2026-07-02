@@ -199,16 +199,7 @@ pub enum UiEvent {
     /// Update the chat list display
     UpdateChatList { sessions: Vec<ChatMetadata> },
     /// Clear all messages
-    #[allow(dead_code)]
     ClearMessages,
-    /// Send user message with optional attachments to active session (triggers agent)
-    SendUserMessage {
-        message: String,
-        session_id: String,
-        attachments: Vec<DraftAttachment>,
-        /// If set, creates a new branch from this parent node instead of appending to active path
-        branch_parent_id: Option<NodeId>,
-    },
     /// Update metadata for a single session without refreshing the entire list
     UpdateSessionMetadata { metadata: ChatMetadata },
     /// Update activity state for a single session
@@ -216,15 +207,6 @@ pub enum UiEvent {
         session_id: String,
         activity_state: SessionActivityState,
     },
-    /// Queue a user message with optional attachments while agent is running
-    QueueUserMessage {
-        message: String,
-        session_id: String,
-        attachments: Vec<DraftAttachment>,
-    },
-    /// Request to edit pending message (move back to input)
-    #[allow(dead_code)]
-    RequestPendingMessageEdit { session_id: String },
     /// Update pending message display
     UpdatePendingMessage { message: Option<String> },
     /// Display an error message to the user
@@ -248,9 +230,6 @@ pub enum UiEvent {
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
 
-    /// Cancel a running sub-agent by its tool id
-    CancelSubAgent { tool_id: String },
-
     /// Schedule a debounced save of the per-session UI state file.
     /// Sent after any mutation to the UI state (tool collapse toggle, plan
     /// toggle, etc.).  The handler cancels any pending save timer and starts
@@ -258,21 +237,9 @@ pub enum UiEvent {
     PersistUiState,
 
     // === Session Branching Events ===
-    /// Request to start editing a message (creates a branch point)
-    /// UI should load the message content into the input area
-    StartMessageEdit {
-        session_id: String,
-        /// The node ID of the message being edited
-        node_id: NodeId,
-    },
-    /// Switch to a different branch at a branch point
-    SwitchBranch {
-        session_id: String,
-        /// The node ID to switch to (a sibling of the current node at a branch point)
-        new_node_id: NodeId,
-    },
-    /// Response: Message content loaded for editing
-    /// Sent in response to StartMessageEdit
+    /// The transcript was truncated for a message edit and the message
+    /// content should be loaded into the input area. Emitted by the GPUI
+    /// edit flow after `SessionService::start_message_edit`.
     MessageEditReady {
         /// The text content of the message
         content: String,
@@ -284,16 +251,6 @@ pub enum UiEvent {
         messages: Vec<MessageData>,
         /// Tool results for the truncated path
         tool_results: Vec<ToolResultData>,
-    },
-    /// Response: Branch switch completed, new messages to display
-    BranchSwitched {
-        session_id: String,
-        /// Full message list for the new active path
-        messages: Vec<MessageData>,
-        /// Tool results for the new path
-        tool_results: Vec<ToolResultData>,
-        /// Updated plan for the new path
-        plan: PlanState,
     },
     /// Update the branch info for a specific message node
     /// Used when a new branch is created to update the UI for the parent message
