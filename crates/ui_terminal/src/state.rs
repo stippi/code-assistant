@@ -1,7 +1,7 @@
 use crate::slash_popup::PopupStack;
-use code_assistant_core::backend::SkillCatalogEntry;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
+use code_assistant_core::session::service::SkillCatalogEntry;
 use code_assistant_core::types::PlanState;
 use sandbox::SandboxPolicy;
 use std::collections::HashMap;

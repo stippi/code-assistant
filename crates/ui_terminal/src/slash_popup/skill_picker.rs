@@ -3,12 +3,12 @@
 //! Pushed by [`super::command_list::CommandListPopup`] when `/skill` is
 //! activated. Unlike the model picker (which reads global config), the skills
 //! are session-scoped and supplied from [`crate::state::AppState::skills`],
-//! which is populated from a [`code_assistant_core::backend::BackendEvent::ListSkills`]
+//! which is populated from a `SessionService::list_skills`
 //! request.
 
 use crate::commands::CommandResult;
 use crate::slash_popup::{PopupAction, PopupRow, SlashPopup};
-use code_assistant_core::backend::SkillCatalogEntry;
+use code_assistant_core::session::service::SkillCatalogEntry;
 
 pub struct SkillPickerPopup {
     /// All skill entries (parallel to `all_rows`), used to dispatch on activate.

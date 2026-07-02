@@ -10,7 +10,7 @@ pub mod terminal;
 pub use code_assistant_core::config::AgentRunConfig;
 
 #[cfg(any(feature = "gpui-frontend", feature = "terminal-frontend"))]
-use code_assistant_core::backend::CommandExecutorFactory;
+use code_assistant_core::session::service::CommandExecutorFactory;
 
 /// The command executor the interactive frontends use for agent sessions:
 /// commands run attached to live terminal views when the GPUI terminal pool
