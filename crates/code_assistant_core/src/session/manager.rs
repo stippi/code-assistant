@@ -95,6 +95,9 @@ pub struct SessionManager {
 
     /// The tool registry shared by all sessions this manager runs.
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
+
+    /// The core→UI broadcast stream all sessions publish to.
+    events: crate::session::event_stream::EventStream,
 }
 
 impl SessionManager {
@@ -108,6 +111,7 @@ impl SessionManager {
         session_config_template: SessionConfig,
         default_model_name: String,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
+        events: crate::session::event_stream::EventStream,
     ) -> Self {
         // Clean up empty sessions from previous runs at startup
         match persistence.delete_empty_sessions() {
@@ -137,7 +141,13 @@ impl SessionManager {
             force_diff_format,
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
+            events,
         }
+    }
+
+    /// The core→UI broadcast stream this manager's sessions publish to.
+    pub fn event_stream(&self) -> &crate::session::event_stream::EventStream {
+        &self.events
     }
 
     /// Returns the session config template.
@@ -633,7 +643,10 @@ impl SessionManager {
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
             let session_config = session_instance.session.config.clone();
-            let proxy_ui = session_instance.create_proxy_ui(ui.clone());
+            // A new agent run supersedes any prior stop request.
+            session_instance.clear_stop_request();
+
+            let proxy_ui = session_instance.create_proxy_ui(ui.clone(), self.events.clone());
             let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
 
@@ -676,6 +689,13 @@ impl SessionManager {
         self.save_session_state(session_state.clone())?;
 
         // Broadcast the initial state change
+        self.events.publish_ui(
+            session_id,
+            crate::ui::UiEvent::UpdateSessionActivityState {
+                session_id: session_id.to_string(),
+                activity_state: crate::session::instance::SessionActivityState::AgentRunning,
+            },
+        );
         let _ = ui
             .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
                 session_id: session_id.to_string(),
@@ -689,6 +709,7 @@ impl SessionManager {
             self.session_config_template.clone(),
             self.default_model_name.clone(),
             self.tool_registry.clone(),
+            self.events.clone(),
         )));
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
@@ -778,6 +799,7 @@ impl SessionManager {
         // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
         let ui_clone = ui.clone();
+        let events_clone = self.events.clone();
         let sleep_inhibitor = self.sleep_inhibitor.clone();
         sleep_inhibitor.agent_started();
 
@@ -821,6 +843,13 @@ impl SessionManager {
                     activity.set(crate::session::instance::SessionActivityState::Idle);
 
                     // Broadcast Idle to UI
+                    events_clone.publish_ui(
+                        &session_id_clone,
+                        crate::ui::UiEvent::UpdateSessionActivityState {
+                            session_id: session_id_clone.clone(),
+                            activity_state: crate::session::instance::SessionActivityState::Idle,
+                        },
+                    );
                     let _ = ui_clone
                         .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
                             session_id: session_id_clone.clone(),
@@ -846,6 +875,13 @@ impl SessionManager {
                     activity.set(errored_state.clone());
 
                     // Broadcast Errored state to UI (sidebar update)
+                    events_clone.publish_ui(
+                        &session_id_clone,
+                        crate::ui::UiEvent::UpdateSessionActivityState {
+                            session_id: session_id_clone.clone(),
+                            activity_state: errored_state.clone(),
+                        },
+                    );
                     let _ = ui_clone
                         .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
                             session_id: session_id_clone.clone(),
@@ -1491,6 +1527,7 @@ mod tests {
             template,
             "test-model".to_string(),
             crate::tools::test_registry(),
+            crate::session::event_stream::EventStream::new(),
         );
         (manager, dir)
     }

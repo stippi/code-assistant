@@ -828,11 +828,13 @@ impl TerminalTuiApp {
         };
 
         // Create session manager
+        let events = code_assistant_core::session::event_stream::EventStream::new();
         let session_manager = SessionManager::new(
             session_persistence,
             session_config_template,
             config.model.clone(),
             code_assistant_core::tools::default_registry(),
+            events.clone(),
         );
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
@@ -855,6 +857,7 @@ impl TerminalTuiApp {
                 command_executor_factory,
             }),
             ui.clone(),
+            events,
         );
         let backend_task = tokio::spawn(service_worker);
 

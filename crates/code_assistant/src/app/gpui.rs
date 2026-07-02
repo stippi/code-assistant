@@ -3,6 +3,7 @@ use crate::session::watcher::SessionWatcher;
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
 use anyhow::Result;
+use code_assistant_core::session::event_stream::EventStream;
 use code_assistant_core::session::service::{AgentRuntimeOptions, SessionService};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -30,11 +31,13 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     // filesystem watcher can use it to resolve the sessions directory.
     let persistence_for_watcher = persistence.clone();
 
+    let events = EventStream::new();
     let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         session_config_template,
         config.model.clone(),
         code_assistant_core::tools::default_registry(),
+        events.clone(),
     )));
 
     // Create the session command service. The GUI gets the handle; the
@@ -49,6 +52,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             command_executor_factory: super::session_command_executor_factory(),
         }),
         ui,
+        events,
     );
     gui.set_session_service(service.clone());
 

@@ -16,6 +16,7 @@
 
 use crate::config::{save_project, DefaultProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
+use crate::session::event_stream::EventStream;
 use crate::session::SessionManager;
 use crate::skills::{
     discover_session_catalog, load_skill_payload, render_skill_invocation_message, SkillsConfig,
@@ -133,6 +134,16 @@ struct ServiceCtx {
     manager: Arc<Mutex<SessionManager>>,
     runtime: Arc<AgentRuntimeOptions>,
     ui: Arc<dyn UserInterface>,
+    events: EventStream,
+}
+
+impl ServiceCtx {
+    /// Send a session-scoped notification to the broadcast stream and — for
+    /// the transition period — to the legacy attached UI.
+    async fn notify_session(&self, session_id: &str, event: UiEvent) {
+        self.events.publish_ui(session_id, event.clone());
+        send_ui_event(&self.ui, event).await;
+    }
 }
 
 type BoxedCommandFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -142,22 +153,29 @@ type Command = Box<dyn FnOnce(ServiceCtx) -> BoxedCommandFuture + Send>;
 #[derive(Clone)]
 pub struct SessionService {
     tx: async_channel::Sender<Command>,
+    events: EventStream,
 }
 
 impl SessionService {
     /// Create the service handle and its worker future. The caller must
     /// spawn the worker on the tokio runtime that should execute commands
     /// (agents started by commands spawn tasks onto that runtime).
+    ///
+    /// `events` must be the same stream the [`SessionManager`] publishes to,
+    /// so that [`SessionService::subscribe`] covers command results and agent
+    /// streaming alike.
     pub fn new(
         manager: Arc<Mutex<SessionManager>>,
         runtime: Arc<AgentRuntimeOptions>,
         ui: Arc<dyn UserInterface>,
+        events: EventStream,
     ) -> (Self, impl Future<Output = ()>) {
         let (tx, rx) = async_channel::unbounded::<Command>();
         let ctx = ServiceCtx {
             manager,
             runtime,
             ui,
+            events: events.clone(),
         };
         let worker = async move {
             debug!("Session service worker started");
@@ -166,7 +184,26 @@ impl SessionService {
             }
             debug!("Session service worker stopped");
         };
-        (Self { tx }, worker)
+        (Self { tx, events }, worker)
+    }
+
+    /// Subscribe to the core→UI broadcast stream.
+    pub fn subscribe(&self) -> crate::session::event_stream::Subscription {
+        self.events.subscribe()
+    }
+
+    /// Request that the running agent of a session stops at the next
+    /// opportunity (streaming checkpoint). No-op if no agent is running.
+    pub async fn request_stop(&self, session_id: String) -> Result<()> {
+        self.call(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            let session = manager
+                .get_session(&session_id)
+                .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
+            session.request_stop();
+            Ok(())
+        })
+        .await
     }
 
     /// Enqueue a command and await its typed reply.
@@ -234,7 +271,7 @@ impl SessionService {
                     .await?
             };
             for event in ui_events {
-                send_ui_event(&ctx.ui, event).await;
+                ctx.notify_session(&session_id, event).await;
             }
             let allowed_models = {
                 let manager = ctx.manager.lock().await;
@@ -242,8 +279,8 @@ impl SessionService {
                     .allowed_models_for_session(&session_id)
                     .unwrap_or_default()
             };
-            send_ui_event(
-                &ctx.ui,
+            ctx.notify_session(
+                &session_id,
                 UiEvent::UpdateAllowedModels {
                     models: allowed_models,
                 },
@@ -283,7 +320,7 @@ impl SessionService {
                         manager.refresh_session_incremental(&session_id)?
                     };
                     for event in ui_events {
-                        send_ui_event(&ctx.ui, event).await;
+                        ctx.notify_session(&session_id, event).await;
                     }
                     Ok(())
                 }
@@ -313,8 +350,8 @@ impl SessionService {
                 }
             }
             // Broadcast the state change so the sidebar updates
-            send_ui_event(
-                &ctx.ui,
+            ctx.notify_session(
+                &session_id.clone(),
                 UiEvent::UpdateSessionActivityState {
                     session_id,
                     activity_state: crate::session::instance::SessionActivityState::Idle,
@@ -341,7 +378,8 @@ impl SessionService {
                     chat.plan = Default::default();
                 }
             }
-            send_ui_event(&ctx.ui, UiEvent::ClearMessages).await;
+            ctx.notify_session(&session_id, UiEvent::ClearMessages)
+                .await;
             Ok(())
         })
         .await
@@ -923,8 +961,8 @@ async fn send_user_message_impl(
     };
 
     // Now display the user message with the correct node_id.
-    send_ui_event(
-        &ctx.ui,
+    ctx.notify_session(
+        session_id,
         UiEvent::DisplayUserInput {
             content: message.to_string(),
             attachments: attachments.to_vec(),
@@ -936,8 +974,8 @@ async fn send_user_message_impl(
     // Send branch info updates for all siblings (so they show the branch
     // switcher).
     for (sibling_node_id, branch_info) in branch_info_updates {
-        send_ui_event(
-            &ctx.ui,
+        ctx.notify_session(
+            session_id,
             UiEvent::UpdateBranchInfo {
                 node_id: sibling_node_id,
                 branch_info,
@@ -1029,12 +1067,14 @@ mod tests {
     use crate::session::SessionConfig;
 
     fn test_service(root: &std::path::Path) -> (SessionService, MockUI) {
+        let events = EventStream::new();
         let persistence = FileSessionPersistence::new_with_root_dir(root.to_path_buf());
         let manager = Arc::new(Mutex::new(SessionManager::new(
             persistence,
             SessionConfig::default(),
             "test-model".to_string(),
             crate::tools::test_registry(),
+            events.clone(),
         )));
         let runtime = Arc::new(AgentRuntimeOptions {
             record_path: None,
@@ -1045,7 +1085,7 @@ mod tests {
             }),
         });
         let ui = MockUI::default();
-        let (service, worker) = SessionService::new(manager, runtime, Arc::new(ui.clone()));
+        let (service, worker) = SessionService::new(manager, runtime, Arc::new(ui.clone()), events);
         tokio::spawn(worker);
         (service, ui)
     }
@@ -1139,6 +1179,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn command_notifications_reach_stream_subscribers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _ui) = test_service(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        let mut subscription = service.subscribe();
+        service.clear_context(id.clone()).await.unwrap();
+
+        // The ClearMessages notification arrives session-tagged on the
+        // broadcast stream.
+        loop {
+            let event = subscription.recv().await.unwrap();
+            if matches!(
+                event.payload,
+                crate::session::event_stream::EventPayload::Ui(UiEvent::ClearMessages)
+            ) {
+                assert_eq!(event.session_id.as_deref(), Some(id.as_str()));
+                break;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_stop_sets_session_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _ui) = test_service(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        // Unknown session errors.
+        assert!(service.request_stop("nope".to_string()).await.is_err());
+
+        service.request_stop(id).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn compact_context_reports_unimplemented() {
         let tmp = tempfile::tempdir().unwrap();
         let (service, _ui) = test_service(tmp.path());
@@ -1163,12 +1238,14 @@ mod tests {
     #[tokio::test]
     async fn service_reports_stopped_worker() {
         let tmp = tempfile::tempdir().unwrap();
+        let events = EventStream::new();
         let persistence = FileSessionPersistence::new_with_root_dir(tmp.path().to_path_buf());
         let manager = Arc::new(Mutex::new(SessionManager::new(
             persistence,
             SessionConfig::default(),
             "test-model".to_string(),
             crate::tools::test_registry(),
+            events.clone(),
         )));
         let runtime = Arc::new(AgentRuntimeOptions {
             record_path: None,
@@ -1178,7 +1255,8 @@ mod tests {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
         });
-        let (service, worker) = SessionService::new(manager, runtime, Arc::new(MockUI::default()));
+        let (service, worker) =
+            SessionService::new(manager, runtime, Arc::new(MockUI::default()), events);
         drop(worker); // never spawned
 
         let err = service.list_sessions().await.unwrap_err();

@@ -76,6 +76,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         session_config_template.clone(),
         model_name.clone(),
         tool_registry.clone(),
+        code_assistant_core::session::event_stream::EventStream::new(),
     )));
 
     // Channel for session notifications: `ACPUserUI` instances push into the
