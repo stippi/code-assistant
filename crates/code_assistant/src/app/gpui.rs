@@ -41,8 +41,9 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     )));
 
     // Create the session command service. The GUI gets the handle; the
-    // worker runs on the backend tokio runtime below.
-    let ui: Arc<dyn UserInterface> = Arc::new(gui.clone());
+    // worker runs on the backend tokio runtime below. The GUI consumes the
+    // broadcast stream, so the legacy push side gets a no-op UI.
+    let ui: Arc<dyn UserInterface> = Arc::new(code_assistant_core::ui::NullUserInterface);
     let (service, service_worker) = SessionService::new(
         multi_session_manager,
         Arc::new(AgentRuntimeOptions {
@@ -111,9 +112,12 @@ async fn startup(service: &SessionService, gui: &ui_gpui::Gpui, task: Option<Str
                 return;
             }
         };
-        if let Err(e) = service.load_session(session_id.clone(), None).await {
-            error!("Failed to connect initial session: {e:#}");
-            return;
+        match service.load_session(session_id.clone(), None).await {
+            Ok(snapshot) => gui.apply_snapshot(&snapshot),
+            Err(e) => {
+                error!("Failed to connect initial session: {e:#}");
+                return;
+            }
         }
         if let Err(e) = service
             .send_user_message(session_id.clone(), initial_task, Vec::new(), None)
@@ -140,12 +144,15 @@ async fn startup(service: &SessionService, gui: &ui_gpui::Gpui, task: Option<Str
                 let edit_until_node_id = gui
                     .load_draft_for_session(&session_id)
                     .and_then(|(_, _, anchor)| anchor);
-                if let Err(e) = service
+                match service
                     .load_session(session_id.clone(), edit_until_node_id)
                     .await
                 {
-                    error!("Failed to connect to session {session_id}: {e:#}");
-                    return;
+                    Ok(snapshot) => gui.apply_snapshot(&snapshot),
+                    Err(e) => {
+                        error!("Failed to connect to session {session_id}: {e:#}");
+                        return;
+                    }
                 }
                 Some(session_id)
             }

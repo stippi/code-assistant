@@ -27,7 +27,7 @@ use sandbox::SandboxPolicy;
 use shared::assets::Assets;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, trace, warn};
 
 actions!(
     code_assistant,
@@ -437,6 +437,9 @@ impl Gpui {
             // dispatched from any thread (see app/commands.rs).
             *gpui_clone.background_executor.lock().unwrap() =
                 Some(cx.background_executor().clone());
+
+            // Subscribe to the core→UI broadcast stream (see app/event_bridge.rs)
+            gpui_clone.spawn_event_bridge();
 
             // Register our Gpui instance as a global
             cx.set_global(gpui_clone.clone());

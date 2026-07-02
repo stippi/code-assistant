@@ -1,17 +1,92 @@
-//! `UserInterface` trait implementation for `Gpui`.
+//! Subscription to the core→UI broadcast stream.
 //!
-//! This is the bridge between the agent system and the GUI — it receives
-//! events and display fragments from the agent loop and forwards them into
-//! the GPUI event queue for processing on the UI thread.
+//! The bridge is GPUI's single ingestion point for everything the core
+//! publishes. It filters by the currently viewed session — sidebar-relevant
+//! events (activity, metadata, chat list) pass regardless — and forwards
+//! into the internal UI event queue, where the existing processing on the
+//! foreground thread takes over. On lag it resyncs by reloading a fresh
+//! snapshot of the viewed session.
 
-use async_trait::async_trait;
-use code_assistant_core::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
+use code_assistant_core::session::{EventPayload, SessionEvent, SessionSnapshot, StreamError};
+use code_assistant_core::ui::UiEvent;
+use tracing::{debug, warn};
 
 use super::super::*;
 
-#[async_trait]
-impl UserInterface for Gpui {
-    async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+impl Gpui {
+    /// Subscribe to the broadcast stream and forward events until it closes.
+    /// Called once from `run_app`.
+    pub(crate) fn spawn_event_bridge(&self) {
+        let Some(service) = self.session_service() else {
+            warn!("No session service — event bridge not started");
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            let mut subscription = service.subscribe();
+            debug!("Event bridge started");
+            loop {
+                match subscription.recv().await {
+                    Ok(event) => gpui.handle_stream_event(event).await,
+                    Err(StreamError::Lagged { missed }) => {
+                        warn!("Event stream lagged ({missed} events missed) — resyncing");
+                        if let Some(session_id) = gpui.get_current_session_id() {
+                            gpui.cmd_load_session(session_id, None);
+                        }
+                    }
+                    Err(StreamError::Closed) => {
+                        debug!("Event stream closed — bridge stopped");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Apply one stream event: decide whether it concerns this view, then
+    /// feed it into the internal UI event queue.
+    async fn handle_stream_event(&self, event: SessionEvent) {
+        let current = self.get_current_session_id();
+        let is_current_session = event.session_id == current;
+
+        match event.payload {
+            EventPayload::Fragment(fragment) => {
+                // Streaming fragments only matter for the viewed session;
+                // background sessions are resynced via snapshot on switch.
+                if is_current_session {
+                    let _ = self.handle_fragment(&fragment);
+                }
+            }
+            EventPayload::Ui(ui_event) => {
+                let forward = match &ui_event {
+                    // Sidebar state: relevant for every session, always.
+                    UiEvent::UpdateSessionActivityState { .. }
+                    | UiEvent::UpdateSessionMetadata { .. }
+                    | UiEvent::UpdateChatList { .. }
+                    | UiEvent::RefreshChatList
+                    | UiEvent::ConfigChanged => true,
+                    // Everything else: app-scoped events pass, session-scoped
+                    // events only for the viewed session.
+                    _ => event.session_id.is_none() || is_current_session,
+                };
+                if forward {
+                    let _ = self.handle_app_event(ui_event).await;
+                }
+            }
+        }
+    }
+
+    /// Apply an owned session snapshot by replaying the canonical connect
+    /// sequence through the internal event queue.
+    pub fn apply_snapshot(&self, snapshot: &SessionSnapshot) {
+        for event in snapshot.connect_events() {
+            self.push_event(event);
+        }
+    }
+
+    /// Ingest an application event: track side state, then enqueue it for
+    /// processing on the foreground thread.
+    pub(crate) async fn handle_app_event(&self, event: UiEvent) {
         // Handle special events that need state management
         match &event {
             UiEvent::StreamingStarted { request_id, .. } => {
@@ -38,10 +113,16 @@ impl UserInterface for Gpui {
 
         // Forward all events to the event processing
         self.push_event(event);
-        Ok(())
     }
 
-    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
+    /// Translate a streaming display fragment of the viewed session into
+    /// the internal event vocabulary.
+    pub(crate) fn handle_fragment(
+        &self,
+        fragment: &code_assistant_core::ui::DisplayFragment,
+    ) -> Result<(), code_assistant_core::ui::UIError> {
+        use code_assistant_core::ui::{DisplayFragment, UIError};
+
         match fragment {
             DisplayFragment::PlainText(text) => {
                 self.push_event(UiEvent::AppendToTextBlock {
@@ -76,7 +157,10 @@ impl UserInterface for Gpui {
                 tool_id,
             } => {
                 if tool_id.is_empty() {
-                    error!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
+                    tracing::error!(
+                        "StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!",
+                        name
+                    );
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("Empty tool ID for parameter '{name}'"),
@@ -149,31 +233,5 @@ impl UserInterface for Gpui {
         }
 
         Ok(())
-    }
-
-    fn should_streaming_continue(&self) -> bool {
-        // Check if the current session has requested a stop
-        if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
-            let stop_requests = self.session_stop_requests.lock().unwrap();
-            if stop_requests.contains(current_session_id) {
-                return false;
-            }
-        }
-
-        // Default: continue streaming
-        true
-    }
-
-    fn notify_rate_limit(&self, _seconds_remaining: u64) {
-        // This is not handled here, but in the ProxyUI of each SessionInstance.
-        // We receive separate events for SessionActivityState
-    }
-
-    fn clear_rate_limit(&self) {
-        // See notify_rate_limit()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

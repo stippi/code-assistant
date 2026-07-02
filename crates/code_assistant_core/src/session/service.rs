@@ -273,7 +273,7 @@ impl SessionService {
             };
             // Legacy push path: frontends that haven't migrated to the
             // stream still receive the connect sequence as events.
-            for event in connect_events(&snapshot) {
+            for event in snapshot.connect_events() {
                 send_ui_event(&ctx.ui, event).await;
             }
             Ok(snapshot)
@@ -887,50 +887,6 @@ async fn send_ui_event(ui: &Arc<dyn UserInterface>, event: UiEvent) {
     if let Err(e) = ui.send_event(event).await {
         error!("Failed to send UI event: {}", e);
     }
-}
-
-/// Legacy shim: render a [`SessionSnapshot`] as the connect event sequence
-/// for frontends that still consume the single-UI push path. Removed once
-/// all frontends apply snapshots directly.
-fn connect_events(snapshot: &crate::session::SessionSnapshot) -> Vec<UiEvent> {
-    let mut events = vec![
-        UiEvent::SetMessages {
-            messages: snapshot.messages.clone(),
-            session_id: Some(snapshot.session_id.clone()),
-            tool_results: snapshot.tool_results.clone(),
-        },
-        UiEvent::UpdatePlan {
-            plan: snapshot.plan.clone(),
-        },
-        UiEvent::UpdateSessionActivityState {
-            session_id: snapshot.session_id.clone(),
-            activity_state: snapshot.activity_state.clone(),
-        },
-    ];
-    // Show the error banner when connecting to an errored session.
-    if let crate::session::instance::SessionActivityState::Errored { message } =
-        &snapshot.activity_state
-    {
-        events.push(UiEvent::DisplayError {
-            message: message.clone(),
-        });
-    }
-    events.push(UiEvent::UpdateSessionMetadata {
-        metadata: snapshot.metadata.clone(),
-    });
-    events.push(UiEvent::UpdatePendingMessage {
-        message: snapshot.pending_message.clone(),
-    });
-    events.push(UiEvent::UpdateCurrentModel {
-        model_name: snapshot.current_model.clone(),
-    });
-    events.push(UiEvent::UpdateSandboxPolicy {
-        policy: snapshot.sandbox_policy.clone(),
-    });
-    events.push(UiEvent::UpdateAllowedModels {
-        models: snapshot.allowed_models.clone(),
-    });
-    events
 }
 
 fn transcript_data(

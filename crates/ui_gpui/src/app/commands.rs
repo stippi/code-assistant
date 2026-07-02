@@ -21,7 +21,7 @@ impl Gpui {
         *self.session_service.lock().unwrap() = Some(service);
     }
 
-    fn session_service(&self) -> Option<SessionService> {
+    pub(crate) fn session_service(&self) -> Option<SessionService> {
         let service = self.session_service.lock().unwrap().clone();
         if service.is_none() {
             warn!("Session service not available");
@@ -32,7 +32,7 @@ impl Gpui {
     /// Run a command future as a detached task on the GPUI background
     /// executor. Commands only touch thread-safe state and the UI event
     /// queue, never entities.
-    fn dispatch(&self, fut: impl Future<Output = ()> + Send + 'static) {
+    pub(crate) fn dispatch(&self, fut: impl Future<Output = ()> + Send + 'static) {
         let executor = self.background_executor.lock().unwrap().clone();
         if let Some(executor) = executor {
             executor.spawn(fut).detach();
@@ -88,22 +88,42 @@ impl Gpui {
         });
     }
 
-    /// Connect a session to the UI. The transcript arrives as `UiEvent`s;
-    /// the skill catalog for the `/skill` picker is refreshed as well.
+    /// Connect a session to the UI: apply the returned snapshot and refresh
+    /// the skill catalog for the `/skill` picker.
     pub(crate) fn cmd_load_session(&self, session_id: String, edit_until_node_id: Option<NodeId>) {
         let Some(service) = self.session_service() else {
             return;
         };
         let gpui = self.clone();
         self.dispatch(async move {
-            if let Err(e) = service
+            match service
                 .load_session(session_id.clone(), edit_until_node_id)
                 .await
             {
-                gpui.display_error(format!("Failed to load session: {e:#}"));
-                return;
+                Ok(snapshot) => {
+                    gpui.apply_snapshot(&snapshot);
+                    gpui.refresh_skills(session_id);
+                }
+                Err(e) => gpui.display_error(format!("Failed to load session: {e:#}")),
             }
-            gpui.refresh_skills(session_id);
+        });
+    }
+
+    /// Ask the running agent of a session to stop. The local stop-request
+    /// set drives the cancel button state; the actual stop happens core-side
+    /// at the agent's next streaming checkpoint.
+    pub(crate) fn cmd_request_stop(&self, session_id: String) {
+        self.session_stop_requests
+            .lock()
+            .unwrap()
+            .insert(session_id.clone());
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        self.dispatch(async move {
+            if let Err(e) = service.request_stop(session_id).await {
+                debug!("Failed to request agent stop: {e:#}");
+            }
         });
     }
 

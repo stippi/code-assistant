@@ -181,6 +181,16 @@ impl Actions {
         });
     }
 
+    /// Ask the running agent to stop at its next streaming checkpoint.
+    fn request_stop(&self, session_id: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this.service.request_stop(session_id).await {
+                tracing::debug!("Failed to request agent stop: {e:#}");
+            }
+        });
+    }
+
     fn clear_context(&self, session_id: String) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -520,10 +530,9 @@ async fn event_loop(
                                         if let Some(session_id) = current_session_id {
                                             cancel_flag.store(true, Ordering::SeqCst);
                                             debug!(
-                                                "Escape pressed - cancellation flag set for session {} (state: {:?})",
+                                                "Escape pressed - requesting stop for session {} (state: {:?})",
                                                 session_id, activity_state
                                             );
-
 
                                             let mut state = app_state.lock().await;
                                             if activity_state.as_ref().is_some_and(|s| s.is_terminal()) {
@@ -531,6 +540,7 @@ async fn event_loop(
                                                     "No agent is currently running.".to_string(),
                                                 ));
                                             } else {
+                                                actions.request_stop(session_id.clone());
                                                 state.set_info_message(Some(
                                                     "Cancellation requested...".to_string(),
                                                 ));
@@ -847,7 +857,9 @@ impl TerminalTuiApp {
             async_channel::unbounded::<code_assistant_core::ui::UiEvent>();
         terminal_ui.set_event_sender(ui_event_tx);
 
-        // Create the session command service and spawn its worker
+        // Create the session command service and spawn its worker. This
+        // frontend consumes the broadcast stream (see the bridge task
+        // below), so the legacy push side gets a no-op UI.
         let (service, service_worker) = SessionService::new(
             multi_session_manager.clone(),
             Arc::new(AgentRuntimeOptions {
@@ -856,10 +868,72 @@ impl TerminalTuiApp {
                 fast_playback: config.fast_playback,
                 command_executor_factory,
             }),
-            ui.clone(),
+            Arc::new(code_assistant_core::ui::NullUserInterface),
             events,
         );
         let backend_task = tokio::spawn(service_worker);
+
+        // Bridge: subscribe to the core→UI broadcast stream and feed the
+        // terminal's rendering pipeline. Single-session app, so everything
+        // scoped to the current session (or app-scoped) passes.
+        {
+            let terminal_ui = terminal_ui.clone();
+            let app_state = app_state.clone();
+            let service_for_bridge = service.clone();
+            let mut subscription = service.subscribe();
+            tokio::spawn(async move {
+                use code_assistant_core::session::instance::SessionActivityState;
+                use code_assistant_core::session::{EventPayload, StreamError};
+                loop {
+                    match subscription.recv().await {
+                        Ok(event) => {
+                            let current = app_state.lock().await.current_session_id.clone();
+                            let relevant =
+                                event.session_id.is_none() || event.session_id == current;
+                            if !relevant {
+                                continue;
+                            }
+                            match event.payload {
+                                EventPayload::Fragment(fragment) => {
+                                    let _ = terminal_ui.display_fragment(&fragment);
+                                }
+                                EventPayload::Ui(ui_event) => {
+                                    // Drive the rate-limit spinner from activity
+                                    // transitions (used to be trait callbacks).
+                                    if let UiEvent::UpdateSessionActivityState {
+                                        activity_state,
+                                        ..
+                                    } = &ui_event
+                                    {
+                                        match activity_state {
+                                            SessionActivityState::RateLimited {
+                                                seconds_remaining,
+                                            } => terminal_ui.notify_rate_limit(*seconds_remaining),
+                                            _ => terminal_ui.clear_rate_limit(),
+                                        }
+                                    }
+                                    let _ = terminal_ui.send_event(ui_event).await;
+                                }
+                            }
+                        }
+                        Err(StreamError::Lagged { missed }) => {
+                            tracing::warn!("Event stream lagged ({missed} missed) — resyncing");
+                            let current = app_state.lock().await.current_session_id.clone();
+                            if let Some(session_id) = current {
+                                if let Ok(snapshot) =
+                                    service_for_bridge.load_session(session_id, None).await
+                                {
+                                    for event in snapshot.connect_events() {
+                                        let _ = terminal_ui.send_event(event).await;
+                                    }
+                                }
+                            }
+                        }
+                        Err(StreamError::Closed) => break,
+                    }
+                }
+            });
+        }
 
         // Create the redraw notification channel early so `Actions` can wake
         // the event loop after async state updates.
@@ -888,7 +962,12 @@ impl TerminalTuiApp {
                     .load_session(existing_session_id.clone(), None)
                     .await
                 {
-                    Ok(_snapshot) => session_id = Some(existing_session_id),
+                    Ok(snapshot) => {
+                        for event in snapshot.connect_events() {
+                            let _ = terminal_ui.send_event(event).await;
+                        }
+                        session_id = Some(existing_session_id);
+                    }
                     Err(e) => {
                         // Fall through to creating a fresh session
                         debug!("Failed to continue session {existing_session_id}: {e:#}");
@@ -904,7 +983,10 @@ impl TerminalTuiApp {
             debug!("Creating new session");
             let new_session_id = service.create_session(None, None).await?;
             debug!("Created new session: {}", new_session_id);
-            service.load_session(new_session_id.clone(), None).await?;
+            let snapshot = service.load_session(new_session_id.clone(), None).await?;
+            for event in snapshot.connect_events() {
+                let _ = terminal_ui.send_event(event).await;
+            }
             session_id = Some(new_session_id);
         }
 

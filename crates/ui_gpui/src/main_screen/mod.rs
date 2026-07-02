@@ -496,10 +496,7 @@ impl MainScreen {
                 // Handle cancel/stop request
                 if let Some(session_id) = &self.current_session_id {
                     if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.session_stop_requests
-                            .lock()
-                            .unwrap()
-                            .insert(session_id.clone());
+                        gpui.cmd_request_stop(session_id.clone());
                     }
                 }
                 cx.notify();
@@ -773,13 +770,10 @@ impl MainScreen {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        // Add current session to stop requests
+        // Request the agent of the current session to stop
         if let Some(session_id) = &self.current_session_id {
             if let Some(gpui) = cx.try_global::<Gpui>() {
-                gpui.session_stop_requests
-                    .lock()
-                    .unwrap()
-                    .insert(session_id.clone());
+                gpui.cmd_request_stop(session_id.clone());
             }
         }
         cx.notify();
