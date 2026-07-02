@@ -49,6 +49,90 @@ impl SessionActivityState {
     }
 }
 
+/// Shared handle to a session's activity state that owns the transition
+/// rules. The [`ProxyUI`] reports streaming lifecycle moments through the
+/// `on_*` methods and broadcasts whatever state change they return — what a
+/// moment *means* for the state is decided here, not in the UI proxy.
+#[derive(Clone, Default)]
+pub struct SessionActivity {
+    state: Arc<Mutex<SessionActivityState>>,
+}
+
+impl SessionActivity {
+    pub fn get(&self) -> SessionActivityState {
+        self.state.lock().unwrap().clone()
+    }
+
+    /// Set the state unconditionally. Reserved for the agent lifecycle
+    /// itself (start, completion, error) — the only places allowed to leave
+    /// a terminal state.
+    pub fn set(&self, state: SessionActivityState) {
+        *self.state.lock().unwrap() = state;
+    }
+
+    /// Apply a transition respecting the terminal-state rule: terminal
+    /// states (Idle, Errored) persist until a new agent is explicitly
+    /// started via [`SessionActivity::set`]. Returns the new state if it
+    /// changed, so the caller knows whether to broadcast.
+    pub fn try_transition(&self, new_state: SessionActivityState) -> Option<SessionActivityState> {
+        let mut state = self.state.lock().unwrap();
+        if state.is_terminal() && !new_state.is_terminal() {
+            debug!(
+                "Ignoring activity transition from {:?} to {:?}",
+                *state, new_state
+            );
+            return None;
+        }
+        if *state == new_state {
+            return None;
+        }
+        *state = new_state.clone();
+        Some(new_state)
+    }
+
+    /// An LLM request was sent and the response hasn't started streaming.
+    pub fn on_streaming_started(&self) -> Option<SessionActivityState> {
+        self.try_transition(SessionActivityState::WaitingForResponse)
+    }
+
+    /// Streaming ended. Moves back to AgentRunning on success; a cancelled
+    /// or failed request leaves the state untouched (the agent task decides
+    /// the final state), as does an agent that already completed.
+    pub fn on_streaming_stopped(
+        &self,
+        cancelled: bool,
+        errored: bool,
+    ) -> Option<SessionActivityState> {
+        if cancelled || errored {
+            return None;
+        }
+        match self.get() {
+            SessionActivityState::WaitingForResponse | SessionActivityState::RateLimited { .. } => {
+                self.try_transition(SessionActivityState::AgentRunning)
+            }
+            _ => None,
+        }
+    }
+
+    /// The stream produced its first visible output.
+    pub fn on_visible_output(&self) -> Option<SessionActivityState> {
+        match self.get() {
+            SessionActivityState::WaitingForResponse => {
+                self.try_transition(SessionActivityState::AgentRunning)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn on_rate_limited(&self, seconds_remaining: u64) -> Option<SessionActivityState> {
+        self.try_transition(SessionActivityState::RateLimited { seconds_remaining })
+    }
+
+    pub fn on_rate_limit_cleared(&self) -> Option<SessionActivityState> {
+        self.try_transition(SessionActivityState::WaitingForResponse)
+    }
+}
+
 /// Buffered tool-status update received while the session was disconnected.
 /// Keyed by `tool_id` so only the most recent status per tool is retained.
 type ToolStatusBuffer = HashMap<String, crate::ui::ui_events::ToolResultData>;
@@ -76,8 +160,8 @@ pub struct SessionInstance {
     /// Whether this session is currently connected to the UI
     pub is_ui_connected: Arc<Mutex<bool>>,
 
-    /// Current activity state of this session
-    pub activity_state: Arc<Mutex<SessionActivityState>>,
+    /// Current activity state of this session (shared with the ProxyUI)
+    pub activity: SessionActivity,
 
     /// Pending user message (structured content blocks) that will be processed by the next agent iteration
     pub pending_message: Arc<Mutex<Option<Vec<ContentBlock>>>>,
@@ -130,7 +214,7 @@ impl SessionInstance {
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
             is_ui_connected: Arc::new(Mutex::new(false)),
-            activity_state: Arc::new(Mutex::new(SessionActivityState::Idle)),
+            activity: SessionActivity::default(),
             pending_message: Arc::new(Mutex::new(None)),
             sandbox_context,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
@@ -149,12 +233,12 @@ impl SessionInstance {
 
     /// Get the current activity state
     pub fn get_activity_state(&self) -> SessionActivityState {
-        self.activity_state.lock().unwrap().clone()
+        self.activity.get()
     }
 
     /// Set the activity state
     pub fn set_activity_state(&self, state: SessionActivityState) {
-        *self.activity_state.lock().unwrap() = state;
+        self.activity.set(state);
     }
 
     /// Get all buffered fragments and optionally clear the buffer
@@ -285,7 +369,7 @@ impl SessionInstance {
             self.fragment_buffer.clone(),
             self.tool_status_buffer.clone(),
             self.is_ui_connected.clone(),
-            self.activity_state.clone(),
+            self.activity.clone(),
             self.session.id.clone(),
         ))
     }
@@ -734,7 +818,11 @@ impl SessionInstance {
     }
 }
 
-/// ProxyUI that buffers fragments and conditionally forwards to real UI
+/// ProxyUI that buffers fragments and conditionally forwards to real UI.
+///
+/// It owns no state logic: activity transitions are decided by the shared
+/// [`SessionActivity`] handle; the proxy only reports lifecycle moments to
+/// it and broadcasts resulting changes.
 struct ProxyUI {
     real_ui: Arc<dyn UserInterface>,
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
@@ -742,7 +830,7 @@ struct ProxyUI {
     /// can be replayed on the next session reconnect.
     tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
     is_session_connected: Arc<Mutex<bool>>,
-    session_activity_state: Arc<Mutex<SessionActivityState>>,
+    activity: SessionActivity,
     session_id: String,
 }
 
@@ -752,7 +840,7 @@ impl ProxyUI {
         fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
         tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
         is_session_connected: Arc<Mutex<bool>>,
-        session_activity_state: Arc<Mutex<SessionActivityState>>,
+        activity: SessionActivity,
         session_id: String,
     ) -> Self {
         Self {
@@ -760,7 +848,7 @@ impl ProxyUI {
             fragment_buffer,
             tool_status_buffer,
             is_session_connected,
-            session_activity_state,
+            activity,
             session_id,
         }
     }
@@ -773,40 +861,25 @@ impl ProxyUI {
             .unwrap_or(false)
     }
 
-    /// Update activity state and broadcast the change to the UI
-    fn update_activity_state(&self, new_state: SessionActivityState) {
-        // Update our internal state
-        if let Ok(mut state) = self.session_activity_state.lock() {
-            // Don't allow transitions from terminal states (Idle, Errored) back to other states.
-            // Terminal states persist until a new agent is explicitly started.
-            if state.is_terminal() && !new_state.is_terminal() {
-                debug!(
-                    "Ignoring state transition from {:?} to {:?} for session {}",
-                    *state, new_state, self.session_id
-                );
-                return;
-            }
-
-            if *state != new_state {
-                *state = new_state.clone();
-
-                // Always broadcast activity state changes to UI (regardless of connection status)
-                // This ensures the chat sidebar shows current activity for all sessions
-                // Send synchronously to avoid race conditions with async task spawning
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    let ui = self.real_ui.clone();
-                    let session_id = self.session_id.clone();
-                    let activity_state = new_state;
-                    handle.spawn(async move {
-                        let _ = ui
-                            .send_event(UiEvent::UpdateSessionActivityState {
-                                session_id,
-                                activity_state,
-                            })
-                            .await;
-                    });
-                }
-            }
+    /// Broadcast an activity-state change produced by [`SessionActivity`].
+    ///
+    /// Broadcasts regardless of connection status so the chat sidebar shows
+    /// current activity for all sessions.
+    fn broadcast_activity_change(&self, change: Option<SessionActivityState>) {
+        let Some(activity_state) = change else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let ui = self.real_ui.clone();
+            let session_id = self.session_id.clone();
+            handle.spawn(async move {
+                let _ = ui
+                    .send_event(UiEvent::UpdateSessionActivityState {
+                        session_id,
+                        activity_state,
+                    })
+                    .await;
+            });
         }
     }
 }
@@ -821,8 +894,7 @@ impl UserInterface for ProxyUI {
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
-                // Update activity state to waiting for response
-                self.update_activity_state(SessionActivityState::WaitingForResponse);
+                self.broadcast_activity_change(self.activity.on_streaming_started());
             }
             UiEvent::StreamingStopped {
                 cancelled, error, ..
@@ -831,29 +903,17 @@ impl UserInterface for ProxyUI {
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
-                // Only update activity state back to agent running if streaming was not cancelled
-                // and there was no error, and the agent hasn't already completed (i.e., state is not already Idle)
-                if !cancelled && error.is_none() {
-                    let current_state = self
-                        .session_activity_state
-                        .lock()
-                        .map(|s| s.clone())
-                        .unwrap_or(SessionActivityState::Idle);
-                    if matches!(
-                        current_state,
-                        SessionActivityState::WaitingForResponse
-                            | SessionActivityState::RateLimited { .. }
-                    ) {
-                        self.update_activity_state(SessionActivityState::AgentRunning);
-                    }
-                } else if let Some(error_msg) = error {
-                    // If there was an error, the agent will terminate, so don't transition to AgentRunning
+                if let Some(error_msg) = error {
+                    // The agent task will set the final state when it terminates
                     debug!(
                         "StreamingStopped with error for session {}: {}",
                         self.session_id, error_msg
                     );
-                    // The agent task will set the state to Idle when it terminates
                 }
+                self.broadcast_activity_change(
+                    self.activity
+                        .on_streaming_stopped(*cancelled, error.is_some()),
+                );
             }
             UiEvent::RollbackStreaming { .. } => {
                 // Clear fragment buffer — the partial content is being discarded before a retry
@@ -865,7 +925,9 @@ impl UserInterface for ProxyUI {
                 session_id,
                 activity_state,
             } if session_id == &self.session_id => {
-                self.update_activity_state(activity_state.clone());
+                self.broadcast_activity_change(
+                    self.activity.try_transition(activity_state.clone()),
+                );
                 return Ok(());
             }
             _ => {}
@@ -940,15 +1002,7 @@ impl UserInterface for ProxyUI {
         };
 
         if has_visible_content {
-            // Only transition if the agent is still running (not Idle)
-            let current_state = self
-                .session_activity_state
-                .lock()
-                .map(|s| s.clone())
-                .unwrap_or(SessionActivityState::Idle);
-            if matches!(current_state, SessionActivityState::WaitingForResponse) {
-                self.update_activity_state(SessionActivityState::AgentRunning);
-            }
+            self.broadcast_activity_change(self.activity.on_visible_output());
         }
 
         // Only forward to real UI if session is connected
@@ -968,8 +1022,7 @@ impl UserInterface for ProxyUI {
     }
 
     fn notify_rate_limit(&self, seconds_remaining: u64) {
-        // Update session activity state and broadcast
-        self.update_activity_state(SessionActivityState::RateLimited { seconds_remaining });
+        self.broadcast_activity_change(self.activity.on_rate_limited(seconds_remaining));
 
         if self.is_connected() {
             self.real_ui.notify_rate_limit(seconds_remaining);
@@ -978,8 +1031,7 @@ impl UserInterface for ProxyUI {
     }
 
     fn clear_rate_limit(&self) {
-        // Update session activity state back to waiting for response
-        self.update_activity_state(SessionActivityState::WaitingForResponse);
+        self.broadcast_activity_change(self.activity.on_rate_limit_cleared());
 
         if self.is_connected() {
             self.real_ui.clear_rate_limit();
@@ -999,12 +1051,122 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
+    fn activity_with(state: SessionActivityState) -> SessionActivity {
+        let activity = SessionActivity::default();
+        activity.set(state);
+        activity
+    }
+
+    #[test]
+    fn terminal_states_block_transitions_until_explicit_set() {
+        for terminal in [
+            SessionActivityState::Idle,
+            SessionActivityState::Errored {
+                message: "boom".to_string(),
+            },
+        ] {
+            let activity = activity_with(terminal.clone());
+            assert_eq!(
+                activity.try_transition(SessionActivityState::AgentRunning),
+                None
+            );
+            assert_eq!(activity.get(), terminal);
+
+            // An explicit set (agent start) leaves the terminal state.
+            activity.set(SessionActivityState::AgentRunning);
+            assert_eq!(activity.get(), SessionActivityState::AgentRunning);
+        }
+    }
+
+    #[test]
+    fn try_transition_reports_only_changes() {
+        let activity = activity_with(SessionActivityState::AgentRunning);
+        // Same state → no change to broadcast.
+        assert_eq!(
+            activity.try_transition(SessionActivityState::AgentRunning),
+            None
+        );
+        assert_eq!(
+            activity.try_transition(SessionActivityState::WaitingForResponse),
+            Some(SessionActivityState::WaitingForResponse)
+        );
+    }
+
+    #[test]
+    fn streaming_stopped_only_resumes_running_state_on_success() {
+        // Error → state untouched (the agent task decides the final state).
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(activity.on_streaming_stopped(false, true), None);
+        assert_eq!(activity.get(), SessionActivityState::WaitingForResponse);
+
+        // Cancelled → state untouched.
+        assert_eq!(activity.on_streaming_stopped(true, false), None);
+
+        // Success from WaitingForResponse → AgentRunning.
+        assert_eq!(
+            activity.on_streaming_stopped(false, false),
+            Some(SessionActivityState::AgentRunning)
+        );
+
+        // Success while already AgentRunning → no change.
+        assert_eq!(activity.on_streaming_stopped(false, false), None);
+
+        // Success from RateLimited → AgentRunning.
+        let activity = activity_with(SessionActivityState::RateLimited {
+            seconds_remaining: 5,
+        });
+        assert_eq!(
+            activity.on_streaming_stopped(false, false),
+            Some(SessionActivityState::AgentRunning)
+        );
+
+        // Success after the agent already completed (Idle) → stays Idle.
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_streaming_stopped(false, false), None);
+        assert_eq!(activity.get(), SessionActivityState::Idle);
+    }
+
+    #[test]
+    fn visible_output_moves_waiting_to_running() {
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(
+            activity.on_visible_output(),
+            Some(SessionActivityState::AgentRunning)
+        );
+        // Only the first visible output transitions.
+        assert_eq!(activity.on_visible_output(), None);
+
+        // No transition when the agent already finished.
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_visible_output(), None);
+    }
+
+    #[test]
+    fn rate_limit_round_trip() {
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(
+            activity.on_rate_limited(30),
+            Some(SessionActivityState::RateLimited {
+                seconds_remaining: 30
+            })
+        );
+        assert_eq!(
+            activity.on_rate_limit_cleared(),
+            Some(SessionActivityState::WaitingForResponse)
+        );
+
+        // Rate limit notifications after completion don't revive the session.
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_rate_limited(30), None);
+        assert_eq!(activity.on_rate_limit_cleared(), None);
+    }
+
     #[tokio::test]
     async fn test_streaming_stopped_with_error_prevents_agent_running_state() {
         let mock_ui = Arc::new(MockUI::default());
         let fragment_buffer = Arc::new(Mutex::new(VecDeque::new()));
         let is_session_connected = Arc::new(Mutex::new(true));
-        let session_activity_state = Arc::new(Mutex::new(SessionActivityState::WaitingForResponse));
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
         let session_id = "test-session".to_string();
 
         let proxy_ui = ProxyUI::new(
@@ -1012,7 +1174,7 @@ mod tests {
             fragment_buffer,
             Arc::new(Mutex::new(HashMap::new())),
             is_session_connected,
-            session_activity_state.clone(),
+            activity.clone(),
             session_id,
         );
 
@@ -1026,19 +1188,17 @@ mod tests {
             .await;
 
         // Verify that the activity state is NOT changed to AgentRunning when there's an error
-        let final_state = session_activity_state.lock().unwrap().clone();
-        assert_eq!(final_state, SessionActivityState::WaitingForResponse);
+        assert_eq!(activity.get(), SessionActivityState::WaitingForResponse);
 
         // Now test without error - should transition to AgentRunning
-        let session_activity_state2 =
-            Arc::new(Mutex::new(SessionActivityState::WaitingForResponse));
+        let activity2 = activity_with(SessionActivityState::WaitingForResponse);
 
         let proxy_ui2 = ProxyUI::new(
             mock_ui.clone(),
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(true)),
-            session_activity_state2.clone(),
+            activity2.clone(),
             "test-session-2".to_string(),
         );
 
@@ -1051,7 +1211,6 @@ mod tests {
             .await;
 
         // Verify that the activity state IS changed to AgentRunning when there's no error
-        let final_state2 = session_activity_state2.lock().unwrap().clone();
-        assert_eq!(final_state2, SessionActivityState::AgentRunning);
+        assert_eq!(activity2.get(), SessionActivityState::AgentRunning);
     }
 }

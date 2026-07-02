@@ -616,7 +616,7 @@ impl SessionManager {
             session_config,
             proxy_ui,
             session_state,
-            activity_state_ref,
+            activity,
             pending_message_ref,
             sandbox_context,
         ) = {
@@ -634,7 +634,7 @@ impl SessionManager {
             let name = session_instance.session.name.clone();
             let session_config = session_instance.session.config.clone();
             let proxy_ui = session_instance.create_proxy_ui(ui.clone());
-            let activity_state_ref = session_instance.activity_state.clone();
+            let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
 
             let session_state = crate::session::SessionState {
@@ -666,7 +666,7 @@ impl SessionManager {
                 session_config,
                 proxy_ui,
                 session_state,
-                activity_state_ref,
+                activity,
                 pending_message_ref,
                 session_instance.sandbox_context.clone(),
             )
@@ -818,9 +818,7 @@ impl SessionManager {
                         "Agent completed successfully for session {}, setting state to Idle",
                         session_id_clone
                     );
-                    if let Ok(mut state) = activity_state_ref.lock() {
-                        *state = crate::session::instance::SessionActivityState::Idle;
-                    }
+                    activity.set(crate::session::instance::SessionActivityState::Idle);
 
                     // Broadcast Idle to UI
                     let _ = ui_clone
@@ -845,9 +843,7 @@ impl SessionManager {
                     let errored_state = crate::session::instance::SessionActivityState::Errored {
                         message: error_message.clone(),
                     };
-                    if let Ok(mut state) = activity_state_ref.lock() {
-                        *state = errored_state.clone();
-                    }
+                    activity.set(errored_state.clone());
 
                     // Broadcast Errored state to UI (sidebar update)
                     let _ = ui_clone
