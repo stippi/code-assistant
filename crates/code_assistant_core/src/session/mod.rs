@@ -21,6 +21,28 @@ pub use event_stream::{EventPayload, EventStream, SessionEvent, StreamError, Sub
 pub use manager::SessionManager;
 pub use service::SessionService;
 
+/// Owned snapshot of everything a frontend needs to render a session.
+///
+/// Returned by `SessionService::load_session`. Frontends render it and then
+/// apply subsequent events for the session from the broadcast stream; a
+/// lagged subscriber recovers by fetching a fresh snapshot.
+#[derive(Debug, Clone)]
+pub struct SessionSnapshot {
+    pub session_id: String,
+    /// Transcript of the active path. When an agent response is currently
+    /// streaming, the last entry is the in-flight partial assistant message.
+    pub messages: Vec<crate::ui::ui_events::MessageData>,
+    pub tool_results: Vec<crate::ui::ui_events::ToolResultData>,
+    pub plan: PlanState,
+    pub activity_state: instance::SessionActivityState,
+    pub metadata: crate::persistence::ChatMetadata,
+    /// Text summary of a queued (pending) user message, if any.
+    pub pending_message: Option<String>,
+    pub current_model: String,
+    pub allowed_models: Vec<String>,
+    pub sandbox_policy: SandboxPolicy,
+}
+
 /// Static configuration stored with each session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {

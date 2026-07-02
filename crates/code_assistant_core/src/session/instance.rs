@@ -242,10 +242,14 @@ impl SessionInstance {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Clear a previous stop request (called when a new agent starts).
-    pub fn clear_stop_request(&self) {
+    /// Reset per-run state when a new agent starts: clears a previous stop
+    /// request and the live tool-status map of the prior run.
+    pub fn begin_agent_run(&self) {
         self.stop_requested
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut buf) = self.tool_status_buffer.lock() {
+            buf.clear();
+        }
     }
 
     /// Get the current activity state
@@ -405,67 +409,40 @@ impl SessionInstance {
     /// up to and including that node. This is used to restore the "edit mode"
     /// view (truncated to the branch parent) directly when connecting to a
     /// session whose draft is in edit mode, avoiding a full-then-truncate flash.
-    pub fn generate_session_connect_events(
+    pub fn build_snapshot(
         &self,
         until_node_id: Option<crate::persistence::NodeId>,
-    ) -> Result<Vec<UiEvent>, anyhow::Error> {
-        let mut events = Vec::new();
-
+    ) -> Result<crate::session::SessionSnapshot, anyhow::Error> {
         // Convert session messages to UI data (optionally truncated for edit mode)
-        let mut messages_data =
+        let mut messages =
             self.convert_messages_to_ui_data_until(self.session.config.tool_syntax, until_node_id)?;
         let mut tool_results = self.convert_tool_executions_to_ui_data()?;
 
-        // Drain any UpdateToolStatus events that arrived while we were
-        // disconnected (e.g. from running sub-agents).  Only inject entries
-        // that don't already have a persisted result — the persisted result
-        // is authoritative once it exists.
-        if let Ok(mut buf) = self.tool_status_buffer.lock() {
-            for (_tool_id, result_data) in buf.drain() {
+        // Merge in the latest live tool statuses (e.g. from running
+        // sub-agents). Only inject entries that don't already have a
+        // persisted result — the persisted result is authoritative once it
+        // exists.
+        if let Ok(buf) = self.tool_status_buffer.lock() {
+            for result_data in buf.values() {
                 if !tool_results
                     .iter()
                     .any(|r| r.tool_id == result_data.tool_id)
                 {
-                    tool_results.push(result_data);
+                    tool_results.push(result_data.clone());
                 }
             }
         }
 
-        // If currently streaming, add incomplete message as additional MessageData
+        // If currently streaming, add the incomplete message as additional MessageData
         let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
         if !buffered_fragments.is_empty() {
-            // Create incomplete assistant message from buffered fragments
-            let incomplete_message = MessageData {
+            messages.push(MessageData {
                 role: MessageRole::Assistant,
                 fragments: buffered_fragments,
                 node_id: None,     // Streaming message doesn't have a node yet
                 branch_info: None, // No branch info for incomplete message
-            };
-            messages_data.push(incomplete_message);
+            });
         }
-
-        events.push(UiEvent::SetMessages {
-            messages: messages_data,
-            session_id: Some(self.session.id.clone()),
-            tool_results,
-        });
-
-        events.push(UiEvent::UpdatePlan {
-            plan: self.session.plan.clone(),
-        });
-
-        events.push(UiEvent::UpdateSessionActivityState {
-            session_id: self.session.id.clone(),
-            activity_state: self.get_activity_state(),
-        });
-
-        // If the session is in an errored state, emit a DisplayError so the
-        // error banner is shown when the user switches to this session.
-        if let SessionActivityState::Errored { message } = self.get_activity_state() {
-            events.push(UiEvent::DisplayError { message });
-        }
-
-        // Add session metadata to ensure UI has the session info including initial_project
 
         let metadata = ChatMetadata {
             id: self.session.id.clone(),
@@ -484,17 +461,25 @@ impl SessionInstance {
             is_resumable: self.session.is_resumable(),
         };
 
-        events.push(UiEvent::UpdateSessionMetadata { metadata });
+        let pending_message = self.pending_message.lock().ok().and_then(|pending| {
+            pending
+                .as_ref()
+                .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks))
+        });
 
-        if let Ok(pending) = self.pending_message.lock() {
-            events.push(UiEvent::UpdatePendingMessage {
-                message: pending
-                    .as_ref()
-                    .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks)),
-            });
-        }
-
-        Ok(events)
+        Ok(crate::session::SessionSnapshot {
+            session_id: self.session.id.clone(),
+            messages,
+            tool_results,
+            plan: self.session.plan.clone(),
+            activity_state: self.get_activity_state(),
+            metadata,
+            pending_message,
+            // Filled in by the SessionManager, which owns model resolution.
+            current_model: String::new(),
+            allowed_models: Vec::new(),
+            sandbox_policy: self.session.config.sandbox_policy.clone(),
+        })
     }
 
     /// Convert session messages to UI MessageData format

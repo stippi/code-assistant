@@ -255,18 +255,18 @@ impl SessionManager {
         Ok(messages)
     }
 
-    /// Set the UI-active session and return events for UI update.
+    /// Set the UI-active session and return an owned snapshot for rendering.
     ///
-    /// When `edit_until_node_id` is `Some(_)`, the emitted `SetMessages` event
-    /// is truncated to messages up to and including that node. This lets the
+    /// When `edit_until_node_id` is `Some(_)`, the snapshot transcript is
+    /// truncated to messages up to and including that node. This lets the
     /// UI restore an in-progress message edit (banner + truncated transcript)
-    /// in a single event when connecting to a session whose draft is in edit
-    /// mode, rather than loading the full transcript and then truncating it.
+    /// directly when connecting to a session whose draft is in edit mode,
+    /// rather than loading the full transcript and then truncating it.
     pub async fn set_active_session(
         &mut self,
         session_id: String,
         edit_until_node_id: Option<crate::persistence::NodeId>,
-    ) -> Result<Vec<crate::ui::ui_events::UiEvent>> {
+    ) -> Result<crate::session::SessionSnapshot> {
         // Deactivate old session
         if let Some(old_id) = &self.active_session_id {
             if old_id != &session_id {
@@ -319,29 +319,21 @@ impl SessionManager {
             }
         };
 
-        // Generate UI events for connecting to this session
-        let mut ui_events = {
+        // Build the owned snapshot for the frontend
+        let mut snapshot = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            let events = session_instance.generate_session_connect_events(edit_until_node_id)?;
+            let snapshot = session_instance.build_snapshot(edit_until_node_id)?;
             // Mark what the UI now knows about (baseline for future incremental diffs)
             session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
             session_instance.last_ui_synced_tool_count =
                 session_instance.session.tool_executions.len();
-            events
+            snapshot
         };
 
-        ui_events.push(UiEvent::UpdateCurrentModel {
-            model_name: model_name_for_event.clone(),
-        });
-
-        let sandbox_policy_for_event = {
-            let session_instance = self.active_sessions.get(&session_id).unwrap();
-            session_instance.session.config.sandbox_policy.clone()
-        };
-
-        ui_events.push(UiEvent::UpdateSandboxPolicy {
-            policy: sandbox_policy_for_event,
-        });
+        snapshot.current_model = model_name_for_event;
+        snapshot.allowed_models = self
+            .allowed_models_for_session(&session_id)
+            .unwrap_or_default();
 
         // Check if another process holds the agent lock for this session.
         // If so, mark it as RunningExternally so the UI disables input.
@@ -350,10 +342,8 @@ impl SessionManager {
                 "Session {} has an agent running in another process",
                 session_id
             );
-            ui_events.push(UiEvent::UpdateSessionActivityState {
-                session_id: session_id.clone(),
-                activity_state: crate::session::instance::SessionActivityState::RunningExternally,
-            });
+            snapshot.activity_state =
+                crate::session::instance::SessionActivityState::RunningExternally;
         }
 
         // Set as active
@@ -368,7 +358,7 @@ impl SessionManager {
             self.persistence.save_chat_session(&session_snapshot)?;
         }
 
-        Ok(ui_events)
+        Ok(snapshot)
     }
 
     /// Incremental refresh of the currently viewed session.
@@ -475,12 +465,24 @@ impl SessionManager {
             return Ok(events);
         }
 
-        // Case 3: Paths diverged → full reload
+        // Case 3: Paths diverged → full reload of the transcript
         debug!("Incremental refresh for {session_id}: paths diverged, full reload");
-        let ui_events = session_instance.generate_session_connect_events(None)?;
+        let snapshot = session_instance.build_snapshot(None)?;
         session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
         session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
-        Ok(ui_events)
+        Ok(vec![
+            UiEvent::SetMessages {
+                messages: snapshot.messages,
+                session_id: Some(snapshot.session_id),
+                tool_results: snapshot.tool_results,
+            },
+            UiEvent::UpdatePlan {
+                plan: snapshot.plan,
+            },
+            UiEvent::UpdateSessionMetadata {
+                metadata: snapshot.metadata,
+            },
+        ])
     }
 
     /// Advance the UI-sync baseline to match the current on-disk state.
@@ -643,8 +645,9 @@ impl SessionManager {
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
             let session_config = session_instance.session.config.clone();
-            // A new agent run supersedes any prior stop request.
-            session_instance.clear_stop_request();
+            // A new agent run supersedes any prior stop request and the
+            // previous run's live tool statuses.
+            session_instance.begin_agent_run();
 
             let proxy_ui = session_instance.create_proxy_ui(ui.clone(), self.events.clone());
             let activity = session_instance.activity.clone();

@@ -888,7 +888,7 @@ impl TerminalTuiApp {
                     .load_session(existing_session_id.clone(), None)
                     .await
                 {
-                    Ok(()) => session_id = Some(existing_session_id),
+                    Ok(_snapshot) => session_id = Some(existing_session_id),
                     Err(e) => {
                         // Fall through to creating a fresh session
                         debug!("Failed to continue session {existing_session_id}: {e:#}");
