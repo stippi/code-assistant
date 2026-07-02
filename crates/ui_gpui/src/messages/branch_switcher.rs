@@ -97,15 +97,8 @@ impl RenderOnce for BranchSwitcherElement {
                             base.hover(|s| s.bg(cx.theme().accent.opacity(0.15)))
                                 .on_click(move |_event, _window, cx| {
                                     if let Some(node_id) = prev_node_id {
-                                        if let Some(sender) =
-                                            cx.try_global::<super::super::UiEventSender>()
-                                        {
-                                            let _ = sender.0.try_send(
-                                                code_assistant_core::ui::UiEvent::SwitchBranch {
-                                                    session_id: session_id.clone(),
-                                                    new_node_id: node_id,
-                                                },
-                                            );
+                                        if let Some(gpui) = cx.try_global::<super::super::Gpui>() {
+                                            gpui.cmd_switch_branch(session_id.clone(), node_id);
                                         }
                                     }
                                 })
@@ -145,14 +138,10 @@ impl RenderOnce for BranchSwitcherElement {
                             base.hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
                                 .on_click(move |_event, _window, cx| {
                                     if let Some(node_id) = next_node_id {
-                                        if let Some(sender) =
-                                            cx.try_global::<super::super::UiEventSender>()
-                                        {
-                                            let _ = sender.0.try_send(
-                                                code_assistant_core::ui::UiEvent::SwitchBranch {
-                                                    session_id: session_id_for_next.clone(),
-                                                    new_node_id: node_id,
-                                                },
+                                        if let Some(gpui) = cx.try_global::<super::super::Gpui>() {
+                                            gpui.cmd_switch_branch(
+                                                session_id_for_next.clone(),
+                                                node_id,
                                             );
                                         }
                                     }

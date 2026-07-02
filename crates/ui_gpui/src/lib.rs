@@ -12,8 +12,8 @@ pub mod terminal;
 pub mod tool_cards;
 
 use blocks::MessageContainer;
-use code_assistant_core::backend::{BackendEvent, BackendResponse};
 use code_assistant_core::persistence::{ChatMetadata, DraftStorage};
+use code_assistant_core::session::service::{SessionService, SkillCatalogEntry};
 use code_assistant_core::types::PlanState;
 use code_assistant_core::ui::UiEvent;
 use gpui::{
@@ -63,11 +63,11 @@ pub struct Gpui {
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
     event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
-    session_event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
-    // Unified backend communication
-    backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
-    backend_response_receiver: Arc<Mutex<Option<async_channel::Receiver<BackendResponse>>>>,
+    // UI→core command facade (installed by the wiring before run_app)
+    session_service: Arc<Mutex<Option<SessionService>>>,
+    // Executor handle for dispatching command futures (set in run_app)
+    background_executor: Arc<Mutex<Option<gpui::BackgroundExecutor>>>,
 
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
@@ -120,9 +120,9 @@ pub struct Gpui {
     config_generation: Arc<std::sync::atomic::AtomicU64>,
 
     /// Skills available to the current session, cached for the `/skill`
-    /// input-area completion and submit-time invocation. Refreshed on session
-    /// load via `BackendEvent::ListSkills` / `BackendResponse::SkillsListed`.
-    skills: Arc<Mutex<Vec<code_assistant_core::backend::SkillCatalogEntry>>>,
+    /// input-area completion and submit-time invocation. Refreshed on
+    /// session load via [`Gpui::refresh_skills`].
+    skills: Arc<Mutex<Vec<SkillCatalogEntry>>>,
 }
 
 /// State for a pending message edit (for branching)
@@ -322,7 +322,6 @@ impl Gpui {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
-        let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
 
         // Initialize tool block renderer registry
@@ -372,10 +371,9 @@ impl Gpui {
             event_sender,
             event_receiver,
             event_task,
-            session_event_task,
             current_request_id,
-            backend_event_sender: Arc::new(Mutex::new(None)),
-            backend_response_receiver: Arc::new(Mutex::new(None)),
+            session_service: Arc::new(Mutex::new(None)),
+            background_executor: Arc::new(Mutex::new(None)),
 
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
@@ -435,6 +433,11 @@ impl Gpui {
         let app = gpui_platform::application().with_assets(Assets {});
 
         app.run(move |cx| {
+            // Capture the background executor so session commands can be
+            // dispatched from any thread (see app/commands.rs).
+            *gpui_clone.background_executor.lock().unwrap() =
+                Some(cx.background_executor().clone());
+
             // Register our Gpui instance as a global
             cx.set_global(gpui_clone.clone());
 
@@ -536,48 +539,6 @@ impl Gpui {
                 *task_guard = Some(task);
             }
 
-            // Spawn task to handle chat management responses from agent
-            let chat_gpui_clone = gpui_clone.clone();
-            let chat_response_task = cx.spawn(async move |cx: &mut AsyncApp| {
-                // Wait a bit for the communication channels to be set up.
-                // NOTE: Use GPUI-native timer, not tokio::time::sleep, because
-                // this runs on the GPUI foreground executor, not a tokio runtime.
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(100))
-                    .await;
-
-                loop {
-                    // Check if we have a response receiver
-                    let receiver_opt = chat_gpui_clone
-                        .backend_response_receiver
-                        .lock()
-                        .unwrap()
-                        .clone();
-                    if let Some(receiver) = receiver_opt {
-                        match receiver.recv().await {
-                            Ok(response) => {
-                                chat_gpui_clone.handle_backend_response(response, cx);
-                            }
-                            Err(_) => {
-                                // Channel closed, break the loop
-                                break;
-                            }
-                        }
-                    } else {
-                        // No receiver yet, wait and try again
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(100))
-                            .await;
-                    }
-                }
-            });
-
-            // Store the chat response task as well
-            {
-                let mut task_guard = gpui_clone.session_event_task.lock().unwrap();
-                *task_guard = Some(chat_response_task);
-            }
-
             // Register the GPUI terminal worker so that
             // GpuiTerminalCommandExecutor can create PTY terminals.
             cx.spawn(async move |cx: &mut AsyncApp| {
@@ -652,38 +613,16 @@ impl Gpui {
         });
     }
 
-    /// Setup unified backend communication channels
-    /// Returns channels for backend thread to receive events and send responses
-    pub fn setup_backend_communication(
-        &self,
-    ) -> (
-        async_channel::Receiver<BackendEvent>,
-        async_channel::Sender<BackendResponse>,
-    ) {
-        let (event_tx, event_rx) = async_channel::unbounded::<BackendEvent>();
-        let (response_tx, response_rx) = async_channel::unbounded::<BackendResponse>();
-
-        // Store channels for UI use
-        *self.backend_event_sender.lock().unwrap() = Some(event_tx);
-        *self.backend_response_receiver.lock().unwrap() = Some(response_rx);
-
-        // Return the backend ends
-        (event_rx, response_tx)
-    }
-
     /// Snapshot of the skills available to the current session.
-    pub(crate) fn skills(&self) -> Vec<code_assistant_core::backend::SkillCatalogEntry> {
+    pub(crate) fn skills(&self) -> Vec<SkillCatalogEntry> {
         self.skills.lock().unwrap().clone()
     }
 
-    /// Request the skill catalog for `session_id` from the backend. The
-    /// response (`BackendResponse::SkillsListed`) populates the cached catalog
-    /// used by the `/skill` input-area completion. Used by startup paths that
-    /// connect a session without going through the in-app `LoadSession` flow.
-    pub fn refresh_skills(&self, session_id: String) {
-        if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-            let _ = sender.try_send(BackendEvent::ListSkills { session_id });
-        }
+    /// Replace the cached skill catalog used by the `/skill` input-area
+    /// completion. Used by [`Gpui::refresh_skills`] and by startup paths
+    /// that fetch the catalog on the backend runtime.
+    pub fn set_skills(&self, skills: Vec<SkillCatalogEntry>) {
+        *self.skills.lock().unwrap() = skills;
     }
 
     // Helper to add an event to the queue

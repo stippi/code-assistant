@@ -230,12 +230,8 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                     .hover(|s| s.bg(theme.danger.opacity(0.15)).text_color(theme.danger))
                     .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
                         cx.stop_propagation();
-                        if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                            let _ = sender.0.try_send(
-                                code_assistant_core::ui::UiEvent::CancelSubAgent {
-                                    tool_id: tool_id_cancel.clone(),
-                                },
-                            );
+                        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                            gpui.cmd_cancel_sub_agent(tool_id_cancel.clone());
                         }
                     }))
                     .child("Cancel"),

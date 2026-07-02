@@ -11,7 +11,7 @@ use crate::shared::plan_banner;
 use crate::shared::settings;
 use crate::shared::theme;
 use crate::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
-use code_assistant_core::backend::BackendEvent;
+
 use code_assistant_core::ui::ui_events::UiEvent;
 
 use project_dialog::{NewProjectDialog, NewProjectDialogEvent};
@@ -26,7 +26,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, warn};
 
 // ---------------------------------------------------------------------------
 // Sidebar animation helpers
@@ -328,12 +328,10 @@ impl MainScreen {
     // Trigger refresh of chat list on startup
     pub fn refresh_chat_list(&mut self, cx: &mut Context<Self>) {
         debug!("Requesting chat list refresh");
-        // Request session list from agent via Gpui global
-        if let Some(sender) = cx.try_global::<UiEventSender>() {
-            trace!("Sending RefreshChatList event");
-            let _ = sender.0.try_send(UiEvent::RefreshChatList);
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.cmd_refresh_chat_list();
         } else {
-            warn!("No UiEventSender global available");
+            warn!("No Gpui global available");
         }
     }
 
@@ -462,13 +460,7 @@ impl MainScreen {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::InvokeSkill {
-                            session_id: session_id.clone(),
-                            scope: scope.clone(),
-                            name: name.clone(),
-                        });
-                    }
+                    gpui.cmd_invoke_skill(session_id.clone(), scope.clone(), name.clone());
                 }
             }
 
@@ -496,11 +488,7 @@ impl MainScreen {
                 // Cancel edit mode - reload original messages for this session
                 if let Some(session_id) = &self.current_session_id {
                     if let Some(gpui) = cx.try_global::<Gpui>() {
-                        if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                            let _ = sender.try_send(BackendEvent::CancelMessageEdit {
-                                session_id: session_id.clone(),
-                            });
-                        }
+                        gpui.cmd_cancel_message_edit(session_id.clone());
                     }
                 }
             }
@@ -531,14 +519,7 @@ impl MainScreen {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::SwitchModel {
-                            session_id: session_id.clone(),
-                            model_name: model_name.clone(),
-                        });
-                    } else {
-                        error!("Failed to lock backend event sender");
-                    }
+                    gpui.cmd_switch_model(session_id.clone(), model_name.clone());
                 }
             }
 
@@ -547,14 +528,7 @@ impl MainScreen {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::ChangeSandboxPolicy {
-                            session_id: session_id.clone(),
-                            policy: policy.clone(),
-                        });
-                    } else {
-                        error!("Failed to lock backend event sender");
-                    }
+                    gpui.cmd_change_sandbox_policy(session_id.clone(), policy.clone());
                 }
             }
             InputAreaEvent::WorktreeSwitchedToLocal => {
@@ -562,13 +536,7 @@ impl MainScreen {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::SwitchWorktree {
-                            session_id: session_id.clone(),
-                            worktree_path: None,
-                            branch: None,
-                        });
-                    }
+                    gpui.cmd_switch_worktree(session_id.clone(), None, None);
                 }
             }
             InputAreaEvent::WorktreeSwitched {
@@ -579,13 +547,11 @@ impl MainScreen {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::SwitchWorktree {
-                            session_id: session_id.clone(),
-                            worktree_path: Some(worktree_path.clone()),
-                            branch: Some(branch.clone()),
-                        });
-                    }
+                    gpui.cmd_switch_worktree(
+                        session_id.clone(),
+                        Some(worktree_path.clone()),
+                        Some(branch.clone()),
+                    );
                 }
             }
 
@@ -601,13 +567,7 @@ impl MainScreen {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::CreateWorktree {
-                            session_id: session_id.clone(),
-                            branch_name,
-                            base_branch: None,
-                        });
-                    }
+                    gpui.cmd_create_worktree(session_id.clone(), branch_name);
                 }
             }
             InputAreaEvent::WorktreeRefreshRequested => {
@@ -615,11 +575,7 @@ impl MainScreen {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::ListBranchesAndWorktrees {
-                            session_id: session_id.clone(),
-                        });
-                    }
+                    gpui.cmd_list_branches_and_worktrees(session_id.clone());
                 }
             }
         }
@@ -671,57 +627,37 @@ impl MainScreen {
             let gpui = cx
                 .try_global::<Gpui>()
                 .expect("Failed to obtain Gpui global");
-            if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                let _ = sender.try_send(BackendEvent::DeleteSession {
-                    session_id: session_id.clone(),
-                });
-            }
+            gpui.cmd_delete_session(session_id.clone());
             return;
         }
 
         let gpui = cx
             .try_global::<Gpui>()
             .expect("Failed to obtain Gpui global");
-        if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-            match event {
-                SessionSidebarEvent::SessionSelected { session_id } => {
-                    // If the session's draft is in edit mode, load it already
-                    // truncated to the branch parent so the edit view is
-                    // restored in a single event (no full-then-truncate flash).
-                    let edit_until_node_id = gpui
-                        .load_draft_for_session(session_id)
-                        .and_then(|(_, _, anchor)| anchor);
-                    let _ = sender.try_send(BackendEvent::LoadSession {
-                        session_id: session_id.clone(),
-                        edit_until_node_id,
-                    });
-                    // Refresh the skill catalog for the `/skill` picker.
-                    let _ = sender.try_send(BackendEvent::ListSkills {
-                        session_id: session_id.clone(),
-                    });
-                }
-                SessionSidebarEvent::NewSessionRequested {
-                    name,
-                    initial_project,
-                } => {
-                    let _ = sender.try_send(BackendEvent::CreateNewSession {
-                        name: name.clone(),
-                        initial_project: initial_project.clone(),
-                    });
-                }
-
-                SessionSidebarEvent::PersistProjectRequested { project_name } => {
-                    let _ = sender.try_send(BackendEvent::PersistProject {
-                        project_name: project_name.clone(),
-                    });
-                }
-                SessionSidebarEvent::SessionDeleteRequested { .. }
-                | SessionSidebarEvent::AddProjectRequested => {
-                    // Handled above
-                }
+        match event {
+            SessionSidebarEvent::SessionSelected { session_id } => {
+                // If the session's draft is in edit mode, load it already
+                // truncated to the branch parent so the edit view is
+                // restored in a single event (no full-then-truncate flash).
+                let edit_until_node_id = gpui
+                    .load_draft_for_session(session_id)
+                    .and_then(|(_, _, anchor)| anchor);
+                gpui.cmd_load_session(session_id.clone(), edit_until_node_id);
             }
-        } else {
-            error!("Failed to lock backend event sender");
+            SessionSidebarEvent::NewSessionRequested {
+                name,
+                initial_project,
+            } => {
+                gpui.cmd_create_session(name.clone(), initial_project.clone());
+            }
+
+            SessionSidebarEvent::PersistProjectRequested { project_name } => {
+                gpui.cmd_persist_project(project_name.clone());
+            }
+            SessionSidebarEvent::SessionDeleteRequested { .. }
+            | SessionSidebarEvent::AddProjectRequested => {
+                // Handled above
+            }
         }
     }
 
@@ -737,14 +673,11 @@ impl MainScreen {
             return;
         }
 
-        // Send user message event if we have an active session
-        if let Some(sender) = cx.try_global::<UiEventSender>() {
+        // Send user message if we have an active session
+        if let Some(gpui) = cx.try_global::<Gpui>() {
             // Check if agent is running by looking at activity state
-            let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
-                gpui.current_session_activity_state.lock().unwrap().clone()
-            } else {
-                None
-            };
+            let current_activity_state =
+                gpui.current_session_activity_state.lock().unwrap().clone();
 
             if current_activity_state
                 .as_ref()
@@ -782,11 +715,11 @@ impl MainScreen {
                     content,
                     attachments.len()
                 );
-                let _ = sender.0.try_send(UiEvent::QueueUserMessage {
-                    message: content.clone(),
-                    session_id: session_id.to_string(),
-                    attachments: attachments.clone(),
-                });
+                gpui.cmd_queue_user_message(
+                    session_id.to_string(),
+                    content.clone(),
+                    attachments.clone(),
+                );
             } else {
                 // Send message normally (agent is idle)
                 tracing::info!(
@@ -796,12 +729,12 @@ impl MainScreen {
                     attachments.len(),
                     branch_parent_id
                 );
-                let _ = sender.0.try_send(UiEvent::SendUserMessage {
-                    message: content.clone(),
-                    session_id: session_id.to_string(),
-                    attachments: attachments.clone(),
+                gpui.cmd_send_user_message(
+                    session_id.to_string(),
+                    content.clone(),
+                    attachments.clone(),
                     branch_parent_id,
-                });
+                );
             }
         }
     }
@@ -922,16 +855,10 @@ impl MainScreen {
         match event {
             NewProjectDialogEvent::Confirmed { name, path } => {
                 debug!("New project confirmed: name='{}', path={:?}", name, path);
-                // Send AddProject to backend
                 let gpui = cx
                     .try_global::<Gpui>()
                     .expect("Failed to obtain Gpui global");
-                if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::AddProject {
-                        name: name.clone(),
-                        path: path.clone(),
-                    });
-                }
+                gpui.cmd_add_project(name.clone(), path.clone());
                 // Close dialog
                 self.new_project_dialog = None;
                 self._new_project_dialog_subscription = None;
@@ -978,7 +905,7 @@ impl MainScreen {
         }
 
         // Read everything we need from Gpui in a scoped borrow, then drop the ref
-        let (input_value, attachments, editing_branch_parent_id, backend_sender) = {
+        let (input_value, attachments, editing_branch_parent_id, gpui_handle) = {
             let gpui = cx.try_global::<Gpui>();
 
             let (input_value, attachments, editing_branch_parent_id) = if let (
@@ -1007,10 +934,10 @@ impl MainScreen {
                 ("".to_string(), Vec::new(), None)
             };
 
-            // Extract the backend sender and clear worktree data while we hold the ref
-            let backend_sender = if let Some(gpui) = &gpui {
+            // Clear worktree data while we hold the ref
+            let gpui_handle = if let Some(gpui) = &gpui {
                 *gpui.current_worktree_data.lock().unwrap() = None;
-                gpui.backend_event_sender.lock().unwrap().as_ref().cloned()
+                Some((*gpui).clone())
             } else {
                 None
             };
@@ -1019,7 +946,7 @@ impl MainScreen {
                 input_value,
                 attachments,
                 editing_branch_parent_id,
-                backend_sender,
+                gpui_handle,
             )
             // `gpui` borrow of `cx` dropped here
         };
@@ -1040,10 +967,8 @@ impl MainScreen {
         });
 
         // Request fresh worktree listing for the new session
-        if let (Some(session_id), Some(sender)) = (new_session_id.as_ref(), &backend_sender) {
-            let _ = sender.try_send(BackendEvent::ListBranchesAndWorktrees {
-                session_id: session_id.clone(),
-            });
+        if let (Some(session_id), Some(gpui)) = (new_session_id.as_ref(), &gpui_handle) {
+            gpui.cmd_list_branches_and_worktrees(session_id.clone());
         }
 
         // Reset the worktree selector to "Local" while waiting for fresh data

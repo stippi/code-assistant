@@ -4,7 +4,7 @@ mod message_item;
 mod scroll;
 
 use crate::Gpui;
-use code_assistant_core::backend::BackendEvent;
+
 use code_assistant_core::session::instance::SessionActivityState;
 
 use gpui::{
@@ -673,13 +673,7 @@ impl Render for MessagesView {
                                         return;
                                     };
                                     if let Some(gpui) = cx.try_global::<Gpui>() {
-                                        if let Some(sender) =
-                                            gpui.backend_event_sender.lock().unwrap().as_ref()
-                                        {
-                                            let _ = sender.try_send(BackendEvent::ResumeSession {
-                                                session_id,
-                                            });
-                                        }
+                                        gpui.cmd_resume_session(session_id);
                                     }
                                     cx.notify();
                                 })),

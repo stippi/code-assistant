@@ -105,14 +105,8 @@ pub fn render_message(
                             if let (Some(session_id), Some(node_id)) =
                                 (session_id_for_edit.clone(), node_id_for_edit)
                             {
-                                if let Some(sender) = cx.try_global::<super::super::UiEventSender>()
-                                {
-                                    let _ = sender.0.try_send(
-                                        code_assistant_core::ui::UiEvent::StartMessageEdit {
-                                            session_id,
-                                            node_id,
-                                        },
-                                    );
+                                if let Some(gpui) = cx.try_global::<super::super::Gpui>() {
+                                    gpui.cmd_start_message_edit(session_id, node_id);
                                 }
                             }
                         })
