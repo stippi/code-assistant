@@ -301,17 +301,12 @@ impl Gpui {
         };
         let gpui = self.clone();
         self.dispatch(async move {
-            match service
-                .switch_model(session_id.clone(), model_name.clone())
-                .await
-            {
+            // Model/allowed-models updates arrive via the broadcast stream;
+            // only the caller shows the interaction-scoped warning.
+            match service.switch_model(session_id.clone(), model_name).await {
                 Ok(result) => {
-                    if gpui.is_current_session(&session_id) {
-                        gpui.push_event(UiEvent::UpdateCurrentModel { model_name });
-                        gpui.push_event(UiEvent::UpdateAllowedModels {
-                            models: result.allowed_models,
-                        });
-                        if let Some(message) = result.warning {
+                    if let Some(message) = result.warning {
+                        if gpui.is_current_session(&session_id) {
                             gpui.push_event(UiEvent::ShowTransientStatus { message });
                         }
                     }
@@ -342,16 +337,9 @@ impl Gpui {
         };
         let gpui = self.clone();
         self.dispatch(async move {
-            match service
-                .change_sandbox_policy(session_id.clone(), policy.clone())
-                .await
-            {
-                Ok(()) => {
-                    if gpui.is_current_session(&session_id) {
-                        gpui.push_event(UiEvent::UpdateSandboxPolicy { policy });
-                    }
-                }
-                Err(e) => gpui.display_error(format!("{e:#}")),
+            // The UpdateSandboxPolicy notification arrives via the stream.
+            if let Err(e) = service.change_sandbox_policy(session_id, policy).await {
+                gpui.display_error(format!("{e:#}"));
             }
         });
     }

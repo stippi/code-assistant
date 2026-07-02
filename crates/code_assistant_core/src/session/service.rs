@@ -522,18 +522,34 @@ impl SessionService {
                 bail!("Model '{model_name}' not found in configuration.");
             }
 
-            let mut manager = ctx.manager.lock().await;
-            let outcome = manager.set_session_model_config(
-                &session_id,
-                Some(SessionModelConfig::new(model_name.clone())),
-            )?;
+            let outcome = {
+                let mut manager = ctx.manager.lock().await;
+                manager.set_session_model_config(
+                    &session_id,
+                    Some(SessionModelConfig::new(model_name.clone())),
+                )?
+            };
             if let Some(warning) = &outcome.warning {
                 warn!("{}", warning);
             }
-            let allowed_models = manager
-                .allowed_models_for_session(&session_id)
-                .unwrap_or_default();
+            let allowed_models = {
+                let manager = ctx.manager.lock().await;
+                manager
+                    .allowed_models_for_session(&session_id)
+                    .unwrap_or_default()
+            };
             info!("Switched model for session {session_id} to {model_name}");
+
+            // Fan out the change so every view of this session updates; the
+            // warning stays caller-only (it belongs to the interaction).
+            ctx.notify_session(&session_id, UiEvent::UpdateCurrentModel { model_name });
+            ctx.notify_session(
+                &session_id,
+                UiEvent::UpdateAllowedModels {
+                    models: allowed_models.clone(),
+                },
+            );
+
             Ok(ModelSwitchResult {
                 warning: outcome.warning,
                 allowed_models,
@@ -548,8 +564,13 @@ impl SessionService {
         policy: SandboxPolicy,
     ) -> Result<()> {
         self.call(move |ctx| async move {
-            let mut manager = ctx.manager.lock().await;
-            manager.set_session_sandbox_policy(&session_id, policy)
+            {
+                let mut manager = ctx.manager.lock().await;
+                manager.set_session_sandbox_policy(&session_id, policy.clone())?;
+            }
+            // Fan out the change so every view of this session updates.
+            ctx.notify_session(&session_id, UiEvent::UpdateSandboxPolicy { policy });
+            Ok(())
         })
         .await
     }
