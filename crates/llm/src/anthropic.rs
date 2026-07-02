@@ -1371,12 +1371,6 @@ impl LLMProvider for AnthropicClient {
         let mut anthropic_request = serde_json::json!({
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": if matches!(thinking_mode, ThinkingMode::None) {
-                0.7
-            } else {
-                // Anthropic requires this to be 1.0 if you enable "thinking"
-                1.0
-            },
             "system": system,
             "stream": streaming_callback.is_some(),
             "messages": messages_json,
