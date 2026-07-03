@@ -1,0 +1,98 @@
+{
+  "name": "code-assistant",
+  "displayName": "Code Assistant",
+  "description": "AI coding agent — chat with code-assistant directly in VS Code via the Agent Client Protocol",
+  "version": "0.1.0",
+  "publisher": "stippi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stippi/code-assistant",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "chat",
+    "acp",
+    "agent-client-protocol"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "code-assistant",
+          "title": "Code Assistant",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "code-assistant": [
+        {
+          "type": "webview",
+          "id": "codeAssistant.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codeAssistant.newSession",
+        "title": "Code Assistant: New Session",
+        "icon": "$(add)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "codeAssistant.newSession",
+          "when": "view == codeAssistant.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Code Assistant",
+      "properties": {
+        "codeAssistant.commandPath": {
+          "type": "string",
+          "default": "code-assistant",
+          "description": "Path to the code-assistant executable. Defaults to looking it up on PATH."
+        },
+        "codeAssistant.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional arguments passed to `code-assistant acp` (e.g. --model, --tool-syntax)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.100.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.5.0"
+  }
+}

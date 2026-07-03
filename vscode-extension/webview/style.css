@@ -1,0 +1,126 @@
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+}
+
+#transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.user-message {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  white-space: pre-wrap;
+}
+
+.agent-message {
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.agent-thought {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.error-message {
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+}
+
+.tool-call {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border, transparent);
+  font-size: 0.92em;
+}
+
+.tool-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-status {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+}
+
+.tool-status.in_progress {
+  background: var(--vscode-charts-yellow);
+}
+
+.tool-status.completed {
+  background: var(--vscode-charts-green);
+}
+
+.tool-status.failed {
+  background: var(--vscode-charts-red);
+}
+
+#composer {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--vscode-editorWidget-border, transparent);
+}
+
+#input {
+  flex: 1;
+  resize: none;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+}
+
+#input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+#send {
+  align-self: flex-end;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+#send:hover {
+  background: var(--vscode-button-hoverBackground);
+}
