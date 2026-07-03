@@ -348,6 +348,17 @@ impl ToolCallState {
         Some(vec![acp::ToolCallLocation::new(resolved).line(line)])
     }
 
+    /// `_meta` extension carrying data ACP has no field for, namespaced under
+    /// "code-assistant" (consumed by our VS Code extension, e.g. for per-tool icons).
+    fn meta(&self) -> Option<acp::Meta> {
+        let tool_name = self.tool_name.as_ref()?;
+        let mut extension = serde_json::Map::new();
+        extension.insert("toolName".to_string(), JsonValue::String(tool_name.clone()));
+        let mut meta = serde_json::Map::new();
+        meta.insert("code-assistant".to_string(), JsonValue::Object(extension));
+        Some(meta)
+    }
+
     fn to_tool_call(&self, base_path: Option<&Path>) -> acp::ToolCall {
         let title = self
             .title
@@ -362,6 +373,7 @@ impl ToolCallState {
             .locations(self.build_locations(base_path).unwrap_or_default())
             .raw_input(self.raw_input())
             .raw_output(self.raw_output())
+            .meta(self.meta())
     }
 
     fn to_update(&self, base_path: Option<&Path>) -> acp::ToolCallUpdate {
@@ -374,7 +386,7 @@ impl ToolCallState {
             .raw_input(self.raw_input())
             .raw_output(self.raw_output());
 
-        acp::ToolCallUpdate::new(self.id.clone(), fields)
+        acp::ToolCallUpdate::new(self.id.clone(), fields).meta(self.meta())
     }
 }
 
@@ -1180,6 +1192,45 @@ mod tests {
             }
             other => panic!("unexpected update: {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_call_notifications_carry_tool_name_meta() {
+        let (ui, mut rx) = create_ui();
+
+        ui.display_fragment(&DisplayFragment::tool_name("execute_command", "tool-1"))
+            .unwrap();
+
+        let (notification, _ack) = rx.try_recv().expect("expected tool call notification");
+        let meta = match notification.update {
+            acp::SessionUpdate::ToolCall(call) => call.meta.expect("tool call should have meta"),
+            other => panic!("unexpected update: {other:?}"),
+        };
+        assert_eq!(
+            meta.get("code-assistant")
+                .and_then(|value| value.get("toolName"))
+                .and_then(|value| value.as_str()),
+            Some("execute_command")
+        );
+
+        ui.display_fragment(&DisplayFragment::ToolOutput {
+            tool_id: "tool-1".into(),
+            chunk: "output".into(),
+        })
+        .unwrap();
+        let (notification, _ack) = rx.try_recv().expect("expected tool call update");
+        let meta = match notification.update {
+            acp::SessionUpdate::ToolCallUpdate(update) => {
+                update.meta.expect("tool call update should have meta")
+            }
+            other => panic!("unexpected update: {other:?}"),
+        };
+        assert_eq!(
+            meta.get("code-assistant")
+                .and_then(|value| value.get("toolName"))
+                .and_then(|value| value.as_str()),
+            Some("execute_command")
+        );
     }
 
     #[test]
