@@ -268,6 +268,30 @@ impl ToolCallState {
         Some(acp::ToolCallContent::Diff(diff))
     }
 
+    /// Deletion diffs (old content -> empty) for `delete_files`, parsed from
+    /// the `deleted_contents` JSON emitted by the tool's `render_for_ui()`.
+    fn delete_diffs(&self, base_path: Option<&Path>) -> Option<Vec<acp::ToolCallContent>> {
+        if self.tool_name.as_deref() != Some("delete_files") {
+            return None;
+        }
+        let output = self.final_output.as_ref()?;
+        let parsed = serde_json::from_str::<serde_json::Value>(output).ok()?;
+        let contents = parsed.get("deleted_contents")?.as_array()?;
+
+        let diffs: Vec<acp::ToolCallContent> = contents
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.get("path")?.as_str()?;
+                let content = entry.get("content")?.as_str()?;
+                let diff = acp::Diff::new(resolve_path(path, base_path), String::new())
+                    .old_text(Some(content.to_string()));
+                Some(acp::ToolCallContent::Diff(diff))
+            })
+            .collect();
+
+        (!diffs.is_empty()).then_some(diffs)
+    }
+
     fn build_content(&self, base_path: Option<&Path>) -> Option<Vec<acp::ToolCallContent>> {
         let mut content = Vec::new();
         let is_failed = matches!(self.status, acp::ToolCallStatus::Failed);
@@ -282,6 +306,8 @@ impl ToolCallState {
         // For file modification tools (edit, write_file, replace_in_file), use diff content
         if let Some(diff_content) = self.diff_content(base_path) {
             content.push(diff_content);
+        } else if let Some(delete_diffs) = self.delete_diffs(base_path) {
+            content.extend(delete_diffs);
         } else if self.terminal_id.is_some() && !self.parameters.is_empty() {
             // For terminal tools, show parameters (like the command being run)
             let mut lines = Vec::new();
@@ -348,6 +374,17 @@ impl ToolCallState {
         Some(vec![acp::ToolCallLocation::new(resolved).line(line)])
     }
 
+    /// `_meta` extension carrying data ACP has no field for, namespaced under
+    /// "code-assistant" (consumed by our VS Code extension, e.g. for per-tool icons).
+    fn meta(&self) -> Option<acp::Meta> {
+        let tool_name = self.tool_name.as_ref()?;
+        let mut extension = serde_json::Map::new();
+        extension.insert("toolName".to_string(), JsonValue::String(tool_name.clone()));
+        let mut meta = serde_json::Map::new();
+        meta.insert("code-assistant".to_string(), JsonValue::Object(extension));
+        Some(meta)
+    }
+
     fn to_tool_call(&self, base_path: Option<&Path>) -> acp::ToolCall {
         let title = self
             .title
@@ -362,6 +399,7 @@ impl ToolCallState {
             .locations(self.build_locations(base_path).unwrap_or_default())
             .raw_input(self.raw_input())
             .raw_output(self.raw_output())
+            .meta(self.meta())
     }
 
     fn to_update(&self, base_path: Option<&Path>) -> acp::ToolCallUpdate {
@@ -374,7 +412,7 @@ impl ToolCallState {
             .raw_input(self.raw_input())
             .raw_output(self.raw_output());
 
-        acp::ToolCallUpdate::new(self.id.clone(), fields)
+        acp::ToolCallUpdate::new(self.id.clone(), fields).meta(self.meta())
     }
 }
 
@@ -1183,6 +1221,45 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_notifications_carry_tool_name_meta() {
+        let (ui, mut rx) = create_ui();
+
+        ui.display_fragment(&DisplayFragment::tool_name("execute_command", "tool-1"))
+            .unwrap();
+
+        let (notification, _ack) = rx.try_recv().expect("expected tool call notification");
+        let meta = match notification.update {
+            acp::SessionUpdate::ToolCall(call) => call.meta.expect("tool call should have meta"),
+            other => panic!("unexpected update: {other:?}"),
+        };
+        assert_eq!(
+            meta.get("code-assistant")
+                .and_then(|value| value.get("toolName"))
+                .and_then(|value| value.as_str()),
+            Some("execute_command")
+        );
+
+        ui.display_fragment(&DisplayFragment::ToolOutput {
+            tool_id: "tool-1".into(),
+            chunk: "output".into(),
+        })
+        .unwrap();
+        let (notification, _ack) = rx.try_recv().expect("expected tool call update");
+        let meta = match notification.update {
+            acp::SessionUpdate::ToolCallUpdate(update) => {
+                update.meta.expect("tool call update should have meta")
+            }
+            other => panic!("unexpected update: {other:?}"),
+        };
+        assert_eq!(
+            meta.get("code-assistant")
+                .and_then(|value| value.get("toolName"))
+                .and_then(|value| value.as_str()),
+            Some("execute_command")
+        );
+    }
+
+    #[test]
     fn tool_output_fragments_accumulate_raw_output() {
         let (ui, mut rx) = create_ui();
 
@@ -1323,6 +1400,46 @@ mod tests {
                 assert_eq!(diff.path.to_string_lossy(), "test.txt");
                 assert_eq!(diff.old_text.as_deref(), Some("old content"));
                 assert_eq!(diff.new_text, "new content");
+            }
+            other => panic!("expected diff content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_files_tool_emits_deletion_diffs() {
+        let mut state = ToolCallState::new("tool-1");
+        state.set_tool_name("delete_files");
+        state.append_parameter(
+            "paths",
+            r#"["a.txt", "b.txt"]"#,
+            &code_assistant_core::tools::test_registry(),
+        );
+        state.update_status(
+            acp::ToolCallStatus::Completed,
+            None,
+            Some(
+                r#"{"deleted_contents":[{"path":"a.txt","content":"goodbye"},{"path":"b.txt","content":"farewell"}]}"#
+                    .to_string(),
+            ),
+        );
+
+        let content = state
+            .build_content(None)
+            .expect("content should be emitted");
+
+        assert_eq!(content.len(), 2);
+        match &content[0] {
+            acp::ToolCallContent::Diff(diff) => {
+                assert_eq!(diff.path.to_string_lossy(), "a.txt");
+                assert_eq!(diff.old_text.as_deref(), Some("goodbye"));
+                assert_eq!(diff.new_text, "");
+            }
+            other => panic!("expected diff content, got {other:?}"),
+        }
+        match &content[1] {
+            acp::ToolCallContent::Diff(diff) => {
+                assert_eq!(diff.path.to_string_lossy(), "b.txt");
+                assert_eq!(diff.old_text.as_deref(), Some("farewell"));
             }
             other => panic!("expected diff content, got {other:?}"),
         }

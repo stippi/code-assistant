@@ -42,8 +42,10 @@ pub fn map_tool_kind(tool_name: &str) -> acp::ToolKind {
     match tool_name {
         "read_files" | "list_files" => acp::ToolKind::Read,
         "write_file" | "edit" | "replace_in_file" => acp::ToolKind::Edit,
+        "delete_files" => acp::ToolKind::Delete,
         "execute_command" => acp::ToolKind::Execute,
         "web_search" | "glob_files" | "search_files" | "perplexity_ask" => acp::ToolKind::Search,
+        "web_fetch" => acp::ToolKind::Fetch,
         _ => acp::ToolKind::Other,
     }
 }
