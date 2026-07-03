@@ -664,9 +664,10 @@ impl FileSessionPersistence {
         Self { root_dir }
     }
 
-    /// Construct a persistence instance rooted at a custom directory.
-    /// Intended for tests that want to isolate state to a temp dir.
-    #[cfg(test)]
+    /// Construct a persistence instance rooted at a custom directory;
+    /// sessions are stored in `<root_dir>/sessions`. Used by tests to
+    /// isolate state and by embedders (e.g. pal) that keep their session
+    /// store outside the code-assistant data directory.
     pub fn new_with_root_dir(root_dir: PathBuf) -> Self {
         Self { root_dir }
     }
