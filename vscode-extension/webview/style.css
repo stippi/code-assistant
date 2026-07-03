@@ -438,8 +438,6 @@ svg.lucide {
 
 #input-shell:focus-within {
   border-color: var(--vscode-focusBorder);
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
 }
 
 #input {
