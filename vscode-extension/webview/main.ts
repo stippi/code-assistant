@@ -1,11 +1,21 @@
 import "./style.css";
 import type {
+  PlanEntry,
+  SessionConfigOption,
   SessionUpdate,
   StopReason,
   ToolCallContent,
 } from "@agentclientprotocol/sdk";
 import { diffLines } from "diff";
-import { brainIcon, chevronIcon, spinnerIcon, toolIcon } from "./icons";
+import {
+  brainIcon,
+  chevronIcon,
+  planStatusIcon,
+  sendIcon,
+  spinnerIcon,
+  stopIcon,
+  toolIcon,
+} from "./icons";
 import { renderMarkdown } from "./markdown";
 
 declare function acquireVsCodeApi(): {
@@ -13,19 +23,25 @@ declare function acquireVsCodeApi(): {
 };
 
 type OutboundMessage =
+  | { type: "ready" }
   | { type: "prompt"; text: string }
-  | { type: "cancel" };
+  | { type: "cancel" }
+  | { type: "setConfigOption"; configId: string; value: string };
 
 type InboundMessage =
   | { type: "sessionUpdate"; update: SessionUpdate }
   | { type: "turnEnded"; stopReason: StopReason }
+  | { type: "configOptions"; options: SessionConfigOption[] }
   | { type: "error"; message: string }
   | { type: "reset" };
 
 const vscode = acquireVsCodeApi();
 
 const transcript = document.getElementById("transcript") as HTMLElement;
+const planArea = document.getElementById("plan-area") as HTMLElement;
+const inputShell = document.getElementById("input-shell") as HTMLElement;
 const input = document.getElementById("input") as HTMLTextAreaElement;
+const configSelectors = document.getElementById("config-selectors") as HTMLElement;
 const sendButton = document.getElementById("send") as HTMLButtonElement;
 
 let busy = false;
@@ -36,7 +52,8 @@ function post(msg: OutboundMessage): void {
 
 function setBusy(value: boolean): void {
   busy = value;
-  sendButton.textContent = value ? "Stop" : "Send";
+  sendButton.innerHTML = busy ? stopIcon : sendIcon;
+  sendButton.title = busy ? "Stop" : "Send";
 }
 
 function scrollToBottom(): void {
@@ -322,6 +339,87 @@ function renderDiff(oldText: string, newText: string): HTMLElement {
   return container;
 }
 
+// --- session config options (model selector etc.) ---
+
+function renderConfigOptions(options: SessionConfigOption[]): void {
+  configSelectors.innerHTML = "";
+  for (const option of options) {
+    if (option.type !== "select") {
+      continue;
+    }
+    const select = document.createElement("select");
+    select.className = "config-select";
+    select.title = option.name;
+    for (const entry of option.options) {
+      if ("group" in entry) {
+        const group = document.createElement("optgroup");
+        group.label = entry.name;
+        for (const item of entry.options) {
+          group.appendChild(new Option(item.name, item.value));
+        }
+        select.appendChild(group);
+      } else {
+        select.appendChild(new Option(entry.name, entry.value));
+      }
+    }
+    select.value = option.currentValue;
+    select.addEventListener("change", () => {
+      post({ type: "setConfigOption", configId: option.id, value: select.value });
+    });
+    configSelectors.appendChild(select);
+  }
+}
+
+// --- plan ---
+
+let planCollapsed = false;
+
+function renderPlan(entries: PlanEntry[]): void {
+  planArea.innerHTML = "";
+  planArea.hidden = entries.length === 0;
+  if (entries.length === 0) {
+    return;
+  }
+
+  const completed = entries.filter((e) => e.status === "completed").length;
+  const current = entries.find((e) => e.status === "in_progress");
+
+  const header = document.createElement("button");
+  header.className = planCollapsed ? "plan-header" : "plan-header expanded";
+  const currentLabel =
+    planCollapsed && current
+      ? `<span class="plan-current">${planStatusIcon("in_progress")}<span></span></span>`
+      : "";
+  header.innerHTML = `<span class="plan-chevron">${chevronIcon}</span><span class="plan-title">Plan</span>${currentLabel}<span class="plan-count">${completed}/${entries.length}</span>`;
+  if (planCollapsed && current) {
+    (header.querySelector(".plan-current span") as HTMLElement).textContent =
+      current.content;
+  }
+  header.addEventListener("click", () => {
+    planCollapsed = !planCollapsed;
+    renderPlan(entries);
+  });
+  planArea.appendChild(header);
+
+  if (!planCollapsed) {
+    const list = document.createElement("div");
+    list.className = "plan-entries";
+    for (const entry of entries) {
+      const row = document.createElement("div");
+      row.className = `plan-entry ${entry.status}`;
+      const icon = document.createElement("span");
+      icon.className = "plan-entry-icon";
+      icon.innerHTML = planStatusIcon(entry.status);
+      const content = document.createElement("span");
+      content.className = "plan-entry-content";
+      content.textContent = entry.content;
+      row.append(icon, content);
+      list.appendChild(row);
+    }
+    planArea.appendChild(list);
+  }
+}
+
 // --- session updates ---
 
 function handleUpdate(update: SessionUpdate): void {
@@ -339,6 +437,15 @@ function handleUpdate(update: SessionUpdate): void {
     case "tool_call":
     case "tool_call_update":
       upsertToolCall(update, readToolName(update));
+      break;
+    case "plan":
+      renderPlan(update.entries);
+      break;
+    case "plan_removed":
+      renderPlan([]);
+      break;
+    case "config_option_update":
+      renderConfigOptions(update.configOptions);
       break;
     case "user_message_chunk":
       // The composer already rendered the user's message.
@@ -371,6 +478,16 @@ input.addEventListener("keydown", (e) => {
     submit();
   }
 });
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+});
+// The whole shell acts as the input surface.
+inputShell.addEventListener("click", (e) => {
+  if (e.target === inputShell || e.target === input.parentElement) {
+    input.focus();
+  }
+});
 
 window.addEventListener("message", (event: MessageEvent<InboundMessage>) => {
   const msg = event.data;
@@ -387,11 +504,19 @@ window.addEventListener("message", (event: MessageEvent<InboundMessage>) => {
       appendBlock("error-message").textContent = msg.message;
       setBusy(false);
       break;
+    case "configOptions":
+      renderConfigOptions(msg.options);
+      break;
     case "reset":
       transcript.innerHTML = "";
       toolCalls.clear();
       closeOpenBlock();
+      renderPlan([]);
+      configSelectors.innerHTML = "";
       setBusy(false);
       break;
   }
 });
+
+setBusy(false);
+post({ type: "ready" });

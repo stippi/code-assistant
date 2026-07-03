@@ -3,12 +3,15 @@ import type * as acp from "@agentclientprotocol/sdk";
 import { AgentConnection } from "./acp/connection";
 
 type WebviewInbound =
+  | { type: "ready" }
   | { type: "prompt"; text: string }
-  | { type: "cancel" };
+  | { type: "cancel" }
+  | { type: "setConfigOption"; configId: string; value: string };
 
 type WebviewOutbound =
   | { type: "sessionUpdate"; update: acp.SessionUpdate }
   | { type: "turnEnded"; stopReason: acp.StopReason }
+  | { type: "configOptions"; options: acp.SessionConfigOption[] }
   | { type: "error"; message: string }
   | { type: "reset" };
 
@@ -39,6 +42,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.agent = undefined;
     this.agentStarting = undefined;
     this.post({ type: "reset" });
+    this.connectAgent();
+  }
+
+  /** Start the agent in the background so config options (model selector)
+   *  are available before the first prompt. */
+  private connectAgent(): void {
+    void this.ensureAgent()
+      .then((agent) => {
+        this.post({ type: "configOptions", options: agent.configOptions });
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.post({
+          type: "error",
+          message: `${message} — is code-assistant installed? Set "codeAssistant.commandPath" if it is not on your PATH.`,
+        });
+      });
   }
 
   dispose(): void {
@@ -48,12 +68,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async onMessage(msg: WebviewInbound): Promise<void> {
     switch (msg.type) {
+      case "ready":
+        this.connectAgent();
+        break;
       case "prompt":
         await this.handlePrompt(msg.text);
         break;
       case "cancel":
         await this.agent?.cancel();
         break;
+      case "setConfigOption": {
+        const agent = this.agent;
+        if (!agent) {
+          break;
+        }
+        try {
+          const options = await agent.setConfigOption(msg.configId, msg.value);
+          this.post({ type: "configOptions", options });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.post({ type: "error", message });
+        }
+        break;
+      }
     }
   }
 
@@ -199,8 +236,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <body>
   <main id="transcript"></main>
   <footer id="composer">
-    <textarea id="input" rows="3" placeholder="Ask code-assistant…"></textarea>
-    <button id="send" title="Send">Send</button>
+    <div id="plan-area" hidden></div>
+    <div id="input-shell">
+      <textarea id="input" rows="1" placeholder="Message code-assistant…"></textarea>
+      <div id="input-toolbar">
+        <div id="config-selectors"></div>
+        <span class="spacer"></span>
+        <button id="send" title="Send"></button>
+      </div>
+    </div>
   </footer>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

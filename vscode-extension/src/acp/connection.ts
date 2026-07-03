@@ -99,6 +99,21 @@ export class AgentConnection {
     return this.session.sessionId;
   }
 
+  get configOptions(): acp.SessionConfigOption[] {
+    return this.session.newSessionResponse.configOptions ?? [];
+  }
+
+  async setConfigOption(
+    configId: string,
+    value: string,
+  ): Promise<acp.SessionConfigOption[]> {
+    const response = await this.connection.agent.request(
+      acp.methods.agent.session.setConfigOption,
+      { sessionId: this.session.sessionId, configId, value },
+    );
+    return response.configOptions;
+  }
+
   prompt(text: string): void {
     // Turn completion is reported through the update pump; the promise only
     // matters when the request itself fails.

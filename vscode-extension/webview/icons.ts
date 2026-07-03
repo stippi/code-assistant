@@ -2,6 +2,8 @@ import {
   Bot,
   Brain,
   ChevronDown,
+  Circle,
+  CircleCheck,
   CloudDownload,
   FileOutput,
   FilePen,
@@ -17,7 +19,9 @@ import {
   MessageCircleQuestion,
   RefreshCw,
   Search,
+  SendHorizontal,
   Sparkles,
+  Square,
   SquarePen,
   SquareTerminal,
   Tag,
@@ -69,3 +73,15 @@ export function toolIcon(toolName: string | undefined, kind: string | undefined)
 export const brainIcon = Brain;
 export const chevronIcon = ChevronDown;
 export const spinnerIcon = LoaderCircle;
+export const sendIcon = SendHorizontal;
+export const stopIcon = Square;
+
+const planStatus: Record<string, string> = {
+  pending: Circle,
+  in_progress: RefreshCw,
+  completed: CircleCheck,
+};
+
+export function planStatusIcon(status: string): string {
+  return planStatus[status] ?? Circle;
+}

@@ -303,41 +303,216 @@ svg.lucide {
   background: var(--vscode-diffEditor-insertedTextBackground);
 }
 
+/* --- plan area --- */
+
+#plan-area {
+  border-bottom: 1px solid var(--vscode-editorWidget-border, transparent);
+  padding: 4px 0 6px;
+}
+
+.plan-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-foreground);
+  text-align: left;
+  min-width: 0;
+}
+
+.plan-chevron {
+  display: inline-flex;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plan-chevron svg.lucide {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+  transition: transform 0.15s ease;
+}
+
+.plan-header.expanded .plan-chevron svg.lucide {
+  transform: none;
+}
+
+.plan-title {
+  font-weight: 600;
+}
+
+.plan-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--vscode-textLink-foreground);
+}
+
+.plan-current svg.lucide {
+  width: 13px;
+  height: 13px;
+  animation: spin 2s linear infinite;
+}
+
+.plan-current span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-count {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plan-entries {
+  display: flex;
+  flex-direction: column;
+}
+
+.plan-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 4px 3px 26px;
+  border-radius: 4px;
+}
+
+.plan-entry.in_progress {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.plan-entry-icon {
+  display: inline-flex;
+  align-self: center;
+}
+
+.plan-entry-icon svg.lucide {
+  width: 14px;
+  height: 14px;
+}
+
+.plan-entry.completed .plan-entry-icon {
+  color: var(--vscode-charts-green);
+}
+
+.plan-entry.in_progress .plan-entry-icon {
+  color: var(--vscode-textLink-foreground);
+}
+
+.plan-entry.in_progress .plan-entry-icon svg.lucide {
+  animation: spin 2s linear infinite;
+}
+
+.plan-entry.pending .plan-entry-icon {
+  color: var(--vscode-descriptionForeground);
+}
+
 /* --- composer --- */
 
 #composer {
   display: flex;
+  flex-direction: column;
   gap: 6px;
-  padding: 10px 12px;
+  padding: 8px 12px 10px;
   border-top: 1px solid var(--vscode-editorWidget-border, transparent);
 }
 
+/* The whole shell is the input: textarea plus inline toolbar */
+
+#input-shell {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, transparent));
+  border-radius: 8px;
+  background: var(--vscode-input-background);
+  padding: 8px 8px 6px 10px;
+  cursor: text;
+}
+
+#input-shell:focus-within {
+  border-color: var(--vscode-focusBorder);
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
 #input {
-  flex: 1;
   resize: none;
-  padding: 6px 8px;
-  border-radius: 6px;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  min-height: 2.8em;
+  max-height: 160px;
   font-family: inherit;
   font-size: inherit;
   color: var(--vscode-input-foreground);
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, transparent);
 }
 
-#input:focus {
-  outline: 1px solid var(--vscode-focusBorder);
+#input-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+  cursor: default;
+}
+
+#input-toolbar .spacer {
+  flex: 1;
+}
+
+#config-selectors {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.config-select {
+  max-width: 220px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.92em;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+}
+
+.config-select:hover,
+.config-select:focus {
+  color: var(--vscode-foreground);
+}
+
+.config-select option,
+.config-select optgroup {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
 }
 
 #send {
-  align-self: flex-end;
-  padding: 6px 12px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
+  color: var(--vscode-foreground);
+  background: transparent;
 }
 
 #send:hover {
-  background: var(--vscode-button-hoverBackground);
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-textLink-foreground);
+}
+
+#send svg.lucide {
+  width: 16px;
+  height: 16px;
 }
