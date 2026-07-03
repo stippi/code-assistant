@@ -8,13 +8,87 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 // New session management architecture
+pub mod event_stream;
 pub mod instance;
 pub mod manager;
+pub mod service;
 pub mod sleep_inhibitor;
 pub mod watcher;
 
-// Main session manager
+// Main session manager, the UI→core command facade on top of it, and the
+// core→UI broadcast stream
+pub use event_stream::{EventPayload, EventStream, SessionEvent, StreamError, Subscription};
 pub use manager::SessionManager;
+pub use service::SessionService;
+
+/// Owned snapshot of everything a frontend needs to render a session.
+///
+/// Returned by `SessionService::load_session`. Frontends render it and then
+/// apply subsequent events for the session from the broadcast stream; a
+/// lagged subscriber recovers by fetching a fresh snapshot.
+#[derive(Debug, Clone)]
+pub struct SessionSnapshot {
+    pub session_id: String,
+    /// Transcript of the active path. When an agent response is currently
+    /// streaming, the last entry is the in-flight partial assistant message.
+    pub messages: Vec<crate::ui::ui_events::MessageData>,
+    pub tool_results: Vec<crate::ui::ui_events::ToolResultData>,
+    pub plan: PlanState,
+    pub activity_state: instance::SessionActivityState,
+    pub metadata: crate::persistence::ChatMetadata,
+    /// Text summary of a queued (pending) user message, if any.
+    pub pending_message: Option<String>,
+    pub current_model: String,
+    pub allowed_models: Vec<String>,
+    pub sandbox_policy: SandboxPolicy,
+}
+
+impl SessionSnapshot {
+    /// Render this snapshot as the canonical connect-event sequence.
+    ///
+    /// Frontends that ingest [`crate::ui::UiEvent`]s through a single queue
+    /// can apply a snapshot by replaying these events in order.
+    pub fn connect_events(&self) -> Vec<crate::ui::UiEvent> {
+        use crate::ui::UiEvent;
+
+        let mut events = vec![
+            UiEvent::SetMessages {
+                messages: self.messages.clone(),
+                session_id: Some(self.session_id.clone()),
+                tool_results: self.tool_results.clone(),
+            },
+            UiEvent::UpdatePlan {
+                plan: self.plan.clone(),
+            },
+            UiEvent::UpdateSessionActivityState {
+                session_id: self.session_id.clone(),
+                activity_state: self.activity_state.clone(),
+            },
+        ];
+        // Show the error banner when connecting to an errored session.
+        if let instance::SessionActivityState::Errored { message } = &self.activity_state {
+            events.push(UiEvent::DisplayError {
+                message: message.clone(),
+            });
+        }
+        events.push(UiEvent::UpdateSessionMetadata {
+            metadata: self.metadata.clone(),
+        });
+        events.push(UiEvent::UpdatePendingMessage {
+            message: self.pending_message.clone(),
+        });
+        events.push(UiEvent::UpdateCurrentModel {
+            model_name: self.current_model.clone(),
+        });
+        events.push(UiEvent::UpdateSandboxPolicy {
+            policy: self.sandbox_policy.clone(),
+        });
+        events.push(UiEvent::UpdateAllowedModels {
+            models: self.allowed_models.clone(),
+        });
+        events
+    }
+}
 
 /// Static configuration stored with each session.
 #[derive(Debug, Clone, Serialize, Deserialize)]

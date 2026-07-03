@@ -895,20 +895,13 @@ impl UserInterface for ACPUserUI {
             | UiEvent::RefreshChatList
             | UiEvent::UpdateChatList { .. }
             | UiEvent::ClearMessages
-            | UiEvent::SendUserMessage { .. }
             | UiEvent::UpdateSessionActivityState { .. }
-            | UiEvent::QueueUserMessage { .. }
-            | UiEvent::RequestPendingMessageEdit { .. }
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. }
             | UiEvent::UpdateSandboxPolicy { .. }
-            | UiEvent::CancelSubAgent { .. }
             | UiEvent::HiddenToolCompleted
-            | UiEvent::StartMessageEdit { .. }
-            | UiEvent::SwitchBranch { .. }
             | UiEvent::MessageEditReady { .. }
-            | UiEvent::BranchSwitched { .. }
             | UiEvent::UpdateBranchInfo { .. }
             | UiEvent::RollbackStreaming { .. }
             | UiEvent::ShowTransientStatus { .. }
@@ -1104,10 +1097,6 @@ impl UserInterface for ACPUserUI {
 
     fn clear_rate_limit(&self) {
         // No action needed
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use code_assistant_core::backend::SkillCatalogEntry;
+use code_assistant_core::session::service::SkillCatalogEntry;
 use gpui::{Context, Task, Window};
 use gpui_component::input::{InputState, RopeExt};
 use gpui_component::Rope;

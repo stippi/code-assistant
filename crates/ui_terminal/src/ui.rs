@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use code_assistant_core::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
-use std::any::Any;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -583,9 +582,5 @@ impl UserInterface for TerminalUI {
                 renderer_guard.hide_spinner();
             }
         });
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }

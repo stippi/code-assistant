@@ -3,7 +3,7 @@
 use crate::commands::{all_commands, CommandResult};
 use crate::slash_popup::skill_picker::SkillPickerPopup;
 use crate::slash_popup::{PopupAction, PopupRow, SlashPopup};
-use code_assistant_core::backend::SkillCatalogEntry;
+use code_assistant_core::session::service::SkillCatalogEntry;
 
 pub struct CommandListPopup {
     /// All rows the popup knows about, before filtering.

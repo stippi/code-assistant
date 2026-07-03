@@ -71,11 +71,13 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     let persistence = FileSessionPersistence::new();
     let persistence_for_watcher = FileSessionPersistence::new();
     let tool_registry = code_assistant_core::tools::default_registry();
+    let events = code_assistant_core::session::event_stream::EventStream::new();
     let session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         session_config_template.clone(),
         model_name.clone(),
         tool_registry.clone(),
+        events.clone(),
     )));
 
     // Channel for session notifications: `ACPUserUI` instances push into the
@@ -95,6 +97,43 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         session_update_tx.clone(),
         connected_session_id.clone(),
     ));
+
+    // Route the core→UI broadcast stream to the per-session ACP UIs: each
+    // running prompt registers its ACPUserUI in `active_uis`; events for
+    // sessions without an active prompt are dropped (ACP has no view to
+    // update outside a prompt turn).
+    {
+        let active_uis = state.active_uis();
+        let mut subscription = events.subscribe();
+        tokio::spawn(async move {
+            use code_assistant_core::session::{EventPayload, StreamError};
+            loop {
+                match subscription.recv().await {
+                    Ok(event) => {
+                        let Some(session_id) = &event.session_id else {
+                            continue;
+                        };
+                        let ui = active_uis.lock().await.get(session_id).cloned();
+                        let Some(ui) = ui else {
+                            continue;
+                        };
+                        match event.payload {
+                            EventPayload::Fragment(fragment) => {
+                                let _ = ui.display_fragment(&fragment);
+                            }
+                            EventPayload::Ui(ui_event) => {
+                                let _ = ui.send_event(ui_event).await;
+                            }
+                        }
+                    }
+                    Err(StreamError::Lagged { missed }) => {
+                        warn!("ACP event stream lagged ({missed} events missed)");
+                    }
+                    Err(StreamError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // Start the filesystem watcher for cross-instance awareness.
     let (watcher_event_tx, watcher_event_rx) = async_channel::bounded::<UiEvent>(64);

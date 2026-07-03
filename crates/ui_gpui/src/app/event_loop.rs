@@ -516,12 +516,7 @@ impl Gpui {
             }
             UiEvent::RefreshChatList => {
                 debug!("UI: RefreshChatList event received");
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    debug!("UI: Sending ListSessions to backend");
-                    let _ = sender.try_send(BackendEvent::ListSessions);
-                } else {
-                    warn!("UI: No backend event sender available for RefreshChatList");
-                }
+                self.cmd_refresh_chat_list();
             }
             UiEvent::UpdateChatList { sessions } => {
                 debug!(
@@ -546,33 +541,6 @@ impl Gpui {
                 self.notify_messages_reset(cx);
             }
 
-            UiEvent::SendUserMessage {
-                message,
-                session_id,
-                attachments,
-                branch_parent_id,
-            } => {
-                debug!(
-                    "UI: SendUserMessage event for session {}: {} (with {} attachments, branch_parent: {:?})",
-                    session_id,
-                    message,
-                    attachments.len(),
-                    branch_parent_id
-                );
-                // Clear any existing error when user sends a new message
-                *self.current_error.lock().unwrap() = None;
-
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::SendUserMessage {
-                        session_id,
-                        message,
-                        attachments,
-                        branch_parent_id,
-                    });
-                } else {
-                    warn!("UI: No backend event sender available");
-                }
-            }
             UiEvent::UpdateSessionMetadata { metadata } => {
                 debug!(
                     "UI: UpdateSessionMetadata event for session {}",
@@ -670,34 +638,6 @@ impl Gpui {
                     }
                 }
             }
-            UiEvent::QueueUserMessage {
-                message,
-                session_id,
-                attachments,
-            } => {
-                debug!(
-                    "UI: QueueUserMessage event for session {}: {} (with {} attachments)",
-                    session_id,
-                    message,
-                    attachments.len()
-                );
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::QueueUserMessage {
-                        session_id,
-                        message,
-                        attachments,
-                    });
-                }
-            }
-            UiEvent::RequestPendingMessageEdit { session_id } => {
-                debug!(
-                    "UI: RequestPendingMessageEdit event for session {}",
-                    session_id
-                );
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::RequestPendingMessageEdit { session_id });
-                }
-            }
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("UI: UpdatePendingMessage event with message: {:?}", message);
                 // Update MessagesView's pending message
@@ -753,9 +693,7 @@ impl Gpui {
                     });
                 if is_session_errored {
                     if let Some(session_id) = self.current_session_id.lock().unwrap().clone() {
-                        if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                            let _ = sender.try_send(BackendEvent::ClearSessionError { session_id });
-                        }
+                        self.cmd_clear_session_error(session_id);
                     }
                 }
 
@@ -838,9 +776,7 @@ impl Gpui {
                 debug!("UI: RefreshCurrentSession for {session_id}");
                 let current = self.current_session_id.lock().unwrap().clone();
                 if current.as_deref() == Some(session_id.as_str()) {
-                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::RefreshSession { session_id });
-                    }
+                    self.cmd_refresh_session(session_id);
                 }
             }
 
@@ -874,55 +810,7 @@ impl Gpui {
                 );
             }
 
-            UiEvent::CancelSubAgent { tool_id } => {
-                debug!("UI: CancelSubAgent event for tool_id: {}", tool_id);
-                // Forward to backend with current session ID
-                if let Some(session_id) = self.current_session_id.lock().unwrap().clone() {
-                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::CancelSubAgent {
-                            session_id,
-                            tool_id,
-                        });
-                    }
-                } else {
-                    warn!("UI: CancelSubAgent requested but no active session");
-                }
-            }
-
             // === Session Branching Events ===
-            UiEvent::StartMessageEdit {
-                session_id,
-                node_id,
-            } => {
-                debug!(
-                    "UI: StartMessageEdit event for session {} node {}",
-                    session_id, node_id
-                );
-                // Forward to backend to get message content
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::StartMessageEdit {
-                        session_id,
-                        node_id,
-                    });
-                }
-            }
-            UiEvent::SwitchBranch {
-                session_id,
-                new_node_id,
-            } => {
-                debug!(
-                    "UI: SwitchBranch event for session {} to node {}",
-                    session_id, new_node_id
-                );
-                // Forward to backend to perform branch switch
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::SwitchBranch {
-                        session_id,
-                        new_node_id,
-                    });
-                }
-            }
-
             UiEvent::MessageEditReady {
                 content,
                 attachments,
@@ -1055,30 +943,6 @@ impl Gpui {
                 // Refresh UI to trigger RootView to process the pending edit
                 cx.refresh();
             }
-            UiEvent::BranchSwitched {
-                session_id,
-                messages,
-                tool_results,
-                plan,
-            } => {
-                debug!(
-                    "UI: BranchSwitched event for session {} with {} messages",
-                    session_id,
-                    messages.len()
-                );
-                // TODO: Update messages display with new branch content
-                // For now, we can reuse the SetMessages logic
-                self.process_ui_event_async(
-                    UiEvent::SetMessages {
-                        messages,
-                        session_id: Some(session_id),
-                        tool_results,
-                    },
-                    cx,
-                );
-                self.process_ui_event_async(UiEvent::UpdatePlan { plan }, cx);
-            }
-
             UiEvent::UpdateBranchInfo {
                 node_id,
                 branch_info,
@@ -1123,20 +987,11 @@ impl Gpui {
                                 *self.current_model.lock().unwrap() = Some(default_model.clone());
                                 // Tell the backend to switch the active session's model
                                 // and update the default for future sessions
-                                if let Some(sender) =
-                                    self.backend_event_sender.lock().unwrap().as_ref()
+                                self.cmd_update_default_model(default_model.clone());
+                                if let Some(session_id) =
+                                    self.current_session_id.lock().unwrap().clone()
                                 {
-                                    let _ = sender.try_send(BackendEvent::UpdateDefaultModel {
-                                        model_name: default_model.clone(),
-                                    });
-                                    if let Some(session_id) =
-                                        self.current_session_id.lock().unwrap().clone()
-                                    {
-                                        let _ = sender.try_send(BackendEvent::SwitchModel {
-                                            session_id,
-                                            model_name: default_model.clone(),
-                                        });
-                                    }
+                                    self.cmd_switch_model(session_id, default_model.clone());
                                 }
                             }
                         }

@@ -9,15 +9,13 @@ use crate::{
     ui::TerminalUI,
 };
 use anyhow::Result;
-use code_assistant_core::backend::{
-    handle_backend_events, BackendEvent, BackendResponse, BackendRuntimeOptions,
-};
 use code_assistant_core::config;
 use code_assistant_core::config::AgentRunConfig;
 use code_assistant_core::persistence::FileSessionPersistence;
 use code_assistant_core::session::manager::SessionManager;
+use code_assistant_core::session::service::{AgentRuntimeOptions, SessionService};
 use code_assistant_core::session::SessionConfig;
-use code_assistant_core::ui::UserInterface;
+use code_assistant_core::ui::{UiEvent, UserInterface};
 
 use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, EventStream};
@@ -97,18 +95,172 @@ fn clear_slash_command_word(textarea: &mut TextArea) {
     textarea.replace_range(line_start..end, "");
 }
 
+/// The terminal UI's session commands: thin wrappers around
+/// [`SessionService`] calls that apply each typed result to the app state /
+/// UI. Calls run in spawned tasks so the input loop never blocks on the
+/// backend.
+#[derive(Clone)]
+struct Actions {
+    service: SessionService,
+    ui: Arc<dyn UserInterface>,
+    app_state: Arc<Mutex<AppState>>,
+    redraw_tx: tokio::sync::watch::Sender<()>,
+}
+
+impl Actions {
+    fn display_error(&self, message: String) {
+        let ui = self.ui.clone();
+        tokio::spawn(async move {
+            let _ = ui.send_event(UiEvent::DisplayError { message }).await;
+        });
+    }
+
+    fn send_user_message(
+        &self,
+        session_id: String,
+        message: String,
+        attachments: Vec<code_assistant_core::persistence::DraftAttachment>,
+    ) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this
+                .service
+                .send_user_message(session_id, message, attachments, None)
+                .await
+            {
+                this.display_error(format!("Failed to send message: {e:#}"));
+            }
+        });
+    }
+
+    fn queue_user_message(
+        &self,
+        session_id: String,
+        message: String,
+        attachments: Vec<code_assistant_core::persistence::DraftAttachment>,
+    ) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            match this
+                .service
+                .queue_user_message(session_id, message, attachments)
+                .await
+            {
+                Ok(pending) => {
+                    let _ = this
+                        .ui
+                        .send_event(UiEvent::UpdatePendingMessage { message: pending })
+                        .await;
+                }
+                Err(e) => this.display_error(format!("Failed to queue message: {e:#}")),
+            }
+        });
+    }
+
+    fn switch_model(&self, session_id: String, model_name: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            match this
+                .service
+                .switch_model(session_id, model_name.clone())
+                .await
+            {
+                Ok(result) => {
+                    let mut state = this.app_state.lock().await;
+                    state.update_current_model(Some(model_name.clone()));
+                    let info = match result.warning {
+                        Some(w) => format!("Switched to model: {model_name} ({w})"),
+                        None => format!("Switched to model: {model_name}"),
+                    };
+                    state.set_info_message(Some(info));
+                    drop(state);
+                    let _ = this.redraw_tx.send(());
+                }
+                Err(e) => this.display_error(format!("{e:#}")),
+            }
+        });
+    }
+
+    /// Ask the running agent to stop at its next streaming checkpoint.
+    fn request_stop(&self, session_id: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this.service.request_stop(session_id).await {
+                tracing::debug!("Failed to request agent stop: {e:#}");
+            }
+        });
+    }
+
+    fn clear_context(&self, session_id: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this.service.clear_context(session_id).await {
+                this.display_error(format!("Failed to clear context: {e:#}"));
+            }
+        });
+    }
+
+    fn compact_context(&self, session_id: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this.service.compact_context(session_id).await {
+                this.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
+    fn invoke_skill(&self, session_id: String, scope: String, name: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this.service.invoke_skill(session_id, scope, name).await {
+                this.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
+    /// Fetch the session list and publish it to the UI.
+    fn refresh_chat_list(&self) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            match this.service.list_sessions().await {
+                Ok(sessions) => {
+                    let _ = this
+                        .ui
+                        .send_event(UiEvent::UpdateChatList { sessions })
+                        .await;
+                }
+                Err(e) => this.display_error(format!("Failed to list sessions: {e:#}")),
+            }
+        });
+    }
+
+    /// Fetch the skill catalog for the `/skill` picker and cache it.
+    fn refresh_skills(&self, session_id: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            match this.service.list_skills(session_id).await {
+                Ok(skills) => {
+                    this.app_state.lock().await.skills = skills;
+                }
+                Err(e) => {
+                    debug!("Failed to list skills: {e:#}");
+                }
+            }
+        });
+    }
+}
+
 /// Run the side-effects for a [`CommandResult`] produced by either an inline
-/// `/cmd<Enter>` submission or a popup commit. Returns an optional
-/// [`BackendEvent`] the caller should send.
+/// `/cmd<Enter>` submission or a popup commit.
 async fn handle_command_result(
     cmd: crate::commands::CommandResult,
     app_state: &Arc<Mutex<AppState>>,
     renderer: &Arc<Mutex<ProductionTerminalRenderer>>,
-    backend_event_tx: &async_channel::Sender<BackendEvent>,
-) -> Option<BackendEvent> {
+    actions: &Actions,
+) {
     use crate::commands::CommandResult;
     match cmd {
-        CommandResult::Continue => None,
+        CommandResult::Continue => {}
         CommandResult::Help(_) => {
             let processor = CommandProcessor::new().ok();
             let text = processor
@@ -118,7 +270,6 @@ async fn handle_command_result(
                 })
                 .unwrap_or_default();
             app_state.lock().await.set_info_message(Some(text));
-            None
         }
         CommandResult::ListModels => {
             if let Ok(p) = CommandProcessor::new() {
@@ -127,7 +278,6 @@ async fn handle_command_result(
                     .await
                     .set_info_message(Some(p.get_models_list()));
             }
-            None
         }
         CommandResult::ListProviders => {
             if let Ok(p) = CommandProcessor::new() {
@@ -136,7 +286,6 @@ async fn handle_command_result(
                     .await
                     .set_info_message(Some(p.get_providers_list()));
             }
-            None
         }
         CommandResult::SwitchModel(model_name) => {
             let session_id = {
@@ -144,19 +293,12 @@ async fn handle_command_result(
                 state.current_session_id.clone()
             };
             if let Some(session_id) = session_id {
-                let mut state = app_state.lock().await;
-                state.update_current_model(Some(model_name.clone()));
-                state.set_info_message(Some(format!("Switched to model: {model_name}")));
-                Some(BackendEvent::SwitchModel {
-                    session_id,
-                    model_name,
-                })
+                actions.switch_model(session_id, model_name);
             } else {
                 app_state
                     .lock()
                     .await
                     .set_info_message(Some("No active session to switch model".to_string()));
-                None
             }
         }
         CommandResult::ShowCurrentModel => {
@@ -166,7 +308,6 @@ async fn handle_command_result(
                 None => "No model selected".to_string(),
             };
             app_state.lock().await.set_info_message(Some(message));
-            None
         }
         CommandResult::TogglePlan => {
             let (plan_state, expanded, overlay_active) = {
@@ -180,15 +321,18 @@ async fn handle_command_result(
             }
             renderer_guard.set_plan_expanded(expanded);
             renderer_guard.set_overlay_active(overlay_active);
-            None
         }
         CommandResult::ClearContext => {
             let session_id = app_state.lock().await.current_session_id.clone();
-            session_id.map(|session_id| BackendEvent::ClearContext { session_id })
+            if let Some(session_id) = session_id {
+                actions.clear_context(session_id);
+            }
         }
         CommandResult::CompactContext => {
             let session_id = app_state.lock().await.current_session_id.clone();
-            session_id.map(|session_id| BackendEvent::CompactContext { session_id })
+            if let Some(session_id) = session_id {
+                actions.compact_context(session_id);
+            }
         }
 
         CommandResult::OpenSkillPicker => {
@@ -205,7 +349,6 @@ async fn handle_command_result(
                     crate::slash_popup::SkillPickerPopup::from_entries(skills),
                 ));
             }
-            None
         }
         CommandResult::InvokeSkill { scope, name } => {
             let session_id = app_state.lock().await.current_session_id.clone();
@@ -214,7 +357,7 @@ async fn handle_command_result(
                     .lock()
                     .await
                     .set_info_message(Some("No active session to activate a skill".to_string()));
-                return None;
+                return;
             };
 
             // Resolve the scope token: use the explicit one from the picker, or
@@ -236,18 +379,13 @@ async fn handle_command_result(
                         .lock()
                         .await
                         .set_info_message(Some(format!("Activating skill: {name}")));
-                    Some(BackendEvent::InvokeSkill {
-                        session_id,
-                        scope,
-                        name,
-                    })
+                    actions.invoke_skill(session_id, scope, name);
                 }
                 None => {
                     app_state
                         .lock()
                         .await
                         .set_info_message(Some(format!("No skill named '{name}' was found")));
-                    None
                 }
             }
         }
@@ -256,9 +394,6 @@ async fn handle_command_result(
                 .lock()
                 .await
                 .set_info_message(Some(format!("Error: {error}")));
-            // Suppress unused warning in this branch.
-            let _ = backend_event_tx;
-            None
         }
     }
 }
@@ -269,7 +404,7 @@ async fn event_loop(
     renderer: Arc<Mutex<ProductionTerminalRenderer>>,
     app_state: Arc<Mutex<AppState>>,
     cancel_flag: Arc<AtomicBool>,
-    backend_event_tx: async_channel::Sender<BackendEvent>,
+    actions: Actions,
     mut tui: tui::Tui,
     mut redraw_rx: tokio::sync::watch::Receiver<()>,
 ) -> Result<()> {
@@ -395,10 +530,9 @@ async fn event_loop(
                                         if let Some(session_id) = current_session_id {
                                             cancel_flag.store(true, Ordering::SeqCst);
                                             debug!(
-                                                "Escape pressed - cancellation flag set for session {} (state: {:?})",
+                                                "Escape pressed - requesting stop for session {} (state: {:?})",
                                                 session_id, activity_state
                                             );
-
 
                                             let mut state = app_state.lock().await;
                                             if activity_state.as_ref().is_some_and(|s| s.is_terminal()) {
@@ -406,6 +540,7 @@ async fn event_loop(
                                                     "No agent is currently running.".to_string(),
                                                 ));
                                             } else {
+                                                actions.request_stop(session_id.clone());
                                                 state.set_info_message(Some(
                                                     "Cancellation requested...".to_string(),
                                                 ));
@@ -429,34 +564,25 @@ async fn event_loop(
                                             state.activity_state.clone()
                                         };
 
-
-                                        let event = match activity_state {
-                                            Some(ref s) if s.is_terminal() => {
-                                                cancel_flag.store(false, Ordering::SeqCst);
-                                                BackendEvent::SendUserMessage {
-                                                    session_id,
-                                                    message,
-                                                    attachments,
-                                                    branch_parent_id: None, // Terminal UI doesn't support branching yet
-                                                }
-                                            }
-                                            None => {
-                                                cancel_flag.store(false, Ordering::SeqCst);
-                                                BackendEvent::SendUserMessage {
-                                                    session_id,
-                                                    message,
-                                                    attachments,
-                                                    branch_parent_id: None, // Terminal UI doesn't support branching yet
-                                                }
-                                            }
-                                            _ => BackendEvent::QueueUserMessage {
+                                        // While an agent is running the message is
+                                        // queued; otherwise it starts a new turn.
+                                        let agent_idle = activity_state
+                                            .as_ref()
+                                            .is_none_or(|s| s.is_terminal());
+                                        if agent_idle {
+                                            cancel_flag.store(false, Ordering::SeqCst);
+                                            actions.send_user_message(
                                                 session_id,
                                                 message,
                                                 attachments,
-                                            },
-                                        };
-
-                                        let _ = backend_event_tx.send(event).await;
+                                            );
+                                        } else {
+                                            actions.queue_user_message(
+                                                session_id,
+                                                message,
+                                                attachments,
+                                            );
+                                        }
                                     }
                                 }
                                 KeyEventResult::Continue => {
@@ -475,19 +601,9 @@ async fn event_loop(
                                     };
 
                                     if let Some(session_id) = current_session_id {
-                                        let event = BackendEvent::SwitchModel {
-                                            session_id,
-                                            model_name: model_name.clone(),
-                                        };
-
-                                        let _ = backend_event_tx.send(event).await;
-
-                                        // Update state
-                                        let mut state = app_state.lock().await;
-                                        state.update_current_model(Some(model_name.clone()));
-                                        state.set_info_message(Some(format!(
-                                            "Switched to model: {model_name}",
-                                        )));
+                                        // State and info message are updated when
+                                        // the switch succeeds (see Actions).
+                                        actions.switch_model(session_id, model_name);
                                     } else {
                                         let mut state = app_state.lock().await;
                                         state.set_info_message(Some(
@@ -531,9 +647,7 @@ async fn event_loop(
                                         state.current_session_id.clone()
                                     };
                                     if let Some(session_id) = current_session_id {
-                                        let _ = backend_event_tx
-                                            .send(BackendEvent::ClearContext { session_id })
-                                            .await;
+                                        actions.clear_context(session_id);
                                     }
                                 }
                                 KeyEventResult::CompactContext => {
@@ -542,34 +656,29 @@ async fn event_loop(
                                         state.current_session_id.clone()
                                     };
                                     if let Some(session_id) = current_session_id {
-                                        let _ = backend_event_tx
-                                            .send(BackendEvent::CompactContext { session_id })
-                                            .await;
+                                        actions.compact_context(session_id);
                                     }
                                 }
 
                                 KeyEventResult::OpenSkillPicker => {
                                     // Inline `/skill` (popup not active): reuse the
                                     // command-result handler to open the picker.
-                                    let _ = handle_command_result(
+                                    handle_command_result(
                                         crate::commands::CommandResult::OpenSkillPicker,
                                         &app_state,
                                         &renderer,
-                                        &backend_event_tx,
+                                        &actions,
                                     )
                                     .await;
                                 }
                                 KeyEventResult::InvokeSkill { scope, name } => {
-                                    if let Some(event) = handle_command_result(
+                                    handle_command_result(
                                         crate::commands::CommandResult::InvokeSkill { scope, name },
                                         &app_state,
                                         &renderer,
-                                        &backend_event_tx,
+                                        &actions,
                                     )
-                                    .await
-                                    {
-                                        let _ = backend_event_tx.send(event).await;
-                                    }
+                                    .await;
                                 }
                                 KeyEventResult::SlashPrefixChanged(query) => {
                                     handle_slash_prefix_changed(
@@ -647,17 +756,8 @@ async fn event_loop(
                                         // composer line (the slash word) and dispatch the
                                         // command via the same path as inline /commands.
                                         clear_slash_command_word(&mut input_manager.textarea);
-                                        if let Some(next_event) = handle_command_result(
-                                            cmd,
-                                            &app_state,
-                                            &renderer,
-                                            &backend_event_tx,
-                                        )
-                                        .await
-                                        {
-                                            // Forward any backend event the command produced.
-                                            let _ = backend_event_tx.send(next_event).await;
-                                        }
+                                        handle_command_result(cmd, &app_state, &renderer, &actions)
+                                            .await;
                                     }
                                 }
                             }
@@ -714,7 +814,7 @@ impl TerminalTuiApp {
     pub async fn run(
         &self,
         config: &AgentRunConfig,
-        command_executor_factory: code_assistant_core::backend::CommandExecutorFactory,
+        command_executor_factory: code_assistant_core::session::service::CommandExecutorFactory,
     ) -> Result<()> {
         let app_state = Arc::new(Mutex::new(AppState::new()));
         let root_path = config.path.canonicalize()?;
@@ -738,11 +838,13 @@ impl TerminalTuiApp {
         };
 
         // Create session manager
+        let events = code_assistant_core::session::event_stream::EventStream::new();
         let session_manager = SessionManager::new(
             session_persistence,
             session_config_template,
             config.model.clone(),
             code_assistant_core::tools::default_registry(),
+            events.clone(),
         );
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
@@ -755,32 +857,91 @@ impl TerminalTuiApp {
             async_channel::unbounded::<code_assistant_core::ui::UiEvent>();
         terminal_ui.set_event_sender(ui_event_tx);
 
-        // Setup backend communication channels
-        let (backend_event_tx, backend_event_rx) = async_channel::unbounded::<BackendEvent>();
-        let (backend_response_tx, backend_response_rx) =
-            async_channel::unbounded::<BackendResponse>();
-
-        // Spawn backend handler
-        let backend_task = {
-            let multi_session_manager = multi_session_manager.clone();
-            let runtime_options = Arc::new(BackendRuntimeOptions {
+        // Create the session command service and spawn its worker. This
+        // frontend consumes the broadcast stream (see the bridge task below).
+        let (service, service_worker) = SessionService::new(
+            multi_session_manager.clone(),
+            Arc::new(AgentRuntimeOptions {
                 record_path: config.record.clone(),
                 playback_path: config.playback.clone(),
                 fast_playback: config.fast_playback,
                 command_executor_factory,
-            });
-            let ui = ui.clone();
+            }),
+            events,
+        );
+        let backend_task = tokio::spawn(service_worker);
 
+        // Bridge: subscribe to the core→UI broadcast stream and feed the
+        // terminal's rendering pipeline. Single-session app, so everything
+        // scoped to the current session (or app-scoped) passes.
+        {
+            let terminal_ui = terminal_ui.clone();
+            let app_state = app_state.clone();
+            let service_for_bridge = service.clone();
+            let mut subscription = service.subscribe();
             tokio::spawn(async move {
-                handle_backend_events(
-                    backend_event_rx,
-                    backend_response_tx,
-                    multi_session_manager,
-                    runtime_options,
-                    ui,
-                )
-                .await;
-            })
+                use code_assistant_core::session::instance::SessionActivityState;
+                use code_assistant_core::session::{EventPayload, StreamError};
+                loop {
+                    match subscription.recv().await {
+                        Ok(event) => {
+                            let current = app_state.lock().await.current_session_id.clone();
+                            let relevant =
+                                event.session_id.is_none() || event.session_id == current;
+                            if !relevant {
+                                continue;
+                            }
+                            match event.payload {
+                                EventPayload::Fragment(fragment) => {
+                                    let _ = terminal_ui.display_fragment(&fragment);
+                                }
+                                EventPayload::Ui(ui_event) => {
+                                    // Drive the rate-limit spinner from activity
+                                    // transitions (used to be trait callbacks).
+                                    if let UiEvent::UpdateSessionActivityState {
+                                        activity_state,
+                                        ..
+                                    } = &ui_event
+                                    {
+                                        match activity_state {
+                                            SessionActivityState::RateLimited {
+                                                seconds_remaining,
+                                            } => terminal_ui.notify_rate_limit(*seconds_remaining),
+                                            _ => terminal_ui.clear_rate_limit(),
+                                        }
+                                    }
+                                    let _ = terminal_ui.send_event(ui_event).await;
+                                }
+                            }
+                        }
+                        Err(StreamError::Lagged { missed }) => {
+                            tracing::warn!("Event stream lagged ({missed} missed) — resyncing");
+                            let current = app_state.lock().await.current_session_id.clone();
+                            if let Some(session_id) = current {
+                                if let Ok(snapshot) =
+                                    service_for_bridge.load_session(session_id, None).await
+                                {
+                                    for event in snapshot.connect_events() {
+                                        let _ = terminal_ui.send_event(event).await;
+                                    }
+                                }
+                            }
+                        }
+                        Err(StreamError::Closed) => break,
+                    }
+                }
+            });
+        }
+
+        // Create the redraw notification channel early so `Actions` can wake
+        // the event loop after async state updates.
+        let (redraw_tx, redraw_rx) = tokio::sync::watch::channel::<()>(());
+
+        let actions = Actions {
+            service: service.clone(),
+            ui: ui.clone(),
+            app_state: app_state.clone(),
+            redraw_tx: redraw_tx.clone(),
         };
 
         // Determine which session to use and load it
@@ -795,14 +956,21 @@ impl TerminalTuiApp {
 
             if let Some(existing_session_id) = latest_session_id {
                 debug!("Continuing from latest session: {}", existing_session_id);
-
-                backend_event_tx
-                    .send(BackendEvent::LoadSession {
-                        session_id: existing_session_id.clone(),
-                        edit_until_node_id: None,
-                    })
-                    .await?;
-                session_id = Some(existing_session_id);
+                match service
+                    .load_session(existing_session_id.clone(), None)
+                    .await
+                {
+                    Ok(snapshot) => {
+                        for event in snapshot.connect_events() {
+                            let _ = terminal_ui.send_event(event).await;
+                        }
+                        session_id = Some(existing_session_id);
+                    }
+                    Err(e) => {
+                        // Fall through to creating a fresh session
+                        debug!("Failed to continue session {existing_session_id}: {e:#}");
+                    }
+                }
             } else {
                 debug!("No previous session found");
             }
@@ -811,35 +979,13 @@ impl TerminalTuiApp {
         // Create new session if we don't have one yet
         if session_id.is_none() {
             debug!("Creating new session");
-
-            backend_event_tx
-                .send(BackendEvent::CreateNewSession {
-                    name: None,
-                    initial_project: None,
-                })
-                .await?;
-
-            match backend_response_rx.recv().await? {
-                BackendResponse::SessionCreated {
-                    session_id: new_session_id,
-                } => {
-                    debug!("Created new session: {}", new_session_id);
-
-                    backend_event_tx
-                        .send(BackendEvent::LoadSession {
-                            session_id: new_session_id.clone(),
-                            edit_until_node_id: None,
-                        })
-                        .await?;
-                    session_id = Some(new_session_id);
-                }
-                BackendResponse::Error { message } => {
-                    return Err(anyhow::anyhow!("Failed to create session: {message}"));
-                }
-                _ => {
-                    return Err(anyhow::anyhow!("Unexpected response when creating session"));
-                }
+            let new_session_id = service.create_session(None, None).await?;
+            debug!("Created new session: {}", new_session_id);
+            let snapshot = service.load_session(new_session_id.clone(), None).await?;
+            for event in snapshot.connect_events() {
+                let _ = terminal_ui.send_event(event).await;
             }
+            session_id = Some(new_session_id);
         }
 
         let session_id = session_id.expect("Session ID should be set at this point");
@@ -853,12 +999,10 @@ impl TerminalTuiApp {
         }
 
         // Kick off a session list refresh (optional but useful)
-        let _ = backend_event_tx.try_send(BackendEvent::ListSessions);
+        actions.refresh_chat_list();
 
         // Fetch the skill catalog for the `/skill` picker.
-        let _ = backend_event_tx.try_send(BackendEvent::ListSkills {
-            session_id: session_id.clone(),
-        });
+        actions.refresh_skills(session_id.clone());
 
         // Spawn a background task to process UI events from display fragments
         {
@@ -866,120 +1010,6 @@ impl TerminalTuiApp {
             tokio::spawn(async move {
                 while let Ok(event) = ui_event_rx.recv().await {
                     let _ = terminal_ui_clone.send_event(event).await;
-                }
-            });
-        }
-
-        // Spawn a background task to translate backend responses into UiEvents
-        {
-            let ui_clone = ui.clone();
-            let app_state_clone = app_state.clone();
-            tokio::spawn(async move {
-                while let Ok(resp) = backend_response_rx.recv().await {
-                    match resp {
-                        BackendResponse::SessionsListed { sessions } => {
-                            let _ = ui_clone
-                                .send_event(code_assistant_core::ui::UiEvent::UpdateChatList {
-                                    sessions,
-                                })
-                                .await;
-                        }
-                        BackendResponse::SkillsListed {
-                            session_id: _,
-                            skills,
-                        } => {
-                            // Cache the catalog for the `/skill` picker.
-                            app_state_clone.lock().await.skills = skills;
-                        }
-                        BackendResponse::PendingMessageUpdated {
-                            session_id: _,
-                            message,
-                        } => {
-                            let _ = ui_clone
-                                .send_event(
-                                    code_assistant_core::ui::UiEvent::UpdatePendingMessage {
-                                        message,
-                                    },
-                                )
-                                .await;
-                        }
-                        BackendResponse::PendingMessageForEdit {
-                            session_id: _,
-                            message: _,
-                        } => {
-                            // For now, just clear pending in UI
-                            let _ = ui_clone
-                                .send_event(
-                                    code_assistant_core::ui::UiEvent::UpdatePendingMessage {
-                                        message: None,
-                                    },
-                                )
-                                .await;
-                        }
-                        BackendResponse::Error { message } => {
-                            // Display error in status area
-                            let _ = ui_clone
-                                .send_event(code_assistant_core::ui::UiEvent::DisplayError {
-                                    message,
-                                })
-                                .await;
-                        }
-                        BackendResponse::SessionCreated { .. } => {}
-                        BackendResponse::SessionDeleted { .. } => {}
-                        BackendResponse::ModelSwitched {
-                            session_id: _,
-                            model_name,
-                            warning,
-                            allowed_models: _,
-                        } => {
-                            // Update current model in app state
-                            let mut state = app_state_clone.lock().await;
-                            state.update_current_model(Some(model_name.clone()));
-                            let info = match warning {
-                                Some(w) => format!("Switched to model: {model_name} ({w})"),
-                                None => format!("Switched to model: {model_name}"),
-                            };
-                            state.set_info_message(Some(info));
-                        }
-
-                        BackendResponse::SandboxPolicyChanged {
-                            session_id: _,
-                            policy,
-                        } => {
-                            let mut state = app_state_clone.lock().await;
-                            state.update_sandbox_policy(Some(policy.clone()));
-                            state.set_info_message(Some(format!(
-                                "Sandbox mode set to {:?}",
-                                policy
-                            )));
-                        }
-
-                        BackendResponse::SubAgentCancelled {
-                            session_id: _,
-                            tool_id: _,
-                        } => {
-                            // Sub-agent cancellation handled; the sub-agent will
-                            // update its tool output via the normal mechanism
-                        }
-
-                        BackendResponse::MessageEditReady { .. }
-                        | BackendResponse::BranchSwitched { .. }
-                        | BackendResponse::MessageEditCancelled { .. } => {
-                            // Session branching not supported in terminal UI
-                        }
-
-                        BackendResponse::BranchesAndWorktreesListed { .. }
-                        | BackendResponse::WorktreeSwitched { .. }
-                        | BackendResponse::WorktreeCreated { .. } => {
-                            // Worktree management not supported in terminal UI
-                        }
-
-                        BackendResponse::ProjectAdded { .. }
-                        | BackendResponse::ProjectPersisted { .. }
-                        | BackendResponse::ProjectAlreadyExists { .. } => {
-                            // Project management not supported in terminal UI
-                        }
-                    }
                 }
             });
         }
@@ -999,8 +1029,6 @@ impl TerminalTuiApp {
         // Bind renderer to UI for message printing and input redraws
         terminal_ui.set_renderer_async(renderer.clone()).await;
 
-        // Create redraw notification channel
-        let (redraw_tx, redraw_rx) = tokio::sync::watch::channel::<()>(());
         terminal_ui.set_redraw_sender(redraw_tx.clone());
 
         // Display welcome banner with project info
@@ -1030,12 +1058,7 @@ impl TerminalTuiApp {
 
         // Send initial task if provided
         if let Some(task) = &config.task {
-            let _ = backend_event_tx.try_send(BackendEvent::SendUserMessage {
-                session_id: session_id.clone(),
-                message: task.clone(),
-                attachments: Vec::new(),
-                branch_parent_id: None,
-            });
+            actions.send_user_message(session_id.clone(), task.clone(), Vec::new());
         }
 
         // Start main event loop in a separate task
@@ -1044,7 +1067,7 @@ impl TerminalTuiApp {
             renderer.clone(),
             app_state,
             terminal_ui.cancel_flag.clone(),
-            backend_event_tx,
+            actions,
             tui,
             redraw_rx,
         ));

@@ -30,8 +30,8 @@ This is a Rust-based tool for AI-assisted code tasks with multiple operational m
 Layer 0 (generic):    llm  command_executor  fs_explorer  sandbox  web  git  terminal  terminal_output
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
-Layer 3 (domain):     code_assistant_core — sessions, persistence, UiEvent, tool impls,
-                                           dialects (xml/caret), plugins, sub-agents, backend
+Layer 3 (domain):     code_assistant_core — sessions, SessionService, event stream, UiEvent,
+                                           tool impls, dialects (xml/caret), plugins, sub-agents
 Layer 4 (frontends):  ui_gpui  ui_terminal  ui_acp  mcp_server
 Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend wiring
 ```
@@ -94,41 +94,50 @@ headless binary without gpui.
 
 ## UI Communication Architecture
 
-### Communication Channels
-There are **two main communication patterns** between components and the UI:
+Two directions across one seam (`code_assistant_core::session`):
 
-1. **Direct UserInterface trait calls** (primary pattern):
-   - Agent calls methods like `begin_llm_request()`, `display()`, `update_tool_status()`, etc.
-   - The `display()` method takes a `UIMessage` which can wrap a `UiEvent`
-   - Can send any UI event by wrapping it: `UIMessage::UiEvent(event)`
-   - Events go into the main UI event queue processed by the first task
+1. **UI → core: `SessionService`** (`session/service.rs`) — every command a
+   frontend issues (create/load/delete session, send/queue message, switch
+   model/sandbox/worktree, branching, skills, `request_stop`) is a typed async
+   method returning `Result<T>`. Internally an actor: methods enqueue a
+   closure on a command channel and await a oneshot reply; a single worker
+   (spawned on the backend tokio runtime by the wiring) executes commands in
+   order. `load_session` returns an owned `SessionSnapshot` (transcript incl.
+   in-flight partial response, tool results, plan, activity, model/sandbox
+   state); `SessionSnapshot::connect_events()` renders it as the canonical
+   event sequence.
 
-2. **Backend thread communication** (session management):
-   - Used for session management operations (create, delete, list sessions)
-   - Has separate `BackendEvent`/`BackendResponse` types and channels (`code_assistant_core::backend`)
-   - Handled by a second task running concurrently
-   - Operations: `LoadSession`, `CreateNewSession`, `ListSessions`, etc.
-
-### Event Queue Architecture
-- **Two event queues** running concurrently with separate tasks
-- **Task 1**: Processes `UiEvent`s from UserInterface trait calls
-- **Task 2**: Handles session management `BackendEvent`s and `BackendResponse`s
-- Architecture acknowledged as "messy" and should be cleaned up eventually
+2. **Core → UI: broadcast `EventStream`** (`session/event_stream.rs`) — all
+   notifications (streaming `DisplayFragment`s, `UiEvent`s) are published
+   session-tagged; frontends `subscribe()` and filter by the session they
+   view (sidebar-relevant events like activity/metadata pass regardless).
+   A lagged subscriber gets `StreamError::Lagged` and resyncs via a fresh
+   snapshot. The core does not know which session is "connected" or how many
+   views exist.
 
 ### Concurrent Agent System
-- **Multiple agents** can run concurrently, one per session
-- **Only one agent** is connected to the UI at any time
-- **ProxyUI system**: Each session gets a `ProxyUI` instance that only forwards events and method calls to the real UI when that session is "connected"
-- **Session states**:
-  - **Connected**: Session is actively connected to UI (user clicked on chat item in sidebar)
-  - **Active**: Agent loop is currently running in the session (can be active without being connected)
-- **Session switching**: User clicks chat items in sidebar to connect/activate different sessions
+- **Multiple agents** can run concurrently, one per session; any number of
+  frontends/views can observe them via the stream
+- **`SessionEventPublisher`** (`session/instance.rs`) implements the
+  `UserInterface` trait for the agent seam: it publishes everything and
+  records per-session in-flight state (fragments of the streaming response,
+  live tool statuses) that snapshots include; activity-state transition rules
+  live in `SessionActivity`
+- **Cancellation** is a core-side per-session flag (`request_stop`), checked
+  by the agent at streaming checkpoints — works for background sessions too
 
-### Key Implementation Details
-- Agent-to-UI communication should use existing `self.ui.display(UIMessage::UiEvent(...))` pattern
-- Avoid overcomplicating with new channels or architectures
-- Leverage the ProxyUI system for proper session isolation
-- Session metadata updates can be sent directly via the existing event system
+### Frontend patterns
+- **GPUI**: commands in `ui_gpui/src/app/commands.rs` (dispatched on the
+  background executor), stream ingestion in `app/event_bridge.rs`
+- **Terminal**: commands via the `Actions` struct, bridge task in
+  `ui_terminal/src/app.rs`
+- **ACP**: routes stream events to per-prompt `ACPUserUI` instances via its
+  `active_uis` registry (`ui_acp/src/app.rs`); its session/prompt commands
+  intentionally use `SessionManager` directly — the protocol-adapter needs
+  (client-specified session ids, per-prompt agent starts, completion waiting)
+  don't map onto `SessionService`
+- The filesystem `SessionWatcher` still pushes `UiEvent`s directly into
+  frontend channels (not via the stream) — a known remaining seam
 
 (Below instructions copied from Zed's `.rules` file)
 

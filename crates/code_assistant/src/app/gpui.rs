@@ -1,21 +1,16 @@
 use super::AgentRunConfig;
-use crate::config::DefaultProjectManager;
 use crate::session::watcher::SessionWatcher;
 use crate::session::{SessionConfig, SessionManager};
-use crate::ui::UserInterface;
 use anyhow::Result;
-use llm::factory::create_llm_client_from_model;
+use code_assistant_core::session::event_stream::EventStream;
+use code_assistant_core::session::service::{AgentRuntimeOptions, SessionService};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
-use ui_gpui::terminal::executor::GpuiTerminalCommandExecutor;
 
 pub fn run(config: AgentRunConfig) -> Result<()> {
     // Create shared state between GUI and backend
     let gui = ui_gpui::Gpui::new();
-
-    // Setup unified backend communication
-    let (backend_event_rx, backend_response_tx) = gui.setup_backend_communication();
 
     // Setup dynamic types for MultiSessionManager
     let persistence = crate::persistence::FileSessionPersistence::new();
@@ -31,153 +26,50 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         ..SessionConfig::default()
     };
 
-    let default_model = config.model.clone();
-    let base_session_model_config =
-        crate::persistence::SessionModelConfig::new(default_model.clone());
-
     // Clone persistence before it is moved into SessionManager so the
     // filesystem watcher can use it to resolve the sessions directory.
     let persistence_for_watcher = persistence.clone();
 
-    // Create the new SessionManager
+    let events = EventStream::new();
     let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         session_config_template,
-        default_model.clone(),
+        config.model.clone(),
         code_assistant_core::tools::default_registry(),
+        events.clone(),
     )));
 
-    // Clone GUI before moving it into thread
-    let gui_for_thread = gui.clone();
-    let task_clone = config.task.clone();
-    let model = default_model;
-    let base_model_config = base_session_model_config.clone();
-    let record = config.record.clone();
-    let playback = config.playback.clone();
-    let fast_playback = config.fast_playback;
+    // Create the session command service. The GUI gets the handle; the
+    // worker runs on the backend tokio runtime below. The GUI consumes the
+    // broadcast stream (see ui_gpui's event bridge).
+    let (service, service_worker) = SessionService::new(
+        multi_session_manager,
+        Arc::new(AgentRuntimeOptions {
+            record_path: config.record.clone(),
+            playback_path: config.playback.clone(),
+            fast_playback: config.fast_playback,
+            command_executor_factory: super::session_command_executor_factory(),
+        }),
+        events,
+    );
+    gui.set_session_service(service.clone());
 
-    // Start the simplified backend thread
+    let gui_for_thread = gui.clone();
+    let task = config.task.clone();
+
+    // Start the backend thread: runs the service worker and the startup
+    // session connection on its own tokio runtime.
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
-            if let Some(initial_task) = task_clone {
-                // Task provided - create new session and start agent
-                debug!("Creating initial session with task: {}", initial_task);
+            let worker = tokio::spawn(service_worker);
 
-                let session_id = {
-                    let mut manager = multi_session_manager.lock().await;
-                    manager
-                        .create_session_with_config(None, None, Some(base_model_config.clone()))
-                        .unwrap()
-                };
-
-                debug!("Created initial session: {}", session_id);
-
-                // Connect session to UI and start agent
-                let ui_events = {
-                    let mut manager = multi_session_manager.lock().await;
-                    manager
-                        .set_active_session(session_id.clone(), None)
-                        .await
-                        .unwrap_or_else(|e| {
-                            error!("Failed to set active session: {}", e);
-                            Vec::new()
-                        })
-                };
-
-                for event in ui_events {
-                    if let Err(e) = gui_for_thread.send_event(event).await {
-                        error!("Failed to send UI event: {}", e);
-                    }
-                }
-
-                // Populate the skill catalog for the `/skill` input-area popup.
-                gui_for_thread.refresh_skills(session_id.clone());
-
-                let project_manager = Box::new(DefaultProjectManager::new());
-                let command_executor =
-                    Box::new(GpuiTerminalCommandExecutor::new(session_id.clone()));
-                let user_interface: Arc<dyn crate::ui::UserInterface> =
-                    Arc::new(gui_for_thread.clone());
-
-                let llm_client = create_llm_client_from_model(
-                    &model,
-                    playback.clone(),
-                    fast_playback,
-                    record.clone(),
-                )
-                .await
-                .expect("Failed to create LLM client");
-
-                {
-                    let mut manager = multi_session_manager.lock().await;
-                    manager
-                        .start_agent_for_message(
-                            &session_id,
-                            vec![llm::ContentBlock::new_text(initial_task)],
-                            None, // Initial task is not a branch
-                            llm_client,
-                            project_manager,
-                            command_executor,
-                            user_interface,
-                            None,
-                        )
-                        .await
-                        .expect("Failed to start agent with initial task");
-                }
-
-                debug!("Started agent for initial session");
-            } else {
-                // No task - connect to latest existing session
-                info!("No task provided, connecting to latest session");
-
-                let latest_session_id = {
-                    let manager = multi_session_manager.lock().await;
-                    manager.get_latest_session_id().unwrap_or(None)
-                };
-
-                if let Some(session_id) = latest_session_id {
-                    debug!("Connecting to existing session: {}", session_id);
-
-                    // If the session's draft is in edit mode, connect with the
-                    // transcript already truncated to the branch parent so the
-                    // edit view is restored directly on startup.
-                    let edit_until_node_id = gui_for_thread
-                        .load_draft_for_session(&session_id)
-                        .and_then(|(_, _, anchor)| anchor);
-
-                    let ui_events = {
-                        let mut manager = multi_session_manager.lock().await;
-                        manager
-                            .set_active_session(session_id.clone(), edit_until_node_id)
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!("Failed to set active session: {}", e);
-                                Vec::new()
-                            })
-                    };
-
-                    for event in ui_events {
-                        if let Err(e) = gui_for_thread.send_event(event).await {
-                            error!("Failed to send UI event: {}", e);
-                        }
-                    }
-
-                    // Populate the skill catalog for the `/skill` input-area popup.
-                    gui_for_thread.refresh_skills(session_id.clone());
-                } else {
-                    info!("No existing sessions found - showing empty state (no session view)");
-                    // In GPUI mode, don't auto-create a session. The user can
-                    // create one from the sidebar. The MessagesView will render
-                    // the "no session" hint since no session is connected.
-                }
-            }
+            startup(&service, &gui_for_thread, task).await;
 
             // Start the filesystem watcher for cross-instance awareness.
             // The watcher runs in the background and emits UI events when
             // other code-assistant instances modify session files.
-
             let _session_watcher = match SessionWatcher::start(
                 &persistence_for_watcher,
                 gui_for_thread.event_sender(),
@@ -193,19 +85,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 }
             };
 
-            code_assistant_core::backend::handle_backend_events(
-                backend_event_rx,
-                backend_response_tx,
-                multi_session_manager,
-                Arc::new(code_assistant_core::backend::BackendRuntimeOptions {
-                    record_path: record.clone(),
-                    playback_path: playback.clone(),
-                    fast_playback,
-                    command_executor_factory: super::session_command_executor_factory(),
-                }),
-                Arc::new(gui_for_thread) as Arc<dyn crate::ui::UserInterface>,
-            )
-            .await;
+            // Keep the runtime alive for the lifetime of the app.
+            let _ = worker.await;
         });
     });
 
@@ -213,4 +94,80 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     gui.run_app();
 
     Ok(())
+}
+
+/// Connect the initial session: either create one for a provided task and
+/// start the agent, or connect to the latest existing session.
+async fn startup(service: &SessionService, gui: &ui_gpui::Gpui, task: Option<String>) {
+    let session_id = if let Some(initial_task) = task {
+        // Task provided - create a new session and start the agent for it
+        debug!("Creating initial session with task");
+        let session_id = match service.create_session(None, None).await {
+            Ok(id) => id,
+            Err(e) => {
+                error!("Failed to create initial session: {e:#}");
+                return;
+            }
+        };
+        match service.load_session(session_id.clone(), None).await {
+            Ok(snapshot) => gui.apply_snapshot(&snapshot),
+            Err(e) => {
+                error!("Failed to connect initial session: {e:#}");
+                return;
+            }
+        }
+        if let Err(e) = service
+            .send_user_message(session_id.clone(), initial_task, Vec::new(), None)
+            .await
+        {
+            error!("Failed to start agent with initial task: {e:#}");
+        }
+        Some(session_id)
+    } else {
+        // No task - connect to the latest existing session, if any
+        info!("No task provided, connecting to latest session");
+        let latest = service
+            .list_sessions()
+            .await
+            .ok()
+            .and_then(|sessions| sessions.first().map(|s| s.id.clone()));
+
+        match latest {
+            Some(session_id) => {
+                debug!("Connecting to existing session: {}", session_id);
+                // If the session's draft is in edit mode, connect with the
+                // transcript already truncated to the branch parent so the
+                // edit view is restored directly on startup.
+                let edit_until_node_id = gui
+                    .load_draft_for_session(&session_id)
+                    .and_then(|(_, _, anchor)| anchor);
+                match service
+                    .load_session(session_id.clone(), edit_until_node_id)
+                    .await
+                {
+                    Ok(snapshot) => gui.apply_snapshot(&snapshot),
+                    Err(e) => {
+                        error!("Failed to connect to session {session_id}: {e:#}");
+                        return;
+                    }
+                }
+                Some(session_id)
+            }
+            None => {
+                info!("No existing sessions found - showing empty state (no session view)");
+                // In GPUI mode, don't auto-create a session. The user can
+                // create one from the sidebar. The MessagesView will render
+                // the "no session" hint since no session is connected.
+                None
+            }
+        }
+    };
+
+    // Populate the skill catalog for the `/skill` input-area popup.
+    if let Some(session_id) = session_id {
+        match service.list_skills(session_id).await {
+            Ok(skills) => gui.set_skills(skills),
+            Err(e) => debug!("Failed to list skills at startup: {e:#}"),
+        }
+    }
 }

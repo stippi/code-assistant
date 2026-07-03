@@ -119,10 +119,6 @@ impl UserInterface for TestUI {
     fn clear_rate_limit(&self) {
         // Test implementation does nothing with rate limit clearing
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 /// The stream processors consume the agent core's UI boundary; fragments take

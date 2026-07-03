@@ -49,6 +49,90 @@ impl SessionActivityState {
     }
 }
 
+/// Shared handle to a session's activity state that owns the transition
+/// rules. The [`SessionEventPublisher`] reports streaming lifecycle moments
+/// through the `on_*` methods and publishes whatever state change they
+/// return — what a moment *means* for the state is decided here.
+#[derive(Clone, Default)]
+pub struct SessionActivity {
+    state: Arc<Mutex<SessionActivityState>>,
+}
+
+impl SessionActivity {
+    pub fn get(&self) -> SessionActivityState {
+        self.state.lock().unwrap().clone()
+    }
+
+    /// Set the state unconditionally. Reserved for the agent lifecycle
+    /// itself (start, completion, error) — the only places allowed to leave
+    /// a terminal state.
+    pub fn set(&self, state: SessionActivityState) {
+        *self.state.lock().unwrap() = state;
+    }
+
+    /// Apply a transition respecting the terminal-state rule: terminal
+    /// states (Idle, Errored) persist until a new agent is explicitly
+    /// started via [`SessionActivity::set`]. Returns the new state if it
+    /// changed, so the caller knows whether to broadcast.
+    pub fn try_transition(&self, new_state: SessionActivityState) -> Option<SessionActivityState> {
+        let mut state = self.state.lock().unwrap();
+        if state.is_terminal() && !new_state.is_terminal() {
+            debug!(
+                "Ignoring activity transition from {:?} to {:?}",
+                *state, new_state
+            );
+            return None;
+        }
+        if *state == new_state {
+            return None;
+        }
+        *state = new_state.clone();
+        Some(new_state)
+    }
+
+    /// An LLM request was sent and the response hasn't started streaming.
+    pub fn on_streaming_started(&self) -> Option<SessionActivityState> {
+        self.try_transition(SessionActivityState::WaitingForResponse)
+    }
+
+    /// Streaming ended. Moves back to AgentRunning on success; a cancelled
+    /// or failed request leaves the state untouched (the agent task decides
+    /// the final state), as does an agent that already completed.
+    pub fn on_streaming_stopped(
+        &self,
+        cancelled: bool,
+        errored: bool,
+    ) -> Option<SessionActivityState> {
+        if cancelled || errored {
+            return None;
+        }
+        match self.get() {
+            SessionActivityState::WaitingForResponse | SessionActivityState::RateLimited { .. } => {
+                self.try_transition(SessionActivityState::AgentRunning)
+            }
+            _ => None,
+        }
+    }
+
+    /// The stream produced its first visible output.
+    pub fn on_visible_output(&self) -> Option<SessionActivityState> {
+        match self.get() {
+            SessionActivityState::WaitingForResponse => {
+                self.try_transition(SessionActivityState::AgentRunning)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn on_rate_limited(&self, seconds_remaining: u64) -> Option<SessionActivityState> {
+        self.try_transition(SessionActivityState::RateLimited { seconds_remaining })
+    }
+
+    pub fn on_rate_limit_cleared(&self) -> Option<SessionActivityState> {
+        self.try_transition(SessionActivityState::WaitingForResponse)
+    }
+}
+
 /// Buffered tool-status update received while the session was disconnected.
 /// Keyed by `tool_id` so only the most recent status per tool is retained.
 type ToolStatusBuffer = HashMap<String, crate::ui::ui_events::ToolResultData>;
@@ -63,21 +147,27 @@ pub struct SessionInstance {
     /// Task handle for the running agent (None if not running)
     pub task_handle: Option<JoinHandle<Result<()>>>,
 
-    /// Buffer for DisplayFragments from the current streaming message
-    /// This allows UI to connect mid-streaming and see buffered content
+    /// In-flight DisplayFragments of the currently streaming response.
+    /// Written by the [`SessionEventPublisher`]; included in snapshots so a
+    /// frontend connecting mid-stream sees the partial message.
     pub fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
 
-    /// Buffer for `UpdateToolStatus` events received while the session is
-    /// disconnected.  Shared with the session's [`ProxyUI`] which writes into
-    /// it; read (and drained) by [`generate_session_connect_events`] on
-    /// reconnect.  Only the latest status per tool-id is kept.
+    /// The pre-allocated node id of the currently streaming response (from
+    /// `StreamingStarted`). Snapshots tag the partial message with it so
+    /// frontends can deduplicate against the persisted message later.
+    pub in_flight_node_id: Arc<Mutex<Option<NodeId>>>,
+
+    /// Latest live `UpdateToolStatus` per tool of the current agent run.
+    /// Written by the [`SessionEventPublisher`]; merged into snapshots
+    /// (persisted results take precedence). Cleared on agent start.
     pub tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
 
-    /// Whether this session is currently connected to the UI
-    pub is_ui_connected: Arc<Mutex<bool>>,
+    /// Current activity state of this session (shared with the publisher)
+    pub activity: SessionActivity,
 
-    /// Current activity state of this session
-    pub activity_state: Arc<Mutex<SessionActivityState>>,
+    /// Set when a user requests the running agent to stop; checked by the
+    /// agent at streaming checkpoints. Cleared when a new agent starts.
+    pub stop_requested: Arc<std::sync::atomic::AtomicBool>,
 
     /// Pending user message (structured content blocks) that will be processed by the next agent iteration
     pub pending_message: Arc<Mutex<Option<Vec<ContentBlock>>>>,
@@ -129,8 +219,9 @@ impl SessionInstance {
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
-            is_ui_connected: Arc::new(Mutex::new(false)),
-            activity_state: Arc::new(Mutex::new(SessionActivityState::Idle)),
+            in_flight_node_id: Arc::new(Mutex::new(None)),
+            activity: SessionActivity::default(),
+            stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_message: Arc::new(Mutex::new(None)),
             sandbox_context,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
@@ -147,14 +238,30 @@ impl SessionInstance {
         self.sub_agent_cancellation_registry.cancel(tool_id)
     }
 
+    /// Ask the running agent to stop at its next streaming checkpoint.
+    pub fn request_stop(&self) {
+        self.stop_requested
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Reset per-run state when a new agent starts: clears a previous stop
+    /// request and the live tool-status map of the prior run.
+    pub fn begin_agent_run(&self) {
+        self.stop_requested
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut buf) = self.tool_status_buffer.lock() {
+            buf.clear();
+        }
+    }
+
     /// Get the current activity state
     pub fn get_activity_state(&self) -> SessionActivityState {
-        self.activity_state.lock().unwrap().clone()
+        self.activity.get()
     }
 
     /// Set the activity state
     pub fn set_activity_state(&self, state: SessionActivityState) {
-        *self.activity_state.lock().unwrap() = state;
+        self.activity.set(state);
     }
 
     /// Get all buffered fragments and optionally clear the buffer
@@ -271,23 +378,22 @@ impl SessionInstance {
         Ok(())
     }
 
-    /// Set UI active state for this session
-    pub fn set_ui_connected(&mut self, connected: bool) {
-        if let Ok(mut ui_connected) = self.is_ui_connected.lock() {
-            *ui_connected = connected;
-        }
-    }
-
-    /// Create a ProxyUI for this session that handles fragment buffering
-    pub fn create_proxy_ui(&self, real_ui: Arc<dyn UserInterface>) -> Arc<dyn UserInterface> {
-        Arc::new(ProxyUI::new(
-            real_ui,
-            self.fragment_buffer.clone(),
-            self.tool_status_buffer.clone(),
-            self.is_ui_connected.clone(),
-            self.activity_state.clone(),
-            self.session.id.clone(),
-        ))
+    /// Create the publisher this session's agent talks to: it records
+    /// in-flight state for snapshots and publishes everything session-tagged
+    /// to the core→UI broadcast stream.
+    pub fn create_publisher(
+        &self,
+        events: crate::session::event_stream::EventStream,
+    ) -> Arc<dyn UserInterface> {
+        Arc::new(SessionEventPublisher {
+            events,
+            fragment_buffer: self.fragment_buffer.clone(),
+            in_flight_node_id: self.in_flight_node_id.clone(),
+            tool_status_buffer: self.tool_status_buffer.clone(),
+            activity: self.activity.clone(),
+            stop_requested: self.stop_requested.clone(),
+            session_id: self.session.id.clone(),
+        })
     }
 
     /// Generate UI events for connecting to this session.
@@ -297,67 +403,42 @@ impl SessionInstance {
     /// up to and including that node. This is used to restore the "edit mode"
     /// view (truncated to the branch parent) directly when connecting to a
     /// session whose draft is in edit mode, avoiding a full-then-truncate flash.
-    pub fn generate_session_connect_events(
+    pub fn build_snapshot(
         &self,
         until_node_id: Option<crate::persistence::NodeId>,
-    ) -> Result<Vec<UiEvent>, anyhow::Error> {
-        let mut events = Vec::new();
-
+    ) -> Result<crate::session::SessionSnapshot, anyhow::Error> {
         // Convert session messages to UI data (optionally truncated for edit mode)
-        let mut messages_data =
+        let mut messages =
             self.convert_messages_to_ui_data_until(self.session.config.tool_syntax, until_node_id)?;
         let mut tool_results = self.convert_tool_executions_to_ui_data()?;
 
-        // Drain any UpdateToolStatus events that arrived while we were
-        // disconnected (e.g. from running sub-agents).  Only inject entries
-        // that don't already have a persisted result — the persisted result
-        // is authoritative once it exists.
-        if let Ok(mut buf) = self.tool_status_buffer.lock() {
-            for (_tool_id, result_data) in buf.drain() {
+        // Merge in the latest live tool statuses (e.g. from running
+        // sub-agents). Only inject entries that don't already have a
+        // persisted result — the persisted result is authoritative once it
+        // exists.
+        if let Ok(buf) = self.tool_status_buffer.lock() {
+            for result_data in buf.values() {
                 if !tool_results
                     .iter()
                     .any(|r| r.tool_id == result_data.tool_id)
                 {
-                    tool_results.push(result_data);
+                    tool_results.push(result_data.clone());
                 }
             }
         }
 
-        // If currently streaming, add incomplete message as additional MessageData
+        // If currently streaming, add the incomplete message as additional
+        // MessageData, tagged with the pre-allocated node id so frontends can
+        // deduplicate it against the persisted message later.
         let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
         if !buffered_fragments.is_empty() {
-            // Create incomplete assistant message from buffered fragments
-            let incomplete_message = MessageData {
+            messages.push(MessageData {
                 role: MessageRole::Assistant,
                 fragments: buffered_fragments,
-                node_id: None,     // Streaming message doesn't have a node yet
+                node_id: self.in_flight_node_id.lock().ok().and_then(|id| *id),
                 branch_info: None, // No branch info for incomplete message
-            };
-            messages_data.push(incomplete_message);
+            });
         }
-
-        events.push(UiEvent::SetMessages {
-            messages: messages_data,
-            session_id: Some(self.session.id.clone()),
-            tool_results,
-        });
-
-        events.push(UiEvent::UpdatePlan {
-            plan: self.session.plan.clone(),
-        });
-
-        events.push(UiEvent::UpdateSessionActivityState {
-            session_id: self.session.id.clone(),
-            activity_state: self.get_activity_state(),
-        });
-
-        // If the session is in an errored state, emit a DisplayError so the
-        // error banner is shown when the user switches to this session.
-        if let SessionActivityState::Errored { message } = self.get_activity_state() {
-            events.push(UiEvent::DisplayError { message });
-        }
-
-        // Add session metadata to ensure UI has the session info including initial_project
 
         let metadata = ChatMetadata {
             id: self.session.id.clone(),
@@ -376,17 +457,25 @@ impl SessionInstance {
             is_resumable: self.session.is_resumable(),
         };
 
-        events.push(UiEvent::UpdateSessionMetadata { metadata });
+        let pending_message = self.pending_message.lock().ok().and_then(|pending| {
+            pending
+                .as_ref()
+                .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks))
+        });
 
-        if let Ok(pending) = self.pending_message.lock() {
-            events.push(UiEvent::UpdatePendingMessage {
-                message: pending
-                    .as_ref()
-                    .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks)),
-            });
-        }
-
-        Ok(events)
+        Ok(crate::session::SessionSnapshot {
+            session_id: self.session.id.clone(),
+            messages,
+            tool_results,
+            plan: self.session.plan.clone(),
+            activity_state: self.get_activity_state(),
+            metadata,
+            pending_message,
+            // Filled in by the SessionManager, which owns model resolution.
+            current_model: String::new(),
+            allowed_models: Vec::new(),
+            sandbox_policy: self.session.config.sandbox_policy.clone(),
+        })
     }
 
     /// Convert session messages to UI MessageData format
@@ -427,9 +516,6 @@ impl SessionInstance {
             }
             fn notify_rate_limit(&self, _seconds_remaining: u64) {}
             fn clear_rate_limit(&self) {}
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
@@ -561,9 +647,6 @@ impl SessionInstance {
             }
             fn notify_rate_limit(&self, _seconds_remaining: u64) {}
             fn clear_rate_limit(&self) {}
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
@@ -734,150 +817,101 @@ impl SessionInstance {
     }
 }
 
-/// ProxyUI that buffers fragments and conditionally forwards to real UI
-struct ProxyUI {
-    real_ui: Arc<dyn UserInterface>,
+/// The session's publisher onto the core→UI broadcast stream, implementing
+/// [`UserInterface`] for the agent seam.
+///
+/// It owns no state logic: activity transitions are decided by the shared
+/// [`SessionActivity`] handle; in-flight fragments and live tool statuses
+/// are recorded as session state so snapshots can include them. Which
+/// frontend (if any) renders the published events is not its concern.
+struct SessionEventPublisher {
+    events: crate::session::event_stream::EventStream,
+    /// In-flight fragments of the currently streaming response, kept for
+    /// snapshots (the content is not persisted until the message completes).
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
-    /// Buffers `UpdateToolStatus` events received while disconnected so they
-    /// can be replayed on the next session reconnect.
+    /// Pre-allocated node id of the in-flight response (see
+    /// [`SessionInstance::in_flight_node_id`]).
+    in_flight_node_id: Arc<Mutex<Option<NodeId>>>,
+    /// Latest live status per tool of the current agent run, kept for
+    /// snapshots (persisted results take precedence when merging).
     tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
-    is_session_connected: Arc<Mutex<bool>>,
-    session_activity_state: Arc<Mutex<SessionActivityState>>,
+    activity: SessionActivity,
+    stop_requested: Arc<std::sync::atomic::AtomicBool>,
     session_id: String,
 }
 
-impl ProxyUI {
-    pub fn new(
-        real_ui: Arc<dyn UserInterface>,
-        fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
-        tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
-        is_session_connected: Arc<Mutex<bool>>,
-        session_activity_state: Arc<Mutex<SessionActivityState>>,
-        session_id: String,
-    ) -> Self {
-        Self {
-            real_ui,
-            fragment_buffer,
-            tool_status_buffer,
-            is_session_connected,
-            session_activity_state,
-            session_id,
-        }
-    }
-
-    /// Check if this session is currently connected to the real UI
-    fn is_connected(&self) -> bool {
-        self.is_session_connected
-            .lock()
-            .map(|active| *active)
-            .unwrap_or(false)
-    }
-
-    /// Update activity state and broadcast the change to the UI
-    fn update_activity_state(&self, new_state: SessionActivityState) {
-        // Update our internal state
-        if let Ok(mut state) = self.session_activity_state.lock() {
-            // Don't allow transitions from terminal states (Idle, Errored) back to other states.
-            // Terminal states persist until a new agent is explicitly started.
-            if state.is_terminal() && !new_state.is_terminal() {
-                debug!(
-                    "Ignoring state transition from {:?} to {:?} for session {}",
-                    *state, new_state, self.session_id
-                );
-                return;
-            }
-
-            if *state != new_state {
-                *state = new_state.clone();
-
-                // Always broadcast activity state changes to UI (regardless of connection status)
-                // This ensures the chat sidebar shows current activity for all sessions
-                // Send synchronously to avoid race conditions with async task spawning
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    let ui = self.real_ui.clone();
-                    let session_id = self.session_id.clone();
-                    let activity_state = new_state;
-                    handle.spawn(async move {
-                        let _ = ui
-                            .send_event(UiEvent::UpdateSessionActivityState {
-                                session_id,
-                                activity_state,
-                            })
-                            .await;
-                    });
-                }
-            }
-        }
+impl SessionEventPublisher {
+    /// Publish an activity-state change produced by [`SessionActivity`].
+    fn publish_activity_change(&self, change: Option<SessionActivityState>) {
+        let Some(activity_state) = change else {
+            return;
+        };
+        self.events.publish_ui(
+            &self.session_id,
+            UiEvent::UpdateSessionActivityState {
+                session_id: self.session_id.clone(),
+                activity_state,
+            },
+        );
     }
 }
 
 #[async_trait]
-impl UserInterface for ProxyUI {
+impl UserInterface for SessionEventPublisher {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         // Handle special events that need buffer management and activity state updates
         match &event {
-            UiEvent::StreamingStarted { .. } => {
-                // Clear fragment buffer at start of new LLM request
+            UiEvent::StreamingStarted { node_id, .. } => {
+                // Reset the in-flight state for the new LLM request
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
-                // Update activity state to waiting for response
-                self.update_activity_state(SessionActivityState::WaitingForResponse);
+                if let Ok(mut in_flight) = self.in_flight_node_id.lock() {
+                    *in_flight = Some(*node_id);
+                }
+                self.publish_activity_change(self.activity.on_streaming_started());
             }
             UiEvent::StreamingStopped {
                 cancelled, error, ..
             } => {
-                // Clear fragment buffer when LLM request ends - fragments are now part of message history
+                // Clear the in-flight state when the LLM request ends —
+                // fragments are now part of message history
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
-                // Only update activity state back to agent running if streaming was not cancelled
-                // and there was no error, and the agent hasn't already completed (i.e., state is not already Idle)
-                if !cancelled && error.is_none() {
-                    let current_state = self
-                        .session_activity_state
-                        .lock()
-                        .map(|s| s.clone())
-                        .unwrap_or(SessionActivityState::Idle);
-                    if matches!(
-                        current_state,
-                        SessionActivityState::WaitingForResponse
-                            | SessionActivityState::RateLimited { .. }
-                    ) {
-                        self.update_activity_state(SessionActivityState::AgentRunning);
-                    }
-                } else if let Some(error_msg) = error {
-                    // If there was an error, the agent will terminate, so don't transition to AgentRunning
+                if let Ok(mut in_flight) = self.in_flight_node_id.lock() {
+                    *in_flight = None;
+                }
+                if let Some(error_msg) = error {
+                    // The agent task will set the final state when it terminates
                     debug!(
                         "StreamingStopped with error for session {}: {}",
                         self.session_id, error_msg
                     );
-                    // The agent task will set the state to Idle when it terminates
                 }
+                self.publish_activity_change(
+                    self.activity
+                        .on_streaming_stopped(*cancelled, error.is_some()),
+                );
             }
             UiEvent::RollbackStreaming { .. } => {
-                // Clear fragment buffer — the partial content is being discarded before a retry
+                // Discard the in-flight state — the partial content is being
+                // discarded before a retry
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
+                }
+                if let Ok(mut in_flight) = self.in_flight_node_id.lock() {
+                    *in_flight = None;
                 }
             }
             UiEvent::UpdateSessionActivityState {
                 session_id,
                 activity_state,
             } if session_id == &self.session_id => {
-                self.update_activity_state(activity_state.clone());
+                self.publish_activity_change(self.activity.try_transition(activity_state.clone()));
                 return Ok(());
             }
-            _ => {}
-        }
-
-        if self.is_connected() {
-            self.real_ui.send_event(event).await
-        } else {
-            // Session is disconnected — buffer UpdateToolStatus events so that
-            // the latest state per tool can be replayed on reconnect.
-
-            if let UiEvent::UpdateToolStatus {
+            UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
                 message,
@@ -885,37 +919,42 @@ impl UserInterface for ProxyUI {
                 styled_output,
                 duration_seconds,
                 images,
-            } = event
-            {
+            } => {
+                // Record the latest status per tool so snapshots can include
+                // live tool state that isn't persisted yet.
                 if let Ok(mut buf) = self.tool_status_buffer.lock() {
                     buf.insert(
                         tool_id.clone(),
                         crate::ui::ui_events::ToolResultData {
-                            tool_id,
-                            status,
-                            message,
-                            output,
-                            styled_output,
-                            duration_seconds,
-                            images,
+                            tool_id: tool_id.clone(),
+                            status: *status,
+                            message: message.clone(),
+                            output: output.clone(),
+                            styled_output: styled_output.clone(),
+                            duration_seconds: *duration_seconds,
+                            images: images.clone(),
                         },
                     );
                 }
             }
-            Ok(())
+            _ => {}
         }
+
+        self.events.publish_ui(&self.session_id, event);
+        Ok(())
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Always buffer fragments
+        // Record the in-flight fragment for snapshots. Cleared on streaming
+        // start/stop/rollback, so the buffer is bounded by one response.
         if let Ok(mut buffer) = self.fragment_buffer.lock() {
             buffer.push_back(fragment.clone());
-
-            // Keep buffer size reasonable
-            while buffer.len() > 1000 {
-                buffer.pop_front();
-            }
         }
+
+        self.events.publish(
+            Some(self.session_id.clone()),
+            crate::session::event_stream::EventPayload::Fragment(fragment.clone()),
+        );
 
         // Transition from WaitingForResponse to AgentRunning only when the
         // fragment actually produces something visible in the UI. Some
@@ -940,84 +979,204 @@ impl UserInterface for ProxyUI {
         };
 
         if has_visible_content {
-            // Only transition if the agent is still running (not Idle)
-            let current_state = self
-                .session_activity_state
-                .lock()
-                .map(|s| s.clone())
-                .unwrap_or(SessionActivityState::Idle);
-            if matches!(current_state, SessionActivityState::WaitingForResponse) {
-                self.update_activity_state(SessionActivityState::AgentRunning);
-            }
+            self.publish_activity_change(self.activity.on_visible_output());
         }
 
-        // Only forward to real UI if session is connected
-        if self.is_connected() {
-            self.real_ui.display_fragment(fragment)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn should_streaming_continue(&self) -> bool {
-        if self.is_connected() {
-            self.real_ui.should_streaming_continue()
-        } else {
-            true // Don't interrupt streaming if session is not connected
-        }
+        !self
+            .stop_requested
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn notify_rate_limit(&self, seconds_remaining: u64) {
-        // Update session activity state and broadcast
-        self.update_activity_state(SessionActivityState::RateLimited { seconds_remaining });
-
-        if self.is_connected() {
-            self.real_ui.notify_rate_limit(seconds_remaining);
-        }
-        // No-op if session not connected
+        self.publish_activity_change(self.activity.on_rate_limited(seconds_remaining));
     }
 
     fn clear_rate_limit(&self) {
-        // Update session activity state back to waiting for response
-        self.update_activity_state(SessionActivityState::WaitingForResponse);
-
-        if self.is_connected() {
-            self.real_ui.clear_rate_limit();
-        }
-        // No-op if session not connected
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+        self.publish_activity_change(self.activity.on_rate_limit_cleared());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::MockUI;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    #[tokio::test]
-    async fn test_streaming_stopped_with_error_prevents_agent_running_state() {
-        let mock_ui = Arc::new(MockUI::default());
-        let fragment_buffer = Arc::new(Mutex::new(VecDeque::new()));
-        let is_session_connected = Arc::new(Mutex::new(true));
-        let session_activity_state = Arc::new(Mutex::new(SessionActivityState::WaitingForResponse));
-        let session_id = "test-session".to_string();
+    fn activity_with(state: SessionActivityState) -> SessionActivity {
+        let activity = SessionActivity::default();
+        activity.set(state);
+        activity
+    }
 
-        let proxy_ui = ProxyUI::new(
-            mock_ui.clone(),
-            fragment_buffer,
-            Arc::new(Mutex::new(HashMap::new())),
-            is_session_connected,
-            session_activity_state.clone(),
-            session_id,
+    #[test]
+    fn terminal_states_block_transitions_until_explicit_set() {
+        for terminal in [
+            SessionActivityState::Idle,
+            SessionActivityState::Errored {
+                message: "boom".to_string(),
+            },
+        ] {
+            let activity = activity_with(terminal.clone());
+            assert_eq!(
+                activity.try_transition(SessionActivityState::AgentRunning),
+                None
+            );
+            assert_eq!(activity.get(), terminal);
+
+            // An explicit set (agent start) leaves the terminal state.
+            activity.set(SessionActivityState::AgentRunning);
+            assert_eq!(activity.get(), SessionActivityState::AgentRunning);
+        }
+    }
+
+    #[test]
+    fn try_transition_reports_only_changes() {
+        let activity = activity_with(SessionActivityState::AgentRunning);
+        // Same state → no change to broadcast.
+        assert_eq!(
+            activity.try_transition(SessionActivityState::AgentRunning),
+            None
+        );
+        assert_eq!(
+            activity.try_transition(SessionActivityState::WaitingForResponse),
+            Some(SessionActivityState::WaitingForResponse)
+        );
+    }
+
+    #[test]
+    fn streaming_stopped_only_resumes_running_state_on_success() {
+        // Error → state untouched (the agent task decides the final state).
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(activity.on_streaming_stopped(false, true), None);
+        assert_eq!(activity.get(), SessionActivityState::WaitingForResponse);
+
+        // Cancelled → state untouched.
+        assert_eq!(activity.on_streaming_stopped(true, false), None);
+
+        // Success from WaitingForResponse → AgentRunning.
+        assert_eq!(
+            activity.on_streaming_stopped(false, false),
+            Some(SessionActivityState::AgentRunning)
         );
 
+        // Success while already AgentRunning → no change.
+        assert_eq!(activity.on_streaming_stopped(false, false), None);
+
+        // Success from RateLimited → AgentRunning.
+        let activity = activity_with(SessionActivityState::RateLimited {
+            seconds_remaining: 5,
+        });
+        assert_eq!(
+            activity.on_streaming_stopped(false, false),
+            Some(SessionActivityState::AgentRunning)
+        );
+
+        // Success after the agent already completed (Idle) → stays Idle.
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_streaming_stopped(false, false), None);
+        assert_eq!(activity.get(), SessionActivityState::Idle);
+    }
+
+    #[test]
+    fn visible_output_moves_waiting_to_running() {
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(
+            activity.on_visible_output(),
+            Some(SessionActivityState::AgentRunning)
+        );
+        // Only the first visible output transitions.
+        assert_eq!(activity.on_visible_output(), None);
+
+        // No transition when the agent already finished.
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_visible_output(), None);
+    }
+
+    #[test]
+    fn rate_limit_round_trip() {
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(
+            activity.on_rate_limited(30),
+            Some(SessionActivityState::RateLimited {
+                seconds_remaining: 30
+            })
+        );
+        assert_eq!(
+            activity.on_rate_limit_cleared(),
+            Some(SessionActivityState::WaitingForResponse)
+        );
+
+        // Rate limit notifications after completion don't revive the session.
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_rate_limited(30), None);
+        assert_eq!(activity.on_rate_limit_cleared(), None);
+    }
+
+    fn test_publisher(activity: SessionActivity, session_id: &str) -> SessionEventPublisher {
+        SessionEventPublisher {
+            events: crate::session::event_stream::EventStream::new(),
+            fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight_node_id: Arc::new(Mutex::new(None)),
+            tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
+            activity,
+            stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            session_id: session_id.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_tags_in_flight_message_with_preallocated_node_id() {
+        let session = crate::persistence::ChatSession::new_empty(
+            "s1".to_string(),
+            String::new(),
+            crate::session::SessionConfig::default(),
+            None,
+        );
+        let instance = SessionInstance::new(session, crate::tools::test_registry());
+        let publisher = instance.create_publisher(crate::session::event_stream::EventStream::new());
+
+        // The agent announces the request with the node id the message will
+        // be persisted under, then streams fragments.
+        let _ = publisher
+            .send_event(UiEvent::StreamingStarted {
+                request_id: 1,
+                node_id: 42,
+            })
+            .await;
+        let _ = publisher.display_fragment(&DisplayFragment::PlainText("hel".to_string()));
+        let _ = publisher.display_fragment(&DisplayFragment::PlainText("lo".to_string()));
+
+        // A snapshot taken mid-stream carries the partial message tagged
+        // with the pre-allocated node id, so a frontend rendering it stays
+        // deduplicatable against the persisted message later.
+        let snapshot = instance.build_snapshot(None).unwrap();
+        let partial = snapshot.messages.last().expect("partial message present");
+        assert_eq!(partial.node_id, Some(42));
+        assert_eq!(partial.fragments.len(), 2);
+
+        // Once streaming ends the in-flight state is gone.
+        let _ = publisher
+            .send_event(UiEvent::StreamingStopped {
+                id: 1,
+                cancelled: false,
+                error: None,
+            })
+            .await;
+        let snapshot = instance.build_snapshot(None).unwrap();
+        assert!(snapshot.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_stopped_with_error_prevents_agent_running_state() {
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        let publisher = test_publisher(activity.clone(), "test-session");
+
         // Simulate StreamingStopped with error
-        let _ = proxy_ui
+        let _ = publisher
             .send_event(UiEvent::StreamingStopped {
                 id: 1,
                 cancelled: false,
@@ -1026,23 +1185,13 @@ mod tests {
             .await;
 
         // Verify that the activity state is NOT changed to AgentRunning when there's an error
-        let final_state = session_activity_state.lock().unwrap().clone();
-        assert_eq!(final_state, SessionActivityState::WaitingForResponse);
+        assert_eq!(activity.get(), SessionActivityState::WaitingForResponse);
 
         // Now test without error - should transition to AgentRunning
-        let session_activity_state2 =
-            Arc::new(Mutex::new(SessionActivityState::WaitingForResponse));
+        let activity2 = activity_with(SessionActivityState::WaitingForResponse);
+        let publisher2 = test_publisher(activity2.clone(), "test-session-2");
 
-        let proxy_ui2 = ProxyUI::new(
-            mock_ui.clone(),
-            Arc::new(Mutex::new(VecDeque::new())),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(true)),
-            session_activity_state2.clone(),
-            "test-session-2".to_string(),
-        );
-
-        let _ = proxy_ui2
+        let _ = publisher2
             .send_event(UiEvent::StreamingStopped {
                 id: 2,
                 cancelled: false,
@@ -1051,7 +1200,6 @@ mod tests {
             .await;
 
         // Verify that the activity state IS changed to AgentRunning when there's no error
-        let final_state2 = session_activity_state2.lock().unwrap().clone();
-        assert_eq!(final_state2, SessionActivityState::AgentRunning);
+        assert_eq!(activity2.get(), SessionActivityState::AgentRunning);
     }
 }

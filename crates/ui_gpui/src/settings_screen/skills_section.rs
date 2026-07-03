@@ -278,8 +278,8 @@ impl Render for SkillsSection {
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(SharedString::from(format!(
-                                    "Add skills under {}/skills",
-                                    code_assistant_core::config_dir::config_dir().display()
+                                    "Add user skills under {}",
+                                    code_assistant_core::config::user_skills_root().display()
                                 ))),
                         ),
                 )

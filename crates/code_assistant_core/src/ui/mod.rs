@@ -24,9 +24,6 @@ pub trait UserInterface: Send + Sync {
 
     /// Clear rate limit notification
     fn clear_rate_limit(&self);
-
-    /// Downcast to Any for accessing concrete type methods
-    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Implements the agent core's UI boundary on top of a [`UserInterface`]:

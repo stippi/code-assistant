@@ -15,7 +15,6 @@ use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
-use crate::ui::UserInterface;
 use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
@@ -95,6 +94,9 @@ pub struct SessionManager {
 
     /// The tool registry shared by all sessions this manager runs.
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
+
+    /// The core→UI broadcast stream all sessions publish to.
+    events: crate::session::event_stream::EventStream,
 }
 
 impl SessionManager {
@@ -108,6 +110,7 @@ impl SessionManager {
         session_config_template: SessionConfig,
         default_model_name: String,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
+        events: crate::session::event_stream::EventStream,
     ) -> Self {
         // Clean up empty sessions from previous runs at startup
         match persistence.delete_empty_sessions() {
@@ -137,7 +140,13 @@ impl SessionManager {
             force_diff_format,
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
+            events,
         }
+    }
+
+    /// The core→UI broadcast stream this manager's sessions publish to.
+    pub fn event_stream(&self) -> &crate::session::event_stream::EventStream {
+        &self.events
     }
 
     /// Returns the session config template.
@@ -245,27 +254,18 @@ impl SessionManager {
         Ok(messages)
     }
 
-    /// Set the UI-active session and return events for UI update.
+    /// Set the UI-active session and return an owned snapshot for rendering.
     ///
-    /// When `edit_until_node_id` is `Some(_)`, the emitted `SetMessages` event
-    /// is truncated to messages up to and including that node. This lets the
+    /// When `edit_until_node_id` is `Some(_)`, the snapshot transcript is
+    /// truncated to messages up to and including that node. This lets the
     /// UI restore an in-progress message edit (banner + truncated transcript)
-    /// in a single event when connecting to a session whose draft is in edit
-    /// mode, rather than loading the full transcript and then truncating it.
+    /// directly when connecting to a session whose draft is in edit mode,
+    /// rather than loading the full transcript and then truncating it.
     pub async fn set_active_session(
         &mut self,
         session_id: String,
         edit_until_node_id: Option<crate::persistence::NodeId>,
-    ) -> Result<Vec<crate::ui::ui_events::UiEvent>> {
-        // Deactivate old session
-        if let Some(old_id) = &self.active_session_id {
-            if old_id != &session_id {
-                if let Some(old_session) = self.active_sessions.get_mut(old_id) {
-                    old_session.set_ui_connected(false);
-                }
-            }
-        }
-
+    ) -> Result<crate::session::SessionSnapshot> {
         // Check if session exists
         let session_exists = self.active_sessions.contains_key(&session_id);
 
@@ -278,7 +278,6 @@ impl SessionManager {
         let mut needs_persist = false;
         {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            session_instance.set_ui_connected(true);
 
             // Reload session from persistence to get latest state
             // This ensures we see any changes made by agents since session was loaded
@@ -309,29 +308,21 @@ impl SessionManager {
             }
         };
 
-        // Generate UI events for connecting to this session
-        let mut ui_events = {
+        // Build the owned snapshot for the frontend
+        let mut snapshot = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            let events = session_instance.generate_session_connect_events(edit_until_node_id)?;
+            let snapshot = session_instance.build_snapshot(edit_until_node_id)?;
             // Mark what the UI now knows about (baseline for future incremental diffs)
             session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
             session_instance.last_ui_synced_tool_count =
                 session_instance.session.tool_executions.len();
-            events
+            snapshot
         };
 
-        ui_events.push(UiEvent::UpdateCurrentModel {
-            model_name: model_name_for_event.clone(),
-        });
-
-        let sandbox_policy_for_event = {
-            let session_instance = self.active_sessions.get(&session_id).unwrap();
-            session_instance.session.config.sandbox_policy.clone()
-        };
-
-        ui_events.push(UiEvent::UpdateSandboxPolicy {
-            policy: sandbox_policy_for_event,
-        });
+        snapshot.current_model = model_name_for_event;
+        snapshot.allowed_models = self
+            .allowed_models_for_session(&session_id)
+            .unwrap_or_default();
 
         // Check if another process holds the agent lock for this session.
         // If so, mark it as RunningExternally so the UI disables input.
@@ -340,10 +331,8 @@ impl SessionManager {
                 "Session {} has an agent running in another process",
                 session_id
             );
-            ui_events.push(UiEvent::UpdateSessionActivityState {
-                session_id: session_id.clone(),
-                activity_state: crate::session::instance::SessionActivityState::RunningExternally,
-            });
+            snapshot.activity_state =
+                crate::session::instance::SessionActivityState::RunningExternally;
         }
 
         // Set as active
@@ -358,7 +347,7 @@ impl SessionManager {
             self.persistence.save_chat_session(&session_snapshot)?;
         }
 
-        Ok(ui_events)
+        Ok(snapshot)
     }
 
     /// Incremental refresh of the currently viewed session.
@@ -465,12 +454,24 @@ impl SessionManager {
             return Ok(events);
         }
 
-        // Case 3: Paths diverged → full reload
+        // Case 3: Paths diverged → full reload of the transcript
         debug!("Incremental refresh for {session_id}: paths diverged, full reload");
-        let ui_events = session_instance.generate_session_connect_events(None)?;
+        let snapshot = session_instance.build_snapshot(None)?;
         session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
         session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
-        Ok(ui_events)
+        Ok(vec![
+            UiEvent::SetMessages {
+                messages: snapshot.messages,
+                session_id: Some(snapshot.session_id),
+                tool_results: snapshot.tool_results,
+            },
+            UiEvent::UpdatePlan {
+                plan: snapshot.plan,
+            },
+            UiEvent::UpdateSessionMetadata {
+                metadata: snapshot.metadata,
+            },
+        ])
     }
 
     /// Advance the UI-sync baseline to match the current on-disk state.
@@ -570,7 +571,6 @@ impl SessionManager {
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
         // Add the message first
@@ -582,7 +582,6 @@ impl SessionManager {
             llm_provider,
             project_manager,
             command_executor,
-            ui,
             permission_handler,
         )
         .await
@@ -596,7 +595,6 @@ impl SessionManager {
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
         // Acquire exclusive cross-process agent lock.
@@ -614,9 +612,9 @@ impl SessionManager {
         // Prepare session - need to scope the mutable borrow carefully
         let (
             session_config,
-            proxy_ui,
+            publisher,
             session_state,
-            activity_state_ref,
+            activity,
             pending_message_ref,
             sandbox_context,
         ) = {
@@ -633,8 +631,12 @@ impl SessionManager {
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
             let session_config = session_instance.session.config.clone();
-            let proxy_ui = session_instance.create_proxy_ui(ui.clone());
-            let activity_state_ref = session_instance.activity_state.clone();
+            // A new agent run supersedes any prior stop request and the
+            // previous run's live tool statuses.
+            session_instance.begin_agent_run();
+
+            let publisher = session_instance.create_publisher(self.events.clone());
+            let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
 
             let session_state = crate::session::SessionState {
@@ -664,9 +666,9 @@ impl SessionManager {
 
             (
                 session_config,
-                proxy_ui,
+                publisher,
                 session_state,
-                activity_state_ref,
+                activity,
                 pending_message_ref,
                 session_instance.sandbox_context.clone(),
             )
@@ -676,12 +678,13 @@ impl SessionManager {
         self.save_session_state(session_state.clone())?;
 
         // Broadcast the initial state change
-        let _ = ui
-            .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+        self.events.publish_ui(
+            session_id,
+            crate::ui::UiEvent::UpdateSessionActivityState {
                 session_id: session_id.to_string(),
                 activity_state: crate::session::instance::SessionActivityState::AgentRunning,
-            })
-            .await;
+            },
+        );
 
         // Create agent components
         let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
@@ -689,6 +692,7 @@ impl SessionManager {
             self.session_config_template.clone(),
             self.default_model_name.clone(),
             self.tool_registry.clone(),
+            self.events.clone(),
         )));
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
@@ -698,7 +702,7 @@ impl SessionManager {
         let state_storage = Box::new(
             crate::agent::persistence::MetadataNotifyingPersistence::new(
                 state_storage,
-                proxy_ui.clone(),
+                publisher.clone(),
             ),
         );
 
@@ -740,7 +744,7 @@ impl SessionManager {
                 session_config.clone(),
                 sandbox_context_clone,
                 sub_agent_cancellation_registry.clone(),
-                proxy_ui.clone(),
+                publisher.clone(),
                 permission_handler.clone(),
                 self.tool_registry.clone(),
             ));
@@ -749,7 +753,7 @@ impl SessionManager {
             llm_provider,
             project_manager: sandboxed_project_manager,
             command_executor: Arc::from(command_executor),
-            ui: proxy_ui.clone(),
+            ui: publisher.clone(),
             state_persistence: state_storage,
             permission_handler,
             tool_registry: self.tool_registry.clone(),
@@ -765,7 +769,7 @@ impl SessionManager {
         agent.load_from_session_state(session_state).await?;
 
         // Announce the restored plan to the UI
-        let _ = proxy_ui
+        let _ = publisher
             .send_event(UiEvent::UpdatePlan {
                 plan: agent.plan().clone(),
             })
@@ -777,7 +781,7 @@ impl SessionManager {
         // lock is held for exactly as long as the agent is running and released
         // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
-        let ui_clone = ui.clone();
+        let events_clone = self.events.clone();
         let sleep_inhibitor = self.sleep_inhibitor.clone();
         sleep_inhibitor.agent_started();
 
@@ -818,17 +822,16 @@ impl SessionManager {
                         "Agent completed successfully for session {}, setting state to Idle",
                         session_id_clone
                     );
-                    if let Ok(mut state) = activity_state_ref.lock() {
-                        *state = crate::session::instance::SessionActivityState::Idle;
-                    }
+                    activity.set(crate::session::instance::SessionActivityState::Idle);
 
                     // Broadcast Idle to UI
-                    let _ = ui_clone
-                        .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+                    events_clone.publish_ui(
+                        &session_id_clone,
+                        crate::ui::UiEvent::UpdateSessionActivityState {
                             session_id: session_id_clone.clone(),
                             activity_state: crate::session::instance::SessionActivityState::Idle,
-                        })
-                        .await;
+                        },
+                    );
                 }
                 Err(e) => {
                     error!("Agent failed for session {}: {}", session_id_clone, e);
@@ -845,26 +848,20 @@ impl SessionManager {
                     let errored_state = crate::session::instance::SessionActivityState::Errored {
                         message: error_message.clone(),
                     };
-                    if let Ok(mut state) = activity_state_ref.lock() {
-                        *state = errored_state.clone();
-                    }
+                    activity.set(errored_state.clone());
 
-                    // Broadcast Errored state to UI (sidebar update)
-                    let _ = ui_clone
-                        .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+                    // Broadcast Errored state (sidebar update). We do NOT
+                    // publish DisplayError here — frontends show the banner
+                    // only when the errored session is the one being viewed
+                    // (via the activity event or the snapshot's connect
+                    // sequence).
+                    events_clone.publish_ui(
+                        &session_id_clone,
+                        crate::ui::UiEvent::UpdateSessionActivityState {
                             session_id: session_id_clone.clone(),
                             activity_state: errored_state,
-                        })
-                        .await;
-
-                    // Note: we do NOT send DisplayError here because ui_clone is the
-                    // raw UI, not the session's ProxyUI — it would show the error
-                    // banner even if the user is looking at a different session.
-                    // Instead, the GPUI event handler for UpdateSessionActivityState
-                    // checks whether the errored session is the currently viewed one
-                    // and shows the banner only then.  When the user later switches
-                    // to this session, generate_session_connect_events emits
-                    // DisplayError from the stored Errored state.
+                        },
+                    );
                 }
             }
 
@@ -1495,6 +1492,7 @@ mod tests {
             template,
             "test-model".to_string(),
             crate::tools::test_registry(),
+            crate::session::event_stream::EventStream::new(),
         );
         (manager, dir)
     }

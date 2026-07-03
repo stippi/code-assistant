@@ -19,8 +19,9 @@ A skill lives in one of three scopes. Pick based on how widely it should apply:
 - **project** — `<project_root>/.agents/skills/<name>/` — specific to one repo.
   Load with `read_skill(project="<project-name>", name="<name>")`; read its
   resources with `read_files(project="<project-name>", ...)`.
-- **user** — addressed by the scope token `:config:` — your personal skills,
-  available in every project. Load with `read_skill(project=":config:", ...)`.
+- **user** — `~/.agents/skills/<name>/` — your personal skills, available in
+  every project (and shared with other agent harnesses). Addressed by the scope
+  token `:config:`; load with `read_skill(project=":config:", ...)`.
 - **system** — token `:system:` — bundled skills (like this one). Usually
   read-only.
 
