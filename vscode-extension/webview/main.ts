@@ -4,6 +4,7 @@ import type {
   StopReason,
   ToolCallContent,
 } from "@agentclientprotocol/sdk";
+import { diffLines } from "diff";
 import { brainIcon, chevronIcon, spinnerIcon, toolIcon } from "./icons";
 import { renderMarkdown } from "./markdown";
 
@@ -73,8 +74,7 @@ function closeOpenBlock(): void {
 function appendStreamText(variant: "agent" | "thought", text: string): void {
   if (openBlock?.variant !== variant) {
     closeOpenBlock();
-    openBlock =
-      variant === "agent" ? createAgentBlock() : createThoughtBlock();
+    openBlock = variant === "agent" ? createAgentBlock() : createThoughtBlock();
   }
   openBlock.raw += text;
   renderMarkdown(openBlock.contentEl, openBlock.raw);
@@ -112,44 +112,74 @@ function createThoughtBlock(): TextBlock {
 
 interface ToolCallView {
   card: HTMLElement;
+  iconEl: HTMLElement;
   titleEl: HTMLElement;
+  durationEl: HTMLElement;
   trailingEl: HTMLElement;
   bodyEl: HTMLElement;
+  toolName?: string;
+  kind?: string;
+  status?: string;
   content: ToolCallContent[] | null;
   rawInput: unknown;
   rendered: boolean;
+  isCard: boolean;
+  startedAt: number;
 }
 
 const toolCalls = new Map<string, ToolCallView>();
 
-function upsertToolCall(update: {
-  toolCallId: string;
-  title?: string | null;
-  kind?: string | null;
-  status?: string | null;
-  content?: ToolCallContent[] | null;
-  rawInput?: unknown;
-}): void {
+function readToolName(update: unknown): string | undefined {
+  const meta = (update as { _meta?: Record<string, unknown> })._meta;
+  const extension = meta?.["code-assistant"] as { toolName?: unknown } | undefined;
+  return typeof extension?.toolName === "string" ? extension.toolName : undefined;
+}
+
+function wantsCard(view: ToolCallView): boolean {
+  return (
+    view.kind === "edit" ||
+    view.kind === "execute" ||
+    view.toolName === "spawn_agent"
+  );
+}
+
+function upsertToolCall(
+  update: {
+    toolCallId: string;
+    title?: string | null;
+    kind?: string | null;
+    status?: string | null;
+    content?: ToolCallContent[] | null;
+    rawInput?: unknown;
+  },
+  toolName: string | undefined,
+): void {
   closeOpenBlock();
   let view = toolCalls.get(update.toolCallId);
   if (!view) {
-    view = createToolCallView(update.kind ?? "other");
+    view = createToolCallView();
     toolCalls.set(update.toolCallId, view);
+  }
+  if (toolName) {
+    view.toolName = toolName;
+  }
+  if (update.kind) {
+    view.kind = update.kind;
   }
   if (update.title) {
     view.titleEl.textContent = update.title;
   }
-  if (update.kind) {
-    const icon = view.card.querySelector(".tool-icon");
-    if (icon) {
-      icon.innerHTML = toolIcon(update.kind);
-    }
-    view.card.classList.toggle("tool-agent-card", update.kind === "other");
-  }
   if (update.status) {
+    view.status = update.status;
     view.card.dataset.status = update.status;
     const running = update.status === "pending" || update.status === "in_progress";
     view.trailingEl.innerHTML = running ? spinnerIcon : chevronIcon;
+    if (!running && view.kind === "execute") {
+      const seconds = Math.round((Date.now() - view.startedAt) / 1000);
+      if (seconds >= 1) {
+        view.durationEl.textContent = `(${seconds}s)`;
+      }
+    }
   }
   if (update.content !== undefined && update.content !== null) {
     view.content = update.content;
@@ -157,19 +187,22 @@ function upsertToolCall(update: {
   }
   if (update.rawInput !== undefined) {
     view.rawInput = update.rawInput;
-    view.rendered = view.rendered && view.content !== null;
+    if (view.content === null) {
+      view.rendered = false;
+    }
   }
+  applyToolStyle(view);
   if (!view.bodyEl.hidden && !view.rendered) {
     renderToolBody(view);
   }
   scrollToBottom();
 }
 
-function createToolCallView(kind: string): ToolCallView {
-  const card = appendBlock(kind === "other" ? "tool-call tool-agent-card" : "tool-call");
+function createToolCallView(): ToolCallView {
+  const card = appendBlock("tool-call");
   const header = document.createElement("button");
   header.className = "tool-header";
-  header.innerHTML = `<span class="tool-icon">${toolIcon(kind)}</span><span class="tool-title"></span><span class="trailing">${chevronIcon}</span>`;
+  header.innerHTML = `<span class="tool-icon"></span><span class="tool-title"></span><span class="trailing"><span class="tool-duration"></span>${chevronIcon}</span>`;
   const body = document.createElement("div");
   body.className = "tool-body";
   body.hidden = true;
@@ -177,12 +210,16 @@ function createToolCallView(kind: string): ToolCallView {
 
   const view: ToolCallView = {
     card,
+    iconEl: header.querySelector(".tool-icon") as HTMLElement,
     titleEl: header.querySelector(".tool-title") as HTMLElement,
+    durationEl: header.querySelector(".tool-duration") as HTMLElement,
     trailingEl: header.querySelector(".trailing") as HTMLElement,
     bodyEl: body,
     content: null,
     rawInput: undefined,
     rendered: false,
+    isCard: false,
+    startedAt: Date.now(),
   };
   header.addEventListener("click", () => {
     body.hidden = !body.hidden;
@@ -191,12 +228,24 @@ function createToolCallView(kind: string): ToolCallView {
       renderToolBody(view);
     }
   });
-  // Agent-style cards show their content without needing a click.
-  if (kind === "other") {
-    body.hidden = false;
-    card.classList.add("expanded");
-  }
   return view;
+}
+
+function applyToolStyle(view: ToolCallView): void {
+  view.iconEl.innerHTML = toolIcon(view.toolName, view.kind);
+  const becomesCard = wantsCard(view);
+  if (becomesCard && !view.isCard) {
+    view.isCard = true;
+    view.card.classList.add("tool-card");
+    // Cards show their content without needing a click.
+    view.bodyEl.hidden = false;
+    view.card.classList.add("expanded");
+  }
+  view.card.classList.toggle("tool-card-edit", view.isCard && view.kind === "edit");
+  view.card.classList.toggle(
+    "tool-card-terminal",
+    view.isCard && view.kind === "execute",
+  );
 }
 
 function renderToolBody(view: ToolCallView): void {
@@ -228,25 +277,8 @@ function renderToolContent(item: ToolCallContent): HTMLElement {
         item.content.type === "text" ? item.content.text : `[${item.content.type}]`;
       return pre;
     }
-    case "diff": {
-      const container = document.createElement("div");
-      container.className = "diff";
-      const path = document.createElement("div");
-      path.className = "diff-path";
-      path.textContent = item.path;
-      container.appendChild(path);
-      if (item.oldText) {
-        const removed = document.createElement("pre");
-        removed.className = "diff-removed";
-        removed.textContent = item.oldText;
-        container.appendChild(removed);
-      }
-      const added = document.createElement("pre");
-      added.className = "diff-added";
-      added.textContent = item.newText;
-      container.appendChild(added);
-      return container;
-    }
+    case "diff":
+      return renderDiff(item.oldText ?? "", item.newText);
     case "terminal": {
       const el = document.createElement("div");
       el.className = "tool-empty";
@@ -260,6 +292,34 @@ function renderToolContent(item: ToolCallContent): HTMLElement {
       return el;
     }
   }
+}
+
+function renderDiff(oldText: string, newText: string): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "diff";
+  for (const part of diffLines(oldText, newText)) {
+    const lines = part.value.split("\n");
+    if (lines[lines.length - 1] === "") {
+      lines.pop();
+    }
+    for (const line of lines) {
+      const row = document.createElement("div");
+      row.className = part.added
+        ? "diff-line diff-added"
+        : part.removed
+          ? "diff-line diff-removed"
+          : "diff-line";
+      const gutter = document.createElement("span");
+      gutter.className = "diff-gutter";
+      gutter.textContent = part.added ? "+" : part.removed ? "−" : " ";
+      const content = document.createElement("span");
+      content.className = "diff-content";
+      content.textContent = line;
+      row.append(gutter, content);
+      container.appendChild(row);
+    }
+  }
+  return container;
 }
 
 // --- session updates ---
@@ -278,7 +338,7 @@ function handleUpdate(update: SessionUpdate): void {
       break;
     case "tool_call":
     case "tool_call_update":
-      upsertToolCall(update);
+      upsertToolCall(update, readToolName(update));
       break;
     case "user_message_chunk":
       // The composer already rendered the user's message.

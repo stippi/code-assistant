@@ -169,10 +169,16 @@ svg.lucide {
   background: none;
   cursor: pointer;
   font-family: inherit;
-  font-size: 0.95em;
+  font-size: inherit;
   color: var(--vscode-foreground);
   text-align: left;
   min-width: 0;
+}
+
+.tool-duration {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  margin-right: 6px;
 }
 
 .tool-icon {
@@ -213,63 +219,87 @@ svg.lucide {
   font-size: 0.9em;
 }
 
-/* Agent-style cards (sub-agents and other heavyweight tools) */
+/* Cards (edit, terminal, sub-agent) — header strip plus full-width body */
 
-.tool-agent-card {
-  background: var(--vscode-editorWidget-background);
+.tool-card {
+  background: var(--vscode-textCodeBlock-background);
   border: 1px solid var(--vscode-editorWidget-border, transparent);
   border-radius: 8px;
+  overflow: hidden;
 }
 
-.tool-agent-card:hover {
+.tool-card:hover {
+  background: var(--vscode-textCodeBlock-background);
+}
+
+.tool-card > .tool-header {
+  padding: 8px 12px;
   background: var(--vscode-editorWidget-background);
 }
 
-.tool-agent-card > .tool-header {
+.tool-card > .tool-body {
   padding: 8px 12px;
 }
 
-.tool-agent-card > .tool-body {
-  padding: 0 12px 10px 36px;
-}
-
-.tool-agent-card .tool-output {
+.tool-card .tool-output {
   background: none;
   padding: 0;
-  max-height: 200px;
-  font-family: inherit;
-  font-size: inherit;
+  max-height: 300px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Edit and terminal card headers show a path or command */
+
+.tool-card-edit > .tool-header .tool-title,
+.tool-card-terminal > .tool-header .tool-title {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.92em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tool-card-edit > .tool-body {
+  padding: 0;
+}
+
+.tool-card-terminal .tool-output {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
 }
 
 /* --- diffs --- */
 
 .diff {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.diff-path {
-  font-family: var(--vscode-editor-font-family);
-  font-size: 0.9em;
-  color: var(--vscode-descriptionForeground);
-}
-
-.diff pre {
-  margin: 0;
   overflow-x: auto;
-  max-height: 200px;
-  padding: 6px 8px;
-  border-radius: 4px;
+  max-height: 400px;
   font-family: var(--vscode-editor-font-family);
   font-size: 0.9em;
+  line-height: 1.5;
+  padding: 6px 0;
 }
 
-.diff-removed {
+.diff-line {
+  display: flex;
+  white-space: pre;
+}
+
+.diff-gutter {
+  flex-shrink: 0;
+  width: 2ch;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+}
+
+.diff-content {
+  flex: 1;
+  padding-right: 12px;
+}
+
+.diff-line.diff-removed {
   background: var(--vscode-diffEditor-removedTextBackground);
 }
 
-.diff-added {
+.diff-line.diff-added {
   background: var(--vscode-diffEditor-insertedTextBackground);
 }
 

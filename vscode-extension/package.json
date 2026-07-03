@@ -87,9 +87,14 @@
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.1.0"
+    "@agentclientprotocol/sdk": "^1.1.0",
+    "diff": "^9.0.0",
+    "dompurify": "^3.4.11",
+    "lucide-static": "^1.23.0",
+    "marked": "^18.0.5"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.100.0",
     "esbuild": "^0.25.0",
