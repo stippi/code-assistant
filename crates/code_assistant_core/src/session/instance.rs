@@ -152,6 +152,11 @@ pub struct SessionInstance {
     /// frontend connecting mid-stream sees the partial message.
     pub fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
 
+    /// The pre-allocated node id of the currently streaming response (from
+    /// `StreamingStarted`). Snapshots tag the partial message with it so
+    /// frontends can deduplicate against the persisted message later.
+    pub in_flight_node_id: Arc<Mutex<Option<NodeId>>>,
+
     /// Latest live `UpdateToolStatus` per tool of the current agent run.
     /// Written by the [`SessionEventPublisher`]; merged into snapshots
     /// (persisted results take precedence). Cleared on agent start.
@@ -214,6 +219,7 @@ impl SessionInstance {
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
+            in_flight_node_id: Arc::new(Mutex::new(None)),
             activity: SessionActivity::default(),
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_message: Arc::new(Mutex::new(None)),
@@ -382,6 +388,7 @@ impl SessionInstance {
         Arc::new(SessionEventPublisher {
             events,
             fragment_buffer: self.fragment_buffer.clone(),
+            in_flight_node_id: self.in_flight_node_id.clone(),
             tool_status_buffer: self.tool_status_buffer.clone(),
             activity: self.activity.clone(),
             stop_requested: self.stop_requested.clone(),
@@ -420,13 +427,15 @@ impl SessionInstance {
             }
         }
 
-        // If currently streaming, add the incomplete message as additional MessageData
+        // If currently streaming, add the incomplete message as additional
+        // MessageData, tagged with the pre-allocated node id so frontends can
+        // deduplicate it against the persisted message later.
         let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
         if !buffered_fragments.is_empty() {
             messages.push(MessageData {
                 role: MessageRole::Assistant,
                 fragments: buffered_fragments,
-                node_id: None,     // Streaming message doesn't have a node yet
+                node_id: self.in_flight_node_id.lock().ok().and_then(|id| *id),
                 branch_info: None, // No branch info for incomplete message
             });
         }
@@ -820,6 +829,9 @@ struct SessionEventPublisher {
     /// In-flight fragments of the currently streaming response, kept for
     /// snapshots (the content is not persisted until the message completes).
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
+    /// Pre-allocated node id of the in-flight response (see
+    /// [`SessionInstance::in_flight_node_id`]).
+    in_flight_node_id: Arc<Mutex<Option<NodeId>>>,
     /// Latest live status per tool of the current agent run, kept for
     /// snapshots (persisted results take precedence when merging).
     tool_status_buffer: Arc<Mutex<ToolStatusBuffer>>,
@@ -849,19 +861,26 @@ impl UserInterface for SessionEventPublisher {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         // Handle special events that need buffer management and activity state updates
         match &event {
-            UiEvent::StreamingStarted { .. } => {
-                // Clear fragment buffer at start of new LLM request
+            UiEvent::StreamingStarted { node_id, .. } => {
+                // Reset the in-flight state for the new LLM request
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
+                }
+                if let Ok(mut in_flight) = self.in_flight_node_id.lock() {
+                    *in_flight = Some(*node_id);
                 }
                 self.publish_activity_change(self.activity.on_streaming_started());
             }
             UiEvent::StreamingStopped {
                 cancelled, error, ..
             } => {
-                // Clear fragment buffer when LLM request ends - fragments are now part of message history
+                // Clear the in-flight state when the LLM request ends —
+                // fragments are now part of message history
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
+                }
+                if let Ok(mut in_flight) = self.in_flight_node_id.lock() {
+                    *in_flight = None;
                 }
                 if let Some(error_msg) = error {
                     // The agent task will set the final state when it terminates
@@ -876,9 +895,13 @@ impl UserInterface for SessionEventPublisher {
                 );
             }
             UiEvent::RollbackStreaming { .. } => {
-                // Clear fragment buffer — the partial content is being discarded before a retry
+                // Discard the in-flight state — the partial content is being
+                // discarded before a retry
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
+                }
+                if let Ok(mut in_flight) = self.in_flight_node_id.lock() {
+                    *in_flight = None;
                 }
             }
             UiEvent::UpdateSessionActivityState {
@@ -1097,11 +1120,54 @@ mod tests {
         SessionEventPublisher {
             events: crate::session::event_stream::EventStream::new(),
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight_node_id: Arc::new(Mutex::new(None)),
             tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
             activity,
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_id: session_id.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn snapshot_tags_in_flight_message_with_preallocated_node_id() {
+        let session = crate::persistence::ChatSession::new_empty(
+            "s1".to_string(),
+            String::new(),
+            crate::session::SessionConfig::default(),
+            None,
+        );
+        let instance = SessionInstance::new(session, crate::tools::test_registry());
+        let publisher = instance.create_publisher(crate::session::event_stream::EventStream::new());
+
+        // The agent announces the request with the node id the message will
+        // be persisted under, then streams fragments.
+        let _ = publisher
+            .send_event(UiEvent::StreamingStarted {
+                request_id: 1,
+                node_id: 42,
+            })
+            .await;
+        let _ = publisher.display_fragment(&DisplayFragment::PlainText("hel".to_string()));
+        let _ = publisher.display_fragment(&DisplayFragment::PlainText("lo".to_string()));
+
+        // A snapshot taken mid-stream carries the partial message tagged
+        // with the pre-allocated node id, so a frontend rendering it stays
+        // deduplicatable against the persisted message later.
+        let snapshot = instance.build_snapshot(None).unwrap();
+        let partial = snapshot.messages.last().expect("partial message present");
+        assert_eq!(partial.node_id, Some(42));
+        assert_eq!(partial.fragments.len(), 2);
+
+        // Once streaming ends the in-flight state is gone.
+        let _ = publisher
+            .send_event(UiEvent::StreamingStopped {
+                id: 1,
+                cancelled: false,
+                error: None,
+            })
+            .await;
+        let snapshot = instance.build_snapshot(None).unwrap();
+        assert!(snapshot.messages.is_empty());
     }
 
     #[tokio::test]
