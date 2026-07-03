@@ -1004,6 +1004,52 @@ impl TerminalTuiApp {
         // Fetch the skill catalog for the `/skill` picker.
         actions.refresh_skills(session_id.clone());
 
+        // Start the filesystem watcher for cross-instance awareness, so a
+        // session that another code-assistant instance appends to stays in
+        // sync here (e.g. `--continue` on a session streamed elsewhere).
+        let watcher_session_ref: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(Some(session_id.clone())));
+        let (watcher_tx, watcher_rx) = async_channel::bounded::<UiEvent>(64);
+        let _session_watcher = match code_assistant_core::session::watcher::SessionWatcher::start(
+            &FileSessionPersistence::new(),
+            watcher_tx,
+            watcher_session_ref,
+        ) {
+            Ok(watcher) => {
+                debug!("Filesystem session watcher started (terminal mode)");
+                Some(watcher)
+            }
+            Err(e) => {
+                debug!("Failed to start filesystem session watcher: {e}");
+                None
+            }
+        };
+        {
+            let service = service.clone();
+            let terminal_ui = terminal_ui.clone();
+            let our_session_id = session_id.clone();
+            tokio::spawn(async move {
+                while let Ok(event) = watcher_rx.recv().await {
+                    match event {
+                        UiEvent::RefreshCurrentSession { session_id } => {
+                            // The resulting AppendMessages/UpdatePlan events
+                            // arrive via the broadcast stream (bridge task).
+                            if let Err(e) = service.refresh_session(session_id).await {
+                                debug!("Watcher-triggered refresh failed: {e:#}");
+                            }
+                        }
+                        UiEvent::UpdateSessionActivityState { ref session_id, .. }
+                            if *session_id == our_session_id =>
+                        {
+                            let _ = terminal_ui.send_event(event).await;
+                        }
+                        // Chat list and config changes have no terminal UI.
+                        _ => {}
+                    }
+                }
+            });
+        }
+
         // Spawn a background task to process UI events from display fragments
         {
             let terminal_ui_clone = terminal_ui.clone();

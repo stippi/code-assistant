@@ -77,6 +77,81 @@ impl TerminalUI {
             }
         }
     }
+
+    /// Render a complete message (appended by another code-assistant
+    /// instance) into the scrollback, mapping its fragments onto the same
+    /// renderer calls the live-streaming path uses.
+    fn render_message_data(
+        &self,
+        renderer: &mut ProductionTerminalRenderer,
+        message: code_assistant_core::ui::ui_events::MessageData,
+    ) {
+        use code_assistant_core::ui::ui_events::MessageRole;
+
+        match message.role {
+            MessageRole::User => {
+                let text = plain_text_of(&message.fragments);
+                let _ = renderer.add_user_message(&text);
+            }
+            MessageRole::System => {
+                let text = plain_text_of(&message.fragments);
+                let _ = renderer.add_instruction_message(&text);
+            }
+            MessageRole::Assistant => {
+                // Finalizes any previous live message, like StreamingStarted.
+                renderer.start_new_message(message.node_id.unwrap_or_default());
+                for fragment in message.fragments {
+                    match fragment {
+                        DisplayFragment::PlainText(text) => renderer.queue_text_delta(text),
+                        DisplayFragment::ThinkingText { text, .. } => {
+                            renderer.queue_thinking_delta(text)
+                        }
+                        DisplayFragment::ToolName { name, id, .. } => {
+                            renderer.start_tool_use_block(name, id)
+                        }
+                        DisplayFragment::ToolParameter {
+                            name,
+                            value,
+                            tool_id,
+                        } => renderer.add_or_update_tool_parameter(&tool_id, name, value),
+                        DisplayFragment::ToolOutput { tool_id, chunk } => {
+                            renderer.append_tool_output(&tool_id, &chunk)
+                        }
+                        DisplayFragment::ReasoningSummaryDelta(text) => {
+                            renderer.queue_thinking_delta(text)
+                        }
+                        DisplayFragment::CompactionDivider { summary } => {
+                            let _ = renderer.add_instruction_message(&format!(
+                                "\n\n[conversation compacted]\n{summary}\n"
+                            ));
+                        }
+                        DisplayFragment::HiddenToolCompleted => {
+                            renderer.mark_hidden_tool_completed()
+                        }
+                        DisplayFragment::Image { media_type, .. } => {
+                            renderer.queue_text_delta(format!("[image ({media_type})]"))
+                        }
+                        DisplayFragment::ToolEnd { .. }
+                        | DisplayFragment::ToolTerminal { .. }
+                        | DisplayFragment::ReasoningSummaryStart
+                        | DisplayFragment::ReasoningComplete => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Concatenate the plain-text fragments of a message (user/system messages
+/// carry their content as plain text).
+fn plain_text_of(fragments: &[DisplayFragment]) -> String {
+    let mut text = String::new();
+    for fragment in fragments {
+        if let DisplayFragment::PlainText(part) = fragment {
+            text.push_str(part);
+        }
+    }
+    text
 }
 
 #[async_trait]
@@ -84,7 +159,7 @@ impl UserInterface for TerminalUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         match event {
             UiEvent::SetMessages {
-                messages: _,
+                messages,
                 session_id,
                 tool_results,
             } => {
@@ -98,11 +173,58 @@ impl UserInterface for TerminalUI {
                     state.current_session_id = Some(session_id);
                 }
 
+                // The terminal doesn't replay history into the scrollback,
+                // but it must know which nodes the transcript baseline covers
+                // so later watcher appends only render genuinely new content.
+                state.reset_seen_nodes(messages.iter().filter_map(|m| m.node_id));
+
                 // Update tool statuses from tool results
                 for tool_result in tool_results {
                     state
                         .tool_statuses
                         .insert(tool_result.tool_id, tool_result.status);
+                }
+            }
+
+            UiEvent::AppendMessages {
+                messages,
+                tool_results,
+            } => {
+                // Messages appended by another code-assistant instance (file
+                // watcher). Deduplicate by node id: locally streamed content
+                // carries the same pre-allocated node id, so a watcher refresh
+                // racing the agent's Idle transition must not render it again.
+                let fresh: Vec<_> = {
+                    let mut state = self.app_state.lock().await;
+                    for tool_result in &tool_results {
+                        state
+                            .tool_statuses
+                            .insert(tool_result.tool_id.clone(), tool_result.status);
+                    }
+                    messages
+                        .into_iter()
+                        .filter(|message| match message.node_id {
+                            Some(node_id) => state.mark_node_seen(node_id),
+                            None => true,
+                        })
+                        .collect()
+                };
+                debug!("Appending {} externally added message(s)", fresh.len());
+
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    for message in fresh {
+                        self.render_message_data(&mut renderer_guard, message);
+                    }
+                    for tool_result in tool_results {
+                        renderer_guard.update_tool_status(
+                            &tool_result.tool_id,
+                            tool_result.status,
+                            tool_result.message,
+                            tool_result.output,
+                        );
+                    }
+                    renderer_guard.flush_streaming_pending();
                 }
             }
 
@@ -182,6 +304,7 @@ impl UserInterface for TerminalUI {
             }
             UiEvent::ClearMessages => {
                 debug!("Clearing messages");
+                self.app_state.lock().await.reset_seen_nodes([]);
                 // Clear all messages in renderer
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
@@ -192,9 +315,12 @@ impl UserInterface for TerminalUI {
             UiEvent::DisplayUserInput {
                 content,
                 attachments,
-                node_id: _, // Terminal UI doesn't support branching
+                node_id,
             } => {
                 debug!("Displaying user input: {}", content);
+                if let Some(node_id) = node_id {
+                    self.app_state.lock().await.mark_node_seen(node_id);
+                }
 
                 // Add user message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
@@ -247,9 +373,16 @@ impl UserInterface for TerminalUI {
                     let _ = renderer_guard.add_instruction_message(&formatted);
                 }
             }
-            UiEvent::StreamingStarted { request_id, .. } => {
+            UiEvent::StreamingStarted {
+                request_id,
+                node_id,
+            } => {
                 debug!("Streaming started for request {}", request_id);
                 self.cancel_flag.store(false, Ordering::SeqCst);
+                // The streamed response will be persisted under the
+                // pre-allocated node id — record it so a watcher append of
+                // the persisted message is recognized as already rendered.
+                self.app_state.lock().await.mark_node_seen(node_id);
                 // Start a new message - this will finalize any existing live message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
