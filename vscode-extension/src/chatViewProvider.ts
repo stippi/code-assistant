@@ -242,6 +242,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="input-toolbar">
         <div id="config-selectors"></div>
         <span class="spacer"></span>
+        <span id="usage-ring"></span>
         <button id="send" title="Send"></button>
       </div>
     </div>

@@ -42,6 +42,7 @@ const planArea = document.getElementById("plan-area") as HTMLElement;
 const inputShell = document.getElementById("input-shell") as HTMLElement;
 const input = document.getElementById("input") as HTMLTextAreaElement;
 const configSelectors = document.getElementById("config-selectors") as HTMLElement;
+const usageRing = document.getElementById("usage-ring") as HTMLElement;
 const sendButton = document.getElementById("send") as HTMLButtonElement;
 
 let busy = false;
@@ -155,6 +156,7 @@ function readToolName(update: unknown): string | undefined {
 function wantsCard(view: ToolCallView): boolean {
   return (
     view.kind === "edit" ||
+    view.kind === "delete" ||
     view.kind === "execute" ||
     view.toolName === "spawn_agent"
   );
@@ -258,7 +260,10 @@ function applyToolStyle(view: ToolCallView): void {
     view.bodyEl.hidden = false;
     view.card.classList.add("expanded");
   }
-  view.card.classList.toggle("tool-card-edit", view.isCard && view.kind === "edit");
+  view.card.classList.toggle(
+    "tool-card-edit",
+    view.isCard && (view.kind === "edit" || view.kind === "delete"),
+  );
   view.card.classList.toggle(
     "tool-card-terminal",
     view.isCard && view.kind === "execute",
@@ -268,9 +273,13 @@ function applyToolStyle(view: ToolCallView): void {
 function renderToolBody(view: ToolCallView): void {
   view.bodyEl.innerHTML = "";
   if (view.content && view.content.length > 0) {
+    // With several diffs in one call (multi-file delete), label each with its path.
+    const showPaths = view.content.filter((c) => c.type === "diff").length > 1;
     for (const item of view.content) {
-      view.bodyEl.appendChild(renderToolContent(item));
+      view.bodyEl.appendChild(renderToolContent(item, showPaths));
     }
+  } else if (view.kind === "execute") {
+    // Terminal cards stay empty until output streams in.
   } else if (view.rawInput !== undefined) {
     const pre = document.createElement("pre");
     pre.className = "tool-output";
@@ -285,7 +294,7 @@ function renderToolBody(view: ToolCallView): void {
   view.rendered = true;
 }
 
-function renderToolContent(item: ToolCallContent): HTMLElement {
+function renderToolContent(item: ToolCallContent, showPath: boolean): HTMLElement {
   switch (item.type) {
     case "content": {
       const pre = document.createElement("pre");
@@ -294,8 +303,19 @@ function renderToolContent(item: ToolCallContent): HTMLElement {
         item.content.type === "text" ? item.content.text : `[${item.content.type}]`;
       return pre;
     }
-    case "diff":
-      return renderDiff(item.oldText ?? "", item.newText);
+    case "diff": {
+      const diff = renderDiff(item.oldText ?? "", item.newText);
+      if (!showPath) {
+        return diff;
+      }
+      const section = document.createElement("div");
+      section.className = "diff-section";
+      const path = document.createElement("div");
+      path.className = "diff-path";
+      path.textContent = item.path;
+      section.append(path, diff);
+      return section;
+    }
     case "terminal": {
       const el = document.createElement("div");
       el.className = "tool-empty";
@@ -420,6 +440,28 @@ function renderPlan(entries: PlanEntry[]): void {
   }
 }
 
+// --- context usage ring ---
+
+function renderUsage(used: number, size: number): void {
+  if (!size) {
+    usageRing.innerHTML = "";
+    usageRing.title = "";
+    return;
+  }
+  const ratio = Math.min(used / size, 1);
+  const radius = 6;
+  const circumference = 2 * Math.PI * radius;
+  usageRing.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="${radius}" fill="none" stroke="currentColor" opacity="0.25" stroke-width="2"/>
+    <circle cx="8" cy="8" r="${radius}" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-dasharray="${(circumference * ratio).toFixed(2)} ${circumference.toFixed(2)}"
+      stroke-linecap="round" transform="rotate(-90 8 8)"/>
+  </svg>`;
+  usageRing.title = `Context: ${Math.round(ratio * 100)}% (${used.toLocaleString()} / ${size.toLocaleString()} tokens)`;
+  usageRing.classList.toggle("high", ratio >= 0.75 && ratio < 0.9);
+  usageRing.classList.toggle("critical", ratio >= 0.9);
+}
+
 // --- session updates ---
 
 function handleUpdate(update: SessionUpdate): void {
@@ -446,6 +488,9 @@ function handleUpdate(update: SessionUpdate): void {
       break;
     case "config_option_update":
       renderConfigOptions(update.configOptions);
+      break;
+    case "usage_update":
+      renderUsage(update.used, update.size);
       break;
     case "user_message_chunk":
       // The composer already rendered the user's message.
@@ -512,6 +557,7 @@ window.addEventListener("message", (event: MessageEvent<InboundMessage>) => {
       toolCalls.clear();
       closeOpenBlock();
       renderPlan([]);
+      renderUsage(0, 0);
       configSelectors.innerHTML = "";
       setBusy(false);
       break;

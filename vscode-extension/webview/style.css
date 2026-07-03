@@ -13,6 +13,27 @@ body {
   color: var(--vscode-foreground);
 }
 
+/* Scrollbars: thumb only, no track */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
 #transcript {
   flex: 1;
   overflow-y: auto;
@@ -276,6 +297,17 @@ svg.lucide {
 
 /* --- diffs --- */
 
+.diff-section + .diff-section {
+  border-top: 1px solid var(--vscode-editorWidget-border, transparent);
+}
+
+.diff-path {
+  padding: 6px 12px 0;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.88em;
+  color: var(--vscode-descriptionForeground);
+}
+
 .diff {
   overflow-x: auto;
   max-height: 400px;
@@ -498,6 +530,21 @@ svg.lucide {
 .config-select optgroup {
   background: var(--vscode-dropdown-background);
   color: var(--vscode-dropdown-foreground);
+}
+
+#usage-ring {
+  display: inline-flex;
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  margin-right: 2px;
+}
+
+#usage-ring.high {
+  color: var(--vscode-editorWarning-foreground, orange);
+}
+
+#usage-ring.critical {
+  color: var(--vscode-errorForeground);
 }
 
 #send {

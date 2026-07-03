@@ -21,6 +21,10 @@ pub struct DeleteFilesOutput {
     pub project: String,
     pub deleted: Vec<PathBuf>,
     pub failed: Vec<(PathBuf, String)>,
+    /// File contents captured before deletion, for UI diff rendering only
+    /// (never part of the LLM-facing render).
+    #[serde(default)]
+    pub deleted_contents: Vec<(PathBuf, String)>,
 }
 
 // Render implementation for output formatting
@@ -58,6 +62,20 @@ impl Render for DeleteFilesOutput {
         }
 
         formatted
+    }
+
+    fn render_for_ui(&self, tracker: &mut ResourcesTracker) -> String {
+        // Emit JSON with the deleted contents so diff card renderers can show
+        // the removed file contents as a deletion diff.
+        if self.deleted_contents.is_empty() {
+            return self.render(tracker);
+        }
+        let contents: Vec<serde_json::Value> = self
+            .deleted_contents
+            .iter()
+            .map(|(path, content)| json!({ "path": path, "content": content }))
+            .collect();
+        json!({ "deleted_contents": contents }).to_string()
     }
 }
 
@@ -137,6 +155,7 @@ impl Tool for DeleteFilesTool {
 
         let mut deleted = Vec::new();
         let mut failed = Vec::new();
+        let mut deleted_contents = Vec::new();
 
         // Process each path
         for path_str in input.paths.clone() {
@@ -151,10 +170,17 @@ impl Tool for DeleteFilesTool {
             // Join with root_dir to get full path
             let full_path = explorer.root_dir().join(&path);
 
+            // Capture the content before deletion (best effort; binary or
+            // unreadable files simply render without a diff)
+            let content = explorer.read_file(&full_path).await.ok();
+
             // Try to delete the file
             match explorer.delete_file(&full_path).await {
                 Ok(_) => {
                     deleted.push(path.clone());
+                    if let Some(content) = content {
+                        deleted_contents.push((path.clone(), content));
+                    }
 
                     // Emit resource event
                     if let Some(ui) = context.ui() {
@@ -176,6 +202,7 @@ impl Tool for DeleteFilesTool {
             project: input.project.clone(),
             deleted,
             failed,
+            deleted_contents,
         })
     }
 }
@@ -195,6 +222,7 @@ mod tests {
             project: "test-project".to_string(),
             deleted,
             failed,
+            deleted_contents: vec![(PathBuf::from("file1.txt"), "File 1 content".to_string())],
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -206,6 +234,37 @@ mod tests {
         assert!(rendered.contains("Successfully deleted the following file(s):"));
         assert!(rendered.contains("- file1.txt"));
         assert!(rendered.contains("- file2.txt"));
+        // Deleted contents are for UI diff rendering only, never for the LLM
+        assert!(!rendered.contains("File 1 content"));
+
+        let ui_rendered = output.render_for_ui(&mut tracker);
+        let parsed: serde_json::Value = serde_json::from_str(&ui_rendered).unwrap();
+        let contents = parsed.get("deleted_contents").unwrap().as_array().unwrap();
+        assert_eq!(contents[0].get("path").unwrap(), "file1.txt");
+        assert_eq!(contents[0].get("content").unwrap(), "File 1 content");
+    }
+
+    #[tokio::test]
+    async fn test_delete_files_captures_contents_before_deletion() -> Result<()> {
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "file1.txt".to_string(),
+            "File 1 content".to_string(),
+        )]);
+        let mut context = fixture.context();
+
+        let mut input = DeleteFilesInput {
+            project: "test-project".to_string(),
+            paths: vec!["file1.txt".to_string()],
+        };
+
+        let tool = DeleteFilesTool;
+        let result = tool.execute(&mut context, &mut input).await?;
+
+        assert_eq!(
+            result.deleted_contents,
+            vec![(PathBuf::from("file1.txt"), "File 1 content".to_string())]
+        );
+        Ok(())
     }
 
     #[tokio::test]
