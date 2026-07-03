@@ -22,6 +22,11 @@ body {
   gap: 10px;
 }
 
+/* Never let transcript entries shrink to fit the viewport — scroll instead. */
+#transcript > * {
+  flex-shrink: 0;
+}
+
 /* --- lucide icons --- */
 
 svg.lucide {
