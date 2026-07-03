@@ -1,10 +1,10 @@
 use crate::slash_popup::PopupStack;
-use code_assistant_core::persistence::ChatMetadata;
+use code_assistant_core::persistence::{ChatMetadata, NodeId};
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::service::SkillCatalogEntry;
 use code_assistant_core::types::PlanState;
 use sandbox::SandboxPolicy;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayState {
@@ -30,6 +30,10 @@ pub struct AppState {
     pub skills: Vec<SkillCatalogEntry>,
     /// Slash-command popup stack. Empty stack ↔ no popup visible.
     pub popup_stack: PopupStack,
+    /// Node ids of messages the transcript already shows (or knows about),
+    /// for deduplicating externally appended messages against locally
+    /// streamed content.
+    seen_node_ids: HashSet<NodeId>,
 }
 
 impl AppState {
@@ -51,6 +55,7 @@ impl AppState {
             current_sandbox_policy: None,
             skills: Vec::new(),
             popup_stack: PopupStack::new(),
+            seen_node_ids: HashSet::new(),
         }
     }
 
@@ -77,6 +82,21 @@ impl AppState {
 
     pub fn update_current_model(&mut self, model: Option<String>) {
         self.current_model = model;
+    }
+
+    /// Record a message node the transcript already shows (or knows about).
+    /// Returns `true` if the node was new — i.e. its message should be
+    /// rendered. Keeps externally appended messages (file watcher) idempotent
+    /// against locally streamed content, which carries the same
+    /// pre-allocated node id.
+    pub fn mark_node_seen(&mut self, node_id: NodeId) -> bool {
+        self.seen_node_ids.insert(node_id)
+    }
+
+    /// Reset the seen-node set to the given ids (used when the transcript
+    /// baseline is replaced, e.g. `SetMessages` on connect).
+    pub fn reset_seen_nodes(&mut self, node_ids: impl IntoIterator<Item = NodeId>) {
+        self.seen_node_ids = node_ids.into_iter().collect();
     }
 
     pub fn update_sandbox_policy(&mut self, policy: Option<SandboxPolicy>) {
@@ -113,5 +133,25 @@ impl AppState {
 
     pub fn is_overlay_active(&self) -> bool {
         !matches!(self.overlay_state, OverlayState::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seen_nodes_deduplicate_and_reset() {
+        let mut state = AppState::new();
+
+        // First sighting renders, repeats don't.
+        assert!(state.mark_node_seen(42));
+        assert!(!state.mark_node_seen(42));
+        assert!(state.mark_node_seen(43));
+
+        // Replacing the transcript baseline reseeds the set.
+        state.reset_seen_nodes([1, 2]);
+        assert!(!state.mark_node_seen(1));
+        assert!(state.mark_node_seen(42));
     }
 }

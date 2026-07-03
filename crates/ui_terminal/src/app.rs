@@ -115,6 +115,28 @@ impl Actions {
         });
     }
 
+    /// Whether the current session is view-only because another
+    /// code-assistant instance runs its agent. Session-mutating actions are
+    /// refused in that state (the local in-memory session would diverge from
+    /// the one the external instance keeps writing).
+    async fn refuse_if_view_only(&self) -> bool {
+        let mut state = self.app_state.lock().await;
+        let view_only = state
+            .activity_state
+            .as_ref()
+            .is_some_and(|s| s.is_running_externally());
+        if view_only {
+            state.set_info_message(Some(
+                "This session is running in another code-assistant instance — \
+                 it is read-only until that agent finishes."
+                    .to_string(),
+            ));
+            drop(state);
+            let _ = self.redraw_tx.send(());
+        }
+        view_only
+    }
+
     fn send_user_message(
         &self,
         session_id: String,
@@ -160,6 +182,9 @@ impl Actions {
     fn switch_model(&self, session_id: String, model_name: String) {
         let this = self.clone();
         tokio::spawn(async move {
+            if this.refuse_if_view_only().await {
+                return;
+            }
             match this
                 .service
                 .switch_model(session_id, model_name.clone())
@@ -194,6 +219,9 @@ impl Actions {
     fn clear_context(&self, session_id: String) {
         let this = self.clone();
         tokio::spawn(async move {
+            if this.refuse_if_view_only().await {
+                return;
+            }
             if let Err(e) = this.service.clear_context(session_id).await {
                 this.display_error(format!("Failed to clear context: {e:#}"));
             }
@@ -203,6 +231,9 @@ impl Actions {
     fn compact_context(&self, session_id: String) {
         let this = self.clone();
         tokio::spawn(async move {
+            if this.refuse_if_view_only().await {
+                return;
+            }
             if let Err(e) = this.service.compact_context(session_id).await {
                 this.display_error(format!("{e:#}"));
             }
@@ -212,6 +243,9 @@ impl Actions {
     fn invoke_skill(&self, session_id: String, scope: String, name: String) {
         let this = self.clone();
         tokio::spawn(async move {
+            if this.refuse_if_view_only().await {
+                return;
+            }
             if let Err(e) = this.service.invoke_skill(session_id, scope, name).await {
                 this.display_error(format!("{e:#}"));
             }
@@ -539,6 +573,15 @@ async fn event_loop(
                                                 state.set_info_message(Some(
                                                     "No agent is currently running.".to_string(),
                                                 ));
+                                            } else if activity_state
+                                                .as_ref()
+                                                .is_some_and(|s| s.is_running_externally())
+                                            {
+                                                state.set_info_message(Some(
+                                                    "The agent runs in another code-assistant \
+                                                     instance and cannot be cancelled from here."
+                                                        .to_string(),
+                                                ));
                                             } else {
                                                 actions.request_stop(session_id.clone());
                                                 state.set_info_message(Some(
@@ -564,12 +607,27 @@ async fn event_loop(
                                             state.activity_state.clone()
                                         };
 
-                                        // While an agent is running the message is
-                                        // queued; otherwise it starts a new turn.
-                                        let agent_idle = activity_state
+                                        if activity_state
                                             .as_ref()
-                                            .is_none_or(|s| s.is_terminal());
-                                        if agent_idle {
+                                            .is_some_and(|s| s.is_running_externally())
+                                        {
+                                            // The session is view-only while another
+                                            // instance runs it: refuse the submit and
+                                            // restore the composer so nothing typed
+                                            // is lost.
+                                            input_manager.textarea.insert_str(&message);
+                                            input_manager.attachments = attachments;
+                                            app_state.lock().await.set_info_message(Some(
+                                                "This session is running in another \
+                                                 code-assistant instance — input is \
+                                                 disabled until it finishes."
+                                                    .to_string(),
+                                            ));
+                                        } else if activity_state
+                                            .as_ref()
+                                            .is_none_or(|s| s.is_terminal())
+                                        {
+                                            // No agent running: start a new turn.
                                             cancel_flag.store(false, Ordering::SeqCst);
                                             actions.send_user_message(
                                                 session_id,
@@ -577,6 +635,7 @@ async fn event_loop(
                                                 attachments,
                                             );
                                         } else {
+                                            // Local agent running: queue the message.
                                             actions.queue_user_message(
                                                 session_id,
                                                 message,
@@ -1003,6 +1062,52 @@ impl TerminalTuiApp {
 
         // Fetch the skill catalog for the `/skill` picker.
         actions.refresh_skills(session_id.clone());
+
+        // Start the filesystem watcher for cross-instance awareness, so a
+        // session that another code-assistant instance appends to stays in
+        // sync here (e.g. `--continue` on a session streamed elsewhere).
+        let watcher_session_ref: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(Some(session_id.clone())));
+        let (watcher_tx, watcher_rx) = async_channel::bounded::<UiEvent>(64);
+        let _session_watcher = match code_assistant_core::session::watcher::SessionWatcher::start(
+            &FileSessionPersistence::new(),
+            watcher_tx,
+            watcher_session_ref,
+        ) {
+            Ok(watcher) => {
+                debug!("Filesystem session watcher started (terminal mode)");
+                Some(watcher)
+            }
+            Err(e) => {
+                debug!("Failed to start filesystem session watcher: {e}");
+                None
+            }
+        };
+        {
+            let service = service.clone();
+            let terminal_ui = terminal_ui.clone();
+            let our_session_id = session_id.clone();
+            tokio::spawn(async move {
+                while let Ok(event) = watcher_rx.recv().await {
+                    match event {
+                        UiEvent::RefreshCurrentSession { session_id } => {
+                            // The resulting AppendMessages/UpdatePlan events
+                            // arrive via the broadcast stream (bridge task).
+                            if let Err(e) = service.refresh_session(session_id).await {
+                                debug!("Watcher-triggered refresh failed: {e:#}");
+                            }
+                        }
+                        UiEvent::UpdateSessionActivityState { ref session_id, .. }
+                            if *session_id == our_session_id =>
+                        {
+                            let _ = terminal_ui.send_event(event).await;
+                        }
+                        // Chat list and config changes have no terminal UI.
+                        _ => {}
+                    }
+                }
+            });
+        }
 
         // Spawn a background task to process UI events from display fragments
         {
