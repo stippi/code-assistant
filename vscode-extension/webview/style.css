@@ -174,10 +174,15 @@ svg.lucide {
   background: none;
   cursor: pointer;
   font-family: inherit;
-  font-size: inherit;
-  color: var(--vscode-foreground);
+  font-size: 0.92em;
+  color: var(--vscode-descriptionForeground);
   text-align: left;
   min-width: 0;
+}
+
+.tool-icon svg.lucide {
+  width: 14px;
+  height: 14px;
 }
 
 .tool-duration {
@@ -258,8 +263,6 @@ svg.lucide {
 .tool-card-edit > .tool-header .tool-title,
 .tool-card-terminal > .tool-header .tool-title {
   font-family: var(--vscode-editor-font-family);
-  font-size: 0.92em;
-  color: var(--vscode-descriptionForeground);
 }
 
 .tool-card-edit > .tool-body {
@@ -312,7 +315,7 @@ svg.lucide {
 
 #plan-area {
   border-bottom: 1px solid var(--vscode-editorWidget-border, transparent);
-  padding: 4px 0 6px;
+  padding: 4px 8px 6px;
 }
 
 .plan-header {
@@ -421,12 +424,16 @@ svg.lucide {
 
 /* --- composer --- */
 
+/* The component edge already frames the view, so the composer is
+   borderless and flush: only a top divider separates it. */
 #composer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px 10px;
   border-top: 1px solid var(--vscode-editorWidget-border, transparent);
+}
+
+#composer:focus-within {
+  border-top-color: var(--vscode-focusBorder);
 }
 
 /* The whole shell is the input: textarea plus inline toolbar */
@@ -434,15 +441,9 @@ svg.lucide {
 #input-shell {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, transparent));
-  border-radius: 8px;
   background: var(--vscode-input-background);
-  padding: 8px 8px 6px 10px;
+  padding: 10px 12px 8px;
   cursor: text;
-}
-
-#input-shell:focus-within {
-  border-color: var(--vscode-focusBorder);
 }
 
 #input {
