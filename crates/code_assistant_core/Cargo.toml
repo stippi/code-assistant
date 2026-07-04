@@ -29,9 +29,14 @@ tempfile = "3.23"
 fs2 = "0.4"
 notify = { version = "7", features = ["macos_fsevent"] }
 
-# JSON (de)serialization
+# JSON (de)serialization.
+# preserve_order is load-bearing: the xml/caret tool-doc formatters emit
+# parameters in schema insertion order (and their tests assert it). Workspace
+# builds got the feature transitively through gpui (feature unification);
+# crate-scoped builds/tests did not and behaved differently — declare it
+# explicitly instead of inheriting it by accident.
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
 
 # YAML (de)serialization — used to parse SKILL.md frontmatter.
 # Maintained fork of the archived serde_yaml (see RUSTSEC-2025-0068).
