@@ -42,6 +42,17 @@ pub trait ToolInterceptor: Send + Sync {
     fn after_tool_success(&self, _request: &ToolRequest, _ctx: &mut LoopCtx) {}
 }
 
+/// Observes every message as it is appended to the conversation history —
+/// user input, assistant responses and tool results alike. For side channels
+/// such as transcript mirroring, external memory sync or metrics: observers
+/// cannot veto or modify the message, must not block, and any internal
+/// failure must stay internal (log, don't panic) — the loop does not inspect
+/// an outcome.
+pub trait MessageObserver: Send + Sync {
+    /// `session_id` is `None` while the agent has no session assigned yet.
+    fn on_message(&self, session_id: Option<&str>, message: &Message);
+}
+
 /// Participates in each loop iteration.
 pub trait IterationHook: Send + Sync {
     /// Adjust the rendered messages right before they are sent to the LLM
@@ -142,6 +153,7 @@ pub trait SystemPromptProvider: Send + Sync {
 pub struct HookRegistry {
     pub interceptors: Vec<Box<dyn ToolInterceptor>>,
     pub iteration_hooks: Vec<Box<dyn IterationHook>>,
+    pub observers: Vec<Box<dyn MessageObserver>>,
     pub dispatch: Box<dyn ToolDispatchPolicy>,
     pub compaction: Box<dyn CompactionPolicy>,
     pub recovery: Box<dyn RecoveryPolicy>,

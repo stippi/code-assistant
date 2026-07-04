@@ -33,6 +33,7 @@ pub fn default_hooks() -> HookRegistry {
             Box::new(SkillSnapshotHook),
         ],
         iteration_hooks: vec![Box::new(NameSessionReminderHook)],
+        observers: vec![],
         dispatch: Box::new(SpawnAgentParallelPolicy),
         compaction: Box::new(TokenRatioCompaction::new(0.8)),
         recovery: Box::new(DefaultRecovery),

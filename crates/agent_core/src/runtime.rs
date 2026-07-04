@@ -318,6 +318,10 @@ impl AgentRuntime {
         self.message_nodes.insert(node_id, node);
         self.active_path.push(node_id);
 
+        for observer in &self.hooks.observers {
+            observer.on_message(self.session_id.as_deref(), &message);
+        }
+
         // Also add to linearized history
         self.message_history.push(message);
 
