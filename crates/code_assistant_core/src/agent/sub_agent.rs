@@ -135,6 +135,9 @@ pub struct DefaultSubAgentRunner {
     permission_handler: Option<Arc<dyn PermissionMediator>>,
     /// The tool registry sub-agents run with (shared with the parent agent).
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
+    /// Hook factory sub-agents run with (shared with the parent agent);
+    /// `None` uses code-assistant's default hooks.
+    hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
 }
 
 impl DefaultSubAgentRunner {
@@ -147,6 +150,7 @@ impl DefaultSubAgentRunner {
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
+        hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
     ) -> Self {
         let sandbox_policy = session_config.sandbox_policy.clone();
         Self {
@@ -158,6 +162,7 @@ impl DefaultSubAgentRunner {
             ui,
             permission_handler,
             tool_registry,
+            hooks_factory,
         }
     }
 
@@ -215,6 +220,7 @@ impl DefaultSubAgentRunner {
             permission_handler,
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: None,
+            hooks_factory: self.hooks_factory.clone(),
         };
 
         let mut agent = Agent::new(components, self.session_config.clone());

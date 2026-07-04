@@ -147,3 +147,8 @@ pub struct HookRegistry {
     pub recovery: Box<dyn RecoveryPolicy>,
     pub system_prompt: Box<dyn SystemPromptProvider>,
 }
+
+/// Builds a fresh [`HookRegistry`] per agent instance. Embedders install one
+/// where agents are created repeatedly (e.g. a session manager) to customize
+/// the hook set without the wiring layer knowing about agent construction.
+pub type HookRegistryFactory = std::sync::Arc<dyn Fn() -> HookRegistry + Send + Sync>;

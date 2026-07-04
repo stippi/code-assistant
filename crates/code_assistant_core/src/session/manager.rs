@@ -95,6 +95,10 @@ pub struct SessionManager {
     /// The tool registry shared by all sessions this manager runs.
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
 
+    /// Builds the hook set for each agent this manager starts; `None` uses
+    /// code-assistant's default hooks.
+    hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
+
     /// The core→UI broadcast stream all sessions publish to.
     events: crate::session::event_stream::EventStream,
 }
@@ -140,8 +144,15 @@ impl SessionManager {
             force_diff_format,
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
+            hooks_factory: None,
             events,
         }
+    }
+
+    /// Install a hook factory applied to every agent this manager starts.
+    /// Embedders use this to customize e.g. the system prompt provider.
+    pub fn set_hooks_factory(&mut self, factory: agent_core::hooks::HookRegistryFactory) {
+        self.hooks_factory = Some(factory);
     }
 
     /// The core→UI broadcast stream this manager's sessions publish to.
@@ -747,6 +758,7 @@ impl SessionManager {
                 publisher.clone(),
                 permission_handler.clone(),
                 self.tool_registry.clone(),
+                self.hooks_factory.clone(),
             ));
 
         let components = AgentComponents {
@@ -758,6 +770,7 @@ impl SessionManager {
             permission_handler,
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: Some(sub_agent_runner),
+            hooks_factory: self.hooks_factory.clone(),
         };
 
         let mut agent = Agent::new(components, session_config.clone());

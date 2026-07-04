@@ -53,6 +53,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -177,6 +178,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -305,6 +307,7 @@ async fn test_parse_error_handling() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -446,6 +449,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -549,6 +553,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -704,6 +709,7 @@ async fn test_compaction_reminds_about_active_skills() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -791,6 +797,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -920,6 +927,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1126,6 +1134,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1493,6 +1502,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1545,6 +1555,7 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1611,6 +1622,7 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1661,6 +1673,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1715,6 +1728,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1819,6 +1833,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -1904,6 +1919,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -2059,6 +2075,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
@@ -2188,6 +2205,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         permission_handler: None,
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        hooks_factory: None,
     };
 
     let session_config = SessionConfig {
