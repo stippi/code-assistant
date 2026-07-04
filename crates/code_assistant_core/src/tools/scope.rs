@@ -28,6 +28,10 @@ pub enum ToolScope {
     /// `use_diff_blocks = true`, so sub-agents inherit their parent's
     /// edit-tool layout.
     SubAgentDefaultWithDiffBlocks,
+    /// An embedder-defined scope: the tag is supplied verbatim. Lets
+    /// applications built on this crate offer their own tool subsets (e.g. a
+    /// memory-tools-only wrap-up turn) without this enum having to know them.
+    Custom(&'static str),
 }
 
 impl ToolScope {
@@ -40,6 +44,7 @@ impl ToolScope {
             ToolScope::SubAgentReadOnly => capabilities::SCOPE_SUBAGENT_READ_ONLY,
             ToolScope::SubAgentDefault => capabilities::SCOPE_SUBAGENT_DEFAULT,
             ToolScope::SubAgentDefaultWithDiffBlocks => capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
+            ToolScope::Custom(tag) => tag,
         }
     }
 }

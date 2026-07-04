@@ -391,8 +391,40 @@ impl SessionService {
         branch_parent_id: Option<NodeId>,
     ) -> Result<()> {
         self.call(move |ctx| async move {
-            send_user_message_impl(&ctx, &session_id, &message, &attachments, branch_parent_id)
-                .await
+            send_user_message_impl(
+                &ctx,
+                &session_id,
+                &message,
+                &attachments,
+                branch_parent_id,
+                None,
+            )
+            .await
+        })
+        .await
+    }
+
+    /// Like [`Self::send_user_message`], but the agent run is restricted to
+    /// the tools carrying `tool_scope`'s capability tag. Per-run only; the
+    /// session's next turn uses its normal scope again. For system-initiated
+    /// turns such as a memory-only session wrap-up.
+    pub async fn send_user_message_scoped(
+        &self,
+        session_id: String,
+        message: String,
+        attachments: Vec<DraftAttachment>,
+        tool_scope: crate::tools::core::ToolScope,
+    ) -> Result<()> {
+        self.call(move |ctx| async move {
+            send_user_message_impl(
+                &ctx,
+                &session_id,
+                &message,
+                &attachments,
+                None,
+                Some(tool_scope),
+            )
+            .await
         })
         .await
     }
@@ -501,7 +533,7 @@ impl SessionService {
                 }
             }
 
-            send_user_message_impl(&ctx, &session_id, &message, &[], None).await
+            send_user_message_impl(&ctx, &session_id, &message, &[], None, None).await
         })
         .await
     }
@@ -925,6 +957,7 @@ async fn send_user_message_impl(
     message: &str,
     attachments: &[DraftAttachment],
     branch_parent_id: Option<NodeId>,
+    tool_scope_override: Option<crate::tools::core::ToolScope>,
 ) -> Result<()> {
     debug!(
         "User message for session {}: {} (with {} attachments, branch_parent: {:?})",
@@ -973,7 +1006,7 @@ async fn send_user_message_impl(
         );
     }
 
-    start_agent_impl(ctx, session_id).await
+    start_agent_impl(ctx, session_id, tool_scope_override).await
 }
 
 async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
@@ -1002,11 +1035,15 @@ async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
         }
     }
 
-    start_agent_impl(ctx, session_id).await
+    start_agent_impl(ctx, session_id, None).await
 }
 
 /// Start the agent loop for a session against its current message history.
-async fn start_agent_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
+async fn start_agent_impl(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    tool_scope_override: Option<crate::tools::core::ToolScope>,
+) -> Result<()> {
     let session_config = {
         let manager = ctx.manager.lock().await;
         manager.get_session_model_config(session_id).unwrap_or(None)
@@ -1040,6 +1077,7 @@ async fn start_agent_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
             project_manager,
             command_executor,
             None,
+            tool_scope_override,
         )
         .await
         .context("Failed to start agent")?;

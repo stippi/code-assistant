@@ -605,11 +605,19 @@ impl SessionManager {
             project_manager,
             command_executor,
             permission_handler,
+            None,
         )
         .await
     }
 
-    /// Start an agent for a session (message must already be added via add_user_message)
+    /// Start an agent for a session (message must already be added via
+    /// add_user_message).
+    ///
+    /// `tool_scope_override` restricts this run to the tools carrying the
+    /// scope's capability tag (offered to the LLM and enforced at dispatch)
+    /// instead of the scope derived from the session config. Per-run only:
+    /// nothing is persisted, the next run derives its scope normally. Used
+    /// for system-initiated turns such as a memory-only session wrap-up.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_agent_for_session(
         &mut self,
@@ -618,6 +626,7 @@ impl SessionManager {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
+        tool_scope_override: Option<crate::tools::core::ToolScope>,
     ) -> Result<()> {
         // Acquire exclusive cross-process agent lock.
         // This prevents another code-assistant instance from running an agent
@@ -791,6 +800,13 @@ impl SessionManager {
 
         // Load the session state into the agent
         agent.load_from_session_state(session_state).await?;
+
+        // Apply the per-run scope after the load, which derives the scope
+        // from the session config and would otherwise win.
+        if let Some(scope) = tool_scope_override {
+            agent.set_tool_scope(scope);
+            agent.invalidate_system_message_cache();
+        }
 
         // Announce the restored plan to the UI
         let _ = publisher
