@@ -48,6 +48,12 @@ pub trait ToolInterceptor: Send + Sync {
 /// cannot veto or modify the message, must not block, and any internal
 /// failure must stay internal (log, don't panic) — the loop does not inspect
 /// an outcome.
+///
+/// Contract: each message is announced exactly once, when it first enters a
+/// conversation. Restoring a persisted conversation does not re-notify.
+/// Embedders that insert messages outside the loop (e.g. a session manager
+/// accepting user input while no agent runs) must notify observers at that
+/// insertion point themselves.
 pub trait MessageObserver: Send + Sync {
     /// `session_id` is `None` while the agent has no session assigned yet.
     fn on_message(&self, session_id: Option<&str>, message: &Message);

@@ -521,12 +521,23 @@ impl SessionManager {
         session_instance.reload_from_persistence(&self.persistence)?;
 
         // Add structured user message to session, optionally creating a branch
-        let node_id = session_instance
-            .add_message_with_branch(Message::new_user_content(content_blocks), branch_parent_id)?;
+        let message = Message::new_user_content(content_blocks);
+        let node_id =
+            session_instance.add_message_with_branch(message.clone(), branch_parent_id)?;
 
         // Save the session state with the new message
         self.persistence
             .save_chat_session(&session_instance.session)?;
+
+        // Notify message observers. Messages added here enter the agent later
+        // via `restore_conversation`, which deliberately does not re-notify —
+        // this call is what keeps observers (transcript mirrors, external
+        // memory sync) complete for user messages sent to an idle session.
+        if let Some(factory) = &self.hooks_factory {
+            for observer in &factory().observers {
+                observer.on_message(Some(session_id), &message);
+            }
+        }
 
         // Advance the UI-synced baseline: the user message is displayed immediately
         // by the UI, so the file watcher should not treat it as "new".
