@@ -18,12 +18,11 @@ tokio = { version = "1.48", features = ["macros", "process", "rt", "io-util", "t
 tracing = "0.1"
 
 [dev-dependencies]
+command_executor = { path = "../command_executor" }
 rmcp = { version = "2.1", default-features = false, features = [
     "base64",
     "client",
     "server",
-    "macros",
     "transport-child-process",
 ] }
 tokio = { version = "1.48", features = ["full"] }
-schemars = "1.0"

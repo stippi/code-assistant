@@ -26,7 +26,7 @@ pub fn registry_tool_name(server: &str, tool: &str) -> String {
     format!("{prefix}{hash}")
 }
 
-fn sanitize(part: &str) -> String {
+pub(crate) fn sanitize(part: &str) -> String {
     part.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
