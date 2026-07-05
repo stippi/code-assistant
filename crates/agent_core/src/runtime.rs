@@ -318,6 +318,10 @@ impl AgentRuntime {
         self.message_nodes.insert(node_id, node);
         self.active_path.push(node_id);
 
+        for observer in &self.hooks.observers {
+            observer.on_message(self.session_id.as_deref(), &message);
+        }
+
         // Also add to linearized history
         self.message_history.push(message);
 
@@ -842,6 +846,7 @@ impl AgentRuntime {
         let ctx = crate::hooks::PromptCtx {
             dialect: self.dialect.as_ref(),
             model_hint: self.model_hint.as_deref(),
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_ref(),
         };
@@ -936,6 +941,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
@@ -1730,6 +1736,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
@@ -1747,6 +1754,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };

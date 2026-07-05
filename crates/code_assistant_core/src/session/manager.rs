@@ -95,6 +95,10 @@ pub struct SessionManager {
     /// The tool registry shared by all sessions this manager runs.
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
 
+    /// Builds the hook set for each agent this manager starts; `None` uses
+    /// code-assistant's default hooks.
+    hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
+
     /// The core→UI broadcast stream all sessions publish to.
     events: crate::session::event_stream::EventStream,
 }
@@ -140,8 +144,15 @@ impl SessionManager {
             force_diff_format,
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
+            hooks_factory: None,
             events,
         }
+    }
+
+    /// Install a hook factory applied to every agent this manager starts.
+    /// Embedders use this to customize e.g. the system prompt provider.
+    pub fn set_hooks_factory(&mut self, factory: agent_core::hooks::HookRegistryFactory) {
+        self.hooks_factory = Some(factory);
     }
 
     /// The core→UI broadcast stream this manager's sessions publish to.
@@ -510,12 +521,23 @@ impl SessionManager {
         session_instance.reload_from_persistence(&self.persistence)?;
 
         // Add structured user message to session, optionally creating a branch
-        let node_id = session_instance
-            .add_message_with_branch(Message::new_user_content(content_blocks), branch_parent_id)?;
+        let message = Message::new_user_content(content_blocks);
+        let node_id =
+            session_instance.add_message_with_branch(message.clone(), branch_parent_id)?;
 
         // Save the session state with the new message
         self.persistence
             .save_chat_session(&session_instance.session)?;
+
+        // Notify message observers. Messages added here enter the agent later
+        // via `restore_conversation`, which deliberately does not re-notify —
+        // this call is what keeps observers (transcript mirrors, external
+        // memory sync) complete for user messages sent to an idle session.
+        if let Some(factory) = &self.hooks_factory {
+            for observer in &factory().observers {
+                observer.on_message(Some(session_id), &message);
+            }
+        }
 
         // Advance the UI-synced baseline: the user message is displayed immediately
         // by the UI, so the file watcher should not treat it as "new".
@@ -583,11 +605,19 @@ impl SessionManager {
             project_manager,
             command_executor,
             permission_handler,
+            None,
         )
         .await
     }
 
-    /// Start an agent for a session (message must already be added via add_user_message)
+    /// Start an agent for a session (message must already be added via
+    /// add_user_message).
+    ///
+    /// `tool_scope_override` restricts this run to the tools carrying the
+    /// scope's capability tag (offered to the LLM and enforced at dispatch)
+    /// instead of the scope derived from the session config. Per-run only:
+    /// nothing is persisted, the next run derives its scope normally. Used
+    /// for system-initiated turns such as a memory-only session wrap-up.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_agent_for_session(
         &mut self,
@@ -596,6 +626,7 @@ impl SessionManager {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
+        tool_scope_override: Option<crate::tools::core::ToolScope>,
     ) -> Result<()> {
         // Acquire exclusive cross-process agent lock.
         // This prevents another code-assistant instance from running an agent
@@ -747,6 +778,7 @@ impl SessionManager {
                 publisher.clone(),
                 permission_handler.clone(),
                 self.tool_registry.clone(),
+                self.hooks_factory.clone(),
             ));
 
         let components = AgentComponents {
@@ -758,6 +790,7 @@ impl SessionManager {
             permission_handler,
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: Some(sub_agent_runner),
+            hooks_factory: self.hooks_factory.clone(),
         };
 
         let mut agent = Agent::new(components, session_config.clone());
@@ -767,6 +800,13 @@ impl SessionManager {
 
         // Load the session state into the agent
         agent.load_from_session_state(session_state).await?;
+
+        // Apply the per-run scope after the load, which derives the scope
+        // from the session config and would otherwise win.
+        if let Some(scope) = tool_scope_override {
+            agent.set_tool_scope(scope);
+            agent.invalidate_system_message_cache();
+        }
 
         // Announce the restored plan to the UI
         let _ = publisher

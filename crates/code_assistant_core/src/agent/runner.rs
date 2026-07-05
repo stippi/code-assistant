@@ -33,6 +33,11 @@ pub struct AgentComponents {
 
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
+
+    /// Hook set for this agent; `None` uses code-assistant's default hooks.
+    /// Embedders install a factory to customize e.g. the system
+    /// prompt while reusing the rest of the runtime.
+    pub hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
 }
 
 pub struct Agent {
@@ -54,6 +59,7 @@ impl Agent {
             permission_handler,
             tool_registry,
             sub_agent_runner,
+            hooks_factory,
         } = components;
 
         let app_state = AgentAppState::new(session_config.clone());
@@ -77,7 +83,9 @@ impl Agent {
             permission_handler,
             services_provider,
             state_persistence: Box::new(SessionStateAdapter::new(state_persistence)),
-            hooks: crate::plugins::default_hooks(),
+            hooks: hooks_factory
+                .map(|factory| factory())
+                .unwrap_or_else(crate::plugins::default_hooks),
             extensions: Box::new(app_state),
         });
 
