@@ -39,12 +39,7 @@ pub fn load_mcp_servers_config_from(path: &Path) -> Result<McpServersConfig> {
         .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
     let mut config: McpServersConfig = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse MCP config: {}", path.display()))?;
-    for (name, server) in config.servers.iter_mut() {
-        for value in server.env.values_mut() {
-            *value = crate::tools::core::ToolsConfig::substitute_env_var_in_string(value)
-                .with_context(|| format!("in env of MCP server '{name}'"))?;
-        }
-    }
+    config.substitute_env_values(|name| std::env::var(name).ok())?;
     Ok(config)
 }
 
