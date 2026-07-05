@@ -1535,6 +1535,7 @@ dependencies = [
  "image",
  "keepawake",
  "llm",
+ "mcp_client",
  "md5",
  "notify",
  "regex",

@@ -7,6 +7,9 @@ pub mod tool_use_filter;
 // Tools configuration (tools.json)
 pub mod config;
 
+// MCP client mode: mcp-servers.json + registration of MCP server tools
+pub mod mcp;
+
 // New trait-based tools implementation
 pub mod core;
 pub mod impls;
@@ -36,6 +39,18 @@ pub fn default_registry() -> Arc<ToolRegistry> {
     let config = ToolsConfig::load().unwrap_or_default();
     let mut registry = ToolRegistry::new();
     register_default_tools(&mut registry, &config);
+    Arc::new(registry)
+}
+
+/// [`default_registry`] plus the tools of all MCP servers configured in
+/// `mcp-servers.json`. Connecting to the servers is asynchronous (child
+/// processes, initialize handshake), hence the async variant; wiring layers
+/// without a config or without enabled servers pay nothing.
+pub async fn default_registry_with_mcp() -> Arc<ToolRegistry> {
+    let config = ToolsConfig::load().unwrap_or_default();
+    let mut registry = ToolRegistry::new();
+    register_default_tools(&mut registry, &config);
+    mcp::register_configured_mcp_tools(&mut registry).await;
     Arc::new(registry)
 }
 

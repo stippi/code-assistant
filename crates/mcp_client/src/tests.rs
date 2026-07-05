@@ -223,6 +223,36 @@ async fn dead_server_degrades_to_tool_error() {
     assert!(!output.is_success());
 }
 
+/// Smoke test against a real child process: code-assistant's own MCP server
+/// mode. Ignored by default because it needs the workspace binary built
+/// first (`cargo build -p code-assistant --no-default-features`).
+#[tokio::test]
+#[ignore = "needs a built code-assistant binary in target/debug"]
+async fn connects_to_a_real_stdio_server() {
+    let binary =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/code-assistant");
+    assert!(
+        binary.exists(),
+        "build the code-assistant binary before running this test"
+    );
+
+    let config = server_config(json!({
+        "command": binary.to_string_lossy(),
+        "args": ["server"]
+    }));
+    let connection = McpServerConnection::connect("self", &config).await.unwrap();
+    let tools = connection.list_tools().await.unwrap();
+    assert!(
+        tools.iter().any(|tool| tool.name == "read_files"),
+        "expected code-assistant's MCP server tools, got: {:?}",
+        tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>()
+    );
+    connection.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn non_object_params_are_rejected() {
     let (connection, _server) = connect_test_server().await;

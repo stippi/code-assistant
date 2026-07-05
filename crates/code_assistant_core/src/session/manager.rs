@@ -155,6 +155,15 @@ impl SessionManager {
         self.hooks_factory = Some(factory);
     }
 
+    /// Replace the tool registry shared by the sessions this manager runs.
+    /// Wiring layers use this when the full registry is only available after
+    /// asynchronous setup (e.g. connecting MCP servers) — swap before the
+    /// first agent starts; already-created session instances keep the
+    /// registry they were built with.
+    pub fn set_tool_registry(&mut self, tool_registry: Arc<crate::tools::core::ToolRegistry>) {
+        self.tool_registry = tool_registry;
+    }
+
     /// The core→UI broadcast stream this manager's sessions publish to.
     pub fn event_stream(&self) -> &crate::session::event_stream::EventStream {
         &self.events

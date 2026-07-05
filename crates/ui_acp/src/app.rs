@@ -70,7 +70,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     // Create session manager
     let persistence = FileSessionPersistence::new();
     let persistence_for_watcher = FileSessionPersistence::new();
-    let tool_registry = code_assistant_core::tools::default_registry();
+    let tool_registry = code_assistant_core::tools::default_registry_with_mcp().await;
     let events = code_assistant_core::session::event_stream::EventStream::new();
     let session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,

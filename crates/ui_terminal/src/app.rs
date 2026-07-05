@@ -902,7 +902,7 @@ impl TerminalTuiApp {
             session_persistence,
             session_config_template,
             config.model.clone(),
-            code_assistant_core::tools::default_registry(),
+            code_assistant_core::tools::default_registry_with_mcp().await,
             events.clone(),
         );
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
