@@ -22,6 +22,10 @@ pub struct LoopCtx<'a> {
     pub tool_executions: &'a mut Vec<ToolExecution>,
     pub message_nodes: &'a mut BTreeMap<NodeId, MessageNode>,
     pub active_path: &'a ConversationPath,
+    /// The session this agent runs, `None` while no session is assigned yet.
+    /// Lets shared hook state (built once per process) be keyed per session —
+    /// same role `PromptCtx::session_id` plays for system-prompt providers.
+    pub session_id: Option<&'a str>,
     /// The agent's tool registry (e.g. for capability checks).
     pub registry: &'a ToolRegistry,
     /// Application-specific loop state. Hooks downcast this to the concrete

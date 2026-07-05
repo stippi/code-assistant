@@ -941,6 +941,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
@@ -1735,6 +1736,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
@@ -1752,6 +1754,7 @@ impl AgentRuntime {
             tool_executions: &mut self.tool_executions,
             message_nodes: &mut self.message_nodes,
             active_path: &self.active_path,
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };

@@ -92,6 +92,7 @@ mod tests {
                 tool_executions: &mut tool_executions,
                 message_nodes: &mut message_nodes,
                 active_path: &active_path,
+                session_id: None,
                 registry: registry.as_ref(),
                 extensions: &mut state,
             };
@@ -110,6 +111,7 @@ mod tests {
                 tool_executions: &mut tool_executions,
                 message_nodes: &mut message_nodes,
                 active_path: &active_path,
+                session_id: None,
                 registry: registry.as_ref(),
                 extensions: &mut state,
             };
@@ -138,6 +140,7 @@ mod tests {
                 tool_executions: &mut tool_executions,
                 message_nodes: &mut message_nodes,
                 active_path: &active_path,
+                session_id: None,
                 registry: registry.as_ref(),
                 extensions: &mut state,
             };
