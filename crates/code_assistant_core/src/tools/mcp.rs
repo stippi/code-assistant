@@ -104,6 +104,50 @@ pub async fn register_configured_mcp_tools(registry: &mut ToolRegistry) -> Vec<M
 mod tests {
     use super::*;
 
+    /// Full core path: mcp-servers.json in the config dir → registry with
+    /// namespaced, scope-tagged MCP tools, served by a real child process
+    /// (code-assistant's own MCP server mode). Ignored by default: needs the
+    /// workspace binary built, and mutates CODE_ASSISTANT_CONFIG_DIR (safe
+    /// only because ignored tests run alone).
+    #[tokio::test]
+    #[ignore = "needs a built code-assistant binary in target/debug"]
+    async fn default_registry_with_mcp_offers_server_tools() {
+        let binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug/code-assistant");
+        assert!(binary.exists(), "build the code-assistant binary first");
+
+        let dir = tempfile::tempdir().unwrap();
+        save_mcp_servers_config_to(
+            &dir.path().join("mcp-servers.json"),
+            &serde_json::from_value(serde_json::json!({
+                "servers": { "self": {
+                    "command": binary.to_string_lossy(),
+                    "args": ["server"],
+                    "enabled_tools": ["read_files"]
+                } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::env::set_var("CODE_ASSISTANT_CONFIG_DIR", dir.path());
+
+        let registry = crate::tools::default_registry_with_mcp().await;
+        std::env::remove_var("CODE_ASSISTANT_CONFIG_DIR");
+
+        let definitions = registry
+            .get_tool_definitions_with_capability(crate::tools::scope::ToolScope::Agent.tag());
+        assert!(
+            definitions
+                .iter()
+                .any(|tool| tool.name == "mcp__self__read_files"),
+            "agent scope must offer the MCP tool"
+        );
+        // The allowlist keeps every other server tool out.
+        assert!(!definitions.iter().any(
+            |tool| tool.name.starts_with("mcp__self__") && tool.name != "mcp__self__read_files"
+        ));
+    }
+
     #[test]
     fn missing_file_yields_empty_config() {
         let dir = tempfile::tempdir().unwrap();
