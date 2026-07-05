@@ -143,6 +143,11 @@ pub struct PromptCtx<'a> {
     /// tool documentation sections.
     pub dialect: &'a dyn ToolDialect,
     pub model_hint: Option<&'a str>,
+    /// The session the agent runs for, when known — lets providers key
+    /// prompt content to a session (e.g. serve a snapshot that stays stable
+    /// for the session's lifetime), mirroring what observers get on
+    /// [`MessageObserver::on_message`].
+    pub session_id: Option<&'a str>,
     /// The agent's tool registry, for rendering tool documentation.
     pub registry: &'a ToolRegistry,
     /// Application-specific state (projects, scope, …); see

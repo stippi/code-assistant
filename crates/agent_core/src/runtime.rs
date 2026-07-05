@@ -846,6 +846,7 @@ impl AgentRuntime {
         let ctx = crate::hooks::PromptCtx {
             dialect: self.dialect.as_ref(),
             model_hint: self.model_hint.as_deref(),
+            session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_ref(),
         };
