@@ -1,6 +1,7 @@
 //! Settings screen — full-screen view for configuring providers, models, and general preferences.
 
 mod general_section;
+mod mcp_section;
 mod models_section;
 pub(crate) mod provider_forms;
 pub(crate) mod provider_suggestions;
@@ -21,6 +22,7 @@ pub enum SettingsSection {
     Providers,
     Models,
     Skills,
+    McpServers,
 }
 
 /// Events emitted by the settings screen.
@@ -40,6 +42,7 @@ pub struct SettingsScreen {
     models_section: Entity<models_section::ModelsSection>,
     general_section: Entity<general_section::GeneralSection>,
     skills_section: Entity<skills_section::SkillsSection>,
+    mcp_section: Entity<mcp_section::McpSection>,
 }
 
 impl SettingsScreen {
@@ -49,6 +52,7 @@ impl SettingsScreen {
 
         let general_section = cx.new(|cx| general_section::GeneralSection::new(window, cx));
         let skills_section = cx.new(|cx| skills_section::SkillsSection::new(window, cx));
+        let mcp_section = cx.new(|cx| mcp_section::McpSection::new(window, cx));
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -57,6 +61,7 @@ impl SettingsScreen {
             models_section,
             general_section,
             skills_section,
+            mcp_section,
         }
     }
 
@@ -95,6 +100,9 @@ impl SettingsScreen {
             }
             SettingsSection::Skills => {
                 self.skills_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::McpServers => {
+                self.mcp_section.update(cx, |s, _cx| s.reload());
             }
             SettingsSection::General => {}
         }
@@ -264,6 +272,12 @@ impl Render for SettingsScreen {
                                         "Skills",
                                         "icons/library.svg",
                                         cx,
+                                    ))
+                                    .child(self.render_nav_item(
+                                        SettingsSection::McpServers,
+                                        "MCP Servers",
+                                        "icons/braces.svg",
+                                        cx,
                                     )),
                             ),
                     )
@@ -282,6 +296,9 @@ impl Render for SettingsScreen {
                             }
                             SettingsSection::Skills => {
                                 self.skills_section.clone().into_any_element()
+                            }
+                            SettingsSection::McpServers => {
+                                self.mcp_section.clone().into_any_element()
                             }
                         },
                     )),

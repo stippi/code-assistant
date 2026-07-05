@@ -9,7 +9,9 @@ use crate::tools::scope::capabilities;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-pub use mcp_client::{DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig};
+pub use mcp_client::{
+    discover_tools, DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig,
+};
 
 /// Scope tags every MCP tool carries in code-assistant: offered to the main
 /// agent (both dialect variants), not to sub-agents and not through the MCP
@@ -44,6 +46,20 @@ pub fn load_mcp_servers_config_from(path: &Path) -> Result<McpServersConfig> {
         }
     }
     Ok(config)
+}
+
+/// Load the MCP servers configuration verbatim, without `${ENV_VAR}`
+/// substitution — for editing UIs, which must show and preserve the raw
+/// placeholders instead of baked-in secrets.
+pub fn load_mcp_servers_config_raw() -> Result<McpServersConfig> {
+    let path = mcp_servers_config_path();
+    if !path.exists() {
+        return Ok(McpServersConfig::default());
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse MCP config: {}", path.display()))
 }
 
 /// Persist the MCP servers configuration (raw, without env substitution).
