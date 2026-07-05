@@ -35,7 +35,7 @@ pub struct AgentComponents {
     pub sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
 
     /// Hook set for this agent; `None` uses code-assistant's default hooks.
-    /// Embedders (e.g. pal) install a factory to customize e.g. the system
+    /// Embedders install a factory to customize e.g. the system
     /// prompt while reusing the rest of the runtime.
     pub hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
 }
