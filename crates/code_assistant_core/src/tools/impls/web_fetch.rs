@@ -67,8 +67,8 @@ impl Tool for WebFetchTool {
             "can be used for further analysis."
         );
         ToolSpec {
-            name: "web_fetch",
-            description,
+            name: "web_fetch".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -93,7 +93,7 @@ impl Tool for WebFetchTool {
                 "openWorldHint": true
             })),
             // Note: can be disabled in read-only sub-agents if needed later.
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -101,7 +101,7 @@ impl Tool for WebFetchTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Fetching {url}"),

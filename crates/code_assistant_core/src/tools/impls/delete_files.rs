@@ -96,8 +96,9 @@ impl Tool for DeleteFilesTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "delete_files",
-            description: "Delete files from a specified project. This operation cannot be undone!",
+            name: "delete_files".into(),
+            description: "Delete files from a specified project. This operation cannot be undone!"
+                .into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -122,14 +123,14 @@ impl Tool for DeleteFilesTool {
                 "destructiveHint": true,
                 "idempotentHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::EDITS_FILES,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Deleting {paths}"),

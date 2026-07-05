@@ -109,8 +109,8 @@ impl Tool for UpdatePlanTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "update_plan",
-            description: Self::spec_description(),
+            name: "update_plan".into(),
+            description: Self::spec_description().into(),
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -153,11 +153,11 @@ impl Tool for UpdatePlanTool {
                 "required": ["entries"]
             }),
             annotations: None,
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: true,
             title_template: Some("Updating plan ({entries} items)"),

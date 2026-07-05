@@ -133,8 +133,8 @@ impl Tool for ReplaceInFileTool {
             "but you can use SEARCH_ALL/REPLACE_ALL blocks to replace all occurrences of a pattern.",
         );
         ToolSpec {
-            name: "replace_in_file",
-            description,
+            name: "replace_in_file".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -159,11 +159,11 @@ impl Tool for ReplaceInFileTool {
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::EDITS_FILES,
                 capabilities::SCOPE_AGENT_DIFF,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &["diff"],
             hidden: false,
             title_template: Some("Replacing in {path}"),

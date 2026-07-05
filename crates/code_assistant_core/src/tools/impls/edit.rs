@@ -101,8 +101,8 @@ impl Tool for EditTool {
             "Set replace_all to true to replace all occurrences of the pattern.",
         );
         ToolSpec {
-            name: "edit",
-            description,
+            name: "edit".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -136,12 +136,12 @@ impl Tool for EditTool {
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::EDITS_FILES,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
-            ],
+            ]),
             multiline_params: &["old_text", "new_text"],
             hidden: false,
             title_template: Some("Editing {path}"),

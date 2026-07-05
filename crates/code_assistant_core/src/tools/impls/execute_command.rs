@@ -130,8 +130,8 @@ impl Tool for ExecuteCommandTool {
             "Must not be used with commands that would keep running forever, unless combined with a timeout."
         );
         ToolSpec {
-            name: "execute_command",
-            description,
+            name: "execute_command".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -161,13 +161,13 @@ impl Tool for ExecuteCommandTool {
                 "readOnlyHint": false,
                 "idempotentHint": false
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &["command_line"],
             hidden: false,
             title_template: Some("Running: {command_line}"),

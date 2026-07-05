@@ -49,8 +49,8 @@ impl Tool for NameSessionTool {
             "Use this tool when the user has provided a clear task or question that gives the session a clear purpose."
         );
         ToolSpec {
-            name: "name_session",
-            description,
+            name: "name_session".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -62,11 +62,11 @@ impl Tool for NameSessionTool {
                 "required": ["title"]
             }),
             annotations: None,
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: true, // This tool should be hidden from UI
             title_template: Some("Setting session title to '{title}'"),

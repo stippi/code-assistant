@@ -221,8 +221,8 @@ mod conversion_tests {
 
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: "test_tool",
-                description: "Test tool for parameter conversion",
+                name: "test_tool".into(),
+                description: "Test tool for parameter conversion".into(),
                 parameters_schema: json!({
                     "type": "object",
                     "properties": {
@@ -253,7 +253,7 @@ mod conversion_tests {
                     "required": ["string_param"]
                 }),
                 annotations: None,
-                capabilities: &[capabilities::SCOPE_MCP],
+                capabilities: ToolSpec::capabilities(&[capabilities::SCOPE_MCP]),
                 multiline_params: &[],
                 hidden: false,
                 title_template: None,

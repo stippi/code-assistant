@@ -261,8 +261,8 @@ impl Tool for ReadFilesTool {
           "- file.txt:15 - Read only line 15"
         );
         ToolSpec {
-            name: "read_files",
-            description,
+            name: "read_files".into(),
+            description: description.into(),
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -296,7 +296,7 @@ impl Tool for ReadFilesTool {
                 "readOnlyHint": true,
                 "idempotentHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -304,7 +304,7 @@ impl Tool for ReadFilesTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Reading {paths}"),

@@ -169,8 +169,8 @@ impl Tool for ViewDocumentsTool {
         );
 
         ToolSpec {
-            name: "view_documents",
-            description,
+            name: "view_documents".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -194,7 +194,7 @@ impl Tool for ViewDocumentsTool {
                 "readOnlyHint": true,
                 "idempotentHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -202,7 +202,7 @@ impl Tool for ViewDocumentsTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Viewing documents {paths}"),
