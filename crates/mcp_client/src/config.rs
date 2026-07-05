@@ -43,8 +43,10 @@ impl McpServersConfig {
     }
 }
 
-/// Replace every `${VAR}` in `input` with `lookup("VAR")`.
-fn substitute_variables(
+/// Replace every `${VAR}` in `input` with `lookup("VAR")`. Public so
+/// embedders can apply the same substitution semantics to other secrets in
+/// their own configuration (e.g. API tokens next to the servers section).
+pub fn substitute_variables(
     input: &str,
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<String> {
