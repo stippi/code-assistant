@@ -1,8 +1,10 @@
 # MCP client mode — design note
 
-Status: design note, not scheduled. Written 2026-07-05 for the pal handoff;
-pal (the first downstream consumer of the agent stack) wants MCP servers as
-its procurement channel for integrations — email, calendars, Jira-like
+Status: **implemented** (branch `feature/mcp-client-mode`, 2026-07-05) — see
+"Implementation notes" at the end for what landed and what deviates from
+this note. Originally written for the pal handoff; pal (the first
+downstream consumer of the agent stack) wants MCP servers as its
+procurement channel for integrations — email, calendars, Jira-like
 external systems — without bespoke code per service.
 
 ## What it is
@@ -96,3 +98,40 @@ registered, there must be a permission layer the embedder can trust:
    confirmer.
 4. pal: config + confirmer over its channel gateway, first server (email,
    read-only tools only) as the dogfooding target.
+
+## Implementation notes (2026-07-05)
+
+What landed (step 2 of the order above, plus code-assistant UI):
+
+- **Protocol via the official SDK.** Instead of extracting `mcp_server`'s
+  types into a shared crate, the client is built on `rmcp`
+  (`modelcontextprotocol/rust-sdk`, features `client` +
+  `transport-child-process`) — same choice as codex and vtcode. Transport
+  is stdio only, as planned.
+- **New generic crate `crates/mcp_client`** (depends only on `tools_core`
+  + `rmcp`): `McpServersConfig`/`McpServerConfig` (pure data, file I/O is
+  the embedder's), `McpServerConnection`, the `DynTool` proxy `McpTool`
+  (registry name `mcp__<server>__<tool>`, sanitized, 64-byte cap with
+  deterministic hash suffix), and `register_mcp_tools(&mut registry,
+  &config, extra_tags)`. A dead server degrades to error tool outputs.
+  `discover_tools` provides ephemeral discovery for configuration UIs.
+- **Tool filter**: per-server `enabled` flag, `enabled_tools` allowlist
+  (None = all, deviating from the opt-in-only default proposed above —
+  code-assistant is interactive, the settings UI makes per-tool disabling
+  cheap) and `disabled_tools` denylist (denylist wins).
+- **Capability tags**: every MCP tool carries `mcp`, `scope:mcp-<server>`,
+  and the embedder's tags (code-assistant: `scope:agent`,
+  `scope:agent-diff`). `ToolSpec` was widened to owned-capable fields
+  (`Cow`) for runtime-discovered tools.
+- **code-assistant binding** (`code_assistant_core::tools::mcp`):
+  `<config_dir>/mcp-servers.json` with `${ENV_VAR}` substitution in `env`
+  values; `tools::default_registry_with_mcp()` for the wiring layers. The
+  registry stays immutable per process — config changes apply on restart.
+- **gpui settings page** ("MCP Servers"): expandable card per server with
+  enable switch, add/edit/delete, live tool discovery and per-tool
+  toggles persisted to `disabled_tools`.
+
+Still open from this note: additive scope selection (step 1),
+read-only/outward classification and the outward-confirmation
+`ToolInterceptor` (step 3). Until step 3 lands, outward-facing MCP tools
+run without a confirmation gate — configure conservative allowlists.

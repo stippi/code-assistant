@@ -394,8 +394,8 @@ impl Tool for SearchFilesTool {
             "This tool searches for specific content across multiple files, displaying each match with context."
         );
         ToolSpec {
-            name: "search_files",
-            description,
+            name: "search_files".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -423,7 +423,7 @@ impl Tool for SearchFilesTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -431,7 +431,7 @@ impl Tool for SearchFilesTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Searching for '{regex}'"),

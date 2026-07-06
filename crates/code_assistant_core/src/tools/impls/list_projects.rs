@@ -63,8 +63,8 @@ impl Tool for ListProjectsTool {
             "Use this tool to discover which projects are available for exploration."
         );
         ToolSpec {
-            name: "list_projects",
-            description,
+            name: "list_projects".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -75,7 +75,10 @@ impl Tool for ListProjectsTool {
             })),
             // This tool is only needed in MCP mode where we don't control the system message.
             // The regular code-assistant will insert known projects into the system message.
-            capabilities: &[capabilities::READ_ONLY, capabilities::SCOPE_MCP],
+            capabilities: ToolSpec::capabilities(&[
+                capabilities::READ_ONLY,
+                capabilities::SCOPE_MCP,
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: None, // Uses default tool name

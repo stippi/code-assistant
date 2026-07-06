@@ -47,7 +47,7 @@ impl ToolsConfig {
     }
 
     /// Substitute environment variables in a string.
-    fn substitute_env_var_in_string(input: &str) -> Result<String> {
+    pub(crate) fn substitute_env_var_in_string(input: &str) -> Result<String> {
         let mut result = input.to_string();
 
         // Find all ${VAR_NAME} patterns

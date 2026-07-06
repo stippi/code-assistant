@@ -71,8 +71,8 @@ impl Tool for GlobFilesTool {
             "Respects gitignore rules and skips hidden files and common build directories."
         );
         ToolSpec {
-            name: "glob_files",
-            description,
+            name: "glob_files".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -91,7 +91,7 @@ impl Tool for GlobFilesTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -99,7 +99,7 @@ impl Tool for GlobFilesTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Finding files matching '{pattern}'"),

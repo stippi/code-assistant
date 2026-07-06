@@ -29,6 +29,7 @@ This is a Rust-based tool for AI-assisted code tasks with multiple operational m
 ```
 Layer 0 (generic):    llm  command_executor  fs_explorer  sandbox  web  git  terminal  terminal_output
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
+                      mcp_client        — MCP client mode: wraps MCP server tools as registry tools (rmcp SDK)
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
 Layer 3 (domain):     code_assistant_core — sessions, SessionService, event stream, UiEvent,
                                            tool impls, dialects (xml/caret), plugins, sub-agents
@@ -51,6 +52,7 @@ headless binary without gpui.
 - **GPUI frontend**: `crates/ui_gpui/src/`
 - **Terminal frontend**: `crates/ui_terminal/src/`
 - **MCP server**: `crates/mcp_server/src/`
+- **MCP client**: `crates/mcp_client/src/` (config loading/registration binding: `crates/code_assistant_core/src/tools/mcp.rs`)
 - **ACP frontend**: `crates/ui_acp/src/`
 
 ### Tool Architecture
@@ -70,6 +72,19 @@ headless binary without gpui.
 
 ### MCP Server Mode
 - Integrates with Claude Desktop as MCP server
+
+### MCP Client Mode
+- Connects to configured MCP servers (stdio, official `rmcp` SDK) and
+  registers their tools in the `ToolRegistry` as `mcp__<server>__<tool>`
+  with scope tags `scope:agent`/`scope:agent-diff` plus `mcp` and
+  `scope:mcp-<server>`
+- Configured in `<config_dir>/mcp-servers.json` (per-server `enabled`,
+  `enabled_tools` allowlist, `disabled_tools` denylist; `${ENV_VAR}`
+  substitution in `env` values) or programmatically via
+  `mcp_client::register_mcp_tools`
+- Servers connect at process start (`tools::default_registry_with_mcp`);
+  config changes need a restart. The gpui settings page ("MCP Servers")
+  edits the file and discovers tools over ephemeral connections
 
 ### Agent Mode
 - Supports terminal, Agent Client Protocol, and GPUI interfaces

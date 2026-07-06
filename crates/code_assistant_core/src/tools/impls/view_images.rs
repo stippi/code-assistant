@@ -170,8 +170,8 @@ impl Tool for ViewImagesTool {
         );
 
         ToolSpec {
-            name: "view_images",
-            description,
+            name: "view_images".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -195,7 +195,7 @@ impl Tool for ViewImagesTool {
                 "readOnlyHint": true,
                 "idempotentHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -203,7 +203,7 @@ impl Tool for ViewImagesTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Viewing {paths}"),

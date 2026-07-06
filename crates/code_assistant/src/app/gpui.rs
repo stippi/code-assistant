@@ -38,6 +38,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         code_assistant_core::tools::default_registry(),
         events.clone(),
     )));
+    // Connecting configured MCP servers is async; it happens on the backend
+    // runtime below (before the service worker starts) so the GUI comes up
+    // immediately.
+    let manager_for_mcp = multi_session_manager.clone();
 
     // Create the session command service. The GUI gets the handle; the
     // worker runs on the backend tokio runtime below. The GUI consumes the
@@ -63,6 +67,13 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
+            // Build the full registry (defaults + configured MCP servers)
+            // and swap it in before the service worker processes its first
+            // command, so every agent sees the MCP tools. Commands the GUI
+            // issues in the meantime queue in the service channel.
+            let registry = code_assistant_core::tools::default_registry_with_mcp().await;
+            manager_for_mcp.lock().await.set_tool_registry(registry);
+
             let worker = tokio::spawn(service_worker);
 
             startup(&service, &gui_for_thread, task).await;

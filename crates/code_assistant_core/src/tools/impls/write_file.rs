@@ -86,8 +86,8 @@ impl Tool for WriteFileTool {
             "If the file to write is large, write it in chunks making use of the 'append' parameter."
         );
         ToolSpec {
-            name: "write_file",
-            description,
+            name: "write_file".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -118,14 +118,14 @@ impl Tool for WriteFileTool {
                 "destructiveHint": true,
                 "idempotentHint": false
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::EDITS_FILES,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &["content"],
             hidden: false,
             title_template: Some("Writing {path}"),

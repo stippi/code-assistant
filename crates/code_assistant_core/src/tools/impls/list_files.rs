@@ -84,8 +84,8 @@ impl Tool for ListFilesTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "list_files",
-            description: "List files in directories within a specified project",
+            name: "list_files".into(),
+            description: "List files in directories within a specified project".into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -113,7 +113,7 @@ impl Tool for ListFilesTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -121,7 +121,7 @@ impl Tool for ListFilesTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Listing files in {paths}"),

@@ -86,8 +86,8 @@ impl Tool for ListSkillsTool {
             "Load a skill's full instructions with `read_skill`."
         );
         ToolSpec {
-            name: "list_skills",
-            description,
+            name: "list_skills".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -107,11 +107,11 @@ impl Tool for ListSkillsTool {
                 "readOnlyHint": true,
                 "idempotentHint": true
             })),
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Listing skills in {project}"),

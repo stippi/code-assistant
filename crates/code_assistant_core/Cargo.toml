@@ -16,6 +16,7 @@ command_executor = { path = "../command_executor" }
 fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
 llm = { path = "../llm" }
+mcp_client = { path = "../mcp_client" }
 sandbox = { path = "../sandbox" }
 terminal_output = { path = "../terminal_output" }
 tools_core = { path = "../tools_core" }

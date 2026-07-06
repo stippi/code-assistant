@@ -85,8 +85,8 @@ impl Tool for WebSearchTool {
             "`hits_page_number` parameter (starting from 1)."
         );
         ToolSpec {
-            name: "web_search",
-            description,
+            name: "web_search".into(),
+            description: description.into(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -111,7 +111,7 @@ impl Tool for WebSearchTool {
                 "openWorldHint": true
             })),
             // Note: can be disabled in read-only sub-agents if needed later.
-            capabilities: &[
+            capabilities: ToolSpec::capabilities(&[
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
@@ -119,7 +119,7 @@ impl Tool for WebSearchTool {
                 capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
-            ],
+            ]),
             multiline_params: &[],
             hidden: false,
             title_template: Some("Searching web for '{query}'"),
