@@ -752,6 +752,21 @@ impl Gpui {
                 *self.current_sandbox_policy.lock().unwrap() = Some(policy.clone());
                 cx.refresh();
             }
+            UiEvent::UpdatePermissionTier { tier } => {
+                debug!("UI: UpdatePermissionTier event with tier: {:?}", tier);
+                // TODO(permission-tiers): store and render in the selector.
+            }
+            UiEvent::RequestToolPermission { request } => {
+                debug!(
+                    "UI: RequestToolPermission for tool {} ({})",
+                    request.tool_name, request.request_id
+                );
+                // TODO(permission-tiers): render an interactive prompt.
+            }
+            UiEvent::ToolPermissionRequestResolved { request_id } => {
+                debug!("UI: ToolPermissionRequestResolved {request_id}");
+                // TODO(permission-tiers): dismiss the prompt.
+            }
             UiEvent::UpdateWorktreeData {
                 worktrees,
                 current_worktree_path,
