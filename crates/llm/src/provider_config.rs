@@ -2,7 +2,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tracing::info;
+
+/// Process-wide configuration directory override, set once at startup by an
+/// embedding application (see [`ConfigurationSystem::set_config_dir`]).
+static CONFIG_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Configuration for a single provider instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +129,20 @@ pub struct ConfigurationSystem {
 }
 
 impl ConfigurationSystem {
+    /// Pin the configuration directory for this process.
+    ///
+    /// Applications embedding the agent stack under their own home directory
+    /// (e.g. pal with `$PAL_HOME`) call this once at startup so that every
+    /// implicit [`ConfigurationSystem::load`] — session service, sub-agents,
+    /// compaction, model pickers — reads `models.json`/`providers.json` from
+    /// that directory. Like `CODE_ASSISTANT_CONFIG_DIR` the override is
+    /// exclusive (no other location is searched), and it takes precedence
+    /// over the environment variable, which belongs to code-assistant
+    /// itself. The first call wins; returns `false` if it was already set.
+    pub fn set_config_dir(dir: impl Into<PathBuf>) -> bool {
+        CONFIG_DIR_OVERRIDE.set(dir.into()).is_ok()
+    }
+
     /// Load configuration from the default locations
     pub fn load() -> Result<Self> {
         let providers = Self::load_providers_config(None)?;
@@ -486,7 +505,13 @@ impl ConfigurationSystem {
     fn config_directories() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
 
-        // Explicit override is exclusive — don't search anywhere else.
+        // Both overrides are exclusive — don't search anywhere else. The
+        // programmatic one wins: it is set by the embedding application,
+        // while the environment variable configures code-assistant.
+        if let Some(dir) = CONFIG_DIR_OVERRIDE.get() {
+            dirs.push(dir.clone());
+            return dirs;
+        }
         if let Ok(custom_dir) = std::env::var("CODE_ASSISTANT_CONFIG_DIR") {
             dirs.push(PathBuf::from(custom_dir));
             return dirs;
@@ -656,6 +681,23 @@ mod tests {
         // Clean up
         env::remove_var("TEST_API_KEY");
         env::remove_var("TEST_URL");
+    }
+
+    #[test]
+    fn test_config_dir_override_is_exclusive_and_beats_env() {
+        // Process-global by design; this is the only test in the binary that
+        // touches the override or the search list, so no cross-test bleed.
+        assert!(ConfigurationSystem::set_config_dir("/pal/home"));
+        assert!(
+            !ConfigurationSystem::set_config_dir("/elsewhere"),
+            "first call wins"
+        );
+
+        env::set_var("CODE_ASSISTANT_CONFIG_DIR", "/env/dir");
+        let dirs = ConfigurationSystem::config_directories();
+        env::remove_var("CODE_ASSISTANT_CONFIG_DIR");
+
+        assert_eq!(dirs, vec![PathBuf::from("/pal/home")]);
     }
 
     #[test]
