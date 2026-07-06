@@ -47,8 +47,11 @@ an error tool result telling it not to retry.
   requests render as a banner above the input with *Allow once / Always
   (session) / Deny*.
 - **Terminal**: `/permissions [bypass-all|write-tools|all-tools]` shows or
-  switches the tier; requests appear as an info banner and are answered
-  with `/allow`, `/always`, or `/deny` (oldest first).
+  switches the tier. An incoming request opens a modal prompt above the
+  composer (arrow keys + Enter: *Allow once / Always allow (session) /
+  Deny*), one at a time, oldest first. Esc dismisses the prompt without
+  answering; the request stays pending (info banner) and can still be
+  answered with `/allow`, `/always`, or `/deny`.
 - **ACP**: the tiers are advertised as session modes (`bypass-all`,
   `write-tools`, `all-tools`) in `new_session`/`load_session`; clients
   switch via `session/set_mode`. Prompts arrive as native ACP permission

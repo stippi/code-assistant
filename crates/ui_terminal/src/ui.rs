@@ -505,25 +505,14 @@ impl UserInterface for TerminalUI {
             }
             UiEvent::RequestToolPermission { request } => {
                 let mut state = self.app_state.lock().await;
-                let prompt = format!(
-                    "Permission required: {} — respond with /allow, /always or /deny",
-                    request.summary
-                );
                 state.push_permission_request(request);
-                state.set_info_message(Some(prompt));
+                state.open_next_permission_prompt();
             }
             UiEvent::ToolPermissionRequestResolved { request_id } => {
                 let mut state = self.app_state.lock().await;
                 state.remove_permission_request(&request_id);
-                if state.pending_permission_requests.is_empty() {
-                    state.set_info_message(None);
-                } else if let Some(next) = state.pending_permission_requests.first() {
-                    let prompt = format!(
-                        "Permission required: {} — respond with /allow, /always or /deny",
-                        next.summary
-                    );
-                    state.set_info_message(Some(prompt));
-                }
+                state.popup_stack.remove_permission_popup(&request_id);
+                state.open_next_permission_prompt();
             }
             UiEvent::ShowTransientStatus { message } => {
                 debug!("Transient status: {}", message);

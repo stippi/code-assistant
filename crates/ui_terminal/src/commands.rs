@@ -113,8 +113,13 @@ pub enum CommandResult {
     ShowPermissionTier,
     /// Switch the permission tier.
     SetPermissionTier(tools_core::permissions::PermissionTier),
-    /// Answer the oldest pending tool permission request.
-    RespondPermission(tools_core::PermissionDecision),
+    /// Answer a tool permission request. `request_id: None` (slash commands)
+    /// answers the oldest pending request; the permission prompt popup
+    /// carries the id of the request it was opened for.
+    RespondPermission {
+        request_id: Option<String>,
+        decision: tools_core::PermissionDecision,
+    },
 }
 
 /// Process slash commands in terminal UI
@@ -150,13 +155,18 @@ impl CommandProcessor {
             "clear" => CommandResult::ClearContext,
             "compact" => CommandResult::CompactContext,
             "permissions" => Self::process_permissions_command(&parts[1..]),
-            "allow" => {
-                CommandResult::RespondPermission(tools_core::PermissionDecision::GrantedOnce)
-            }
-            "always" => {
-                CommandResult::RespondPermission(tools_core::PermissionDecision::GrantedSession)
-            }
-            "deny" => CommandResult::RespondPermission(tools_core::PermissionDecision::Denied),
+            "allow" => CommandResult::RespondPermission {
+                request_id: None,
+                decision: tools_core::PermissionDecision::GrantedOnce,
+            },
+            "always" => CommandResult::RespondPermission {
+                request_id: None,
+                decision: tools_core::PermissionDecision::GrantedSession,
+            },
+            "deny" => CommandResult::RespondPermission {
+                request_id: None,
+                decision: tools_core::PermissionDecision::Denied,
+            },
             "skill" => {
                 if parts.len() > 1 {
                     CommandResult::InvokeSkill {

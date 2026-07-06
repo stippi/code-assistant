@@ -48,8 +48,11 @@ pub enum KeyEventResult {
     ShowPermissionTier,
     /// Switch the permission tier.
     SetPermissionTier(tools_core::permissions::PermissionTier),
-    /// Answer the oldest pending tool permission request.
-    RespondPermission(tools_core::PermissionDecision),
+    /// Answer a tool permission request (`None` = oldest pending).
+    RespondPermission {
+        request_id: Option<String>,
+        decision: tools_core::PermissionDecision,
+    },
     /// The slash-prefix on the current input line changed.
     ///
     /// `Some("")` means the user just typed `/` (open the popup at root).
@@ -209,9 +212,13 @@ impl InputManager {
                             CommandResult::SetPermissionTier(tier) => {
                                 KeyEventResult::SetPermissionTier(tier)
                             }
-                            CommandResult::RespondPermission(decision) => {
-                                KeyEventResult::RespondPermission(decision)
-                            }
+                            CommandResult::RespondPermission {
+                                request_id,
+                                decision,
+                            } => KeyEventResult::RespondPermission {
+                                request_id,
+                                decision,
+                            },
                             CommandResult::InvalidCommand(error) => {
                                 KeyEventResult::ShowInfo(format!("Error: {error}"))
                             }

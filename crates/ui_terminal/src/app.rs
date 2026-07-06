@@ -467,15 +467,21 @@ async fn handle_command_result(
                 actions.change_permission_tier(session_id, tier);
             }
         }
-        CommandResult::RespondPermission(decision) => {
+        CommandResult::RespondPermission {
+            request_id,
+            decision,
+        } => {
             let (session_id, request_id) = {
                 let state = app_state.lock().await;
                 (
                     state.current_session_id.clone(),
-                    state
-                        .pending_permission_requests
-                        .first()
-                        .map(|r| r.request_id.clone()),
+                    // Slash commands pass no id and answer the oldest request.
+                    request_id.or_else(|| {
+                        state
+                            .pending_permission_requests
+                            .first()
+                            .map(|r| r.request_id.clone())
+                    }),
                 )
             };
             match (session_id, request_id) {
@@ -592,6 +598,11 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(event)) => match event {
                         Event::Key(key_event) => {
+                            // Permission prompts push popups from the backend
+                            // event task; resync routing before each key so
+                            // Up/Down/Enter reach an asynchronously opened popup.
+                            input_manager.popup_active =
+                                app_state.lock().await.popup_stack.is_active();
                             let key_result = input_manager.handle_key_event(key_event);
 
                             match key_result {
@@ -803,29 +814,20 @@ async fn event_loop(
                                         actions.change_permission_tier(session_id, tier);
                                     }
                                 }
-                                KeyEventResult::RespondPermission(decision) => {
-                                    let (session_id, request_id) = {
-                                        let state = app_state.lock().await;
-                                        (
-                                            state.current_session_id.clone(),
-                                            state
-                                                .pending_permission_requests
-                                                .first()
-                                                .map(|r| r.request_id.clone()),
-                                        )
-                                    };
-                                    match (session_id, request_id) {
-                                        (Some(session_id), Some(request_id)) => {
-                                            actions.respond_permission(
-                                                session_id, request_id, decision,
-                                            );
-                                        }
-                                        _ => {
-                                            app_state.lock().await.set_info_message(Some(
-                                                "No pending permission request".to_string(),
-                                            ));
-                                        }
-                                    }
+                                KeyEventResult::RespondPermission {
+                                    request_id,
+                                    decision,
+                                } => {
+                                    handle_command_result(
+                                        crate::commands::CommandResult::RespondPermission {
+                                            request_id,
+                                            decision,
+                                        },
+                                        &app_state,
+                                        &renderer,
+                                        &actions,
+                                    )
+                                    .await;
                                 }
 
                                 KeyEventResult::OpenSkillPicker => {
@@ -878,10 +880,18 @@ async fn event_loop(
                                         // Capture root-Esc *before* dispatch so we can also
                                         // delete the leading "/" from the composer when the
                                         // user dismisses the root popup.
+                                        // Permission prompts are not opened by a
+                                        // typed "/", so dismissing one must not
+                                        // eat a leading slash from the composer.
+                                        let top_is_permission_prompt = state
+                                            .popup_stack
+                                            .top()
+                                            .is_some_and(|p| p.permission_request_id().is_some());
                                         let was_root_esc = matches!(
                                             key.code,
                                             crossterm::event::KeyCode::Esc
-                                        ) && state.popup_stack.depth() == 1;
+                                        ) && state.popup_stack.depth() == 1
+                                            && !top_is_permission_prompt;
                                         let depth_before = state.popup_stack.depth();
                                         let result = state.popup_stack.handle_key(key);
                                         let depth_after = state.popup_stack.depth();
@@ -892,6 +902,7 @@ async fn event_loop(
                                             still_active,
                                             depth_before,
                                             depth_after,
+                                            top_is_permission_prompt,
                                         )
                                     };
                                     let (
@@ -900,6 +911,7 @@ async fn event_loop(
                                         still_active,
                                         depth_before,
                                         depth_after,
+                                        top_was_permission_prompt,
                                     ) = outcome;
                                     input_manager.popup_active = still_active;
 
@@ -923,7 +935,11 @@ async fn event_loop(
                                         // The popup committed a final command; clear the
                                         // composer line (the slash word) and dispatch the
                                         // command via the same path as inline /commands.
-                                        clear_slash_command_word(&mut input_manager.textarea);
+                                        // Permission prompts were not opened by a typed
+                                        // "/word", so their commit leaves the composer alone.
+                                        if !top_was_permission_prompt {
+                                            clear_slash_command_word(&mut input_manager.textarea);
+                                        }
                                         handle_command_result(cmd, &app_state, &renderer, &actions)
                                             .await;
                                     }

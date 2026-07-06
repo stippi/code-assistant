@@ -130,6 +130,25 @@ impl AppState {
             .retain(|r| r.request_id != request_id);
     }
 
+    /// Show the modal prompt for the oldest pending permission request, one
+    /// at a time, and keep the info banner (with the slash-command fallback
+    /// for a dismissed prompt) in sync. No-op while a prompt is already open.
+    pub fn open_next_permission_prompt(&mut self) {
+        let Some(next) = self.pending_permission_requests.first().cloned() else {
+            self.set_info_message(None);
+            return;
+        };
+        self.set_info_message(Some(format!(
+            "Permission required: {} — /allow, /always or /deny",
+            next.summary
+        )));
+        if !self.popup_stack.has_permission_popup() {
+            self.popup_stack.push(Box::new(
+                crate::slash_popup::PermissionPromptPopup::for_request(&next),
+            ));
+        }
+    }
+
     pub fn set_info_message(&mut self, message: Option<String>) {
         self.info_message = message;
     }
