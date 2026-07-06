@@ -54,7 +54,7 @@ pub fn all_commands() -> &'static [SlashCommand] {
             name: "permissions",
             aliases: &[],
             description:
-                "Show or set the permission tier: /permissions [bypass-all|write-tools|all-tools]",
+                "Show or set the permission tier: /permissions [bypass-all|outward-tools|write-tools|all-tools]",
         },
         SlashCommand {
             name: "allow",
@@ -206,16 +206,19 @@ impl CommandProcessor {
                 "bypass-all" | "bypass" => {
                     CommandResult::SetPermissionTier(PermissionTier::BypassAll)
                 }
+                "outward-tools" | "outward" => {
+                    CommandResult::SetPermissionTier(PermissionTier::OutwardTools)
+                }
                 "write-tools" | "write" => {
                     CommandResult::SetPermissionTier(PermissionTier::WriteTools)
                 }
                 "all-tools" | "all" => CommandResult::SetPermissionTier(PermissionTier::AllTools),
                 other => CommandResult::InvalidCommand(format!(
-                    "Unknown permission tier '{other}'. Use bypass-all, write-tools or all-tools.",
+                    "Unknown permission tier '{other}'. Use bypass-all, outward-tools, write-tools or all-tools.",
                 )),
             },
             _ => CommandResult::InvalidCommand(
-                "Usage: /permissions [bypass-all|write-tools|all-tools]".to_string(),
+                "Usage: /permissions [bypass-all|outward-tools|write-tools|all-tools]".to_string(),
             ),
         }
     }

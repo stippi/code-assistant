@@ -35,6 +35,12 @@ const PERMISSION_MODES: &[(PermissionTier, &str, &str, &str)] = &[
         "Run every tool without asking",
     ),
     (
+        PermissionTier::OutwardTools,
+        "outward-tools",
+        "Ask Before Outward Actions",
+        "Ask before running tools whose effects leave the machine",
+    ),
+    (
         PermissionTier::WriteTools,
         "write-tools",
         "Ask Before Writes",

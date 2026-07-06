@@ -68,6 +68,7 @@ impl PermissionSelector {
     fn options() -> Vec<PermissionOption> {
         vec![
             PermissionOption::new("Bypass Permissions", PermissionTier::BypassAll),
+            PermissionOption::new("Ask Before Outward Actions", PermissionTier::OutwardTools),
             PermissionOption::new("Ask Before Writes", PermissionTier::WriteTools),
             PermissionOption::new("Ask For All Tools", PermissionTier::AllTools),
         ]

@@ -11,6 +11,11 @@ pub mod capabilities {
     pub const READ_ONLY: &str = "read_only";
     /// The tool modifies files in a project.
     pub const EDITS_FILES: &str = "edits_files";
+    /// The tool's effects leave the machine and are visible to third
+    /// parties (sending a message, calling a remote service). Orthogonal
+    /// to [`READ_ONLY`]: reading via an outward service still leaks the
+    /// request to that service.
+    pub const OUTWARD: &str = "outward";
 }
 
 /// Specification for a tool, including metadata

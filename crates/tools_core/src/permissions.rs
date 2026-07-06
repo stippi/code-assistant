@@ -20,6 +20,10 @@ pub enum PermissionTier {
     /// Never ask; every tool call runs without prompting.
     #[default]
     BypassAll,
+    /// Ask before running tools whose effects leave the machine — anything
+    /// tagged [`capabilities::OUTWARD`]. Local state changes run without
+    /// prompting; the tag wins over [`capabilities::READ_ONLY`].
+    OutwardTools,
     /// Ask before running tools that may modify state — anything not
     /// tagged [`capabilities::READ_ONLY`].
     WriteTools,
@@ -32,6 +36,7 @@ impl PermissionTier {
     pub fn requires_permission(&self, spec: &ToolSpec) -> bool {
         match self {
             PermissionTier::BypassAll => false,
+            PermissionTier::OutwardTools => spec.has_capability(capabilities::OUTWARD),
             PermissionTier::WriteTools => !spec.has_capability(capabilities::READ_ONLY),
             PermissionTier::AllTools => true,
         }
@@ -212,6 +217,29 @@ mod tests {
         assert!(tier.requires_permission(&spec_with(&[capabilities::EDITS_FILES])));
         // Untagged tools (e.g. MCP tools without a read-only hint) count as writes.
         assert!(tier.requires_permission(&spec_with(&[])));
+    }
+
+    #[test]
+    fn outward_tools_requires_permission_only_for_outward_tagged_tools() {
+        let tier = PermissionTier::OutwardTools;
+        assert!(tier.requires_permission(&spec_with(&[capabilities::OUTWARD])));
+        // Outward wins over read-only: reading via an outward service still
+        // leaks the request to a third party.
+        assert!(
+            tier.requires_permission(&spec_with(&[capabilities::READ_ONLY, capabilities::OUTWARD]))
+        );
+        assert!(!tier.requires_permission(&spec_with(&[capabilities::EDITS_FILES])));
+        assert!(!tier.requires_permission(&spec_with(&[])));
+    }
+
+    #[test]
+    fn outward_tools_tier_serializes_as_kebab_case() {
+        assert_eq!(
+            serde_json::to_string(&PermissionTier::OutwardTools).unwrap(),
+            "\"outward-tools\""
+        );
+        let parsed: PermissionTier = serde_json::from_str("\"outward-tools\"").unwrap();
+        assert_eq!(parsed, PermissionTier::OutwardTools);
     }
 
     #[test]
