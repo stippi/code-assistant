@@ -429,6 +429,24 @@ impl SessionService {
         .await
     }
 
+    /// Add a user message, starting the agent when the session is idle or
+    /// queueing into the running turn — decided inside the service, where
+    /// the actual activity state is visible. Channel adapters use this
+    /// instead of a send-vs-queue decision on their side, which races agent
+    /// start/completion (e.g. when dispatching a burst of messages that
+    /// arrived while the process was down).
+    pub async fn send_or_queue_user_message(
+        &self,
+        session_id: String,
+        message: String,
+        attachments: Vec<DraftAttachment>,
+    ) -> Result<()> {
+        self.call(move |ctx| async move {
+            send_or_queue_user_message_impl(&ctx, &session_id, &message, &attachments).await
+        })
+        .await
+    }
+
     /// Queue a user message while the agent is running. Returns the updated
     /// pending-message summary.
     pub async fn queue_user_message(
@@ -1018,6 +1036,9 @@ async fn send_user_message_impl(
     // First, add the user message to the session and get the new node_id.
     let (new_node_id, branch_info_updates) = {
         let mut manager = ctx.manager.lock().await;
+        // Headless dispatch (channel adapters, schedulers) reaches sessions
+        // no frontend has opened since the restart — load on demand.
+        manager.ensure_session_loaded(session_id)?;
         let node_id = manager
             .add_user_message(session_id, content_blocks, branch_parent_id)
             .context("Failed to add user message")?;
@@ -1055,21 +1076,27 @@ async fn send_user_message_impl(
     start_agent_impl(ctx, session_id, tool_scope_override).await
 }
 
-async fn inject_wakeup_impl(ctx: &ServiceCtx, session_id: &str, message: &str) -> Result<()> {
+/// Shared by [`SessionService::send_or_queue_user_message`] and the wakeup
+/// path: decide send-vs-queue by the session's actual activity state.
+async fn send_or_queue_user_message_impl(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    message: &str,
+    attachments: &[DraftAttachment],
+) -> Result<()> {
     let running = {
-        let manager = ctx.manager.lock().await;
-        match manager.get_session(session_id) {
-            // Session deleted since the wakeup was armed — drop silently.
-            None => {
-                debug!("Wakeup for unknown session {session_id} dropped");
-                return Ok(());
-            }
-            Some(instance) => !instance.get_activity_state().is_terminal(),
-        }
+        let mut manager = ctx.manager.lock().await;
+        // Headless dispatch (channel adapters, schedulers) reaches sessions
+        // no frontend has opened since the restart — load on demand.
+        manager.ensure_session_loaded(session_id)?;
+        let instance = manager
+            .get_session(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        !instance.get_activity_state().is_terminal()
     };
 
-    let content_blocks = content_blocks_from(message, &[]);
     if running {
+        let content_blocks = content_blocks_from(message, attachments);
         let mut manager = ctx.manager.lock().await;
         manager.queue_structured_user_message(session_id, content_blocks)?;
         if let Some(summary) = manager.get_pending_message(session_id)? {
@@ -1083,21 +1110,16 @@ async fn inject_wakeup_impl(ctx: &ServiceCtx, session_id: &str, message: &str) -
         return Ok(());
     }
 
-    let node_id = {
-        let mut manager = ctx.manager.lock().await;
-        manager
-            .add_user_message(session_id, content_blocks, None)
-            .context("Failed to add wakeup message")?
-    };
-    ctx.notify_session(
-        session_id,
-        UiEvent::DisplayUserInput {
-            content: message.to_string(),
-            attachments: Vec::new(),
-            node_id: Some(node_id),
-        },
-    );
-    start_agent_impl(ctx, session_id, None).await
+    send_user_message_impl(ctx, session_id, message, attachments, None, None).await
+}
+
+async fn inject_wakeup_impl(ctx: &ServiceCtx, session_id: &str, message: &str) -> Result<()> {
+    // Session deleted since the wakeup was armed — drop silently.
+    if ctx.manager.lock().await.get_session(session_id).is_none() {
+        debug!("Wakeup for unknown session {session_id} dropped");
+        return Ok(());
+    }
+    send_or_queue_user_message_impl(ctx, session_id, message, &[]).await
 }
 
 async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
@@ -1130,20 +1152,52 @@ async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
 }
 
 /// Start the agent loop for a session against its current message history.
+/// The model config an agent run will use: the session's own — unless it
+/// records a model unknown to the current configuration (models.json
+/// changed since the session last ran), then the default model. Without
+/// the fallback such a session is permanently undispatchable, which
+/// headless channels (no model picker) cannot recover from. The caller
+/// persists the result, so the session heals.
+fn runnable_model_config(
+    session_config: SessionModelConfig,
+    default_model_name: &str,
+    model_exists: impl Fn(&str) -> bool,
+) -> SessionModelConfig {
+    if model_exists(&session_config.model_name) {
+        return session_config;
+    }
+    warn!(
+        "Session records unknown model '{}'; falling back to '{default_model_name}'",
+        session_config.model_name
+    );
+    SessionModelConfig::new(default_model_name.to_string())
+}
+
 async fn start_agent_impl(
     ctx: &ServiceCtx,
     session_id: &str,
     tool_scope_override: Option<crate::tools::core::ToolScope>,
 ) -> Result<()> {
-    let session_config = {
+    let (session_config, default_model_name) = {
         let manager = ctx.manager.lock().await;
-        manager.get_session_model_config(session_id).unwrap_or(None)
+        (
+            manager.get_session_model_config(session_id).unwrap_or(None),
+            manager.default_model_name().to_string(),
+        )
     };
-    let Some(session_config) = session_config else {
+    let Some(mut session_config) = session_config else {
         bail!(
             "Session has no model configuration. Please ensure all sessions are created with a model."
         );
     };
+
+    // Validation is fail-soft: without a loadable configuration the client
+    // construction below reports the error.
+    if let Ok(config_system) = ConfigurationSystem::load() {
+        session_config = runnable_model_config(session_config, &default_model_name, |model| {
+            config_system.get_model(model).is_some()
+        });
+    }
 
     let llm_client = create_llm_client_from_model(
         &session_config.model_name,
@@ -1334,6 +1388,122 @@ mod tests {
 
         let snapshot = service.load_session(id, None).await.unwrap();
         assert_eq!(snapshot.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn send_or_queue_queues_while_agent_is_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        {
+            let mut manager = manager.lock().await;
+            manager.get_session_mut(&id).unwrap().set_activity_state(
+                crate::session::instance::SessionActivityState::AgentRunning,
+            );
+        }
+
+        service
+            .send_or_queue_user_message(id.clone(), "while busy".to_string(), Vec::new())
+            .await
+            .unwrap();
+
+        let pending = service.take_pending_message(id).await.unwrap();
+        assert_eq!(pending.as_deref(), Some("while busy"));
+    }
+
+    #[tokio::test]
+    async fn send_or_queue_sends_to_an_idle_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        // Starting the turn fails in this harness (no real LLM client), but
+        // the message must land in the history — exactly like a plain send.
+        let _ = service
+            .send_or_queue_user_message(id.clone(), "while idle".to_string(), Vec::new())
+            .await;
+
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        assert_eq!(snapshot.messages.len(), 1);
+        assert_eq!(
+            service.take_pending_message(id).await.unwrap(),
+            None,
+            "nothing may sit in the queue when the session was idle"
+        );
+    }
+
+    /// The restart case for headless dispatch: the session exists on disk
+    /// but no frontend has loaded it into the manager. A message arriving
+    /// for it (channel adapter, scheduler) must load it on demand instead
+    /// of failing with "Session not found".
+    #[tokio::test]
+    async fn dispatch_loads_a_persisted_session_after_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = {
+            let service = test_service(tmp.path());
+            let id = service.create_session(None, None).await.unwrap();
+            // Give the session a message so the next startup's
+            // empty-session cleanup does not remove it.
+            let _ = service
+                .send_or_queue_user_message(id.clone(), "first".to_string(), Vec::new())
+                .await;
+            id
+        };
+
+        // A fresh service over the same store — nothing is resident.
+        let service = test_service(tmp.path());
+        let _ = service
+            .send_or_queue_user_message(id.clone(), "after restart".to_string(), Vec::new())
+            .await;
+        let snapshot = service.load_session(id, None).await.unwrap();
+        assert_eq!(snapshot.messages.len(), 2);
+
+        // Same restart case for the plain send path (the scheduler's).
+        let tmp = tempfile::tempdir().unwrap();
+        let id = {
+            let service = test_service(tmp.path());
+            let id = service.create_session(None, None).await.unwrap();
+            let _ = service
+                .send_user_message(id.clone(), "first".to_string(), Vec::new(), None)
+                .await;
+            id
+        };
+        let service = test_service(tmp.path());
+        let _ = service
+            .send_user_message(id.clone(), "after restart".to_string(), Vec::new(), None)
+            .await;
+        let snapshot = service.load_session(id, None).await.unwrap();
+        assert_eq!(snapshot.messages.len(), 2);
+    }
+
+    #[test]
+    fn runnable_model_config_falls_back_when_the_model_vanished() {
+        let kept = runnable_model_config(
+            SessionModelConfig::new("known".to_string()),
+            "default",
+            |model| model == "known",
+        );
+        assert_eq!(kept.model_name, "known");
+
+        let replaced = runnable_model_config(
+            SessionModelConfig::new("vanished".to_string()),
+            "default",
+            |_| false,
+        );
+        assert_eq!(replaced.model_name, "default");
+    }
+
+    #[tokio::test]
+    async fn send_or_queue_to_unknown_session_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+        // Unlike a wakeup (fire-and-forget), a channel adapter must learn
+        // that its dispatch target is gone.
+        assert!(service
+            .send_or_queue_user_message("gone".to_string(), "hi".to_string(), Vec::new())
+            .await
+            .is_err());
     }
 
     #[tokio::test]

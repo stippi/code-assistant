@@ -229,6 +229,14 @@ pub struct SerializedToolExecution {
 }
 
 impl SerializedToolExecution {
+    /// Whether [`Self::deserialize`] can resolve this execution against
+    /// `registry` — `false` when the recorded tool has since disappeared
+    /// (a reconfigured MCP server, a removed integration). Callers check
+    /// this to skip the record instead of failing the whole session load.
+    pub fn tool_available(&self, registry: &ToolRegistry) -> bool {
+        self.tool_name == "parse_error" || registry.get(&self.tool_name).is_some()
+    }
+
     /// Deserialize back to a ToolExecution
     pub fn deserialize(&self, registry: &ToolRegistry) -> Result<ToolExecution> {
         // Special handling for parse errors

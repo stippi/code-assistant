@@ -763,6 +763,16 @@ impl SessionInstance {
         let mut resources_tracker = ResourcesTracker::new();
 
         for serialized_execution in &self.session.tool_executions {
+            // A tool that has since disappeared (e.g. a reconfigured MCP
+            // server) must not break rendering the session: skip its records.
+            if !serialized_execution.tool_available(self.tool_registry.as_ref()) {
+                tracing::warn!(
+                    "Skipping recorded execution of unavailable tool '{}'",
+                    serialized_execution.tool_name
+                );
+                continue;
+            }
+
             // Deserialize the tool execution
             let execution = serialized_execution.deserialize(self.tool_registry.as_ref())?;
 

@@ -22,6 +22,18 @@ use sandbox::SandboxPolicy;
 use tools_core::permissions::PermissionMediator;
 use tracing::{debug, error, info, warn};
 
+/// Provides the tool registry for the next agent run. Consulted at the
+/// start of every run, so embedders can rebuild the registry from their
+/// current configuration (e.g. reconnect MCP servers after a settings
+/// change). Within one run the registry stays the one the run started
+/// with; the provider must be cheap when nothing changed (return the
+/// same `Arc`).
+pub type ToolRegistryProvider = Arc<
+    dyn Fn() -> futures::future::BoxFuture<'static, Arc<crate::tools::core::ToolRegistry>>
+        + Send
+        + Sync,
+>;
+
 /// Result of checking whether a session may switch to another model.
 #[derive(Debug, Clone)]
 pub struct ModelSwitchCheck {
@@ -95,6 +107,11 @@ pub struct SessionManager {
     /// The tool registry shared by all sessions this manager runs.
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
 
+    /// When set, refreshes `tool_registry` at the start of every agent run
+    /// (see [`ToolRegistryProvider`]); `None` keeps the construction-time
+    /// registry for the manager's lifetime.
+    tool_registry_provider: Option<ToolRegistryProvider>,
+
     /// Builds the hook set for each agent this manager starts; `None` uses
     /// code-assistant's default hooks.
     hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
@@ -148,6 +165,7 @@ impl SessionManager {
             force_diff_format,
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
+            tool_registry_provider: None,
             hooks_factory: None,
             wakeup_handle: None,
             events,
@@ -183,6 +201,37 @@ impl SessionManager {
         self.tool_registry = tool_registry;
     }
 
+    /// Install a registry provider consulted at the start of every agent
+    /// run (see [`ToolRegistryProvider`]). This is the seam for dynamic
+    /// tool configuration: a running agent keeps the registry it started
+    /// with, the next run picks up whatever the provider returns.
+    pub fn set_tool_registry_provider(&mut self, provider: ToolRegistryProvider) {
+        self.tool_registry_provider = Some(provider);
+    }
+
+    /// The tool registry the next agent run would currently use.
+    pub fn tool_registry(&self) -> &Arc<crate::tools::core::ToolRegistry> {
+        &self.tool_registry
+    }
+
+    /// Pull the current registry from the provider (no-op without one).
+    /// Session instances follow the swap so their UI rebuilds resolve tool
+    /// executions against the same registry the next run uses.
+    async fn refresh_tool_registry(&mut self) {
+        let Some(provider) = &self.tool_registry_provider else {
+            return;
+        };
+        let fresh = provider().await;
+        if Arc::ptr_eq(&fresh, &self.tool_registry) {
+            return;
+        }
+        info!("Tool registry refreshed for the next agent run");
+        self.tool_registry = fresh.clone();
+        for instance in self.active_sessions.values_mut() {
+            instance.tool_registry = fresh.clone();
+        }
+    }
+
     /// The core→UI broadcast stream this manager's sessions publish to.
     pub fn event_stream(&self) -> &crate::session::event_stream::EventStream {
         &self.events
@@ -206,6 +255,11 @@ impl SessionManager {
     }
 
     /// Update the default model name used for newly created sessions.
+    /// The model used for sessions without an own model configuration.
+    pub fn default_model_name(&self) -> &str {
+        &self.default_model_name
+    }
+
     pub fn set_default_model_name(&mut self, model_name: String) {
         self.default_model_name = model_name;
     }
@@ -271,6 +325,18 @@ impl SessionManager {
         self.active_sessions.insert(session_id.clone(), instance);
 
         Ok(session_id)
+    }
+
+    /// Make sure the session is resident in the manager, loading it from
+    /// persistence when it is not. Message dispatch without a prior UI
+    /// load — headless channel adapters, schedulers — hits sessions that
+    /// exist only on disk after a restart; receiving a message must not
+    /// require a frontend to have opened the session first.
+    pub fn ensure_session_loaded(&mut self, session_id: &str) -> Result<()> {
+        if self.active_sessions.contains_key(session_id) {
+            return Ok(());
+        }
+        self.load_session(session_id).map(|_| ())
     }
 
     /// Load a session from persistence and make it active
@@ -656,6 +722,10 @@ impl SessionManager {
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         tool_scope_override: Option<crate::tools::core::ToolScope>,
     ) -> Result<()> {
+        // A new run is the point where configuration changes take effect:
+        // pull the current registry before anything below binds to it.
+        self.refresh_tool_registry().await;
+
         // Acquire exclusive cross-process agent lock.
         // This prevents another code-assistant instance from running an agent
         // for the same session concurrently.
@@ -709,6 +779,19 @@ impl SessionManager {
                     .session
                     .tool_executions
                     .iter()
+                    // A tool that has since disappeared (e.g. a reconfigured
+                    // MCP server) must not brick the session: skip its
+                    // records, the conversation itself lives in the messages.
+                    .filter(|se| {
+                        let available = se.tool_available(self.tool_registry.as_ref());
+                        if !available {
+                            warn!(
+                                "Skipping recorded execution of unavailable tool '{}'",
+                                se.tool_name
+                            );
+                        }
+                        available
+                    })
                     .map(|se| se.deserialize(self.tool_registry.as_ref()))
                     .collect::<Result<Vec<_>>>()?,
 
@@ -1123,14 +1206,15 @@ impl SessionManager {
             return Ok(ModelSwitchCheck::allowed(model_name));
         };
 
-        let current_kind = config
-            .model_api_client_kind(&current_model_config.model_name)
-            .with_context(|| {
-                format!(
-                    "Failed to resolve provider API client for current model '{}'",
-                    current_model_config.model_name
-                )
-            })?;
+        let Ok(current_kind) = config.model_api_client_kind(&current_model_config.model_name)
+        else {
+            // The recorded model no longer exists in the configuration —
+            // there is no API-client compatibility left to preserve, and
+            // blocking here would pin the session to an unusable model.
+            // Any configured model may take over (the escape hatch that
+            // lets a session heal after models.json changed underneath it).
+            return Ok(ModelSwitchCheck::allowed(model_name));
+        };
         let new_kind = config.model_api_client_kind(model_name).with_context(|| {
             format!("Failed to resolve provider API client for model '{model_name}'")
         })?;
@@ -1760,6 +1844,23 @@ mod tests {
         );
     }
 
+    /// A session whose recorded model was removed from models.json must be
+    /// allowed to switch to any configured model — there is no API-client
+    /// compatibility left to preserve, and blocking would pin the session
+    /// to an unusable model (headless channels could never recover).
+    #[test]
+    fn model_switch_away_from_a_vanished_model_is_allowed() {
+        let config = model_switch_test_config();
+        let session = non_empty_session("model-removed-from-config");
+        let target = SessionModelConfig::new("claude-direct".to_string());
+
+        let check =
+            SessionManager::check_model_switch_for_session_with_config(&session, &target, &config)
+                .expect("compatibility check");
+
+        assert!(check.allowed);
+    }
+
     #[test]
     fn model_switch_aicore_api_type_participates_in_compatibility() {
         let config = model_switch_test_config();
@@ -1862,5 +1963,69 @@ mod tests {
         let (manager, _dir) = build_manager(true);
         assert!(manager.force_diff_format);
         assert!(!manager.session_config_template.use_diff_blocks);
+    }
+
+    fn fixed_registry_provider(
+        registry: Arc<crate::tools::core::ToolRegistry>,
+    ) -> ToolRegistryProvider {
+        Arc::new(move || {
+            let registry = registry.clone();
+            Box::pin(async move { registry })
+        })
+    }
+
+    /// The provider seam: refreshing swaps the manager's registry and the
+    /// registries of the active session instances (their UI rebuilds must
+    /// resolve tools against what the next run uses); an unchanged provider
+    /// result (same `Arc`) is a no-op.
+    #[tokio::test]
+    async fn refresh_swaps_manager_and_instance_registries() {
+        let (mut manager, _dir) = build_manager(false);
+        let initial = manager.tool_registry().clone();
+        let session_id = manager.create_session(None).expect("create session");
+
+        // Without a provider, refreshing changes nothing.
+        manager.refresh_tool_registry().await;
+        assert!(Arc::ptr_eq(manager.tool_registry(), &initial));
+
+        let fresh = crate::tools::test_registry();
+        manager.set_tool_registry_provider(fixed_registry_provider(fresh.clone()));
+        manager.refresh_tool_registry().await;
+
+        assert!(Arc::ptr_eq(manager.tool_registry(), &fresh));
+        let instance = manager.get_session(&session_id).expect("instance");
+        assert!(Arc::ptr_eq(&instance.tool_registry, &fresh));
+    }
+
+    /// Starting an agent run is the point where the provider is consulted:
+    /// the run must bind to the registry the provider currently returns.
+    #[tokio::test]
+    async fn starting_an_agent_run_pulls_the_registry_from_the_provider() {
+        let (mut manager, _dir) = build_manager(false);
+        let session_id = manager.create_session(None).expect("create session");
+
+        let fresh = crate::tools::test_registry();
+        assert!(!Arc::ptr_eq(manager.tool_registry(), &fresh));
+        manager.set_tool_registry_provider(fixed_registry_provider(fresh.clone()));
+
+        let llm = Box::new(crate::mocks::MockLLMProvider::new(vec![Ok(
+            crate::mocks::create_test_response_text("done"),
+        )]));
+        let project_manager = Box::new(crate::mocks::MockProjectManager::default());
+        let command_executor = Box::new(crate::mocks::create_command_executor_mock());
+        manager
+            .start_agent_for_message(
+                &session_id,
+                vec![ContentBlock::new_text("hi")],
+                None,
+                llm,
+                project_manager,
+                command_executor,
+                None,
+            )
+            .await
+            .expect("start agent");
+
+        assert!(Arc::ptr_eq(manager.tool_registry(), &fresh));
     }
 }
