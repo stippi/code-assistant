@@ -21,7 +21,7 @@ pub mod tool;
 pub use dyn_tool::{AnyOutput, DynTool};
 pub use permissions::{
     PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
-    PermissionTier,
+    PermissionTier, ToolPermissions,
 };
 pub use registry::ToolRegistry;
 pub use render::{ImageData, Render, ResourcesTracker};

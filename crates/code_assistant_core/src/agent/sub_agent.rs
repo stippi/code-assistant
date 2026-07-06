@@ -11,7 +11,7 @@ use llm::Message;
 use sandbox::{SandboxContext, SandboxPolicy};
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
-use tools_core::permissions::PermissionMediator;
+use tools_core::permissions::{PermissionMediator, ToolPermissions};
 
 /// Cancellation registry keyed by the parent `spawn_agent` tool id.
 #[derive(Default)]
@@ -133,6 +133,8 @@ pub struct DefaultSubAgentRunner {
     ui: Arc<dyn UserInterface>,
     /// Optional permission handler for sub-agent tool invocations.
     permission_handler: Option<Arc<dyn PermissionMediator>>,
+    /// Permission tier and grants shared with the parent session.
+    permissions: ToolPermissions,
     /// The tool registry sub-agents run with (shared with the parent agent).
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
     /// Hook factory sub-agents run with (shared with the parent agent);
@@ -149,6 +151,7 @@ impl DefaultSubAgentRunner {
         cancellation_registry: Arc<SubAgentCancellationRegistry>,
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
+        permissions: ToolPermissions,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
         hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
     ) -> Self {
@@ -161,6 +164,7 @@ impl DefaultSubAgentRunner {
             cancellation_registry,
             ui,
             permission_handler,
+            permissions,
             tool_registry,
             hooks_factory,
         }
@@ -218,6 +222,7 @@ impl DefaultSubAgentRunner {
             ui,
             state_persistence: Box::new(NoOpStatePersistence),
             permission_handler,
+            permissions: self.permissions.clone(),
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: None,
             hooks_factory: self.hooks_factory.clone(),

@@ -19,7 +19,7 @@ use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
-use tools_core::permissions::PermissionMediator;
+use tools_core::permissions::{PermissionMediator, ToolPermissions};
 use tracing::{debug, error, info, warn};
 
 /// Result of checking whether a session may switch to another model.
@@ -778,6 +778,10 @@ impl SessionManager {
             .as_ref()
             .map(|c| c.model_name.clone())
             .unwrap_or_else(|| self.default_model_name.clone());
+        // Permission tier and session-scoped grants, shared between the
+        // agent and its sub-agents.
+        let permissions = ToolPermissions::default();
+
         let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> =
             Arc::new(DefaultSubAgentRunner::new(
                 model_name_for_subagent,
@@ -786,6 +790,7 @@ impl SessionManager {
                 sub_agent_cancellation_registry.clone(),
                 publisher.clone(),
                 permission_handler.clone(),
+                permissions.clone(),
                 self.tool_registry.clone(),
                 self.hooks_factory.clone(),
             ));
@@ -797,6 +802,7 @@ impl SessionManager {
             ui: publisher.clone(),
             state_persistence: state_storage,
             permission_handler,
+            permissions,
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: Some(sub_agent_runner),
             hooks_factory: self.hooks_factory.clone(),
