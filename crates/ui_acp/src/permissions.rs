@@ -53,7 +53,7 @@ impl AcpPermissionMediator {
             .title(format!("{} (permission required)", request.tool_name))
             .content(vec![acp::ToolCallContent::Content(acp::Content::new(
                 acp::ContentBlock::Text(acp::TextContent::new(
-                    self.reason_summary(&request.reason),
+                    self.reason_summary(request.tool_name, &request.reason),
                 )),
             ))])
             .raw_input(self.reason_metadata(&request.reason));
@@ -61,7 +61,7 @@ impl AcpPermissionMediator {
         acp::ToolCallUpdate::new(acp::ToolCallId::new(id), fields)
     }
 
-    fn reason_summary(&self, reason: &PermissionRequestReason<'_>) -> String {
+    fn reason_summary(&self, tool_name: &str, reason: &PermissionRequestReason<'_>) -> String {
         match reason {
             PermissionRequestReason::ExecuteCommand {
                 command_line,
@@ -74,6 +74,13 @@ impl AcpPermissionMediator {
                 ),
                 None => format!("Command: `{}`", command_line),
             },
+            PermissionRequestReason::ToolInvocation { params } => {
+                format!(
+                    "Tool: `{}`\nParameters: {}",
+                    tool_name,
+                    serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string())
+                )
+            }
         }
     }
 
@@ -86,6 +93,10 @@ impl AcpPermissionMediator {
                 "type": "execute_command",
                 "command_line": command_line,
                 "working_dir": working_dir.map(|dir| dir.display().to_string()),
+            }),
+            PermissionRequestReason::ToolInvocation { params } => json!({
+                "type": "tool_invocation",
+                "params": params,
             }),
         }
     }
