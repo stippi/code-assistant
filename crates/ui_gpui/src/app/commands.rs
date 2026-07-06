@@ -344,6 +344,45 @@ impl Gpui {
         });
     }
 
+    pub(crate) fn cmd_change_permission_tier(
+        &self,
+        session_id: String,
+        tier: tools_core::PermissionTier,
+    ) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            // The UpdatePermissionTier notification arrives via the stream.
+            if let Err(e) = service.change_permission_tier(session_id, tier).await {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
+    /// Answer a pending tool permission request. The prompt dismisses when
+    /// the ToolPermissionRequestResolved notification arrives via the stream.
+    pub(crate) fn cmd_respond_permission(
+        &self,
+        session_id: String,
+        request_id: String,
+        decision: tools_core::PermissionDecision,
+    ) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service
+                .respond_permission(session_id, request_id, decision)
+                .await
+            {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     // ========================================================================
     // Branching
     // ========================================================================

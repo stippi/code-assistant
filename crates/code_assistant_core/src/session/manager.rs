@@ -19,7 +19,7 @@ use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
-use tools_core::permissions::{PermissionMediator, ToolPermissions};
+use tools_core::permissions::PermissionMediator;
 use tracing::{debug, error, info, warn};
 
 /// Result of checking whether a session may switch to another model.

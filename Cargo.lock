@@ -10547,6 +10547,7 @@ dependencies = [
  "terminal",
  "terminal_view",
  "tokio",
+ "tools_core",
  "tracing",
 ]
 

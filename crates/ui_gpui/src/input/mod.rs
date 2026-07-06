@@ -1,5 +1,6 @@
 pub mod attachment;
 pub mod model_selector;
+pub mod permission_selector;
 pub mod sandbox_selector;
 pub mod skill_completion;
 pub mod worktree_selector;
@@ -15,8 +16,10 @@ use gpui::{
 use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
 use gpui_component::{ActiveTheme, Icon};
 use model_selector::{ModelSelector, ModelSelectorEvent};
+use permission_selector::{PermissionSelector, PermissionSelectorEvent};
 use sandbox::SandboxPolicy;
 use sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
+use tools_core::permissions::PermissionTier;
 use worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
 
 /// Events emitted by the InputArea component
@@ -50,6 +53,8 @@ pub enum InputAreaEvent {
     ModelChanged { model_name: String },
     /// Sandbox mode changed
     SandboxChanged { policy: SandboxPolicy },
+    /// Permission tier changed
+    PermissionTierChanged { tier: PermissionTier },
     /// User wants to switch to local (no worktree)
     WorktreeSwitchedToLocal,
     /// User selected an existing worktree
@@ -68,9 +73,11 @@ pub struct InputArea {
     text_input: Entity<InputState>,
     model_selector: Entity<ModelSelector>,
     sandbox_selector: Entity<SandboxSelector>,
+    permission_selector: Entity<PermissionSelector>,
     worktree_selector: Entity<WorktreeSelector>,
     current_model: Option<String>,
     current_sandbox_policy: SandboxPolicy,
+    current_permission_tier: PermissionTier,
     attachments: Vec<DraftAttachment>,
     attachment_views: Vec<Entity<AttachmentView>>,
     focus_handle: FocusHandle,
@@ -91,6 +98,7 @@ pub struct InputArea {
     _input_subscription: Subscription,
     _model_selector_subscription: Subscription,
     _sandbox_selector_subscription: Subscription,
+    _permission_selector_subscription: Subscription,
     _worktree_selector_subscription: Subscription,
 }
 
@@ -117,6 +125,7 @@ impl InputArea {
         // Create the model selector
         let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
         let sandbox_selector = cx.new(|cx| SandboxSelector::new(window, cx));
+        let permission_selector = cx.new(|cx| PermissionSelector::new(window, cx));
         let worktree_selector = cx.new(|cx| WorktreeSelector::new(window, cx));
 
         // Subscribe to model selector events
@@ -124,6 +133,11 @@ impl InputArea {
             cx.subscribe_in(&model_selector, window, Self::on_model_selector_event);
         let sandbox_selector_subscription =
             cx.subscribe_in(&sandbox_selector, window, Self::on_sandbox_selector_event);
+        let permission_selector_subscription = cx.subscribe_in(
+            &permission_selector,
+            window,
+            Self::on_permission_selector_event,
+        );
         let worktree_selector_subscription =
             cx.subscribe_in(&worktree_selector, window, Self::on_worktree_selector_event);
 
@@ -131,9 +145,11 @@ impl InputArea {
             text_input,
             model_selector,
             sandbox_selector,
+            permission_selector,
             worktree_selector,
             current_model: None,
             current_sandbox_policy: SandboxPolicy::DangerFullAccess,
+            current_permission_tier: PermissionTier::default(),
             attachments: Vec::new(),
             attachment_views: Vec::new(),
             focus_handle: cx.focus_handle(),
@@ -148,6 +164,7 @@ impl InputArea {
             _input_subscription: input_subscription,
             _model_selector_subscription: model_selector_subscription,
             _sandbox_selector_subscription: sandbox_selector_subscription,
+            _permission_selector_subscription: permission_selector_subscription,
             _worktree_selector_subscription: worktree_selector_subscription,
         }
     }
@@ -246,6 +263,22 @@ impl InputArea {
 
     pub fn current_sandbox_policy(&self) -> SandboxPolicy {
         self.current_sandbox_policy.clone()
+    }
+
+    pub fn set_current_permission_tier(
+        &mut self,
+        tier: PermissionTier,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.current_permission_tier = tier;
+        self.permission_selector.update(cx, |selector, cx| {
+            selector.set_tier(tier, window, cx);
+        });
+    }
+
+    pub fn current_permission_tier(&self) -> PermissionTier {
+        self.current_permission_tier
     }
 
     /// Ensure the model list stays up to date
@@ -497,6 +530,21 @@ impl InputArea {
         }
     }
 
+    fn on_permission_selector_event(
+        &mut self,
+        _selector: &Entity<PermissionSelector>,
+        event: &PermissionSelectorEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            PermissionSelectorEvent::TierChanged { tier } => {
+                self.current_permission_tier = *tier;
+                cx.emit(InputAreaEvent::PermissionTierChanged { tier: *tier });
+            }
+        }
+    }
+
     fn on_worktree_selector_event(
         &mut self,
         _selector: &Entity<WorktreeSelector>,
@@ -697,7 +745,7 @@ impl InputArea {
                                     .track_focus(&text_input_handle)
                                     .child(Input::new(&self.text_input).appearance(false))
                             })
-                            // Selector row: model | worktree | sandbox | context ring
+                            // Selector row: model | worktree | sandbox | permissions | context ring
                             .child(
                                 div()
                                     .flex()
@@ -715,6 +763,12 @@ impl InputArea {
                                             .flex_none()
                                             .flex()
                                             .child(self.sandbox_selector.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .child(self.permission_selector.clone()),
                                     )
                                     .child({
                                         let ratio = self.context_usage_ratio.unwrap_or(0.0);

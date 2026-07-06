@@ -754,18 +754,28 @@ impl Gpui {
             }
             UiEvent::UpdatePermissionTier { tier } => {
                 debug!("UI: UpdatePermissionTier event with tier: {:?}", tier);
-                // TODO(permission-tiers): store and render in the selector.
+                *self.current_permission_tier.lock().unwrap() = Some(tier);
+                cx.refresh();
             }
             UiEvent::RequestToolPermission { request } => {
                 debug!(
                     "UI: RequestToolPermission for tool {} ({})",
                     request.tool_name, request.request_id
                 );
-                // TODO(permission-tiers): render an interactive prompt.
+                let mut pending = self.pending_permission_requests.lock().unwrap();
+                if !pending.iter().any(|r| r.request_id == request.request_id) {
+                    pending.push(request);
+                }
+                drop(pending);
+                cx.refresh();
             }
             UiEvent::ToolPermissionRequestResolved { request_id } => {
                 debug!("UI: ToolPermissionRequestResolved {request_id}");
-                // TODO(permission-tiers): dismiss the prompt.
+                self.pending_permission_requests
+                    .lock()
+                    .unwrap()
+                    .retain(|r| r.request_id != request_id);
+                cx.refresh();
             }
             UiEvent::UpdateWorktreeData {
                 worktrees,

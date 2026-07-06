@@ -1384,7 +1384,7 @@ mod tests {
 
     #[tokio::test]
     async fn respond_permission_resolves_pending_request() {
-        use tools_core::permissions::{PermissionDecision, PermissionMediator};
+        use tools_core::permissions::PermissionDecision;
 
         let tmp = tempfile::tempdir().unwrap();
         let (service, manager) = test_service_with_manager(tmp.path());
