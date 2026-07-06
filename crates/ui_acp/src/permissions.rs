@@ -117,15 +117,28 @@ impl PermissionMediator for AcpPermissionMediator {
         }
 
         let tool_call = self.tool_call_update(&permission_request);
+        let (allow_always_label, allow_once_label) = match &permission_request.reason {
+            PermissionRequestReason::ExecuteCommand { .. } => (
+                "Always allow in this session".to_string(),
+                "Allow this command".to_string(),
+            ),
+            PermissionRequestReason::ToolInvocation { .. } => (
+                format!(
+                    "Always allow `{}` in this session",
+                    permission_request.tool_name
+                ),
+                "Allow once".to_string(),
+            ),
+        };
         let options = vec![
             acp::PermissionOption::new(
                 ALLOW_ALWAYS_OPTION_ID,
-                "Always allow in this session",
+                allow_always_label,
                 acp::PermissionOptionKind::AllowAlways,
             ),
             acp::PermissionOption::new(
                 ALLOW_OPTION_ID,
-                "Allow this command",
+                allow_once_label,
                 acp::PermissionOptionKind::AllowOnce,
             ),
             acp::PermissionOption::new(
