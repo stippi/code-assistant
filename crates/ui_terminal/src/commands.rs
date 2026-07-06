@@ -51,6 +51,27 @@ pub fn all_commands() -> &'static [SlashCommand] {
             description: "Summarize and compact the conversation context",
         },
         SlashCommand {
+            name: "permissions",
+            aliases: &[],
+            description:
+                "Show or set the permission tier: /permissions [bypass-all|write-tools|all-tools]",
+        },
+        SlashCommand {
+            name: "allow",
+            aliases: &[],
+            description: "Allow the pending tool permission request once",
+        },
+        SlashCommand {
+            name: "always",
+            aliases: &[],
+            description: "Allow the pending tool permission request for this session",
+        },
+        SlashCommand {
+            name: "deny",
+            aliases: &[],
+            description: "Deny the pending tool permission request",
+        },
+        SlashCommand {
             name: "skill",
             aliases: &[],
             description: "Activate a skill: /skill <name> (or pick from the list)",
@@ -88,6 +109,12 @@ pub enum CommandResult {
     /// `:config:` / `:system:`); `None` means resolve it from the cached
     /// catalog by name.
     InvokeSkill { scope: Option<String>, name: String },
+    /// Show the current permission tier.
+    ShowPermissionTier,
+    /// Switch the permission tier.
+    SetPermissionTier(tools_core::permissions::PermissionTier),
+    /// Answer the oldest pending tool permission request.
+    RespondPermission(tools_core::PermissionDecision),
 }
 
 /// Process slash commands in terminal UI
@@ -122,6 +149,14 @@ impl CommandProcessor {
             "plan" => CommandResult::TogglePlan,
             "clear" => CommandResult::ClearContext,
             "compact" => CommandResult::CompactContext,
+            "permissions" => Self::process_permissions_command(&parts[1..]),
+            "allow" => {
+                CommandResult::RespondPermission(tools_core::PermissionDecision::GrantedOnce)
+            }
+            "always" => {
+                CommandResult::RespondPermission(tools_core::PermissionDecision::GrantedSession)
+            }
+            "deny" => CommandResult::RespondPermission(tools_core::PermissionDecision::Denied),
             "skill" => {
                 if parts.len() > 1 {
                     CommandResult::InvokeSkill {
@@ -150,6 +185,28 @@ impl CommandProcessor {
             CommandResult::InvalidCommand(format!(
                 "Model '{model_name}' not found. Use '/model' to list available models.",
             ))
+        }
+    }
+
+    fn process_permissions_command(args: &[&str]) -> CommandResult {
+        use tools_core::permissions::PermissionTier;
+        match args {
+            [] => CommandResult::ShowPermissionTier,
+            [tier] => match tier.to_lowercase().as_str() {
+                "bypass-all" | "bypass" => {
+                    CommandResult::SetPermissionTier(PermissionTier::BypassAll)
+                }
+                "write-tools" | "write" => {
+                    CommandResult::SetPermissionTier(PermissionTier::WriteTools)
+                }
+                "all-tools" | "all" => CommandResult::SetPermissionTier(PermissionTier::AllTools),
+                other => CommandResult::InvalidCommand(format!(
+                    "Unknown permission tier '{other}'. Use bypass-all, write-tools or all-tools.",
+                )),
+            },
+            _ => CommandResult::InvalidCommand(
+                "Usage: /permissions [bypass-all|write-tools|all-tools]".to_string(),
+            ),
         }
     }
 

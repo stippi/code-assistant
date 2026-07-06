@@ -10577,6 +10577,7 @@ dependencies = [
  "similar",
  "textwrap",
  "tokio",
+ "tools_core",
  "tracing",
  "tui-markdown",
  "unicode-segmentation",

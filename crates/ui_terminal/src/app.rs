@@ -240,6 +240,36 @@ impl Actions {
         });
     }
 
+    fn change_permission_tier(&self, session_id: String, tier: tools_core::PermissionTier) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if this.refuse_if_view_only().await {
+                return;
+            }
+            if let Err(e) = this.service.change_permission_tier(session_id, tier).await {
+                this.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
+    fn respond_permission(
+        &self,
+        session_id: String,
+        request_id: String,
+        decision: tools_core::PermissionDecision,
+    ) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this
+                .service
+                .respond_permission(session_id, request_id, decision)
+                .await
+            {
+                this.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     fn invoke_skill(&self, session_id: String, scope: String, name: String) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -420,6 +450,43 @@ async fn handle_command_result(
                         .lock()
                         .await
                         .set_info_message(Some(format!("No skill named '{name}' was found")));
+                }
+            }
+        }
+        CommandResult::ShowPermissionTier => {
+            let mut state = app_state.lock().await;
+            let message = match state.current_permission_tier {
+                Some(tier) => format!("Permission tier: {tier:?}"),
+                None => "No active session".to_string(),
+            };
+            state.set_info_message(Some(message));
+        }
+        CommandResult::SetPermissionTier(tier) => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            if let Some(session_id) = session_id {
+                actions.change_permission_tier(session_id, tier);
+            }
+        }
+        CommandResult::RespondPermission(decision) => {
+            let (session_id, request_id) = {
+                let state = app_state.lock().await;
+                (
+                    state.current_session_id.clone(),
+                    state
+                        .pending_permission_requests
+                        .first()
+                        .map(|r| r.request_id.clone()),
+                )
+            };
+            match (session_id, request_id) {
+                (Some(session_id), Some(request_id)) => {
+                    actions.respond_permission(session_id, request_id, decision);
+                }
+                _ => {
+                    app_state
+                        .lock()
+                        .await
+                        .set_info_message(Some("No pending permission request".to_string()));
                 }
             }
         }
@@ -716,6 +783,48 @@ async fn event_loop(
                                     };
                                     if let Some(session_id) = current_session_id {
                                         actions.compact_context(session_id);
+                                    }
+                                }
+
+                                KeyEventResult::ShowPermissionTier => {
+                                    let mut state = app_state.lock().await;
+                                    let message = match state.current_permission_tier {
+                                        Some(tier) => format!("Permission tier: {tier:?}"),
+                                        None => "No active session".to_string(),
+                                    };
+                                    state.set_info_message(Some(message));
+                                }
+                                KeyEventResult::SetPermissionTier(tier) => {
+                                    let current_session_id = {
+                                        let state = app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
+                                    if let Some(session_id) = current_session_id {
+                                        actions.change_permission_tier(session_id, tier);
+                                    }
+                                }
+                                KeyEventResult::RespondPermission(decision) => {
+                                    let (session_id, request_id) = {
+                                        let state = app_state.lock().await;
+                                        (
+                                            state.current_session_id.clone(),
+                                            state
+                                                .pending_permission_requests
+                                                .first()
+                                                .map(|r| r.request_id.clone()),
+                                        )
+                                    };
+                                    match (session_id, request_id) {
+                                        (Some(session_id), Some(request_id)) => {
+                                            actions.respond_permission(
+                                                session_id, request_id, decision,
+                                            );
+                                        }
+                                        _ => {
+                                            app_state.lock().await.set_info_message(Some(
+                                                "No pending permission request".to_string(),
+                                            ));
+                                        }
                                     }
                                 }
 

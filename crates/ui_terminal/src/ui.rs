@@ -499,6 +499,32 @@ impl UserInterface for TerminalUI {
                     renderer_guard.clear_error();
                 }
             }
+            UiEvent::UpdatePermissionTier { tier } => {
+                let mut state = self.app_state.lock().await;
+                state.update_permission_tier(Some(tier));
+            }
+            UiEvent::RequestToolPermission { request } => {
+                let mut state = self.app_state.lock().await;
+                let prompt = format!(
+                    "Permission required: {} — respond with /allow, /always or /deny",
+                    request.summary
+                );
+                state.push_permission_request(request);
+                state.set_info_message(Some(prompt));
+            }
+            UiEvent::ToolPermissionRequestResolved { request_id } => {
+                let mut state = self.app_state.lock().await;
+                state.remove_permission_request(&request_id);
+                if state.pending_permission_requests.is_empty() {
+                    state.set_info_message(None);
+                } else if let Some(next) = state.pending_permission_requests.first() {
+                    let prompt = format!(
+                        "Permission required: {} — respond with /allow, /always or /deny",
+                        next.summary
+                    );
+                    state.set_info_message(Some(prompt));
+                }
+            }
             UiEvent::ShowTransientStatus { message } => {
                 debug!("Transient status: {}", message);
                 // In the terminal UI, show as a brief info message via the error strip

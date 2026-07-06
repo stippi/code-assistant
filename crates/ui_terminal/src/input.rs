@@ -44,6 +44,12 @@ pub enum KeyEventResult {
     /// Activate a skill. `scope` is the scope token, or `None` to resolve it
     /// from the cached catalog by name.
     InvokeSkill { scope: Option<String>, name: String },
+    /// Show the current permission tier.
+    ShowPermissionTier,
+    /// Switch the permission tier.
+    SetPermissionTier(tools_core::permissions::PermissionTier),
+    /// Answer the oldest pending tool permission request.
+    RespondPermission(tools_core::PermissionDecision),
     /// The slash-prefix on the current input line changed.
     ///
     /// `Some("")` means the user just typed `/` (open the popup at root).
@@ -198,6 +204,13 @@ impl InputManager {
                             CommandResult::OpenSkillPicker => KeyEventResult::OpenSkillPicker,
                             CommandResult::InvokeSkill { scope, name } => {
                                 KeyEventResult::InvokeSkill { scope, name }
+                            }
+                            CommandResult::ShowPermissionTier => KeyEventResult::ShowPermissionTier,
+                            CommandResult::SetPermissionTier(tier) => {
+                                KeyEventResult::SetPermissionTier(tier)
+                            }
+                            CommandResult::RespondPermission(decision) => {
+                                KeyEventResult::RespondPermission(decision)
                             }
                             CommandResult::InvalidCommand(error) => {
                                 KeyEventResult::ShowInfo(format!("Error: {error}"))
