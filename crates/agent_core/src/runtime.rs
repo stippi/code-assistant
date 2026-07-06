@@ -732,6 +732,7 @@ impl AgentRuntime {
     /// Compared to the sequential path, interceptors do not run, the plan is
     /// unavailable, and input modifications are not propagated back into the
     /// message history.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_tool_request_detached(
         tool_request: ToolRequest,
         ui: Arc<dyn AgentUi>,
