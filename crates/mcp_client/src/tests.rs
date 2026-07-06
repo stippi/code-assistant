@@ -126,6 +126,7 @@ fn test_context() -> ToolContext<'static> {
     ToolContext {
         command_executor: &EXECUTOR,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: None,
     }

@@ -990,6 +990,7 @@ pub struct ToolTestFixture {
     command_executor: MockCommandExecutor,
     ui: Option<Arc<MockUI>>,
     tool_id: Option<String>,
+    session_id: Option<String>,
     permission_handler: Option<Arc<dyn PermissionMediator>>,
     services: crate::tools::ToolServices,
 }
@@ -1012,9 +1013,16 @@ impl ToolTestFixture {
             command_executor,
             ui: None,
             tool_id: None,
+            session_id: None,
             permission_handler: None,
             services,
         }
+    }
+
+    /// Set the session id tools see on their `ToolContext`.
+    pub fn with_session_id(mut self, session_id: String) -> Self {
+        self.session_id = Some(session_id);
+        self
     }
 
     /// Create a new test fixture with default mocks
@@ -1154,6 +1162,7 @@ impl ToolTestFixture {
         ToolContext {
             command_executor: &self.command_executor,
             tool_id: self.tool_id.clone(),
+            session_id: self.session_id.clone(),
             permission_handler: self.permission_handler.as_deref(),
             extensions: Some(&mut self.services),
         }

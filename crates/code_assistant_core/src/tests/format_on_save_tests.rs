@@ -195,6 +195,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
     let mut context = ToolContext {
         command_executor: &command_executor,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: Some(&mut services),
     };
@@ -267,6 +268,7 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
     let mut context = ToolContext {
         command_executor: &command_executor,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: Some(&mut services),
     };
@@ -338,6 +340,7 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
     let mut context = ToolContext {
         command_executor: &command_executor,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: Some(&mut services),
     };
@@ -411,6 +414,7 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
     let mut context = ToolContext {
         command_executor: &command_executor,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: Some(&mut services),
     };
@@ -486,6 +490,7 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
     let mut context = ToolContext {
         command_executor: &command_executor,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: Some(&mut services),
     };
@@ -581,6 +586,7 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
     let mut context = ToolContext {
         command_executor: &command_executor,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: Some(&mut services),
     };
@@ -669,6 +675,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
     let mut context = ToolContext {
         command_executor: &command_executor,
         tool_id: None,
+        session_id: None,
         permission_handler: None,
         extensions: Some(&mut services),
     };

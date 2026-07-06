@@ -271,6 +271,7 @@ impl MessageHandler {
             let mut context = tools_core::ToolContext {
                 command_executor: self.command_executor.as_ref(),
                 tool_id: None,
+                session_id: None,
                 permission_handler: None,
                 extensions: Some(&mut services),
             };

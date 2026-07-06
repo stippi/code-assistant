@@ -680,6 +680,7 @@ impl AgentRuntime {
                 let permissions = self.permissions.clone();
                 let services_provider = self.services_provider.clone();
                 let scope_tag = self.tool_capability.clone();
+                let session_id = self.session_id.clone();
 
                 async move {
                     let start_time = Some(SystemTime::now());
@@ -693,6 +694,7 @@ impl AgentRuntime {
                         permissions,
                         services_provider,
                         scope_tag,
+                        session_id,
                     )
                     .await;
 
@@ -742,6 +744,7 @@ impl AgentRuntime {
         permissions: ToolPermissions,
         services_provider: Arc<dyn ToolServicesProvider>,
         scope_tag: String,
+        session_id: Option<String>,
     ) -> (bool, ToolExecution) {
         let is_hidden = registry.is_tool_hidden(&tool_request.name, &scope_tag);
 
@@ -786,6 +789,7 @@ impl AgentRuntime {
                         let mut context = ToolContext {
                             command_executor: command_executor.as_ref(),
                             tool_id: Some(tool_request.id.clone()),
+                            session_id,
                             permission_handler: permission_handler.as_deref(),
                             extensions: Some(services.as_mut()),
                         };
@@ -1906,6 +1910,7 @@ impl AgentRuntime {
         let mut context = ToolContext {
             command_executor: self.command_executor.as_ref(),
             tool_id: Some(tool_request.id.clone()),
+            session_id: self.session_id.clone(),
             permission_handler: self.permission_handler.as_deref(),
             extensions: Some(services.as_mut()),
         };

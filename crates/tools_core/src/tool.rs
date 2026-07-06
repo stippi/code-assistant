@@ -17,6 +17,9 @@ pub struct ToolContext<'a> {
     pub command_executor: &'a dyn CommandExecutor,
     /// Optional current tool ID for streaming output
     pub tool_id: Option<String>,
+    /// The session this invocation runs in, when the embedding runtime has
+    /// one — for tools that key state per session (e.g. schedulers).
+    pub session_id: Option<String>,
     /// Optional permission handler for potentially sensitive operations
     pub permission_handler: Option<&'a dyn PermissionMediator>,
     /// Application-specific services for tools that need more than the fields
