@@ -36,6 +36,9 @@ pub struct AgentComponents {
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
 
+    /// Optional session-bound wakeup handle for the wakeup tools.
+    pub wakeups: Option<crate::session::wakeup::SessionWakeups>,
+
     /// Hook set for this agent; `None` uses code-assistant's default hooks.
     /// Embedders install a factory to customize e.g. the system
     /// prompt while reusing the rest of the runtime.
@@ -62,6 +65,7 @@ impl Agent {
             permissions,
             tool_registry,
             sub_agent_runner,
+            wakeups,
             hooks_factory,
         } = components;
 
@@ -73,6 +77,7 @@ impl Agent {
             project_manager: project_manager.clone(),
             ui,
             sub_agent_runner,
+            wakeups,
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {

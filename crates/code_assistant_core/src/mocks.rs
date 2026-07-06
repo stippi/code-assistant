@@ -1110,6 +1110,22 @@ impl ToolTestFixture {
         self
     }
 
+    /// Attach a wakeup handle backed by a real scheduler task (fired wakeups
+    /// go nowhere; the fixture only exercises the arming side).
+    pub fn with_wakeups(mut self) -> Self {
+        struct NullSink;
+        #[async_trait::async_trait]
+        impl crate::session::wakeup::WakeupSink for NullSink {
+            async fn fire(&self, _session_id: &str, _message: &str) {}
+        }
+        let handle = crate::session::wakeup::spawn_wakeup_scheduler(NullSink, None);
+        self.services.wakeups = Some(crate::session::wakeup::SessionWakeups {
+            handle,
+            session_id: "test-session".to_string(),
+        });
+        self
+    }
+
     /// Add a UI mock to this fixture
     pub fn with_ui(mut self) -> Self {
         let ui = Arc::new(MockUI::default());

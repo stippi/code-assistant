@@ -15,6 +15,7 @@ pub mod manager;
 pub mod permissions;
 pub mod service;
 pub mod sleep_inhibitor;
+pub mod wakeup;
 pub mod watcher;
 
 // Main session manager, the UI→core command facade on top of it, and the
@@ -22,6 +23,7 @@ pub mod watcher;
 pub use event_stream::{EventPayload, EventStream, SessionEvent, StreamError, Subscription};
 pub use manager::SessionManager;
 pub use service::SessionService;
+pub use wakeup::{spawn_wakeup_scheduler, SessionWakeups, WakeupHandle};
 
 /// Owned snapshot of everything a frontend needs to render a session.
 ///

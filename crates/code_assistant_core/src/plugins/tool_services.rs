@@ -6,6 +6,7 @@
 use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
 use crate::plugins::AgentAppState;
+use crate::session::wakeup::SessionWakeups;
 use crate::tools::ToolServices;
 use crate::ui::UserInterface;
 use agent_core::hooks::ToolServicesProvider;
@@ -16,6 +17,7 @@ pub struct CodeAssistantToolServices {
     pub project_manager: Arc<dyn ProjectManager>,
     pub ui: Arc<dyn UserInterface>,
     pub sub_agent_runner: Option<Arc<dyn SubAgentRunner>>,
+    pub wakeups: Option<SessionWakeups>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -26,6 +28,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             plan: Some(plan),
             ui: Some(self.ui.clone()),
             sub_agent_runner: self.sub_agent_runner.clone(),
+            wakeups: self.wakeups.clone(),
         })
     }
 
@@ -41,6 +44,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             plan: None, // No plan access in detached execution
             ui: Some(self.ui.clone()),
             sub_agent_runner: self.sub_agent_runner.clone(),
+            wakeups: self.wakeups.clone(),
         })
     }
 }

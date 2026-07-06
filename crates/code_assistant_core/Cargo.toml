@@ -75,3 +75,5 @@ keepawake = "0.6"
 
 [dev-dependencies]
 axum = "0.7"
+# test-util enables the paused clock (`start_paused`) for timer tests
+tokio = { version = "1.48", features = ["full", "test-util"] }

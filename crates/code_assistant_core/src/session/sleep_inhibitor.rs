@@ -48,6 +48,28 @@ impl SleepInhibitor {
         );
     }
 
+    /// Called while at least one session wakeup is armed — a machine that
+    /// sleeps through the deadline would silently swallow the wakeup. Shares
+    /// the refcount with running agents.
+    pub fn wakeup_armed(&self) {
+        let prev = self.running_count.fetch_add(1, Ordering::SeqCst);
+        if prev == 0 {
+            self.acquire_lock();
+        }
+        debug!("Wakeup armed, holding wake lock");
+    }
+
+    /// Counterpart of [`Self::wakeup_armed`]: the last armed wakeup fired or
+    /// was cancelled.
+    pub fn wakeup_disarmed(&self) {
+        let prev = self.running_count.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(prev > 0, "wakeup_disarmed without wakeup_armed");
+        if prev == 1 {
+            self.release_lock();
+        }
+        debug!("Wakeups disarmed, wake lock released");
+    }
+
     fn acquire_lock(&self) {
         let result = keepawake::Builder::default()
             .idle(true)

@@ -74,6 +74,14 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             let registry = code_assistant_core::tools::default_registry_with_mcp().await;
             manager_for_mcp.lock().await.set_tool_registry(registry);
 
+            // Wakeup scheduler: lets agents arm timed continuations of their
+            // session (schedule_wakeup tool).
+            let wakeup_handle = code_assistant_core::session::spawn_wakeup_scheduler(
+                service.clone(),
+                Some(manager_for_mcp.lock().await.sleep_inhibitor()),
+            );
+            manager_for_mcp.lock().await.set_wakeup_handle(wakeup_handle);
+
             let worker = tokio::spawn(service_worker);
 
             startup(&service, &gui_for_thread, task).await;

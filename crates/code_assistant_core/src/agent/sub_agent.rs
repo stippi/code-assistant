@@ -225,6 +225,9 @@ impl DefaultSubAgentRunner {
             permissions: self.permissions.clone(),
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: None,
+            // Sub-agents run to completion inside the parent's turn; a
+            // wakeup for "their" session would wake the parent instead.
+            wakeups: None,
             hooks_factory: self.hooks_factory.clone(),
         };
 

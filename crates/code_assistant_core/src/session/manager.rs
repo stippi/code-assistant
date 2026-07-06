@@ -99,6 +99,10 @@ pub struct SessionManager {
     /// code-assistant's default hooks.
     hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
 
+    /// Handle to the process-wide wakeup scheduler; when set, agents get the
+    /// `schedule_wakeup` / `cancel_wakeup` tools bound to their session.
+    wakeup_handle: Option<crate::session::wakeup::WakeupHandle>,
+
     /// The core→UI broadcast stream all sessions publish to.
     events: crate::session::event_stream::EventStream,
 }
@@ -145,6 +149,7 @@ impl SessionManager {
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
             hooks_factory: None,
+            wakeup_handle: None,
             events,
         }
     }
@@ -153,6 +158,20 @@ impl SessionManager {
     /// Embedders use this to customize e.g. the system prompt provider.
     pub fn set_hooks_factory(&mut self, factory: agent_core::hooks::HookRegistryFactory) {
         self.hooks_factory = Some(factory);
+    }
+
+    /// Install the wakeup scheduler handle (see
+    /// [`crate::session::wakeup::spawn_wakeup_scheduler`]). Wiring layers set
+    /// this right after constructing the service; without it, agents run
+    /// without the wakeup tools.
+    pub fn set_wakeup_handle(&mut self, handle: crate::session::wakeup::WakeupHandle) {
+        self.wakeup_handle = Some(handle);
+    }
+
+    /// The sleep inhibitor shared by this manager's agents, for other
+    /// wake-lock holders (the wakeup scheduler).
+    pub fn sleep_inhibitor(&self) -> Arc<SleepInhibitor> {
+        self.sleep_inhibitor.clone()
     }
 
     /// Replace the tool registry shared by the sessions this manager runs.
@@ -815,6 +834,12 @@ impl SessionManager {
             permissions,
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: Some(sub_agent_runner),
+            wakeups: self.wakeup_handle.clone().map(|handle| {
+                crate::session::wakeup::SessionWakeups {
+                    handle,
+                    session_id: session_id.to_string(),
+                }
+            }),
             hooks_factory: self.hooks_factory.clone(),
         };
 
@@ -968,6 +993,11 @@ impl SessionManager {
         // Clear active session if it was the deleted one
         if self.active_session_id.as_deref() == Some(session_id) {
             self.active_session_id = None;
+        }
+
+        // A deleted session's armed wakeups must never fire
+        if let Some(handle) = &self.wakeup_handle {
+            handle.cancel_session(session_id.to_string());
         }
 
         // Delete from persistence

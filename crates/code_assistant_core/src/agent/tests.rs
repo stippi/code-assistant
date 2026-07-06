@@ -54,6 +54,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -180,6 +181,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -310,6 +312,7 @@ async fn test_parse_error_handling() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -453,6 +456,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -558,6 +562,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -715,6 +720,7 @@ async fn test_compaction_reminds_about_active_skills() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -804,6 +810,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -935,6 +942,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1143,6 +1151,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1512,6 +1521,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1566,6 +1576,7 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1634,6 +1645,7 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1686,6 +1698,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1742,6 +1755,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1848,6 +1862,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -1935,6 +1950,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -2092,6 +2108,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -2223,6 +2240,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -2382,6 +2400,7 @@ async fn test_write_tier_denied_tool_reports_error_to_llm() -> Result<()> {
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -2443,6 +2462,7 @@ async fn test_write_tier_does_not_ask_for_read_only_tools() -> Result<()> {
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 
@@ -2493,6 +2513,7 @@ async fn test_granted_session_asks_only_once_per_tool() -> Result<()> {
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::AllTools),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
+        wakeups: None,
         hooks_factory: None,
     };
 

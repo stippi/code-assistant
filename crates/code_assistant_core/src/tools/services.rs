@@ -8,6 +8,7 @@
 
 use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
+use crate::session::wakeup::SessionWakeups;
 use crate::tools::core::ToolContext;
 use crate::types::PlanState;
 use crate::ui::UserInterface;
@@ -27,6 +28,9 @@ pub struct ToolServices {
     pub ui: Option<Arc<dyn UserInterface>>,
     /// Optional sub-agent runner used by the `spawn_agent` tool
     pub sub_agent_runner: Option<Arc<dyn SubAgentRunner>>,
+    /// Optional session-bound wakeup handle for the `schedule_wakeup` /
+    /// `cancel_wakeup` tools
+    pub wakeups: Option<SessionWakeups>,
 }
 
 impl ToolServices {
@@ -36,6 +40,7 @@ impl ToolServices {
             plan: None,
             ui: None,
             sub_agent_runner: None,
+            wakeups: None,
         }
     }
 }

@@ -463,6 +463,16 @@ impl SessionService {
             .await
     }
 
+    /// Deliver a fired wakeup (see [`crate::session::wakeup`]): inject
+    /// `message` into the session and make sure a turn runs for it — started
+    /// immediately when the session is idle, queued as the pending message
+    /// when an agent is currently running. A session that no longer exists
+    /// swallows the wakeup silently.
+    pub async fn inject_wakeup(&self, session_id: String, message: String) -> Result<()> {
+        self.call(move |ctx| async move { inject_wakeup_impl(&ctx, &session_id, &message).await })
+            .await
+    }
+
     /// Cancel a running sub-agent by its tool id. Returns `true` if a
     /// sub-agent was actually cancelled, `false` if it had already finished.
     pub async fn cancel_sub_agent(&self, session_id: String, tool_id: String) -> Result<bool> {
@@ -1045,6 +1055,51 @@ async fn send_user_message_impl(
     start_agent_impl(ctx, session_id, tool_scope_override).await
 }
 
+async fn inject_wakeup_impl(ctx: &ServiceCtx, session_id: &str, message: &str) -> Result<()> {
+    let running = {
+        let manager = ctx.manager.lock().await;
+        match manager.get_session(session_id) {
+            // Session deleted since the wakeup was armed — drop silently.
+            None => {
+                debug!("Wakeup for unknown session {session_id} dropped");
+                return Ok(());
+            }
+            Some(instance) => !instance.get_activity_state().is_terminal(),
+        }
+    };
+
+    let content_blocks = content_blocks_from(message, &[]);
+    if running {
+        let mut manager = ctx.manager.lock().await;
+        manager.queue_structured_user_message(session_id, content_blocks)?;
+        if let Some(summary) = manager.get_pending_message(session_id)? {
+            ctx.notify_session(
+                session_id,
+                UiEvent::UpdatePendingMessage {
+                    message: Some(summary),
+                },
+            );
+        }
+        return Ok(());
+    }
+
+    let node_id = {
+        let mut manager = ctx.manager.lock().await;
+        manager
+            .add_user_message(session_id, content_blocks, None)
+            .context("Failed to add wakeup message")?
+    };
+    ctx.notify_session(
+        session_id,
+        UiEvent::DisplayUserInput {
+            content: message.to_string(),
+            attachments: Vec::new(),
+            node_id: Some(node_id),
+        },
+    );
+    start_agent_impl(ctx, session_id, None).await
+}
+
 async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
     debug!("ResumeSession requested for {}", session_id);
 
@@ -1230,6 +1285,55 @@ mod tests {
         let taken = service.take_pending_message(id.clone()).await.unwrap();
         assert_eq!(taken.as_deref(), Some("hello\nworld"));
         assert_eq!(service.take_pending_message(id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn inject_wakeup_into_unknown_session_is_dropped_silently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+        service
+            .inject_wakeup("gone".to_string(), "[scheduled wakeup] x".to_string())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn inject_wakeup_queues_while_agent_is_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        {
+            let mut manager = manager.lock().await;
+            manager.get_session_mut(&id).unwrap().set_activity_state(
+                crate::session::instance::SessionActivityState::AgentRunning,
+            );
+        }
+
+        service
+            .inject_wakeup(id.clone(), "[scheduled wakeup] check".to_string())
+            .await
+            .unwrap();
+
+        let pending = service.take_pending_message(id).await.unwrap();
+        assert_eq!(pending.as_deref(), Some("[scheduled wakeup] check"));
+    }
+
+    #[tokio::test]
+    async fn inject_wakeup_into_idle_session_adds_the_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        // Starting the turn fails in this harness (no real LLM client), but
+        // the injected message must land in the history either way — exactly
+        // like a user message sent to an idle session.
+        let _ = service
+            .inject_wakeup(id.clone(), "[scheduled wakeup] check".to_string())
+            .await;
+
+        let snapshot = service.load_session(id, None).await.unwrap();
+        assert_eq!(snapshot.messages.len(), 1);
     }
 
     #[tokio::test]
