@@ -39,6 +39,10 @@ pub struct AgentComponents {
     /// Optional session-bound wakeup handle for the wakeup tools.
     pub wakeups: Option<crate::session::wakeup::SessionWakeups>,
 
+    /// Optional PTY session registry, shared with the owning session
+    /// instance so interactive sessions survive across agent runs.
+    pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
+
     /// Hook set for this agent; `None` uses code-assistant's default hooks.
     /// Embedders install a factory to customize e.g. the system
     /// prompt while reusing the rest of the runtime.
@@ -66,6 +70,7 @@ impl Agent {
             tool_registry,
             sub_agent_runner,
             wakeups,
+            pty_sessions,
             hooks_factory,
         } = components;
 
@@ -78,6 +83,7 @@ impl Agent {
             ui,
             sub_agent_runner,
             wakeups,
+            pty_sessions,
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {

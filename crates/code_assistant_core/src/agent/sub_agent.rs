@@ -228,6 +228,9 @@ impl DefaultSubAgentRunner {
             // Sub-agents run to completion inside the parent's turn; a
             // wakeup for "their" session would wake the parent instead.
             wakeups: None,
+            // Sub-agents get their own registry: dropping it when the
+            // sub-agent finishes terminates any PTY sessions it left behind.
+            pty_sessions: Some(Arc::new(pty_session::PtySessionManager::default())),
             hooks_factory: self.hooks_factory.clone(),
         };
 

@@ -185,6 +185,11 @@ pub struct SessionInstance {
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 
+    /// Live PTY sessions started by this session's agents (execute_command
+    /// session mode). Survives across agent runs; dropping the instance
+    /// terminates all remaining sessions.
+    pub pty_sessions: Arc<pty_session::PtySessionManager>,
+
     /// Exclusive cross-process lock held while an agent is running.
     ///
     /// Acquired before spawning the agent task, released on task completion
@@ -236,6 +241,7 @@ impl SessionInstance {
                 crate::session::permissions::PendingPermissionRequests::default(),
             ),
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
+            pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
             agent_lock: None,
             last_ui_synced_path: initial_path,
             last_ui_synced_tool_count: initial_tool_count,

@@ -12,6 +12,7 @@ use crate::session::wakeup::SessionWakeups;
 use crate::tools::core::ToolContext;
 use crate::types::PlanState;
 use crate::ui::UserInterface;
+use pty_session::PtySessionManager;
 use std::sync::Arc;
 
 /// The services code-assistant provides to its tools.
@@ -31,6 +32,10 @@ pub struct ToolServices {
     /// Optional session-bound wakeup handle for the `schedule_wakeup` /
     /// `cancel_wakeup` tools
     pub wakeups: Option<SessionWakeups>,
+    /// Optional registry of live PTY sessions for `execute_command`'s
+    /// session mode and the `write_stdin` tool. Lives on the session
+    /// instance so sessions survive across agent runs.
+    pub pty_sessions: Option<Arc<PtySessionManager>>,
 }
 
 impl ToolServices {
@@ -41,6 +46,7 @@ impl ToolServices {
             ui: None,
             sub_agent_runner: None,
             wakeups: None,
+            pty_sessions: None,
         }
     }
 }
@@ -55,6 +61,7 @@ pub trait ToolServicesAccess {
     fn project_manager(&self) -> &dyn ProjectManager;
     fn ui(&self) -> Option<&dyn UserInterface>;
     fn sub_agent_runner(&self) -> Option<&dyn SubAgentRunner>;
+    fn pty_sessions(&self) -> Option<&PtySessionManager>;
 }
 
 impl ToolServicesAccess for ToolContext<'_> {
@@ -80,5 +87,10 @@ impl ToolServicesAccess for ToolContext<'_> {
     fn sub_agent_runner(&self) -> Option<&dyn SubAgentRunner> {
         self.extension::<ToolServices>()
             .and_then(|services| services.sub_agent_runner.as_deref())
+    }
+
+    fn pty_sessions(&self) -> Option<&PtySessionManager> {
+        self.extension::<ToolServices>()
+            .and_then(|services| services.pty_sessions.as_deref())
     }
 }

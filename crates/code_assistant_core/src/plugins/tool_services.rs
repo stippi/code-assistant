@@ -18,6 +18,7 @@ pub struct CodeAssistantToolServices {
     pub ui: Arc<dyn UserInterface>,
     pub sub_agent_runner: Option<Arc<dyn SubAgentRunner>>,
     pub wakeups: Option<SessionWakeups>,
+    pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -29,6 +30,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             ui: Some(self.ui.clone()),
             sub_agent_runner: self.sub_agent_runner.clone(),
             wakeups: self.wakeups.clone(),
+            pty_sessions: self.pty_sessions.clone(),
         })
     }
 
@@ -45,6 +47,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             ui: Some(self.ui.clone()),
             sub_agent_runner: self.sub_agent_runner.clone(),
             wakeups: self.wakeups.clone(),
+            pty_sessions: self.pty_sessions.clone(),
         })
     }
 }

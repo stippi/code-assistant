@@ -1544,6 +1544,7 @@ dependencies = [
  "mcp_client",
  "md5",
  "notify",
+ "pty_session",
  "regex",
  "rust-embed",
  "sandbox",
