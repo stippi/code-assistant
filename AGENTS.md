@@ -14,9 +14,9 @@ Additional documentation is available in the `docs` folder if needed.
 
 ### Testing Specific Components
 - `cargo test --package code-assistant` - Test wiring binary
-- `cargo test --package code-assistant-core` - Test domain layer
-- `cargo test --package agent-core` - Test agent core
-- `cargo test --package tools-core` - Test tool framework
+- `cargo test --package code_assistant_core` - Test domain layer
+- `cargo test --package agent_core` - Test agent core
+- `cargo test --package tools_core` - Test tool framework
 - `cargo test --package llm` - Test LLM integration
 - `cargo test --package web` - Test web functionality
 
