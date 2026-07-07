@@ -73,7 +73,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
         ListFilesTool, ListProjectsTool, ListSkillsTool, NameSessionTool, PerplexityAskTool,
         ReadFilesTool, ReadSkillTool, ReplaceInFileTool, ScheduleWakeupTool, SearchFilesTool,
         SpawnAgentTool, UpdatePlanTool, ViewDocumentsTool, ViewImagesTool, WebFetchTool,
-        WebSearchTool, WriteFileTool,
+        WebSearchTool, WriteFileTool, WriteStdinTool,
     };
 
     registry.register(Box::new(DeleteFilesTool));
@@ -103,4 +103,5 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
     registry.register(Box::new(WebFetchTool));
     registry.register(Box::new(WebSearchTool));
     registry.register(Box::new(WriteFileTool));
+    registry.register(Box::new(WriteStdinTool));
 }
