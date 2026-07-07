@@ -17,6 +17,17 @@ pub struct BufferedOutput {
     pub omitted_bytes: usize,
 }
 
+/// Raw variant of [`BufferedOutput`], for consumers that interpret the
+/// bytes themselves (e.g. a terminal emulator).
+#[derive(Default)]
+pub struct BufferedBytes {
+    /// The buffered bytes. When bytes were dropped, a truncation marker is
+    /// inserted between head and tail.
+    pub bytes: Vec<u8>,
+    /// Number of bytes dropped from the middle since the last take.
+    pub omitted_bytes: usize,
+}
+
 pub struct HeadTailBuffer {
     head_cap: usize,
     tail_cap: usize,
@@ -59,18 +70,30 @@ impl HeadTailBuffer {
 
     /// Drain the buffer, resetting it for the next accumulation window.
     pub fn take(&mut self) -> BufferedOutput {
+        let raw = self.take_bytes();
+        BufferedOutput {
+            text: String::from_utf8_lossy(&raw.bytes).into_owned(),
+            omitted_bytes: raw.omitted_bytes,
+        }
+    }
+
+    /// Drain the buffer as raw bytes, resetting it for the next
+    /// accumulation window.
+    pub fn take_bytes(&mut self) -> BufferedBytes {
         let head = std::mem::take(&mut self.head);
         let tail: Vec<u8> = std::mem::take(&mut self.tail).into();
         let omitted_bytes = std::mem::take(&mut self.omitted_bytes);
 
-        let mut text = String::from_utf8_lossy(&head).into_owned();
+        let mut bytes = head;
         if omitted_bytes > 0 {
-            text.push_str(&format!("\n[... {omitted_bytes} bytes omitted ...]\n"));
+            bytes.extend_from_slice(
+                format!("\n[... {omitted_bytes} bytes omitted ...]\n").as_bytes(),
+            );
         }
-        text.push_str(&String::from_utf8_lossy(&tail));
+        bytes.extend_from_slice(&tail);
 
-        BufferedOutput {
-            text,
+        BufferedBytes {
+            bytes,
             omitted_bytes,
         }
     }

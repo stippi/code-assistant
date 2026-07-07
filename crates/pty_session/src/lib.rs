@@ -22,8 +22,9 @@ mod buffer;
 mod manager;
 mod session;
 
-pub use buffer::{BufferedOutput, HeadTailBuffer};
+pub use buffer::{BufferedBytes, BufferedOutput, HeadTailBuffer};
 pub use manager::{DEFAULT_MAX_SESSIONS, PtySessionInfo, PtySessionManager};
 pub use session::{
-    CTRL_C, CollectedOutput, DEFAULT_MAX_BUFFER_BYTES, PtySession, PtySessionStatus, PtySpawnConfig,
+    CTRL_C, CollectedOutput, DEFAULT_MAX_BUFFER_BYTES, PtySession, PtySessionStatus,
+    PtySpawnConfig, sanitize_terminal_output,
 };

@@ -13,14 +13,14 @@
 //! - `tty: false` — plain pipes via `tokio::process`, stdin closed. Writing
 //!   returns an error advising to re-run with `tty: true`.
 
-use crate::buffer::HeadTailBuffer;
+use crate::buffer::{BufferedBytes, HeadTailBuffer};
 use anyhow::{Context as _, Result, anyhow};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tracing::warn;
 
 /// Default cap for output retained between two `collect_output` calls.
@@ -43,10 +43,35 @@ pub enum PtySessionStatus {
 
 /// One output window drained from the session.
 pub struct CollectedOutput {
+    /// Plain-text output: ANSI escape sequences stripped, CR/CRLF
+    /// normalized to LF — what a language model should read. Consumers
+    /// that want the raw bytes (terminal renderers) take them via the
+    /// `on_chunk` callback of [`PtySession::collect_output_with`].
     pub output: String,
     /// Bytes dropped from the middle of the window when it exceeded the cap.
     pub omitted_bytes: usize,
     pub status: PtySessionStatus,
+}
+
+/// Strip ANSI escape sequences and normalize line endings for LLM/text
+/// consumption of terminal output.
+pub fn sanitize_terminal_output(bytes: &[u8]) -> String {
+    // Normalize CR before stripping: PTYs emit CRLF, and progress-bar
+    // style updates use lone CR — which strip() would silently drop,
+    // gluing successive updates onto one line.
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut iter = bytes.iter().peekable();
+    while let Some(&byte) = iter.next() {
+        if byte == b'\r' {
+            if iter.peek() != Some(&&b'\n') {
+                normalized.push(b'\n');
+            }
+        } else {
+            normalized.push(byte);
+        }
+    }
+    let stripped = strip_ansi_escapes::strip(&normalized);
+    String::from_utf8_lossy(&stripped).into_owned()
 }
 
 pub struct PtySpawnConfig {
@@ -127,6 +152,9 @@ impl Terminator {
 
 pub struct PtySession {
     buffer: Arc<Mutex<HeadTailBuffer>>,
+    /// Signalled by the reader tasks whenever new output was appended.
+    output_notify: Arc<Notify>,
+    max_buffer_bytes: usize,
     exit_rx: watch::Receiver<Option<Option<i32>>>,
     /// Present only for `tty: true` sessions.
     writer_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
@@ -158,18 +186,20 @@ impl PtySession {
         }
 
         let buffer = Arc::new(Mutex::new(HeadTailBuffer::new(config.max_buffer_bytes)));
+        let output_notify = Arc::new(Notify::new());
         let (exit_tx, exit_rx) = watch::channel(None);
 
         if config.tty {
-            Self::spawn_tty(config, buffer, exit_tx, exit_rx)
+            Self::spawn_tty(config, buffer, output_notify, exit_tx, exit_rx)
         } else {
-            Self::spawn_piped(config, buffer, exit_tx, exit_rx)
+            Self::spawn_piped(config, buffer, output_notify, exit_tx, exit_rx)
         }
     }
 
     fn spawn_tty(
         config: PtySpawnConfig,
         buffer: Arc<Mutex<HeadTailBuffer>>,
+        output_notify: Arc<Notify>,
         exit_tx: watch::Sender<Option<Option<i32>>>,
         exit_rx: watch::Receiver<Option<Option<i32>>>,
     ) -> Result<Self> {
@@ -214,6 +244,7 @@ impl PtySession {
 
         // Reader: blocking loop on a plain thread, appending into the buffer.
         let reader_buffer = buffer.clone();
+        let reader_notify = output_notify.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
             loop {
@@ -223,6 +254,7 @@ impl PtySession {
                         if let Ok(mut buffer) = reader_buffer.lock() {
                             buffer.append(&chunk[..n]);
                         }
+                        reader_notify.notify_one();
                     }
                 }
             }
@@ -250,6 +282,8 @@ impl PtySession {
 
         Ok(Self {
             buffer,
+            output_notify,
+            max_buffer_bytes: config.max_buffer_bytes,
             exit_rx,
             writer_tx: Some(writer_tx),
             terminator: Mutex::new(Terminator {
@@ -267,6 +301,7 @@ impl PtySession {
     fn spawn_piped(
         config: PtySpawnConfig,
         buffer: Arc<Mutex<HeadTailBuffer>>,
+        output_notify: Arc<Notify>,
         exit_tx: watch::Sender<Option<Option<i32>>>,
         exit_rx: watch::Receiver<Option<Option<i32>>>,
     ) -> Result<Self> {
@@ -289,10 +324,10 @@ impl PtySession {
         let pgid = child.id().map(|pid| pid as i32);
 
         if let Some(stdout) = child.stdout.take() {
-            spawn_async_reader(stdout, buffer.clone());
+            spawn_async_reader(stdout, buffer.clone(), output_notify.clone());
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_async_reader(stderr, buffer.clone());
+            spawn_async_reader(stderr, buffer.clone(), output_notify.clone());
         }
 
         tokio::spawn(async move {
@@ -302,6 +337,8 @@ impl PtySession {
 
         Ok(Self {
             buffer,
+            output_notify,
+            max_buffer_bytes: config.max_buffer_bytes,
             exit_rx,
             writer_tx: None,
             terminator: Mutex::new(Terminator {
@@ -347,39 +384,82 @@ impl PtySession {
     /// since the last collect. Returns early (after a short drain grace)
     /// when the process exits.
     pub async fn collect_output(&self, yield_time: Duration) -> CollectedOutput {
+        self.collect_output_with(yield_time, |_| {}).await
+    }
+
+    /// Like [`collect_output`](Self::collect_output), but additionally
+    /// forwards each raw output chunk — ANSI escape sequences included — to
+    /// `on_chunk` as it arrives, so a terminal renderer can display the
+    /// window live and in color. The returned `output` stays sanitized
+    /// plain text.
+    pub async fn collect_output_with(
+        &self,
+        yield_time: Duration,
+        mut on_chunk: impl FnMut(&[u8]),
+    ) -> CollectedOutput {
         let deadline = tokio::time::Instant::now() + yield_time;
         let mut exit_rx = self.exit_rx.clone();
+        // Chunks drained during the window re-accumulate here so the
+        // window's total stays capped no matter how chatty the process is.
+        let mut window = HeadTailBuffer::new(self.max_buffer_bytes);
+        let mut omitted_bytes = 0usize;
 
         loop {
+            // Arm the notification before draining: an append landing
+            // between drain and select stores a permit and wakes us.
+            let notified = self.output_notify.notified();
+
+            self.drain_chunk(&mut window, &mut omitted_bytes, &mut on_chunk);
+
             if exit_rx.borrow_and_update().is_some() {
                 tokio::time::sleep(EXIT_OUTPUT_GRACE).await;
+                self.drain_chunk(&mut window, &mut omitted_bytes, &mut on_chunk);
                 break;
             }
+
             tokio::select! {
+                _ = notified => {
+                    // New output: loop drains and forwards it.
+                }
                 changed = exit_rx.changed() => {
                     if changed.is_err() {
                         break;
                     }
                     // Loop re-checks the exit state and applies the grace.
                 }
-                _ = tokio::time::sleep_until(deadline) => break,
+                _ = tokio::time::sleep_until(deadline) => {
+                    self.drain_chunk(&mut window, &mut omitted_bytes, &mut on_chunk);
+                    break;
+                }
             }
         }
 
+        let raw = window.take_bytes();
+        CollectedOutput {
+            output: sanitize_terminal_output(&raw.bytes),
+            omitted_bytes: omitted_bytes + raw.omitted_bytes,
+            status: self.status(),
+        }
+    }
+
+    /// Drain pending output, forward it to the chunk callback, and fold it
+    /// into the window accumulator.
+    fn drain_chunk(
+        &self,
+        window: &mut HeadTailBuffer,
+        omitted_bytes: &mut usize,
+        on_chunk: &mut impl FnMut(&[u8]),
+    ) {
         let drained = self
             .buffer
             .lock()
-            .map(|mut buffer| buffer.take())
-            .unwrap_or_else(|_| crate::buffer::BufferedOutput {
-                text: String::new(),
-                omitted_bytes: 0,
-            });
-
-        CollectedOutput {
-            output: drained.text,
-            omitted_bytes: drained.omitted_bytes,
-            status: self.status(),
+            .map(|mut buffer| buffer.take_bytes())
+            .unwrap_or_else(|_| BufferedBytes::default());
+        if !drained.bytes.is_empty() {
+            on_chunk(&drained.bytes);
+            window.append(&drained.bytes);
         }
+        *omitted_bytes += drained.omitted_bytes;
     }
 
     /// Ask the process to interrupt (Ctrl-C semantics).
@@ -416,7 +496,7 @@ impl Drop for PtySession {
     }
 }
 
-fn spawn_async_reader<R>(mut reader: R, buffer: Arc<Mutex<HeadTailBuffer>>)
+fn spawn_async_reader<R>(mut reader: R, buffer: Arc<Mutex<HeadTailBuffer>>, notify: Arc<Notify>)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -430,6 +510,7 @@ where
                     if let Ok(mut buffer) = buffer.lock() {
                         buffer.append(&chunk[..n]);
                     }
+                    notify.notify_one();
                 }
             }
         }
@@ -506,6 +587,68 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "collect after exit should not wait for the yield time"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_ansi_and_normalizes_line_endings() {
+        let text = sanitize_terminal_output(b"\x1b[31mred\x1b[0m\r\nplain\rprogress");
+        assert_eq!(text, "red\nplain\nprogress");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streaming_chunks_arrive_incrementally() {
+        let session = PtySession::spawn(shell(
+            "printf 'first\\n'; sleep 0.5; printf 'second\\n'",
+            true,
+        ))
+        .unwrap();
+
+        let start = Instant::now();
+        let mut chunks: Vec<(Duration, String)> = Vec::new();
+        let out = session
+            .collect_output_with(Duration::from_secs(10), |bytes| {
+                chunks.push((start.elapsed(), String::from_utf8_lossy(bytes).into_owned()));
+            })
+            .await;
+
+        assert!(matches!(out.status, PtySessionStatus::Exited(_)));
+        let combined: String = chunks.iter().map(|(_, text)| text.as_str()).collect();
+        assert!(combined.contains("first"), "chunks: {combined:?}");
+        assert!(combined.contains("second"), "chunks: {combined:?}");
+
+        let first_seen = chunks
+            .iter()
+            .find(|(_, text)| text.contains("first"))
+            .map(|(at, _)| *at)
+            .expect("'first' should have been streamed");
+        assert!(
+            first_seen < Duration::from_millis(400),
+            "'first' should stream before the process finishes, got {first_seen:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn result_is_plain_text_while_chunks_stay_raw() {
+        let session =
+            PtySession::spawn(shell("printf '\\033[31mcolored\\033[0m\\n'", true)).unwrap();
+
+        let mut raw = Vec::new();
+        let out = session
+            .collect_output_with(Duration::from_secs(10), |bytes| {
+                raw.extend_from_slice(bytes);
+            })
+            .await;
+
+        assert!(out.output.contains("colored"), "output: {}", out.output);
+        assert!(
+            !out.output.contains('\u{1b}'),
+            "result should be ANSI-free: {:?}",
+            out.output
+        );
+        assert!(
+            raw.contains(&0x1b),
+            "raw chunks should keep escape sequences"
         );
     }
 
