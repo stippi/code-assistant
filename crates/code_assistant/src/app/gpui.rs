@@ -80,7 +80,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 service.clone(),
                 Some(manager_for_mcp.lock().await.sleep_inhibitor()),
             );
-            manager_for_mcp.lock().await.set_wakeup_handle(wakeup_handle);
+            manager_for_mcp
+                .lock()
+                .await
+                .set_wakeup_handle(wakeup_handle);
 
             let worker = tokio::spawn(service_worker);
 

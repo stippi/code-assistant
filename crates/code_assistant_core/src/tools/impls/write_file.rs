@@ -157,23 +157,21 @@ impl Tool for WriteFileTool {
         // Resolve the scope (a project name, or the reserved `:config:`
         // token addressing the shared user skills directory — used to
         // author skills) to a sandboxed explorer.
-        let explorer = match crate::config::explorer_for_scope(
-            context.project_manager(),
-            &input.project,
-        ) {
-            Ok(explorer) => explorer,
-            Err(e) => {
-                return Ok(WriteFileOutput {
-                    path: PathBuf::from(&input.path),
-                    content: String::new(), // Empty content on error
-                    error: Some(format!(
-                        "Failed to get explorer for project {}: {}",
-                        input.project, e
-                    )),
-                    original_content: None,
-                });
-            }
-        };
+        let explorer =
+            match crate::config::explorer_for_scope(context.project_manager(), &input.project) {
+                Ok(explorer) => explorer,
+                Err(e) => {
+                    return Ok(WriteFileOutput {
+                        path: PathBuf::from(&input.path),
+                        content: String::new(), // Empty content on error
+                        error: Some(format!(
+                            "Failed to get explorer for project {}: {}",
+                            input.project, e
+                        )),
+                        original_content: None,
+                    });
+                }
+            };
 
         // Load project configuration; the reserved scopes have no project
         // entry (and thus no format-on-save).
@@ -294,17 +292,18 @@ mod tests {
         let skills_root = tempfile::tempdir()?;
         // Sync test: the env override must stay in place across the whole
         // execution, and the explorer paths are std-fs backed.
-        let written = crate::config::test_support::with_user_skills_root(skills_root.path(), || {
-            let mut fixture = ToolTestFixture::new();
-            let mut context = fixture.context();
-            let mut input = WriteFileInput {
-                project: crate::config::SCOPE_CONFIG.to_string(),
-                path: "hello-test/SKILL.md".to_string(),
-                content: "---\nname: hello-test\ndescription: d\n---\n\nBody.\n".to_string(),
-                append: false,
-            };
-            futures::executor::block_on(WriteFileTool.execute(&mut context, &mut input))
-        })?;
+        let written =
+            crate::config::test_support::with_user_skills_root(skills_root.path(), || {
+                let mut fixture = ToolTestFixture::new();
+                let mut context = fixture.context();
+                let mut input = WriteFileInput {
+                    project: crate::config::SCOPE_CONFIG.to_string(),
+                    path: "hello-test/SKILL.md".to_string(),
+                    content: "---\nname: hello-test\ndescription: d\n---\n\nBody.\n".to_string(),
+                    append: false,
+                };
+                futures::executor::block_on(WriteFileTool.execute(&mut context, &mut input))
+            })?;
         assert!(written.error.is_none(), "{:?}", written.error);
 
         let on_disk =
@@ -326,7 +325,10 @@ mod tests {
         let result = WriteFileTool.execute(&mut context, &mut input).await?;
         let error = result.error.expect("system scope must be rejected");
         assert!(error.contains("read-only"), "{error}");
-        assert!(error.contains(":config:"), "points at the writable scope: {error}");
+        assert!(
+            error.contains(":config:"),
+            "points at the writable scope: {error}"
+        );
         Ok(())
     }
 

@@ -1359,9 +1359,10 @@ mod tests {
 
         {
             let mut manager = manager.lock().await;
-            manager.get_session_mut(&id).unwrap().set_activity_state(
-                crate::session::instance::SessionActivityState::AgentRunning,
-            );
+            manager
+                .get_session_mut(&id)
+                .unwrap()
+                .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
         }
 
         service
@@ -1398,9 +1399,10 @@ mod tests {
 
         {
             let mut manager = manager.lock().await;
-            manager.get_session_mut(&id).unwrap().set_activity_state(
-                crate::session::instance::SessionActivityState::AgentRunning,
-            );
+            manager
+                .get_session_mut(&id)
+                .unwrap()
+                .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
         }
 
         service
