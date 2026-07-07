@@ -1002,6 +1002,7 @@ impl UserInterface for SessionEventPublisher {
             DisplayFragment::ReasoningSummaryDelta(s) => !s.is_empty(),
             DisplayFragment::ToolParameter { value, .. } => !value.is_empty(),
             DisplayFragment::ToolOutput { chunk, .. } => !chunk.is_empty(),
+            DisplayFragment::ToolTerminalOutput { bytes, .. } => !bytes.is_empty(),
             DisplayFragment::Image { .. }
             | DisplayFragment::ToolName { .. }
             | DisplayFragment::ReasoningSummaryStart

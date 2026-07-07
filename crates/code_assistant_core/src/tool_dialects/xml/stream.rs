@@ -778,7 +778,9 @@ impl XmlStreamProcessor {
                             buffered_fragments.push(fragment);
                         }
                     }
-                    DisplayFragment::ToolOutput { .. } | DisplayFragment::ToolTerminal { .. } => {
+                    DisplayFragment::ToolOutput { .. }
+                    | DisplayFragment::ToolTerminalOutput { .. }
+                    | DisplayFragment::ToolTerminal { .. } => {
                         // Tool output - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }

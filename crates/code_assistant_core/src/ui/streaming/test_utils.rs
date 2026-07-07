@@ -190,6 +190,12 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
             DisplayFragment::ToolOutput { tool_id, chunk } => {
                 println!("  [{i}] ToolOutput(tool_id: {tool_id}, chunk: {chunk:?})")
             }
+            DisplayFragment::ToolTerminalOutput { tool_id, bytes } => {
+                println!(
+                    "  [{i}] ToolTerminalOutput(tool_id: {tool_id}, {} bytes)",
+                    bytes.len()
+                )
+            }
             DisplayFragment::ToolTerminal {
                 tool_id,
                 terminal_id,

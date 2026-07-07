@@ -665,6 +665,20 @@ impl Gpui {
                 self.auto_scroll_if_following(cx);
             }
 
+            UiEvent::AppendToolTerminalOutput { tool_id, bytes } => {
+                // Raw ANSI bytes stream into a display-only terminal that
+                // the tool card picks up from the pool — live colored
+                // output without a GPUI-side PTY.
+                let session_id = self
+                    .current_session_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                crate::terminal::pool::feed_display_terminal(&session_id, &tool_id, &bytes, cx);
+                self.auto_scroll_if_following(cx);
+            }
+
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
                 // Store the error message in state
@@ -1128,6 +1142,19 @@ impl Gpui {
                     self.update_container(container, cx, |container, cx| {
                         container.append_tool_output(tool_id, chunk, cx);
                     });
+                }
+
+                DisplayFragment::ToolTerminalOutput { tool_id, bytes } => {
+                    // Replay raw terminal output into the card's
+                    // display-only terminal (e.g. reconnecting to a session
+                    // with an in-flight command).
+                    let session_id = self
+                        .current_session_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_default();
+                    crate::terminal::pool::feed_display_terminal(&session_id, &tool_id, &bytes, cx);
                 }
 
                 DisplayFragment::ToolTerminal { .. } => {

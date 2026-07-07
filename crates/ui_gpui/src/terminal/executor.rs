@@ -37,7 +37,7 @@ fn styled_output_cache() -> &'static Mutex<HashMap<String, Vec<StyledLine>>> {
 const MAX_STYLED_CACHE_ENTRIES: usize = 32;
 
 /// Store styled output for a tool_id. Called just before terminal cleanup.
-fn cache_styled_output(tool_id: &str, styled_lines: Vec<StyledLine>) {
+pub fn cache_styled_output(tool_id: &str, styled_lines: Vec<StyledLine>) {
     if let Ok(mut cache) = styled_output_cache().lock() {
         // Evict old entries if the cache is too large
         while cache.len() >= MAX_STYLED_CACHE_ENTRIES {

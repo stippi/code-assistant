@@ -173,6 +173,9 @@ pub enum UiEvent {
     AddImage { media_type: String, data: String },
     /// Append streaming tool output
     AppendToolOutput { tool_id: String, chunk: String },
+    /// Append raw terminal output (ANSI escapes included) for frontends
+    /// that render it in a terminal emulator
+    AppendToolTerminalOutput { tool_id: String, bytes: Vec<u8> },
     /// Update the session plan display
     UpdatePlan { plan: PlanState },
     /// Set all messages at once (for session loading, clears existing)

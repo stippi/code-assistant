@@ -184,10 +184,26 @@ impl Tool for WriteStdinTool {
                 .clamp(MIN_YIELD_TIME_MS, max_yield),
         );
 
-        let collected = session.collect_output(yield_time).await;
+        // Stream raw chunks (ANSI colors included) live during the yield
+        // window for frontends with a terminal emulator; the sanitized
+        // window text follows as one plain ToolOutput chunk for the rest.
+        let ui_stream = match (context.ui(), &context.tool_id) {
+            (Some(ui), Some(tool_id)) => Some((ui, tool_id.clone())),
+            _ => None,
+        };
+        let collected = session
+            .collect_output_with(yield_time, |bytes| {
+                if let Some((ui, tool_id)) = &ui_stream {
+                    let _ = ui.display_fragment(&DisplayFragment::ToolTerminalOutput {
+                        tool_id: tool_id.clone(),
+                        bytes: bytes.to_vec(),
+                    });
+                }
+            })
+            .await;
 
         if !collected.output.is_empty() {
-            if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
+            if let Some((ui, tool_id)) = &ui_stream {
                 let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
                     tool_id: tool_id.clone(),
                     chunk: collected.output.clone(),

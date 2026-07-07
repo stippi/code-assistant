@@ -249,6 +249,12 @@ impl UserInterface for MockUI {
             crate::ui::DisplayFragment::ToolOutput { chunk, .. } => {
                 self.streaming.lock().unwrap().push(chunk.clone());
             }
+            crate::ui::DisplayFragment::ToolTerminalOutput { bytes, .. } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("[terminal-bytes:{}]", bytes.len()));
+            }
             crate::ui::DisplayFragment::ToolTerminal { terminal_id, .. } => {
                 self.streaming
                     .lock()

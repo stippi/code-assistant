@@ -384,12 +384,26 @@ impl ExecuteCommandTool {
                 .unwrap_or(DEFAULT_YIELD_TIME_MS)
                 .clamp(MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS),
         );
-        let collected = session.collect_output(yield_time).await;
+        // Stream raw chunks (ANSI colors included) live during the yield
+        // window for frontends with a terminal emulator; the sanitized
+        // window text follows as one plain ToolOutput chunk for the rest.
+        let ui_stream = match (context.ui(), &context.tool_id) {
+            (Some(ui), Some(tool_id)) => Some((ui, tool_id.clone())),
+            _ => None,
+        };
+        let collected = session
+            .collect_output_with(yield_time, |bytes| {
+                if let Some((ui, tool_id)) = &ui_stream {
+                    let _ = ui.display_fragment(&DisplayFragment::ToolTerminalOutput {
+                        tool_id: tool_id.clone(),
+                        bytes: bytes.to_vec(),
+                    });
+                }
+            })
+            .await;
 
-        // Show the first output window in the tool card, like the classic
-        // path streams its output.
         if !collected.output.is_empty() {
-            if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
+            if let Some((ui, tool_id)) = &ui_stream {
                 let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
                     tool_id: tool_id.clone(),
                     chunk: collected.output.clone(),
@@ -829,6 +843,40 @@ mod tests {
             error.to_string().contains("not available"),
             "error: {error}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_mode_streams_raw_chunks_and_plain_text() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut fixture = session_mode_fixture(dir.path())
+            .with_ui()
+            .with_tool_id("tool-stream-1".to_string());
+        let mut context = fixture.context();
+
+        let mut input = session_mode_input("printf '\\033[32mgreen\\033[0m\\n'", 10_000);
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+
+        assert!(!result.running);
+        assert!(result.output.contains("green"), "output: {}", result.output);
+        assert!(
+            !result.output.contains('\u{1b}'),
+            "LLM-facing output must be ANSI-free: {:?}",
+            result.output
+        );
+
+        drop(context);
+        let streaming = fixture.ui().unwrap().get_streaming_output();
+        assert!(
+            streaming.iter().any(|s| s.starts_with("[terminal-bytes:")),
+            "raw terminal chunks should stream live: {streaming:?}"
+        );
+        assert!(
+            streaming
+                .iter()
+                .any(|s| s.contains("green") && !s.contains('\u{1b}')),
+            "a plain-text chunk should stream too: {streaming:?}"
+        );
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
