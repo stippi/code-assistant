@@ -267,16 +267,17 @@ pub fn save_project(name: &str, project: &Project) -> Result<()> {
     Ok(())
 }
 
+/// Test support shared across modules whose tests mutate the
+/// process-global user-skills env var — one lock, or the tests race.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
-    use tempfile::tempdir;
 
     /// Serializes tests that mutate the process-global user-skills env var.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Set the user-skills override for the duration of `f`, restoring it after.
-    fn with_user_skills_root<R>(path: &Path, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_user_skills_root<R>(path: &Path, f: impl FnOnce() -> R) -> R {
         let _guard = ENV_LOCK.lock().unwrap();
         let previous = std::env::var(USER_SKILLS_DIR_ENV).ok();
         std::env::set_var(USER_SKILLS_DIR_ENV, path);
@@ -287,6 +288,13 @@ mod tests {
         }
         result
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::with_user_skills_root;
+    use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn skills_scope_root_maps_reserved_tokens_only() {

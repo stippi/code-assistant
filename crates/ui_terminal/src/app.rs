@@ -1060,12 +1060,10 @@ impl TerminalTuiApp {
         {
             let mut manager = multi_session_manager.lock().await;
             let sleep_inhibitor = manager.sleep_inhibitor();
-            manager.set_wakeup_handle(
-                code_assistant_core::session::spawn_wakeup_scheduler(
-                    service.clone(),
-                    Some(sleep_inhibitor),
-                ),
-            );
+            manager.set_wakeup_handle(code_assistant_core::session::spawn_wakeup_scheduler(
+                service.clone(),
+                Some(sleep_inhibitor),
+            ));
         }
 
         // Bridge: subscribe to the core→UI broadcast stream and feed the

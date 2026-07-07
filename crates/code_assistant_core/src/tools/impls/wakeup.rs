@@ -112,10 +112,7 @@ impl Tool for ScheduleWakeupTool {
             .wakeups
             .as_ref()
             .ok_or_else(|| anyhow!("Wakeups are unavailable in this context"))?;
-        let wakeup_id = wakeups.arm(
-            Duration::from_secs(input.delay_seconds),
-            prompt.to_string(),
-        );
+        let wakeup_id = wakeups.arm(Duration::from_secs(input.delay_seconds), prompt.to_string());
 
         Ok(ScheduleWakeupOutput {
             wakeup_id,

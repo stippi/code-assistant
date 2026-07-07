@@ -225,9 +225,10 @@ mod tests {
         assert!(tier.requires_permission(&spec_with(&[capabilities::OUTWARD])));
         // Outward wins over read-only: reading via an outward service still
         // leaks the request to a third party.
-        assert!(
-            tier.requires_permission(&spec_with(&[capabilities::READ_ONLY, capabilities::OUTWARD]))
-        );
+        assert!(tier.requires_permission(&spec_with(&[
+            capabilities::READ_ONLY,
+            capabilities::OUTWARD
+        ])));
         assert!(!tier.requires_permission(&spec_with(&[capabilities::EDITS_FILES])));
         assert!(!tier.requires_permission(&spec_with(&[])));
     }
