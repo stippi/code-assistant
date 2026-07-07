@@ -1020,6 +1020,23 @@ impl UserInterface for SessionEventPublisher {
         Ok(())
     }
 
+    fn stream_terminal_output(&self, tool_id: &str, bytes: &[u8]) {
+        // Publish straight to the broadcast stream, bypassing the in-flight
+        // fragment buffer: a background process streams for its whole life,
+        // and buffering that (unbounded, replayed in every snapshot) would
+        // be wrong. Frontends rebuild the card from the persisted result on
+        // reconnect; live colored output is best-effort on the stream.
+        self.events.publish(
+            Some(self.session_id.clone()),
+            crate::session::event_stream::EventPayload::Fragment(
+                DisplayFragment::ToolTerminalOutput {
+                    tool_id: tool_id.to_string(),
+                    bytes: bytes.to_vec(),
+                },
+            ),
+        );
+    }
+
     fn should_streaming_continue(&self) -> bool {
         !self
             .stop_requested

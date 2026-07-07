@@ -358,6 +358,34 @@ const MIN_YIELD_TIME_MS: u64 = 250;
 const MAX_YIELD_TIME_MS: u64 = 30_000;
 const DEFAULT_YIELD_TIME_MS: u64 = 10_000;
 
+/// Forwards a PTY session's raw output to a tool card for the session's
+/// whole lifetime — including between turns, so a background process keeps
+/// streaming live colored output while the agent does other work. Bound to
+/// the `execute_command` tool_id that started the session; `write_stdin`
+/// reactions surface on the same card.
+struct UiTerminalSink {
+    ui: std::sync::Arc<dyn UserInterface>,
+    tool_id: String,
+}
+
+impl pty_session::TerminalOutputSink for UiTerminalSink {
+    fn emit(&self, bytes: &[u8]) {
+        self.ui.stream_terminal_output(&self.tool_id, bytes);
+    }
+}
+
+/// Build the live-output sink for a new session, if the context can stream
+/// to a UI. Shared by `execute_command` (session creation) so the sink is
+/// baked into the session and outlives the creating tool call.
+pub(crate) fn terminal_output_sink(
+    context: &ToolContext<'_>,
+) -> Option<std::sync::Arc<dyn pty_session::TerminalOutputSink>> {
+    let services = context.extension::<crate::tools::ToolServices>()?;
+    let ui = services.ui.clone()?;
+    let tool_id = context.tool_id.clone()?;
+    Some(std::sync::Arc::new(UiTerminalSink { ui, tool_id }))
+}
+
 impl ExecuteCommandTool {
     async fn execute_session_mode<'a>(
         &self,
@@ -386,6 +414,10 @@ impl ExecuteCommandTool {
         config.keep_alive = spec.keep_alive;
         config.tty = input.tty.unwrap_or(true);
         config.working_dir = Some(effective_working_dir);
+        // Bind the live-output sink before spawning so raw colored output
+        // streams to the card for the session's whole life, independent of
+        // this (or any later) tool call's polling window.
+        config.output_sink = terminal_output_sink(context);
 
         let session = std::sync::Arc::new(pty_session::PtySession::spawn(config)?);
 
@@ -395,26 +427,14 @@ impl ExecuteCommandTool {
                 .unwrap_or(DEFAULT_YIELD_TIME_MS)
                 .clamp(MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS),
         );
-        // Stream raw chunks (ANSI colors included) live during the yield
-        // window for frontends with a terminal emulator; the sanitized
-        // window text follows as one plain ToolOutput chunk for the rest.
-        let ui_stream = match (context.ui(), &context.tool_id) {
-            (Some(ui), Some(tool_id)) => Some((ui, tool_id.clone())),
-            _ => None,
-        };
-        let collected = session
-            .collect_output_with(yield_time, |bytes| {
-                if let Some((ui, tool_id)) = &ui_stream {
-                    let _ = ui.display_fragment(&DisplayFragment::ToolTerminalOutput {
-                        tool_id: tool_id.clone(),
-                        bytes: bytes.to_vec(),
-                    });
-                }
-            })
-            .await;
+
+        // The sink already streams raw colored output live; here we just
+        // wait for the window and emit the sanitized text as one plain
+        // ToolOutput chunk (model result + text frontends).
+        let collected = session.collect_output(yield_time).await;
 
         if !collected.output.is_empty() {
-            if let Some((ui, tool_id)) = &ui_stream {
+            if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
                 let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
                     tool_id: tool_id.clone(),
                     chunk: collected.output.clone(),
@@ -887,6 +907,56 @@ mod tests {
                 .any(|s| s.contains("green") && !s.contains('\u{1b}')),
             "a plain-text chunk should stream too: {streaming:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn background_session_keeps_streaming_after_the_tool_call_returns() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut fixture = session_mode_fixture(dir.path())
+            .with_ui()
+            .with_tool_id("tool-bg-1".to_string());
+
+        // Short yield: the tool returns while the process is still running,
+        // before it prints the delayed "LATE" marker.
+        let session_id = {
+            let mut context = fixture.context();
+            let mut input = session_mode_input(
+                "printf 'EARLY\\n'; sleep 0.6; printf 'LATE\\n'; sleep 30",
+                300,
+            );
+            let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+            assert!(result.running, "process should outlive the tool call");
+            result.pty_session_id.expect("running session has an id")
+        };
+        // The tool call is over (context dropped). The agent would now be
+        // doing other work — no tool is polling the session.
+
+        let streamed_at_return = fixture.ui().unwrap().get_terminal_output_text();
+        assert!(
+            streamed_at_return.contains("EARLY"),
+            "early output should have streamed: {streamed_at_return:?}"
+        );
+        assert!(
+            !streamed_at_return.contains("LATE"),
+            "the delayed output cannot have streamed yet: {streamed_at_return:?}"
+        );
+
+        // Wait past the delay without any tool call touching the session.
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+
+        let streamed_later = fixture.ui().unwrap().get_terminal_output_text();
+        assert!(
+            streamed_later.contains("LATE"),
+            "output produced between turns should keep streaming to the card: {streamed_later:?}"
+        );
+
+        fixture
+            .pty_sessions()
+            .unwrap()
+            .get(session_id)
+            .unwrap()
+            .terminate();
         Ok(())
     }
 

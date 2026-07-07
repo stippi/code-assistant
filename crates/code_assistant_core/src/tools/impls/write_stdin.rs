@@ -184,26 +184,15 @@ impl Tool for WriteStdinTool {
                 .clamp(MIN_YIELD_TIME_MS, max_yield),
         );
 
-        // Stream raw chunks (ANSI colors included) live during the yield
-        // window for frontends with a terminal emulator; the sanitized
-        // window text follows as one plain ToolOutput chunk for the rest.
-        let ui_stream = match (context.ui(), &context.tool_id) {
-            (Some(ui), Some(tool_id)) => Some((ui, tool_id.clone())),
-            _ => None,
-        };
-        let collected = session
-            .collect_output_with(yield_time, |bytes| {
-                if let Some((ui, tool_id)) = &ui_stream {
-                    let _ = ui.display_fragment(&DisplayFragment::ToolTerminalOutput {
-                        tool_id: tool_id.clone(),
-                        bytes: bytes.to_vec(),
-                    });
-                }
-            })
-            .await;
+        // The session's own sink (bound when execute_command created it)
+        // streams raw colored output live to that command's terminal card,
+        // continuously and across turns. Here we only poll for the
+        // sanitized window text: the model result, plus a plain ToolOutput
+        // chunk on this write_stdin card as a record of what came back.
+        let collected = session.collect_output(yield_time).await;
 
         if !collected.output.is_empty() {
-            if let Some((ui, tool_id)) = &ui_stream {
+            if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
                 let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
                     tool_id: tool_id.clone(),
                     chunk: collected.output.clone(),

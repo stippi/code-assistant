@@ -53,12 +53,23 @@ Terminal output flows one-way from the backend to the frontends — the
 agent loop never waits on a UI thread (the old GPUI terminal-worker
 round-trip, a recurring source of stalls, is gone):
 
-- `PtySession::collect_output_with` forwards raw chunks (ANSI escapes
-  included) as they arrive; the returned result text is sanitized
-  (escapes stripped, CR/CRLF normalized) for the LLM.
-- The tools emit each raw chunk as `DisplayFragment::ToolTerminalOutput`
-  live during the yield window, followed by one sanitized plain
-  `ToolOutput` chunk. Text frontends (TUI, ACP) ignore the raw variant.
+- A `PtySession` can carry a `TerminalOutputSink`, bound at spawn time,
+  that receives every raw output chunk (ANSI escapes included) for the
+  session's **whole lifetime** — including between turns, so a background
+  process keeps streaming live colored output to its card while the agent
+  does other work. `execute_command` session mode binds this sink (via
+  `UserInterface::stream_terminal_output`, which publishes
+  `DisplayFragment::ToolTerminalOutput` straight onto the broadcast
+  stream, **bypassing** the in-flight fragment buffer so background
+  streaming doesn't grow snapshots). `write_stdin` reactions surface on
+  the same original card through the same sink.
+- Alongside the live raw stream, the polling tools emit one sanitized
+  plain `ToolOutput` chunk per window (the model result and what text
+  frontends render). Text frontends (TUI, ACP) ignore the raw variant.
+- `PtySession::collect_output_with` (used by the classic blocking
+  `PtyCommandExecutor`) forwards raw chunks per poll window instead; the
+  returned result text is always sanitized (escapes stripped, CR/CRLF
+  normalized) for the LLM.
 - GPUI feeds the raw bytes into a display-only alacritty terminal in the
   `TerminalPool` (keyed by tool_id); the terminal card picks it up and
   renders live colored output. `Terminal::write_output` keeps a

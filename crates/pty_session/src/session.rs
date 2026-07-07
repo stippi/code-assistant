@@ -53,6 +53,15 @@ pub struct CollectedOutput {
     pub status: PtySessionStatus,
 }
 
+/// Receives every raw output chunk of a session as it arrives, for the
+/// whole lifetime of the session — including between tool calls, so a
+/// background process keeps streaming to its terminal card while the agent
+/// does other work. `emit` is called from the reader thread and must not
+/// block (a UI sink should hand the bytes to a channel/broadcast).
+pub trait TerminalOutputSink: Send + Sync {
+    fn emit(&self, bytes: &[u8]);
+}
+
 /// Strip ANSI escape sequences and normalize line endings for LLM/text
 /// consumption of terminal output.
 pub fn sanitize_terminal_output(bytes: &[u8]) -> String {
@@ -88,6 +97,9 @@ pub struct PtySpawnConfig {
     /// Opaque guard kept alive as long as the session runs — e.g. the
     /// temp file holding a sandbox profile the spawned argv references.
     pub keep_alive: Option<Box<dyn std::any::Any + Send>>,
+    /// When set, every raw output chunk is forwarded here for the session's
+    /// whole lifetime (live terminal streaming, independent of polling).
+    pub output_sink: Option<Arc<dyn TerminalOutputSink>>,
 }
 
 impl PtySpawnConfig {
@@ -99,6 +111,7 @@ impl PtySpawnConfig {
             tty: true,
             max_buffer_bytes: DEFAULT_MAX_BUFFER_BYTES,
             keep_alive: None,
+            output_sink: None,
         }
     }
 
@@ -250,6 +263,7 @@ impl PtySession {
         // Reader: blocking loop on a plain thread, appending into the buffer.
         let reader_buffer = buffer.clone();
         let reader_notify = output_notify.clone();
+        let reader_sink = config.output_sink.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
             loop {
@@ -260,6 +274,9 @@ impl PtySession {
                             buffer.append(&chunk[..n]);
                         }
                         reader_notify.notify_one();
+                        if let Some(sink) = &reader_sink {
+                            sink.emit(&chunk[..n]);
+                        }
                     }
                 }
             }
@@ -329,10 +346,20 @@ impl PtySession {
         let pgid = child.id().map(|pid| pid as i32);
 
         if let Some(stdout) = child.stdout.take() {
-            spawn_async_reader(stdout, buffer.clone(), output_notify.clone());
+            spawn_async_reader(
+                stdout,
+                buffer.clone(),
+                output_notify.clone(),
+                config.output_sink.clone(),
+            );
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_async_reader(stderr, buffer.clone(), output_notify.clone());
+            spawn_async_reader(
+                stderr,
+                buffer.clone(),
+                output_notify.clone(),
+                config.output_sink.clone(),
+            );
         }
 
         tokio::spawn(async move {
@@ -501,8 +528,12 @@ impl Drop for PtySession {
     }
 }
 
-fn spawn_async_reader<R>(mut reader: R, buffer: Arc<Mutex<HeadTailBuffer>>, notify: Arc<Notify>)
-where
+fn spawn_async_reader<R>(
+    mut reader: R,
+    buffer: Arc<Mutex<HeadTailBuffer>>,
+    notify: Arc<Notify>,
+    sink: Option<Arc<dyn TerminalOutputSink>>,
+) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -516,6 +547,9 @@ where
                         buffer.append(&chunk[..n]);
                     }
                     notify.notify_one();
+                    if let Some(sink) = &sink {
+                        sink.emit(&chunk[..n]);
+                    }
                 }
             }
         }
@@ -655,6 +689,33 @@ mod tests {
             raw.contains(&0x1b),
             "raw chunks should keep escape sequences"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_sink_receives_all_raw_chunks() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct RecordingSink(Mutex<Vec<u8>>);
+        impl TerminalOutputSink for RecordingSink {
+            fn emit(&self, bytes: &[u8]) {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+            }
+        }
+
+        let sink = Arc::new(RecordingSink::default());
+        let mut config = shell("printf '\\033[36mcyan\\033[0m\\n'", true);
+        config.output_sink = Some(sink.clone());
+
+        let session = PtySession::spawn(config).unwrap();
+        let _ = session.collect_output(Duration::from_secs(10)).await;
+
+        let raw = sink.0.lock().unwrap().clone();
+        assert!(
+            String::from_utf8_lossy(&raw).contains("cyan"),
+            "sink should have received the output"
+        );
+        assert!(raw.contains(&0x1b), "sink should receive raw ANSI escapes");
     }
 
     #[tokio::test(flavor = "multi_thread")]
