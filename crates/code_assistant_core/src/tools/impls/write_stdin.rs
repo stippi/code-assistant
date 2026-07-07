@@ -136,7 +136,11 @@ impl Tool for WriteStdinTool {
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ]),
             multiline_params: &["chars"],
-            hidden: false,
+            // Hidden from the UI: the originating execute_command terminal
+            // card already streams this session's raw (colored) output live,
+            // including write_stdin's reactions, so a separate block would
+            // just duplicate it.
+            hidden: true,
             title_template: Some("Session input: {chars}"),
         }
     }
