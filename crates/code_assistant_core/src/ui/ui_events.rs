@@ -229,6 +229,19 @@ pub enum UiEvent {
     UpdateAllowedModels { models: Vec<String> },
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
+    /// Update the current permission tier selection in the UI
+    UpdatePermissionTier {
+        tier: tools_core::permissions::PermissionTier,
+    },
+    /// The agent asks the user for permission to run a tool. Answered via
+    /// `SessionService::respond_permission`; a
+    /// [`UiEvent::ToolPermissionRequestResolved`] follows once settled.
+    RequestToolPermission {
+        request: crate::session::permissions::ToolPermissionRequestData,
+    },
+    /// A permission request was settled (answered, or dropped by a stop
+    /// request); open prompts for it should dismiss.
+    ToolPermissionRequestResolved { request_id: String },
 
     /// Schedule a debounced save of the per-session UI state file.
     /// Sent after any mutation to the UI state (tool collapse toggle, plan

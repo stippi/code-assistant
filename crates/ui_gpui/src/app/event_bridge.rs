@@ -108,6 +108,21 @@ impl Gpui {
             UiEvent::UpdateSandboxPolicy { policy } => {
                 *self.current_sandbox_policy.lock().unwrap() = Some(policy.clone());
             }
+            UiEvent::UpdatePermissionTier { tier } => {
+                *self.current_permission_tier.lock().unwrap() = Some(*tier);
+            }
+            UiEvent::RequestToolPermission { request } => {
+                let mut pending = self.pending_permission_requests.lock().unwrap();
+                if !pending.iter().any(|r| r.request_id == request.request_id) {
+                    pending.push(request.clone());
+                }
+            }
+            UiEvent::ToolPermissionRequestResolved { request_id } => {
+                self.pending_permission_requests
+                    .lock()
+                    .unwrap()
+                    .retain(|r| &r.request_id != request_id);
+            }
             _ => {}
         }
 

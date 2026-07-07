@@ -12,6 +12,7 @@ llm = { path = "../llm" }
 sandbox = { path = "../sandbox" }
 terminal = { path = "../terminal" }
 terminal_view = { path = "../terminal_view" }
+tools_core = { path = "../tools_core" }
 
 # GPUI related
 gpui = "0.2.2"

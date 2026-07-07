@@ -752,6 +752,31 @@ impl Gpui {
                 *self.current_sandbox_policy.lock().unwrap() = Some(policy.clone());
                 cx.refresh();
             }
+            UiEvent::UpdatePermissionTier { tier } => {
+                debug!("UI: UpdatePermissionTier event with tier: {:?}", tier);
+                *self.current_permission_tier.lock().unwrap() = Some(tier);
+                cx.refresh();
+            }
+            UiEvent::RequestToolPermission { request } => {
+                debug!(
+                    "UI: RequestToolPermission for tool {} ({})",
+                    request.tool_name, request.request_id
+                );
+                let mut pending = self.pending_permission_requests.lock().unwrap();
+                if !pending.iter().any(|r| r.request_id == request.request_id) {
+                    pending.push(request);
+                }
+                drop(pending);
+                cx.refresh();
+            }
+            UiEvent::ToolPermissionRequestResolved { request_id } => {
+                debug!("UI: ToolPermissionRequestResolved {request_id}");
+                self.pending_permission_requests
+                    .lock()
+                    .unwrap()
+                    .retain(|r| r.request_id != request_id);
+                cx.refresh();
+            }
             UiEvent::UpdateWorktreeData {
                 worktrees,
                 current_worktree_path,

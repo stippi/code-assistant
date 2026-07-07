@@ -224,6 +224,15 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         .on_receive_request(
             {
                 let state = state.clone();
+                async move |req: acp::schema::SetSessionModeRequest, responder, _cx| {
+                    responder.respond_with_result(state.handle_set_session_mode(req).await)
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let state = state.clone();
                 async move |req: acp::schema::ListSessionsRequest, responder, _cx| {
                     responder.respond_with_result(state.handle_list_sessions(req).await)
                 }

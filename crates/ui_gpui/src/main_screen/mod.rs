@@ -528,6 +528,14 @@ impl MainScreen {
                     gpui.cmd_change_sandbox_policy(session_id.clone(), policy.clone());
                 }
             }
+            InputAreaEvent::PermissionTierChanged { tier } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    gpui.cmd_change_permission_tier(session_id.clone(), *tier);
+                }
+            }
             InputAreaEvent::WorktreeSwitchedToLocal => {
                 if let Some(session_id) = &self.current_session_id {
                     let gpui = cx
@@ -872,6 +880,116 @@ impl MainScreen {
         status_popover::render_status_popover(self, cx)
     }
 
+    /// Banner above the input area listing tool permission requests waiting
+    /// for a decision, each with allow-once / always / deny buttons.
+    fn render_permission_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use tools_core::PermissionDecision;
+
+        let requests = cx
+            .try_global::<Gpui>()
+            .map(|gpui| gpui.get_pending_permission_requests())
+            .unwrap_or_default();
+        if requests.is_empty() {
+            return None;
+        }
+        let session_id = self.current_session_id.clone()?;
+
+        let respond = |session_id: &str, request_id: &str, decision: PermissionDecision| {
+            let session_id = session_id.to_string();
+            let request_id = request_id.to_string();
+            move |_: &gpui::ClickEvent, _: &mut gpui::Window, cx: &mut gpui::App| {
+                if let Some(gpui) = cx.try_global::<Gpui>() {
+                    gpui.cmd_respond_permission(session_id.clone(), request_id.clone(), decision);
+                }
+            }
+        };
+
+        let button = |id: String, label: &'static str, emphasized: bool, cx: &mut Context<Self>| {
+            div()
+                .id(SharedString::from(id))
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .cursor_pointer()
+                .text_xs()
+                .when(emphasized, |this| {
+                    this.bg(cx.theme().primary)
+                        .text_color(cx.theme().primary_foreground)
+                        .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
+                })
+                .when(!emphasized, |this| {
+                    this.border_1()
+                        .border_color(cx.theme().border)
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+                })
+                .child(label)
+        };
+
+        Some(
+            div()
+                .flex_none()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().warning.opacity(0.08))
+                .p_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .children(requests.into_iter().map(|request| {
+                    let rid = request.request_id.clone();
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(cx.theme().foreground)
+                                        .child(format!(
+                                            "Permission required: {}",
+                                            request.tool_name
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(request.summary.clone()),
+                                ),
+                        )
+                        .child(
+                            button(format!("perm-allow-{rid}"), "Allow once", true, cx).on_click(
+                                respond(&session_id, &rid, PermissionDecision::GrantedOnce),
+                            ),
+                        )
+                        .child(
+                            button(format!("perm-always-{rid}"), "Always (session)", false, cx)
+                                .on_click(respond(
+                                    &session_id,
+                                    &rid,
+                                    PermissionDecision::GrantedSession,
+                                )),
+                        )
+                        .child(
+                            button(format!("perm-deny-{rid}"), "Deny", false, cx)
+                                .on_click(respond(&session_id, &rid, PermissionDecision::Denied)),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
     // Handle session change: load new draft (no need to save current - already saved on every change)
     fn handle_session_change(
         &mut self,
@@ -993,6 +1111,7 @@ impl Render for MainScreen {
             current_model,
             plan_state,
             current_sandbox_policy,
+            current_permission_tier,
             current_worktree_data,
             current_last_usage,
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
@@ -1003,11 +1122,12 @@ impl Render for MainScreen {
                 gpui.get_current_model(),
                 gpui.get_plan_state(),
                 gpui.get_current_sandbox_policy(),
+                gpui.get_current_permission_tier(),
                 gpui.get_current_worktree_data(),
                 gpui.get_current_session_last_usage(),
             )
         } else {
-            (Vec::new(), None, None, None, None, None, None, None)
+            (Vec::new(), None, None, None, None, None, None, None, None)
         };
 
         // Update project sidebar if needed
@@ -1088,6 +1208,14 @@ impl Render for MainScreen {
             if self.input_area.read(cx).current_sandbox_policy() != policy {
                 self.input_area.update(cx, |input_area, cx| {
                     input_area.set_current_sandbox_policy(policy.clone(), window, cx);
+                });
+            }
+        }
+
+        if let Some(tier) = current_permission_tier {
+            if self.input_area.read(cx).current_permission_tier() != tier {
+                self.input_area.update(cx, |input_area, cx| {
+                    input_area.set_current_permission_tier(tier, window, cx);
                 });
             }
         }
@@ -1185,6 +1313,7 @@ impl Render for MainScreen {
 
         let new_project_dialog = self.new_project_dialog.clone();
         let sidebar_scale = self.sidebar_animation_scale();
+        let permission_prompts = self.render_permission_prompts(cx);
 
         // Main container with titlebar and content
         div()
@@ -1413,6 +1542,8 @@ impl Render for MainScreen {
                             )
                             // Session plan banner (if available)
                             .when(plan_visible, |s| s.child(self.plan_banner.clone()))
+                            // Pending tool permission prompts (if any)
+                            .children(permission_prompts)
                             // Input area sits at the bottom
                             .child(
                                 div()

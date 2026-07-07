@@ -16,7 +16,7 @@ use anyhow::Result;
 use command_executor::CommandExecutor;
 use llm::{LLMProvider, Message};
 use std::sync::{Arc, Mutex};
-use tools_core::permissions::PermissionMediator;
+use tools_core::permissions::{PermissionMediator, ToolPermissions};
 use tracing::debug;
 
 /// Runtime components required to construct an `Agent`.
@@ -27,6 +27,8 @@ pub struct AgentComponents {
     pub ui: Arc<dyn UserInterface>,
     pub state_persistence: Box<dyn AgentStatePersistence>,
     pub permission_handler: Option<Arc<dyn PermissionMediator>>,
+    /// Active permission tier plus session-scoped grants gating tool calls.
+    pub permissions: ToolPermissions,
 
     /// The tool registry the agent selects and executes tools from.
     pub tool_registry: Arc<crate::tools::core::ToolRegistry>,
@@ -57,6 +59,7 @@ impl Agent {
             ui,
             state_persistence,
             permission_handler,
+            permissions,
             tool_registry,
             sub_agent_runner,
             hooks_factory,
@@ -81,6 +84,7 @@ impl Agent {
             tool_capability,
             command_executor,
             permission_handler,
+            permissions,
             services_provider,
             state_persistence: Box::new(SessionStateAdapter::new(state_persistence)),
             hooks: hooks_factory

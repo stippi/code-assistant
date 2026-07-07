@@ -938,6 +938,11 @@ impl UserInterface for ACPUserUI {
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. }
             | UiEvent::UpdateSandboxPolicy { .. }
+            | UiEvent::UpdatePermissionTier { .. }
+            // Permission prompts reach ACP clients through the protocol's
+            // requestPermission RPC (AcpPermissionMediator), not the stream.
+            | UiEvent::RequestToolPermission { .. }
+            | UiEvent::ToolPermissionRequestResolved { .. }
             | UiEvent::HiddenToolCompleted
             | UiEvent::MessageEditReady { .. }
             | UiEvent::UpdateBranchInfo { .. }

@@ -17,7 +17,9 @@ use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use tools_core::{PermissionMediator, ResourcesTracker, ToolContext, ToolError, ToolRegistry};
+use tools_core::{
+    PermissionMediator, ResourcesTracker, ToolContext, ToolError, ToolPermissions, ToolRegistry,
+};
 use tracing::{debug, trace, warn};
 
 /// Everything an [`AgentRuntime`] is built from.
@@ -34,6 +36,9 @@ pub struct AgentRuntimeComponents {
     pub stream_hidden_tools: HiddenTools,
     pub command_executor: Arc<dyn CommandExecutor>,
     pub permission_handler: Option<Arc<dyn PermissionMediator>>,
+    /// The active permission tier plus session-scoped grants; the loop gates
+    /// every tool invocation on it before dispatching.
+    pub permissions: ToolPermissions,
     /// Builds the application services handed to each tool invocation.
     pub services_provider: Arc<dyn ToolServicesProvider>,
     pub state_persistence: Box<dyn SnapshotPersistence>,
@@ -69,6 +74,7 @@ pub struct AgentRuntime {
     services_provider: Arc<dyn ToolServicesProvider>,
 
     permission_handler: Option<Arc<dyn PermissionMediator>>,
+    permissions: ToolPermissions,
 
     // ========================================================================
     // Branching: Tree-based message storage
@@ -128,6 +134,7 @@ impl AgentRuntime {
             stream_hidden_tools,
             command_executor,
             permission_handler,
+            permissions,
             services_provider,
             state_persistence,
             hooks,
@@ -147,6 +154,7 @@ impl AgentRuntime {
             state_persistence,
             services_provider,
             permission_handler,
+            permissions,
             // Branching tree structure
             message_nodes: BTreeMap::new(),
             active_path: Vec::new(),
@@ -669,6 +677,7 @@ impl AgentRuntime {
                 let registry = self.registry.clone();
                 let command_executor = self.command_executor.clone();
                 let permission_handler = self.permission_handler.clone();
+                let permissions = self.permissions.clone();
                 let services_provider = self.services_provider.clone();
                 let scope_tag = self.tool_capability.clone();
 
@@ -681,6 +690,7 @@ impl AgentRuntime {
                         registry,
                         command_executor,
                         permission_handler,
+                        permissions,
                         services_provider,
                         scope_tag,
                     )
@@ -722,12 +732,14 @@ impl AgentRuntime {
     /// Compared to the sequential path, interceptors do not run, the plan is
     /// unavailable, and input modifications are not propagated back into the
     /// message history.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_tool_request_detached(
         tool_request: ToolRequest,
         ui: Arc<dyn AgentUi>,
         registry: Arc<ToolRegistry>,
         command_executor: Arc<dyn CommandExecutor>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
+        permissions: ToolPermissions,
         services_provider: Arc<dyn ToolServicesProvider>,
         scope_tag: String,
     ) -> (bool, ToolExecution) {
@@ -758,15 +770,29 @@ impl AgentRuntime {
                 ))
             }
             Some(tool) => {
-                let mut services = services_provider.detached(&tool_request.id);
-                let mut context = ToolContext {
-                    command_executor: command_executor.as_ref(),
-                    tool_id: Some(tool_request.id.clone()),
-                    permission_handler: permission_handler.as_deref(),
-                    extensions: Some(services.as_mut()),
-                };
-                let mut input = tool_request.input.clone();
-                tool.invoke(&mut context, &mut input).await
+                // Tier-based permission gate, mirroring the sequential path.
+                match permissions
+                    .check(
+                        permission_handler.as_deref(),
+                        &tool.spec(),
+                        Some(&tool_request.id),
+                        &tool_request.input,
+                    )
+                    .await
+                {
+                    Err(e) => Err(e),
+                    Ok(()) => {
+                        let mut services = services_provider.detached(&tool_request.id);
+                        let mut context = ToolContext {
+                            command_executor: command_executor.as_ref(),
+                            tool_id: Some(tool_request.id.clone()),
+                            permission_handler: permission_handler.as_deref(),
+                            extensions: Some(services.as_mut()),
+                        };
+                        let mut input = tool_request.input.clone();
+                        tool.invoke(&mut context, &mut input).await
+                    }
+                }
             }
         };
 
@@ -1838,6 +1864,37 @@ impl AgentRuntime {
                 "Tool '{}' is not available in the current scope",
                 tool_request.name
             ));
+        }
+
+        // Tier-based permission gate: ask the user before dispatching when
+        // the active tier requires it for this tool.
+        if let Err(e) = self
+            .permissions
+            .check(
+                self.permission_handler.as_deref(),
+                &tool.spec(),
+                Some(&tool_request.id),
+                &tool_request.input,
+            )
+            .await
+        {
+            let error_text = Self::format_error_for_user(&e);
+            if !is_hidden {
+                self.send_ui(AgentUiEvent::UpdateToolStatus {
+                    tool_id: tool_request.id.clone(),
+                    status: crate::ui::ToolStatus::Error,
+                    message: Some(error_text.clone()),
+                    output: Some(error_text.clone()),
+                    duration_seconds: None,
+                    images: vec![],
+                })
+                .await?;
+            }
+            self.tool_executions.push(ToolExecution::create_parse_error(
+                tool_request.id.clone(),
+                error_text,
+            ));
+            return Err(e);
         }
 
         // Create a tool context. The services provider builds the application

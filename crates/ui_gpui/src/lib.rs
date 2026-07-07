@@ -97,6 +97,14 @@ pub struct Gpui {
     // Current sandbox selection.
     current_sandbox_policy: Arc<Mutex<Option<SandboxPolicy>>>,
 
+    // Current permission tier selection.
+    current_permission_tier: Arc<Mutex<Option<tools_core::PermissionTier>>>,
+
+    // Tool permission requests awaiting the user's decision, rendered as a
+    // prompt above the input area. Keyed order = arrival order.
+    pending_permission_requests:
+        Arc<Mutex<Vec<code_assistant_core::session::permissions::ToolPermissionRequestData>>>,
+
     // Current worktree state (branches + worktrees listing from backend)
     current_worktree_data: Arc<Mutex<Option<WorktreeData>>>,
 
@@ -313,6 +321,8 @@ impl Gpui {
         *self.current_model.lock().unwrap() = None;
         *self.allowed_models.lock().unwrap() = None;
         *self.current_sandbox_policy.lock().unwrap() = None;
+        *self.current_permission_tier.lock().unwrap() = None;
+        self.pending_permission_requests.lock().unwrap().clear();
         *self.current_worktree_data.lock().unwrap() = None;
         *self.current_session_last_usage.lock().unwrap() = None;
     }
@@ -396,6 +406,10 @@ impl Gpui {
             allowed_models: Arc::new(Mutex::new(None)),
             // Current sandbox selection.
             current_sandbox_policy: Arc::new(Mutex::new(None)),
+
+            // Current permission tier selection + open permission prompts
+            current_permission_tier: Arc::new(Mutex::new(None)),
+            pending_permission_requests: Arc::new(Mutex::new(Vec::new())),
 
             // Pending message edit state
             pending_edit: Arc::new(Mutex::new(None)),
@@ -690,6 +704,16 @@ impl Gpui {
 
     pub fn get_current_sandbox_policy(&self) -> Option<SandboxPolicy> {
         self.current_sandbox_policy.lock().unwrap().clone()
+    }
+
+    pub fn get_current_permission_tier(&self) -> Option<tools_core::PermissionTier> {
+        *self.current_permission_tier.lock().unwrap()
+    }
+
+    pub fn get_pending_permission_requests(
+        &self,
+    ) -> Vec<code_assistant_core::session::permissions::ToolPermissionRequestData> {
+        self.pending_permission_requests.lock().unwrap().clone()
     }
 
     pub fn get_current_worktree_data(&self) -> Option<WorktreeData> {

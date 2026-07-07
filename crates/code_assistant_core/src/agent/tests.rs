@@ -51,6 +51,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -176,6 +177,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -305,6 +307,7 @@ async fn test_parse_error_handling() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -447,6 +450,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -551,6 +555,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -707,6 +712,7 @@ async fn test_compaction_reminds_about_active_skills() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -795,6 +801,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -925,6 +932,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1132,6 +1140,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         ui,
         state_persistence,
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1500,6 +1509,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1553,6 +1563,7 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1620,6 +1631,7 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1671,6 +1683,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1726,6 +1739,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1831,6 +1845,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -1917,6 +1932,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -2073,6 +2089,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -2203,6 +2220,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
         permission_handler: None,
+        permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
         sub_agent_runner: None,
         hooks_factory: None,
@@ -2285,6 +2303,205 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         has_compaction,
         "Expected compaction divider in UI streaming output"
     );
+
+    Ok(())
+}
+
+// ============================================================================
+// Permission tier gating
+// ============================================================================
+
+/// Mediator returning a fixed decision and counting how often it is asked.
+struct ScriptedPermissionMediator {
+    decision: tools_core::PermissionDecision,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedPermissionMediator {
+    fn new(decision: tools_core::PermissionDecision) -> Self {
+        Self {
+            decision,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl tools_core::PermissionMediator for ScriptedPermissionMediator {
+    async fn request_permission(
+        &self,
+        _request: tools_core::PermissionRequest<'_>,
+    ) -> Result<tools_core::PermissionDecision> {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(self.decision)
+    }
+}
+
+fn permission_test_session_config() -> SessionConfig {
+    SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    }
+}
+
+#[tokio::test]
+async fn test_write_tier_denied_tool_reports_error_to_llm() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Understood, stopping.")),
+        Ok(create_test_response(
+            "del-1",
+            "delete_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["a.txt"]
+            }),
+            "Deleting a file",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+    let mediator = Arc::new(ScriptedPermissionMediator::new(
+        tools_core::PermissionDecision::Denied,
+    ));
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: Some(mediator.clone()),
+        permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+        hooks_factory: None,
+    };
+
+    let mut agent = Agent::new(components, permission_test_session_config());
+    agent.disable_naming_reminders();
+    agent.start_with_task("Test task".to_string()).await?;
+
+    assert_eq!(mediator.call_count(), 1);
+
+    // The denial must be reported to the LLM as an error tool result.
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let followup = &requests[1];
+    let last_message = followup.messages.last().unwrap();
+    let MessageContent::Structured(blocks) = &last_message.content else {
+        panic!("Expected structured content in follow-up message");
+    };
+    let ContentBlock::ToolResult {
+        tool_use_id,
+        content,
+        is_error,
+        ..
+    } = &blocks[0]
+    else {
+        panic!("Expected ToolResult block");
+    };
+    assert_eq!(tool_use_id, "del-1");
+    assert!(is_error.unwrap_or(false));
+    assert!(content.contains("denied permission"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_tier_does_not_ask_for_read_only_tools() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Done.")),
+        Ok(create_test_response(
+            "read-1",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["test.txt"]
+            }),
+            "Reading a file",
+        )),
+    ]);
+    let mediator = Arc::new(ScriptedPermissionMediator::new(
+        tools_core::PermissionDecision::Denied,
+    ));
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: Some(mediator.clone()),
+        permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+        hooks_factory: None,
+    };
+
+    let mut agent = Agent::new(components, permission_test_session_config());
+    agent.disable_naming_reminders();
+    agent.start_with_task("Test task".to_string()).await?;
+
+    // read_files is tagged read_only; the mediator must not be consulted.
+    assert_eq!(mediator.call_count(), 0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_granted_session_asks_only_once_per_tool() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Done.")),
+        Ok(create_test_response(
+            "del-2",
+            "delete_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["b.txt"]
+            }),
+            "Deleting another file",
+        )),
+        Ok(create_test_response(
+            "del-1",
+            "delete_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["a.txt"]
+            }),
+            "Deleting a file",
+        )),
+    ]);
+    let mediator = Arc::new(ScriptedPermissionMediator::new(
+        tools_core::PermissionDecision::GrantedSession,
+    ));
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: Some(mediator.clone()),
+        permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::AllTools),
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+        hooks_factory: None,
+    };
+
+    let mut agent = Agent::new(components, permission_test_session_config());
+    agent.disable_naming_reminders();
+    agent.start_with_task("Test task".to_string()).await?;
+
+    // The session grant from the first call covers the second call.
+    assert_eq!(mediator.call_count(), 1);
 
     Ok(())
 }

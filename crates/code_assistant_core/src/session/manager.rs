@@ -778,6 +778,20 @@ impl SessionManager {
             .as_ref()
             .map(|c| c.model_name.clone())
             .unwrap_or_else(|| self.default_model_name.clone());
+        // Permission tier and session-scoped grants, shared between the
+        // agent and its sub-agents. The grants live on the session instance
+        // so "always allow" answers survive across agent runs; the tier
+        // always follows the (possibly reloaded) session config.
+        let permissions = {
+            let mut permissions = self
+                .active_sessions
+                .get(session_id)
+                .map(|instance| instance.permissions.clone())
+                .unwrap_or_default();
+            permissions.tier = session_config.permission_tier;
+            permissions
+        };
+
         let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> =
             Arc::new(DefaultSubAgentRunner::new(
                 model_name_for_subagent,
@@ -786,6 +800,7 @@ impl SessionManager {
                 sub_agent_cancellation_registry.clone(),
                 publisher.clone(),
                 permission_handler.clone(),
+                permissions.clone(),
                 self.tool_registry.clone(),
                 self.hooks_factory.clone(),
             ));
@@ -797,6 +812,7 @@ impl SessionManager {
             ui: publisher.clone(),
             state_persistence: state_storage,
             permission_handler,
+            permissions,
             tool_registry: self.tool_registry.clone(),
             sub_agent_runner: Some(sub_agent_runner),
             hooks_factory: self.hooks_factory.clone(),
@@ -1197,6 +1213,63 @@ impl SessionManager {
         }
 
         Ok(())
+    }
+
+    /// Set the permission tier for a session. Takes effect on the next
+    /// agent run; session-scoped grants are kept.
+    pub fn set_session_permission_tier(
+        &mut self,
+        session_id: &str,
+        tier: tools_core::PermissionTier,
+    ) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        session.config.permission_tier = tier;
+        self.persistence.save_chat_session(&session)?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.config.permission_tier = tier;
+            instance.permissions.tier = tier;
+        }
+
+        Ok(())
+    }
+
+    /// Build the event-stream permission mediator for a session, used by the
+    /// `SessionService`-driven frontends (GPUI, terminal). ACP supplies its
+    /// own protocol-level mediator instead.
+    pub fn permission_mediator(&self, session_id: &str) -> Result<Arc<dyn PermissionMediator>> {
+        let instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        Ok(Arc::new(
+            crate::session::permissions::SessionPermissionMediator::new(
+                session_id.to_string(),
+                self.events.clone(),
+                instance.pending_permission_requests.clone(),
+            ),
+        ))
+    }
+
+    /// Feed a user's decision back to a pending permission request.
+    /// Returns false when the request is unknown (already settled).
+    pub fn resolve_permission_request(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        decision: tools_core::PermissionDecision,
+    ) -> Result<bool> {
+        let instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        Ok(instance
+            .pending_permission_requests
+            .resolve(request_id, decision))
     }
 
     /// Set the worktree path and branch for a session.

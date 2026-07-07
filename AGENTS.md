@@ -90,6 +90,16 @@ headless binary without gpui.
 - Supports terminal, Agent Client Protocol, and GPUI interfaces
 - State persistence for continuing sessions
 
+### Permission Tiers
+- Per-session setting deciding when the agent asks before running a tool:
+  `bypass-all` (default, never ask), `write-tools` (ask for anything not
+  tagged `read_only`), `all-tools` (ask always); see `docs/permission-tiers.md`
+- Gate lives in the agent loop (`tools_core::ToolPermissions`); prompts
+  travel through the `PermissionMediator` seam — event-stream mediator for
+  GPUI/terminal (`SessionService::respond_permission`), ACP's native
+  `requestPermission` otherwise; tiers are exposed to ACP clients as
+  session modes
+
 ## Development Notes
 
 ### Testing

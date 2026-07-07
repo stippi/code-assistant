@@ -1,10 +1,12 @@
 use crate::slash_popup::PopupStack;
 use code_assistant_core::persistence::{ChatMetadata, NodeId};
 use code_assistant_core::session::instance::SessionActivityState;
+use code_assistant_core::session::permissions::ToolPermissionRequestData;
 use code_assistant_core::session::service::SkillCatalogEntry;
 use code_assistant_core::types::PlanState;
 use sandbox::SandboxPolicy;
 use std::collections::{HashMap, HashSet};
+use tools_core::permissions::PermissionTier;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayState {
@@ -26,6 +28,10 @@ pub struct AppState {
     pub current_model: Option<String>,
     pub info_message: Option<String>,
     pub current_sandbox_policy: Option<SandboxPolicy>,
+    pub current_permission_tier: Option<PermissionTier>,
+    /// Tool permission requests awaiting a decision (FIFO; `/allow`,
+    /// `/always` and `/deny` answer the oldest).
+    pub pending_permission_requests: Vec<ToolPermissionRequestData>,
     /// Skills available to the current session, cached for the `/skill` picker.
     pub skills: Vec<SkillCatalogEntry>,
     /// Slash-command popup stack. Empty stack ↔ no popup visible.
@@ -53,6 +59,8 @@ impl AppState {
             current_model: None,
             info_message: None,
             current_sandbox_policy: None,
+            current_permission_tier: None,
+            pending_permission_requests: Vec::new(),
             skills: Vec::new(),
             popup_stack: PopupStack::new(),
             seen_node_ids: HashSet::new(),
@@ -101,6 +109,44 @@ impl AppState {
 
     pub fn update_sandbox_policy(&mut self, policy: Option<SandboxPolicy>) {
         self.current_sandbox_policy = policy;
+    }
+
+    pub fn update_permission_tier(&mut self, tier: Option<PermissionTier>) {
+        self.current_permission_tier = tier;
+    }
+
+    pub fn push_permission_request(&mut self, request: ToolPermissionRequestData) {
+        if !self
+            .pending_permission_requests
+            .iter()
+            .any(|r| r.request_id == request.request_id)
+        {
+            self.pending_permission_requests.push(request);
+        }
+    }
+
+    pub fn remove_permission_request(&mut self, request_id: &str) {
+        self.pending_permission_requests
+            .retain(|r| r.request_id != request_id);
+    }
+
+    /// Show the modal prompt for the oldest pending permission request, one
+    /// at a time, and keep the info banner (with the slash-command fallback
+    /// for a dismissed prompt) in sync. No-op while a prompt is already open.
+    pub fn open_next_permission_prompt(&mut self) {
+        let Some(next) = self.pending_permission_requests.first().cloned() else {
+            self.set_info_message(None);
+            return;
+        };
+        self.set_info_message(Some(format!(
+            "Permission required: {} — /allow, /always or /deny",
+            next.summary
+        )));
+        if !self.popup_stack.has_permission_popup() {
+            self.popup_stack.push(Box::new(
+                crate::slash_popup::PermissionPromptPopup::for_request(&next),
+            ));
+        }
     }
 
     pub fn set_info_message(&mut self, message: Option<String>) {

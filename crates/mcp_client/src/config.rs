@@ -29,10 +29,7 @@ impl McpServersConfig {
     /// resolves a variable name (typically `|name| std::env::var(name).ok()`);
     /// an unresolvable variable or an unclosed `${` is an error naming the
     /// offending server.
-    pub fn substitute_env_values(
-        &mut self,
-        lookup: impl Fn(&str) -> Option<String>,
-    ) -> Result<()> {
+    pub fn substitute_env_values(&mut self, lookup: impl Fn(&str) -> Option<String>) -> Result<()> {
         for (name, server) in self.servers.iter_mut() {
             for value in server.env.values_mut() {
                 *value = substitute_variables(value, &lookup)

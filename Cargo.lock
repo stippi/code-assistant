@@ -10192,6 +10192,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
@@ -10546,6 +10547,7 @@ dependencies = [
  "terminal",
  "terminal_view",
  "tokio",
+ "tools_core",
  "tracing",
 ]
 
@@ -10575,6 +10577,7 @@ dependencies = [
  "similar",
  "textwrap",
  "tokio",
+ "tools_core",
  "tracing",
  "tui-markdown",
  "unicode-segmentation",

@@ -607,6 +607,42 @@ impl SessionService {
         .await
     }
 
+    /// Change when the agent asks for permission before running tools.
+    /// Takes effect on the next agent run.
+    pub async fn change_permission_tier(
+        &self,
+        session_id: String,
+        tier: tools_core::PermissionTier,
+    ) -> Result<()> {
+        self.call(move |ctx| async move {
+            {
+                let mut manager = ctx.manager.lock().await;
+                manager.set_session_permission_tier(&session_id, tier)?;
+            }
+            // Fan out the change so every view of this session updates.
+            ctx.notify_session(&session_id, UiEvent::UpdatePermissionTier { tier });
+            Ok(())
+        })
+        .await
+    }
+
+    /// Answer a pending tool permission request
+    /// ([`UiEvent::RequestToolPermission`]). Unknown request ids are ignored
+    /// (the request may have been settled by another view or a stop).
+    pub async fn respond_permission(
+        &self,
+        session_id: String,
+        request_id: String,
+        decision: tools_core::PermissionDecision,
+    ) -> Result<()> {
+        self.call(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            manager.resolve_permission_request(&session_id, &request_id, decision)?;
+            Ok(())
+        })
+        .await
+    }
+
     // ========================================================================
     // Session branching
     // ========================================================================
@@ -1070,13 +1106,16 @@ async fn start_agent_impl(
     manager
         .set_session_model_config(session_id, Some(session_config))
         .context("Failed to persist model config")?;
+    // Permission prompts travel over the event stream to whatever frontend
+    // views this session; the tier decides whether the agent ever asks.
+    let permission_handler = manager.permission_mediator(session_id).ok();
     manager
         .start_agent_for_session(
             session_id,
             llm_client,
             project_manager,
             command_executor,
-            None,
+            permission_handler,
             tool_scope_override,
         )
         .await
@@ -1091,7 +1130,9 @@ mod tests {
     use crate::persistence::FileSessionPersistence;
     use crate::session::SessionConfig;
 
-    fn test_service(root: &std::path::Path) -> SessionService {
+    fn test_service_with_manager(
+        root: &std::path::Path,
+    ) -> (SessionService, Arc<Mutex<SessionManager>>) {
         let events = EventStream::new();
         let persistence = FileSessionPersistence::new_with_root_dir(root.to_path_buf());
         let manager = Arc::new(Mutex::new(SessionManager::new(
@@ -1109,9 +1150,13 @@ mod tests {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
         });
-        let (service, worker) = SessionService::new(manager, runtime, events);
+        let (service, worker) = SessionService::new(manager.clone(), runtime, events);
         tokio::spawn(worker);
-        service
+        (service, manager)
+    }
+
+    fn test_service(root: &std::path::Path) -> SessionService {
+        test_service_with_manager(root).0
     }
 
     #[tokio::test]
@@ -1291,5 +1336,111 @@ mod tests {
         }
         assert_eq!(ids.len(), 5);
         assert_eq!(service.list_sessions().await.unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn change_permission_tier_persists_and_notifies() {
+        use tools_core::PermissionTier;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        let mut subscription = service.subscribe();
+        service
+            .change_permission_tier(id.clone(), PermissionTier::AllTools)
+            .await
+            .unwrap();
+
+        // The change is fanned out to stream subscribers...
+        loop {
+            let event = subscription.recv().await.unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(UiEvent::UpdatePermissionTier {
+                tier,
+            }) = event.payload
+            {
+                assert_eq!(tier, PermissionTier::AllTools);
+                assert_eq!(event.session_id.as_deref(), Some(id.as_str()));
+                break;
+            }
+        }
+
+        // ...and lands in the snapshot (persisted config).
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        assert_eq!(snapshot.permission_tier, PermissionTier::AllTools);
+        assert!(snapshot.connect_events().iter().any(|e| matches!(
+            e,
+            UiEvent::UpdatePermissionTier {
+                tier: PermissionTier::AllTools
+            }
+        )));
+
+        // Unknown session errors.
+        assert!(service
+            .change_permission_tier("nope".to_string(), PermissionTier::BypassAll)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn respond_permission_resolves_pending_request() {
+        use tools_core::permissions::PermissionDecision;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        // Build the same mediator the agent would get and fire a request.
+        let mediator = manager.lock().await.permission_mediator(&id).unwrap();
+
+        let mut subscription = service.subscribe();
+        let request_task = tokio::spawn(async move {
+            let params = serde_json::json!({"paths": ["a.txt"]});
+            mediator
+                .request_permission(tools_core::PermissionRequest {
+                    tool_id: Some("tool-1"),
+                    tool_name: "delete_files",
+                    reason: tools_core::PermissionRequestReason::ToolInvocation { params: &params },
+                })
+                .await
+        });
+
+        // The prompt arrives on the stream; answer it via the service.
+        let request_id = loop {
+            let event = subscription.recv().await.unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(
+                UiEvent::RequestToolPermission { request },
+            ) = event.payload
+            {
+                assert_eq!(request.tool_name, "delete_files");
+                break request.request_id;
+            }
+        };
+
+        service
+            .respond_permission(
+                id.clone(),
+                request_id.clone(),
+                PermissionDecision::GrantedOnce,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            request_task.await.unwrap().unwrap(),
+            PermissionDecision::GrantedOnce
+        );
+
+        // Every view is told the request settled.
+        loop {
+            let event = subscription.recv().await.unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(
+                UiEvent::ToolPermissionRequestResolved { request_id: rid },
+            ) = event.payload
+            {
+                assert_eq!(rid, request_id);
+                break;
+            }
+        }
     }
 }

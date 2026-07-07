@@ -6,11 +6,13 @@ use sandbox::SandboxPolicy;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use tools_core::permissions::PermissionTier;
 
 // New session management architecture
 pub mod event_stream;
 pub mod instance;
 pub mod manager;
+pub mod permissions;
 pub mod service;
 pub mod sleep_inhibitor;
 pub mod watcher;
@@ -41,6 +43,10 @@ pub struct SessionSnapshot {
     pub current_model: String,
     pub allowed_models: Vec<String>,
     pub sandbox_policy: SandboxPolicy,
+    pub permission_tier: PermissionTier,
+    /// Permission requests still awaiting an answer; a connecting frontend
+    /// should render prompts for them.
+    pub pending_permission_requests: Vec<permissions::ToolPermissionRequestData>,
 }
 
 impl SessionSnapshot {
@@ -83,9 +89,17 @@ impl SessionSnapshot {
         events.push(UiEvent::UpdateSandboxPolicy {
             policy: self.sandbox_policy.clone(),
         });
+        events.push(UiEvent::UpdatePermissionTier {
+            tier: self.permission_tier,
+        });
         events.push(UiEvent::UpdateAllowedModels {
             models: self.allowed_models.clone(),
         });
+        for request in &self.pending_permission_requests {
+            events.push(UiEvent::RequestToolPermission {
+                request: request.clone(),
+            });
+        }
         events
     }
 }
@@ -103,6 +117,9 @@ pub struct SessionConfig {
     pub use_diff_blocks: bool,
     #[serde(default)]
     pub sandbox_policy: SandboxPolicy,
+    /// When to ask the user for permission before running a tool.
+    #[serde(default)]
+    pub permission_tier: PermissionTier,
     /// If set, the session operates inside this git worktree instead of `init_path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<PathBuf>,
@@ -123,6 +140,7 @@ impl Default for SessionConfig {
             tool_syntax: default_tool_syntax(),
             use_diff_blocks: false,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_tier: PermissionTier::default(),
             worktree_path: None,
             branch: None,
         }

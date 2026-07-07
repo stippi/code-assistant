@@ -17,10 +17,12 @@
 
 pub mod command_list;
 pub mod model_picker;
+pub mod permission_prompt;
 pub mod skill_picker;
 
 pub use command_list::CommandListPopup;
 pub use model_picker::ModelPickerPopup;
+pub use permission_prompt::PermissionPromptPopup;
 pub use skill_picker::SkillPickerPopup;
 
 use crate::commands::CommandResult;
@@ -93,6 +95,13 @@ pub trait SlashPopup: Send {
 
     /// Activate the currently highlighted row.
     fn activate(&self) -> PopupAction;
+
+    /// For permission prompts: the id of the request this popup answers.
+    /// `None` for all other popups. Lets the stack find/remove the prompt
+    /// when its request resolves elsewhere.
+    fn permission_request_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Stack of nested popups. Empty stack ↔ no popup visible.
@@ -200,6 +209,20 @@ impl PopupStack {
         if let Some(top) = self.top_mut() {
             top.set_query(query);
         }
+    }
+
+    /// Whether a permission prompt is anywhere on the stack.
+    pub fn has_permission_popup(&self) -> bool {
+        self.stack
+            .iter()
+            .any(|p| p.permission_request_id().is_some())
+    }
+
+    /// Remove the permission prompt for the given request id, wherever it
+    /// sits on the stack (the request resolved through another channel).
+    pub fn remove_permission_popup(&mut self, request_id: &str) {
+        self.stack
+            .retain(|p| p.permission_request_id() != Some(request_id));
     }
 }
 

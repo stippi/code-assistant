@@ -175,6 +175,13 @@ pub struct SessionInstance {
     /// Tracks sandbox-approved roots for this session
     pub sandbox_context: Arc<SandboxContext>,
 
+    /// Tools the user granted "for this session" via the permission tier
+    /// gate. Shared with running agents; survives across agent runs.
+    pub permissions: tools_core::ToolPermissions,
+
+    /// Permission requests currently awaiting a user decision.
+    pub pending_permission_requests: Arc<crate::session::permissions::PendingPermissionRequests>,
+
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 
@@ -224,6 +231,10 @@ impl SessionInstance {
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_message: Arc::new(Mutex::new(None)),
             sandbox_context,
+            permissions: tools_core::ToolPermissions::default(),
+            pending_permission_requests: Arc::new(
+                crate::session::permissions::PendingPermissionRequests::default(),
+            ),
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             agent_lock: None,
             last_ui_synced_path: initial_path,
@@ -239,19 +250,24 @@ impl SessionInstance {
     }
 
     /// Ask the running agent to stop at its next streaming checkpoint.
+    /// Pending permission requests resolve as denied so the agent does not
+    /// stay blocked waiting for an answer.
     pub fn request_stop(&self) {
         self.stop_requested
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.pending_permission_requests.deny_all();
     }
 
     /// Reset per-run state when a new agent starts: clears a previous stop
-    /// request and the live tool-status map of the prior run.
+    /// request, the live tool-status map of the prior run, and any stale
+    /// permission requests.
     pub fn begin_agent_run(&self) {
         self.stop_requested
             .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut buf) = self.tool_status_buffer.lock() {
             buf.clear();
         }
+        self.pending_permission_requests.deny_all();
     }
 
     /// Get the current activity state
@@ -475,6 +491,8 @@ impl SessionInstance {
             current_model: String::new(),
             allowed_models: Vec::new(),
             sandbox_policy: self.session.config.sandbox_policy.clone(),
+            permission_tier: self.session.config.permission_tier,
+            pending_permission_requests: self.pending_permission_requests.snapshot(),
         })
     }
 

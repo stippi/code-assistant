@@ -19,10 +19,56 @@ use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 use tokio::sync::{mpsc, oneshot};
+use tools_core::permissions::PermissionTier;
 
 /// Config option id used for the model selector exposed via session config
 /// options. This is what the client echoes back in `session/set_config_option`.
 const MODEL_CONFIG_ID: &str = "model";
+
+/// The permission tiers exposed to ACP clients as session modes
+/// (`session/set_mode`). Mode ids match the tier's serde names.
+const PERMISSION_MODES: &[(PermissionTier, &str, &str, &str)] = &[
+    (
+        PermissionTier::BypassAll,
+        "bypass-all",
+        "Bypass Permissions",
+        "Run every tool without asking",
+    ),
+    (
+        PermissionTier::WriteTools,
+        "write-tools",
+        "Ask Before Writes",
+        "Ask before running tools that modify files or state",
+    ),
+    (
+        PermissionTier::AllTools,
+        "all-tools",
+        "Ask For All Tools",
+        "Ask before running any tool",
+    ),
+];
+
+fn permission_mode_state(current: PermissionTier) -> acp::SessionModeState {
+    let available_modes = PERMISSION_MODES
+        .iter()
+        .map(|(_, id, name, description)| {
+            acp::SessionMode::new(*id, *name).description(Some((*description).to_string()))
+        })
+        .collect();
+    let current_id = PERMISSION_MODES
+        .iter()
+        .find(|(tier, ..)| *tier == current)
+        .map(|(_, id, ..)| *id)
+        .unwrap_or("bypass-all");
+    acp::SessionModeState::new(current_id, available_modes)
+}
+
+fn permission_tier_for_mode(mode_id: &str) -> Option<PermissionTier> {
+    PERMISSION_MODES
+        .iter()
+        .find(|(_, id, ..)| *id == mode_id)
+        .map(|(tier, ..)| *tier)
+}
 
 /// If the prompt is a bare `/<token>` slash command (the form clients send when
 /// the user runs an advertised command), return `<token>`. Only the first text
@@ -299,6 +345,7 @@ impl AgentState {
 
         let mut session_config = self.session_config_template.clone();
         session_config.init_path = Some(arguments.cwd.clone());
+        let permission_tier = session_config.permission_tier;
 
         let model_info =
             Self::compute_model_config(&self.model_name, Some(self.model_name.as_str()));
@@ -339,7 +386,42 @@ impl AgentState {
         }
 
         let config_options = model_info.map(|info| info.options);
-        Ok(acp::NewSessionResponse::new(session_id).config_options(config_options))
+        Ok(acp::NewSessionResponse::new(session_id)
+            .config_options(config_options)
+            .modes(Some(permission_mode_state(permission_tier))))
+    }
+
+    /// `session/set_mode`: the client switches the permission tier.
+    pub async fn handle_set_session_mode(
+        &self,
+        arguments: acp::SetSessionModeRequest,
+    ) -> Result<acp::SetSessionModeResponse, acp::Error> {
+        let Some(tier) = permission_tier_for_mode(arguments.mode_id.0.as_ref()) else {
+            tracing::warn!("ACP: Unknown session mode: {}", arguments.mode_id.0);
+            return Err(acp::Error::invalid_params());
+        };
+        let session_id = arguments.session_id.0.to_string();
+
+        // Sessions created but not yet persisted keep the tier in their
+        // pending config; it is stored with the session on the first prompt.
+        {
+            let mut pending = self.pending_sessions.lock().await;
+            if let Some(pending_session) = pending.get_mut(&session_id) {
+                pending_session.config.permission_tier = tier;
+                tracing::info!("ACP: Set permission tier {tier:?} on pending session");
+                return Ok(acp::SetSessionModeResponse::default());
+            }
+        }
+
+        let mut manager = self.session_manager.lock().await;
+        manager
+            .set_session_permission_tier(&session_id, tier)
+            .map_err(|e| {
+                tracing::error!("Failed to set permission tier: {e}");
+                acp::Error::internal_error()
+            })?;
+        tracing::info!("ACP: Set permission tier {tier:?} for session {session_id}");
+        Ok(acp::SetSessionModeResponse::default())
     }
 
     pub async fn handle_load_session(
@@ -363,7 +445,14 @@ impl AgentState {
         }
 
         // Replay message history as session/update events
-        let (tool_syntax, messages, base_path, stored_model_config, initial_project) = {
+        let (
+            tool_syntax,
+            messages,
+            base_path,
+            stored_model_config,
+            initial_project,
+            permission_tier,
+        ) = {
             let manager = self.session_manager.lock().await;
             let session_instance = manager
                 .get_session(&arguments.session_id.0)
@@ -375,6 +464,7 @@ impl AgentState {
                 session_instance.session.config.init_path.clone(),
                 session_instance.session.model_config.clone(),
                 session_instance.session.config.initial_project.clone(),
+                session_instance.session.config.permission_tier,
             )
         };
 
@@ -518,7 +608,9 @@ impl AgentState {
 
         tracing::info!("ACP: Loaded session: {}", arguments.session_id.0);
 
-        Ok(acp::LoadSessionResponse::new().config_options(config_options))
+        Ok(acp::LoadSessionResponse::new()
+            .config_options(config_options)
+            .modes(Some(permission_mode_state(permission_tier))))
     }
 
     pub async fn handle_set_config_option(
