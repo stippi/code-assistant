@@ -33,6 +33,38 @@ pub trait StreamingCallback: Send + Sync {
     }
 }
 
+/// A prepared spawn for a long-lived interactive (PTY) session: the argv to
+/// run, extra environment, and an opaque guard the spawned session must keep
+/// alive (e.g. the temp file holding a sandbox profile the argv references).
+pub struct PtySpawnSpec {
+    pub argv: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub keep_alive: Option<Box<dyn std::any::Any + Send>>,
+}
+
+impl PtySpawnSpec {
+    /// Plain, unsandboxed "run through the user's shell" spawn.
+    pub fn shell(command_line: &str) -> Self {
+        #[cfg(target_family = "unix")]
+        let argv = vec![
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+            "-c".to_string(),
+            command_line.to_string(),
+        ];
+        #[cfg(target_family = "windows")]
+        let argv = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            command_line.to_string(),
+        ];
+        Self {
+            argv,
+            env: Vec::new(),
+            keep_alive: None,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait CommandExecutor: Send + Sync {
     async fn execute(
@@ -50,6 +82,19 @@ pub trait CommandExecutor: Send + Sync {
         callback: Option<&dyn StreamingCallback>,
         sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput>;
+
+    /// Prepare the argv (and env/guard) for spawning `command_line` as a
+    /// long-lived interactive session, applying the executor's sandbox
+    /// wrapping. The caller spawns the process itself — sessions outlive a
+    /// single `execute` call, so they can't run through the executor.
+    fn prepare_pty_spawn(
+        &self,
+        command_line: &str,
+        _working_dir: &Path,
+        _sandbox_request: Option<&SandboxCommandRequest>,
+    ) -> Result<PtySpawnSpec> {
+        Ok(PtySpawnSpec::shell(command_line))
+    }
 }
 
 /// Quote a path for the current platform so spaces and special chars are preserved when passed

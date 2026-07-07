@@ -134,6 +134,53 @@ impl CommandExecutor for SandboxedCommandExecutor {
                 .await
         }
     }
+
+    fn prepare_pty_spawn(
+        &self,
+        command_line: &str,
+        working_dir: &std::path::Path,
+        sandbox_request: Option<&SandboxCommandRequest>,
+    ) -> Result<crate::PtySpawnSpec> {
+        if self.should_bypass(sandbox_request) || !self.policy.requires_restrictions() {
+            return self
+                .inner
+                .prepare_pty_spawn(command_line, working_dir, sandbox_request);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let policy = self.effective_policy(sandbox_request);
+            let mut spec = crate::PtySpawnSpec::shell(command_line);
+            let invocation = sandbox::build_seatbelt_invocation(spec.argv, &policy, working_dir)
+                .map_err(|e| anyhow::anyhow!("Failed to prepare seatbelt invocation: {e}"))?;
+
+            let mut argv = vec![invocation.executable.to_string_lossy().into_owned()];
+            argv.extend(invocation.args);
+            spec.argv = argv;
+            spec.env
+                .push(("CODE_ASSISTANT_SANDBOX".to_string(), "seatbelt".to_string()));
+            if !policy.has_full_network_access() {
+                spec.env.push((
+                    "CODE_ASSISTANT_SANDBOX_NETWORK_DISABLED".to_string(),
+                    "1".to_string(),
+                ));
+            }
+            // The profile temp file must outlive the session, not just the
+            // spawn: sandbox-exec reads it during startup.
+            spec.keep_alive = Some(Box::new(invocation.policy_path));
+            Ok(spec)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            warn!(
+                "Sandbox policy {:?} requested but sandboxing is not supported on this platform; running PTY session unrestricted",
+                self.policy
+            );
+            self.inner
+                .prepare_pty_spawn(command_line, working_dir, sandbox_request)
+        }
+    }
 }
 
 impl SandboxedCommandExecutor {

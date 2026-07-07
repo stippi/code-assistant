@@ -1134,6 +1134,17 @@ impl ToolTestFixture {
         self
     }
 
+    /// Attach a PTY session registry, as agent sessions have one.
+    pub fn with_pty_sessions(mut self) -> Self {
+        self.services.pty_sessions = Some(Arc::new(pty_session::PtySessionManager::default()));
+        self
+    }
+
+    /// The PTY session registry, for assertions.
+    pub fn pty_sessions(&self) -> Option<&pty_session::PtySessionManager> {
+        self.services.pty_sessions.as_deref()
+    }
+
     /// Add a UI mock to this fixture
     pub fn with_ui(mut self) -> Self {
         let ui = Arc::new(MockUI::default());

@@ -20,6 +20,12 @@ pub struct ExecuteCommandInput {
     pub working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ask_user_approval: bool,
+    /// Session mode: allocate a real terminal (PTY) with open stdin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tty: Option<bool>,
+    /// Session mode: how long to wait for output before returning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yield_time_ms: Option<u64>,
 }
 
 // Output type
@@ -32,12 +38,29 @@ pub struct ExecuteCommandOutput {
     pub working_dir: Option<PathBuf>,
     pub output: String,
     pub success: bool,
+    /// Session mode: id under which the still-running process is tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pty_session_id: Option<u32>,
+    /// Session mode: exit code, when the process exited within the yield
+    /// window and reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Session mode: the process was still running when the yield window
+    /// closed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
 }
 
 // Render implementation for output formatting
 impl Render for ExecuteCommandOutput {
     fn status(&self) -> String {
-        if self.success {
+        if self.running {
+            format!(
+                "Command running in session {}: {}",
+                self.pty_session_id.unwrap_or(0),
+                self.command_line
+            )
+        } else if self.success {
             format!("Command executed successfully: {}", self.command_line)
         } else {
             format!("Command failed: {}", self.command_line)
@@ -48,16 +71,30 @@ impl Render for ExecuteCommandOutput {
         let mut formatted = String::new();
 
         // Add execution status
-        if self.success {
+        if self.running {
+            formatted.push_str(&format!(
+                "Status: Still running (session_id: {})\n",
+                self.pty_session_id.unwrap_or(0)
+            ));
+        } else if self.success {
             formatted.push_str("Status: Success\n");
         } else {
             formatted.push_str("Status: Failed\n");
+        }
+        if let Some(code) = self.exit_code {
+            formatted.push_str(&format!("Exit code: {code}\n"));
         }
 
         // Add command output with formatting
         formatted.push_str(">>>>> OUTPUT:\n");
         formatted.push_str(&self.output);
         formatted.push_str("\n<<<<< END OF OUTPUT");
+
+        if let Some(session_id) = self.pty_session_id.filter(|_| self.running) {
+            formatted.push_str(&format!(
+                "\nThe process keeps running in the background. Use the write_stdin tool with session_id {session_id} to send input, poll for more output (empty chars), or interrupt it (chars \"\\u0003\")."
+            ));
+        }
 
         formatted
     }
@@ -126,8 +163,12 @@ impl Tool for ExecuteCommandTool {
     fn spec(&self) -> ToolSpec {
         let description = concat!(
             "Execute a command line or shell script within a specified project. ",
-            "Blocks until the command returns by itself and then provides all output at once. ",
-            "Must not be used with commands that would keep running forever, unless combined with a timeout."
+            "By default, blocks until the command returns by itself and then provides all output at once; ",
+            "in that mode it must not be used with commands that would keep running forever, unless combined with a timeout. ",
+            "Setting `tty` and/or `yield_time_ms` switches to session mode: the command runs in an interactive terminal session, ",
+            "the tool returns after `yield_time_ms` with the output so far, and if the process is still running you get a ",
+            "session_id for the write_stdin tool to send input, poll for more output, or interrupt. ",
+            "Use session mode for long-running processes (builds, servers) and interactive programs (ssh, REPLs, sudo)."
         );
         ToolSpec {
             name: "execute_command".into(),
@@ -153,6 +194,14 @@ impl Tool for ExecuteCommandTool {
                         "type": "boolean",
                         "description": "Set to true if this command should request user approval to run outside the sandbox",
                         "default": false
+                    },
+                    "tty": {
+                        "type": "boolean",
+                        "description": "Session mode: run the command in a PTY (real terminal) with stdin kept open, so interactive programs (ssh, REPLs, sudo prompts) work and write_stdin can send input. Set to false for a non-interactive background session (plain pipes, stdin closed). Defaults to true when session mode is active."
+                    },
+                    "yield_time_ms": {
+                        "type": "integer",
+                        "description": "Session mode: return after this many milliseconds with the output so far instead of blocking until exit (250-30000, default 10000). If the process is still running, the result carries a session_id for the write_stdin tool."
                     }
                 },
                 "required": ["project", "command_line"]
@@ -240,6 +289,13 @@ impl Tool for ExecuteCommandTool {
         sandbox_request.writable_roots.push(project_root.clone());
         sandbox_request.bypass_sandbox = bypass_sandbox;
 
+        // Session mode: run in a PTY/pipe session that can outlive this call.
+        if input.tty.is_some() || input.yield_time_ms.is_some() {
+            return self
+                .execute_session_mode(context, input, effective_working_dir, &sandbox_request)
+                .await;
+        }
+
         // Execute the command using streaming
         let result = match (context.ui(), &context.tool_id) {
             (Some(ui), Some(tool_id)) => {
@@ -279,7 +335,95 @@ impl Tool for ExecuteCommandTool {
             working_dir: working_dir_path,
             output: result.output,
             success: result.success,
+            pty_session_id: None,
+            exit_code: None,
+            running: false,
         })
+    }
+}
+
+/// Yield-time bounds for session mode, mirroring the tool schema.
+const MIN_YIELD_TIME_MS: u64 = 250;
+const MAX_YIELD_TIME_MS: u64 = 30_000;
+const DEFAULT_YIELD_TIME_MS: u64 = 10_000;
+
+impl ExecuteCommandTool {
+    async fn execute_session_mode<'a>(
+        &self,
+        context: &mut ToolContext<'a>,
+        input: &ExecuteCommandInput,
+        effective_working_dir: PathBuf,
+        sandbox_request: &SandboxCommandRequest,
+    ) -> Result<ExecuteCommandOutput> {
+        let Some(manager) = context
+            .extension::<crate::tools::ToolServices>()
+            .and_then(|services| services.pty_sessions.clone())
+        else {
+            return Err(anyhow!(
+                "Interactive sessions are not available in this environment; run the command without tty/yield_time_ms"
+            ));
+        };
+
+        let spec = context.command_executor.prepare_pty_spawn(
+            &input.command_line,
+            &effective_working_dir,
+            Some(sandbox_request),
+        )?;
+
+        let mut config = pty_session::PtySpawnConfig::from_argv(spec.argv);
+        config.env = spec.env;
+        config.keep_alive = spec.keep_alive;
+        config.tty = input.tty.unwrap_or(true);
+        config.working_dir = Some(effective_working_dir);
+
+        let session = std::sync::Arc::new(pty_session::PtySession::spawn(config)?);
+
+        let yield_time = std::time::Duration::from_millis(
+            input
+                .yield_time_ms
+                .unwrap_or(DEFAULT_YIELD_TIME_MS)
+                .clamp(MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS),
+        );
+        let collected = session.collect_output(yield_time).await;
+
+        // Show the first output window in the tool card, like the classic
+        // path streams its output.
+        if !collected.output.is_empty() {
+            if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
+                let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
+                    tool_id: tool_id.clone(),
+                    chunk: collected.output.clone(),
+                });
+            }
+        }
+
+        let output = match collected.status {
+            pty_session::PtySessionStatus::Running => {
+                let session_id = manager.register(session, &input.command_line);
+                ExecuteCommandOutput {
+                    project: input.project.clone(),
+                    command_line: input.command_line.clone(),
+                    working_dir: input.working_dir.as_ref().map(PathBuf::from),
+                    output: collected.output,
+                    success: true,
+                    pty_session_id: Some(session_id),
+                    exit_code: None,
+                    running: true,
+                }
+            }
+            pty_session::PtySessionStatus::Exited(code) => ExecuteCommandOutput {
+                project: input.project.clone(),
+                command_line: input.command_line.clone(),
+                working_dir: input.working_dir.as_ref().map(PathBuf::from),
+                output: collected.output,
+                success: code == Some(0),
+                pty_session_id: None,
+                exit_code: code,
+                running: false,
+            },
+        };
+
+        Ok(output)
     }
 }
 
@@ -332,6 +476,9 @@ mod tests {
             working_dir: Some(PathBuf::from("src")),
             output: "file1.rs\nfile2.rs".to_string(),
             success: true,
+            pty_session_id: None,
+            exit_code: None,
+            running: false,
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -351,6 +498,9 @@ mod tests {
             working_dir: None,
             output: "rm: cannot remove '/tmp/nonexistent': No such file or directory".to_string(),
             success: false,
+            pty_session_id: None,
+            exit_code: None,
+            running: false,
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -378,6 +528,8 @@ mod tests {
             command_line: "ls -la".to_string(),
             working_dir: Some("src".to_string()),
             ask_user_approval: false,
+            tty: None,
+            yield_time_ms: None,
         };
 
         // Execute tool
@@ -415,6 +567,8 @@ mod tests {
             command_line: "rm -rf /tmp/nonexistent".to_string(),
             working_dir: None,
             ask_user_approval: false,
+            tty: None,
+            yield_time_ms: None,
         };
 
         // Execute tool
@@ -452,6 +606,8 @@ mod tests {
             command_line: "echo 'test'".to_string(),
             working_dir: None,
             ask_user_approval: false,
+            tty: None,
+            yield_time_ms: None,
         };
 
         // Execute tool
@@ -492,6 +648,8 @@ mod tests {
             command_line: "ls".to_string(),
             working_dir: None,
             ask_user_approval: false,
+            tty: None,
+            yield_time_ms: None,
         };
 
         let tool = ExecuteCommandTool;
@@ -523,6 +681,8 @@ mod tests {
             command_line: "ls".to_string(),
             working_dir: None,
             ask_user_approval: true,
+            tty: None,
+            yield_time_ms: None,
         };
 
         let tool = ExecuteCommandTool;
@@ -548,6 +708,8 @@ mod tests {
             command_line: "ls".to_string(),
             working_dir: None,
             ask_user_approval: true,
+            tty: None,
+            yield_time_ms: None,
         };
 
         let tool = ExecuteCommandTool;
@@ -566,6 +728,127 @@ mod tests {
             "bypass flag should be set after approval"
         );
 
+        Ok(())
+    }
+
+    /// Session-mode tests spawn real processes, so they need a project
+    /// whose root exists on disk.
+    fn session_mode_fixture(dir: &std::path::Path) -> ToolTestFixture {
+        let explorer =
+            crate::mocks::MockExplorer::new(Default::default(), None).with_root(dir.to_path_buf());
+        let project_manager = crate::mocks::MockProjectManager::new().with_project_path(
+            "real",
+            dir.to_path_buf(),
+            Box::new(explorer),
+        );
+        ToolTestFixture::with_project_manager(project_manager).with_pty_sessions()
+    }
+
+    fn session_mode_input(command_line: &str, yield_time_ms: u64) -> ExecuteCommandInput {
+        ExecuteCommandInput {
+            project: "real".to_string(),
+            command_line: command_line.to_string(),
+            working_dir: None,
+            ask_user_approval: false,
+            tty: None,
+            yield_time_ms: Some(yield_time_ms),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_mode_returns_session_id_while_running() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut fixture = session_mode_fixture(dir.path());
+        let mut context = fixture.context();
+
+        let mut input = session_mode_input("echo started; sleep 30", 500);
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+
+        assert!(result.running, "process should still be running");
+        assert!(result.success, "a running session is not a failure");
+        assert!(
+            result.output.contains("started"),
+            "output: {}",
+            result.output
+        );
+        let session_id = result
+            .pty_session_id
+            .expect("session id for running process");
+        assert_eq!(result.exit_code, None);
+
+        drop(context);
+        let manager = fixture.pty_sessions().unwrap();
+        let session = manager.get(session_id).expect("session should be tracked");
+        session.terminate();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_mode_reports_exit_within_yield_window() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut fixture = session_mode_fixture(dir.path());
+        let mut context = fixture.context();
+
+        let mut input = session_mode_input("echo done; exit 3", 10_000);
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+
+        assert!(!result.running);
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(3));
+        assert_eq!(result.pty_session_id, None);
+        assert!(result.output.contains("done"), "output: {}", result.output);
+
+        drop(context);
+        assert!(
+            fixture.pty_sessions().unwrap().list().is_empty(),
+            "exited processes should not be tracked"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_mode_without_registry_fails_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let explorer = crate::mocks::MockExplorer::new(Default::default(), None)
+            .with_root(dir.path().to_path_buf());
+        let project_manager = crate::mocks::MockProjectManager::new().with_project_path(
+            "real",
+            dir.path().to_path_buf(),
+            Box::new(explorer),
+        );
+        // No .with_pty_sessions() — e.g. the MCP server context.
+        let mut fixture = ToolTestFixture::with_project_manager(project_manager);
+        let mut context = fixture.context();
+
+        let mut input = session_mode_input("echo hi", 500);
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await;
+        let error = result
+            .err()
+            .expect("session mode should fail without a registry");
+        assert!(
+            error.to_string().contains("not available"),
+            "error: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_mode_render_advertises_write_stdin() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut fixture = session_mode_fixture(dir.path());
+        let mut context = fixture.context();
+
+        let mut input = session_mode_input("sleep 30", 300);
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+
+        let mut tracker = ResourcesTracker::new();
+        let rendered = result.render(&mut tracker);
+        let session_id = result.pty_session_id.unwrap();
+        assert!(rendered.contains("Still running"));
+        assert!(rendered.contains(&format!("session_id: {session_id}")));
+        assert!(rendered.contains("write_stdin"));
+
+        drop(context);
+        fixture.pty_sessions().unwrap().terminate_all();
         Ok(())
     }
 }

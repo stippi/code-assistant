@@ -60,6 +60,9 @@ pub struct PtySpawnConfig {
     pub env: Vec<(String, String)>,
     pub tty: bool,
     pub max_buffer_bytes: usize,
+    /// Opaque guard kept alive as long as the session runs — e.g. the
+    /// temp file holding a sandbox profile the spawned argv references.
+    pub keep_alive: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl PtySpawnConfig {
@@ -70,6 +73,7 @@ impl PtySpawnConfig {
             env: Vec::new(),
             tty: true,
             max_buffer_bytes: DEFAULT_MAX_BUFFER_BYTES,
+            keep_alive: None,
         }
     }
 
@@ -131,6 +135,8 @@ pub struct PtySession {
     /// session's lifetime; dropping it would hang up the child. The Mutex
     /// exists for `Sync` (and a future `resize()`), not for contention.
     _master: Option<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    /// See [`PtySpawnConfig::keep_alive`]. The Mutex exists for `Sync`.
+    _keep_alive: Mutex<Option<Box<dyn std::any::Any + Send>>>,
     started_at: Instant,
     tty: bool,
 }
@@ -252,6 +258,7 @@ impl PtySession {
                 killer: Some(killer),
             }),
             _master: Some(Mutex::new(pair.master)),
+            _keep_alive: Mutex::new(config.keep_alive),
             started_at: Instant::now(),
             tty: true,
         })
@@ -303,6 +310,7 @@ impl PtySession {
                 killer: None,
             }),
             _master: None,
+            _keep_alive: Mutex::new(config.keep_alive),
             started_at: Instant::now(),
             tty: false,
         })
