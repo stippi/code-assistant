@@ -46,3 +46,26 @@ interacting through the `write_stdin` tool. The design follows Codex's
   session. `ask_user_approval` bypasses the sandbox as in classic mode.
 - Environments without a session (e.g. MCP server mode) have no
   registry; session mode fails there with a clear error.
+
+## Live colored output (GPUI)
+
+Terminal output flows one-way from the backend to the frontends — the
+agent loop never waits on a UI thread (the old GPUI terminal-worker
+round-trip, a recurring source of stalls, is gone):
+
+- `PtySession::collect_output_with` forwards raw chunks (ANSI escapes
+  included) as they arrive; the returned result text is sanitized
+  (escapes stripped, CR/CRLF normalized) for the LLM.
+- The tools emit each raw chunk as `DisplayFragment::ToolTerminalOutput`
+  live during the yield window, followed by one sanitized plain
+  `ToolOutput` chunk. Text frontends (TUI, ACP) ignore the raw variant.
+- GPUI feeds the raw bytes into a display-only alacritty terminal in the
+  `TerminalPool` (keyed by tool_id); the terminal card picks it up and
+  renders live colored output. `Terminal::write_output` keeps a
+  persistent vte parser so escape sequences split across chunks parse
+  correctly. A cap (32) evicts the oldest display terminals into the
+  styled-output cache, which the card uses for static colored rendering.
+- Classic blocking commands in GPUI run through
+  `command_executor::PtyCommandExecutor` (backend PTY, 5-minute
+  timeout), streaming the same way via
+  `StreamingCallback::on_terminal_output_chunk`.
