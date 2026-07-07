@@ -218,6 +218,11 @@ impl PtySession {
         if let Some(dir) = &config.working_dir {
             cmd.cwd(dir);
         }
+        // GUI processes often have no TERM; without one, programs assume a
+        // dumb terminal and skip colors.
+        if std::env::var_os("TERM").is_none() && !config.env.iter().any(|(key, _)| key == "TERM") {
+            cmd.env("TERM", "xterm-256color");
+        }
         for (key, value) in &config.env {
             cmd.env(key, value);
         }

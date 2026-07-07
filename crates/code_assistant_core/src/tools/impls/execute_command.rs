@@ -136,6 +136,17 @@ impl<'a> StreamingCallback for ToolOutputStreamer<'a> {
         Ok(())
     }
 
+    fn on_terminal_output_chunk(&self, bytes: &[u8]) -> Result<()> {
+        let fragment = DisplayFragment::ToolTerminalOutput {
+            tool_id: self.tool_id.clone(),
+            bytes: bytes.to_vec(),
+        };
+
+        let _ = self.ui.display_fragment(&fragment);
+
+        Ok(())
+    }
+
     fn on_terminal_attached(&self, terminal_id: &str) -> Result<()> {
         let fragment = DisplayFragment::ToolTerminal {
             tool_id: self.tool_id.clone(),

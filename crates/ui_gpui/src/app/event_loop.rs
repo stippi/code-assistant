@@ -147,9 +147,9 @@ impl Gpui {
                 images,
             } => {
                 // If the event doesn't carry styled output, check the cache
-                // (populated by terminal_executor just before PTY cleanup).
-                let styled_output = styled_output
-                    .or_else(|| terminal::executor::take_cached_styled_output(&tool_id));
+                // (populated when a display-only terminal is evicted).
+                let styled_output =
+                    styled_output.or_else(|| terminal::pool::take_cached_styled_output(&tool_id));
                 // Convert ImageData to (media_type, base64_data) tuples for the UI
                 let ui_images: Vec<(String, String)> = images
                     .iter()

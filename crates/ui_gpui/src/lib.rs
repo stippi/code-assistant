@@ -556,13 +556,6 @@ impl Gpui {
                 *task_guard = Some(task);
             }
 
-            // Register the GPUI terminal worker so that
-            // GpuiTerminalCommandExecutor can create PTY terminals.
-            cx.spawn(async move |cx: &mut AsyncApp| {
-                terminal::executor::register_gpui_terminal_worker(cx);
-            })
-            .detach();
-
             // Create window – restore saved bounds or fall back to centered default.
             let bounds = ui_settings
                 .window_bounds

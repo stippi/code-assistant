@@ -1,12 +1,53 @@
 use gpui::AppContext as _;
-use gpui::{App, Entity};
+use gpui::Entity;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use terminal::Terminal;
+use terminal::{StyledLine, Terminal};
 use tracing::warn;
 
 /// Global terminal pool singleton.
 static TERMINAL_POOL: OnceLock<Mutex<TerminalPool>> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// Styled output cache — preserves ANSI colors for static terminal cards
+// ---------------------------------------------------------------------------
+
+/// Cache of styled terminal output captured when a display-only terminal is
+/// evicted. Keyed by tool_id, this allows the terminal card renderer to
+/// display colored output after the live terminal entity is gone.
+static STYLED_OUTPUT_CACHE: OnceLock<Mutex<HashMap<String, Vec<StyledLine>>>> = OnceLock::new();
+
+fn styled_output_cache() -> &'static Mutex<HashMap<String, Vec<StyledLine>>> {
+    STYLED_OUTPUT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Maximum entries in the styled output cache. If this is exceeded, the
+/// oldest entries are evicted. This prevents unbounded memory growth if
+/// `take_cached_styled_output` is never called for some tool_ids.
+const MAX_STYLED_CACHE_ENTRIES: usize = 32;
+
+/// Store styled output for a tool_id, evicting old entries beyond the cap.
+pub fn cache_styled_output(tool_id: &str, styled_lines: Vec<StyledLine>) {
+    if let Ok(mut cache) = styled_output_cache().lock() {
+        while cache.len() >= MAX_STYLED_CACHE_ENTRIES {
+            if let Some(key) = cache.keys().next().cloned() {
+                cache.remove(&key);
+            } else {
+                break;
+            }
+        }
+        cache.insert(tool_id.to_string(), styled_lines);
+    }
+}
+
+/// Retrieve and remove cached styled output for a tool_id.
+/// Called by the terminal card renderer when transitioning to static display.
+pub fn take_cached_styled_output(tool_id: &str) -> Option<Vec<StyledLine>> {
+    styled_output_cache()
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.remove(tool_id))
+}
 
 /// Metadata associated with a terminal in the pool.
 pub struct TerminalEntry {
@@ -210,34 +251,7 @@ fn evict_display_terminal(terminal_id: &str, cx: &mut gpui::AsyncApp) {
         .map(|mut pool| pool.remove(terminal_id))
         .unwrap_or_default();
     for tool_id in tool_ids {
-        crate::terminal::executor::cache_styled_output(&tool_id, styled.clone());
+        cache_styled_output(&tool_id, styled.clone());
         crate::tool_cards::terminal_card::evict_cached_terminal_view_for_tool(&tool_id);
     }
-}
-
-/// Convenience: spawn a PTY terminal and add it to the global pool.
-/// Must be called on the GPUI foreground thread.
-pub fn spawn_terminal_in_pool(
-    command: &str,
-    working_dir: Option<&std::path::Path>,
-    cx: &mut App,
-) -> Result<(String, Entity<Terminal>), anyhow::Error> {
-    let options = terminal::TerminalOptions {
-        command: Some(command.to_string()),
-        working_dir: working_dir.map(|p| p.to_path_buf()),
-        env: vec![("TERM".into(), "xterm-256color".into())],
-        scroll_history: Some(10_000),
-    };
-
-    let builder = terminal::TerminalBuilder::new(options)?;
-    let terminal = cx.new(|cx| builder.subscribe(cx));
-
-    let terminal_id = {
-        let mut pool = TerminalPool::global()
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Terminal pool lock poisoned: {e}"))?;
-        pool.insert(terminal.clone(), command.to_string())
-    };
-
-    Ok((terminal_id, terminal))
 }

@@ -2,8 +2,10 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 mod default_executor;
+mod pty_executor;
 mod sandboxed_executor;
 pub use default_executor::DefaultCommandExecutor;
+pub use pty_executor::PtyCommandExecutor;
 pub use sandboxed_executor::SandboxedCommandExecutor;
 
 #[derive(Clone)]
@@ -22,6 +24,13 @@ pub struct SandboxCommandRequest {
 /// Callback trait for streaming command output
 pub trait StreamingCallback: Send + Sync {
     fn on_output_chunk(&self, chunk: &str) -> Result<()>;
+
+    /// Raw terminal output (ANSI escape sequences included), for frontends
+    /// that render it in a terminal emulator. Plain-text consumers keep
+    /// using `on_output_chunk` and can ignore this.
+    fn on_terminal_output_chunk(&self, _bytes: &[u8]) -> Result<()> {
+        Ok(())
+    }
 
     fn on_terminal_attached(&self, _terminal_id: &str) -> Result<()> {
         Ok(())

@@ -12,21 +12,17 @@ pub use code_assistant_core::config::AgentRunConfig;
 #[cfg(any(feature = "gpui-frontend", feature = "terminal-frontend"))]
 use code_assistant_core::session::service::CommandExecutorFactory;
 
-/// The command executor the interactive frontends use for agent sessions:
-/// commands run attached to live terminal views when the GPUI terminal pool
-/// is available and fall back to plain execution otherwise.
+/// The command executor the GPUI frontend uses for agent sessions:
+/// commands run on a backend PTY whose raw (colored) output streams to the
+/// terminal cards as display fragments — the UI never sits between the
+/// agent loop and the process.
 #[cfg(feature = "gpui-frontend")]
 pub fn session_command_executor_factory() -> CommandExecutorFactory {
-    std::sync::Arc::new(|session_id: &str| {
-        Box::new(
-            ui_gpui::terminal::executor::GpuiTerminalCommandExecutor::new(session_id.to_string()),
-        )
-    })
+    std::sync::Arc::new(|_session_id: &str| Box::new(command_executor::PtyCommandExecutor))
 }
 
-/// Without the GPUI frontend there are no terminal views to attach to;
-/// commands always run through the plain executor (the same path the GPUI
-/// executor falls back to when no terminal worker is available).
+/// Without the GPUI frontend there are no terminal cards; commands run
+/// through the plain executor.
 #[cfg(all(feature = "terminal-frontend", not(feature = "gpui-frontend")))]
 pub fn session_command_executor_factory() -> CommandExecutorFactory {
     std::sync::Arc::new(|_session_id: &str| Box::new(command_executor::DefaultCommandExecutor))
