@@ -147,9 +147,9 @@ impl Gpui {
                 images,
             } => {
                 // If the event doesn't carry styled output, check the cache
-                // (populated by terminal_executor just before PTY cleanup).
-                let styled_output = styled_output
-                    .or_else(|| terminal::executor::take_cached_styled_output(&tool_id));
+                // (populated when a display-only terminal is evicted).
+                let styled_output =
+                    styled_output.or_else(|| terminal::pool::take_cached_styled_output(&tool_id));
                 // Convert ImageData to (media_type, base64_data) tuples for the UI
                 let ui_images: Vec<(String, String)> = images
                     .iter()
@@ -665,6 +665,41 @@ impl Gpui {
                 self.auto_scroll_if_following(cx);
             }
 
+            UiEvent::AttachToolTerminal { tool_id } => {
+                // A backend terminal exists for this tool — create the
+                // card's display terminal even before any output arrives,
+                // so silent commands (e.g. `sleep`) get a running card
+                // with a working stop button instead of a skeleton.
+                let session_id = self
+                    .current_session_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                crate::terminal::pool::ensure_display_terminal(&session_id, &tool_id, cx);
+                self.auto_scroll_if_following(cx);
+            }
+
+            UiEvent::AppendToolTerminalOutput { tool_id, bytes } => {
+                // Raw ANSI bytes stream into a display-only terminal that
+                // the tool card picks up from the pool — live colored
+                // output without a GPUI-side PTY.
+                let session_id = self
+                    .current_session_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                crate::terminal::pool::feed_display_terminal(&session_id, &tool_id, &bytes, cx);
+                self.auto_scroll_if_following(cx);
+            }
+
+            UiEvent::SetToolTerminalExited { tool_id, exit_code } => {
+                // Mark the display-only terminal finished so the card stops
+                // showing the running spinner and stop button.
+                crate::terminal::pool::mark_display_terminal_exited(&tool_id, exit_code, cx);
+            }
+
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
                 // Store the error message in state
@@ -1130,10 +1165,36 @@ impl Gpui {
                     });
                 }
 
-                DisplayFragment::ToolTerminal { .. } => {
-                    // The GPUI terminal executor registers the tool→terminal
-                    // mapping directly in the TerminalPool, so no action needed
-                    // during fragment replay.
+                DisplayFragment::ToolTerminalOutput { tool_id, bytes } => {
+                    // Replay raw terminal output into the card's
+                    // display-only terminal (e.g. reconnecting to a session
+                    // with an in-flight command).
+                    let session_id = self
+                        .current_session_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_default();
+
+                    crate::terminal::pool::feed_display_terminal(&session_id, &tool_id, &bytes, cx);
+                }
+
+                DisplayFragment::ToolTerminalExited { tool_id, exit_code } => {
+                    crate::terminal::pool::mark_display_terminal_exited(&tool_id, exit_code, cx);
+                }
+
+                DisplayFragment::ToolTerminal { tool_id, .. } => {
+                    // Replay of the terminal-attached signal (e.g.
+                    // reconnecting while a command is still running):
+                    // make sure the card has its display terminal even if
+                    // the command hasn't produced output.
+                    let session_id = self
+                        .current_session_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_default();
+                    crate::terminal::pool::ensure_display_terminal(&session_id, &tool_id, cx);
                 }
 
                 DisplayFragment::ReasoningComplete => {

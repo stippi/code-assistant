@@ -14,9 +14,9 @@ Additional documentation is available in the `docs` folder if needed.
 
 ### Testing Specific Components
 - `cargo test --package code-assistant` - Test wiring binary
-- `cargo test --package code-assistant-core` - Test domain layer
-- `cargo test --package agent-core` - Test agent core
-- `cargo test --package tools-core` - Test tool framework
+- `cargo test --package code_assistant_core` - Test domain layer
+- `cargo test --package agent_core` - Test agent core
+- `cargo test --package tools_core` - Test tool framework
 - `cargo test --package llm` - Test LLM integration
 - `cargo test --package web` - Test web functionality
 
@@ -27,7 +27,7 @@ This is a Rust-based tool for AI-assisted code tasks with multiple operational m
 ### Crate Layers
 
 ```
-Layer 0 (generic):    llm  command_executor  fs_explorer  sandbox  web  git  terminal  terminal_output
+Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  terminal  terminal_output
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
                       mcp_client        — MCP client mode: wraps MCP server tools as registry tools (rmcp SDK)
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait

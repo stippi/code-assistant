@@ -1,12 +1,53 @@
 use gpui::AppContext as _;
-use gpui::{App, Entity};
+use gpui::Entity;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use terminal::Terminal;
+use terminal::{StyledLine, Terminal};
 use tracing::warn;
 
 /// Global terminal pool singleton.
 static TERMINAL_POOL: OnceLock<Mutex<TerminalPool>> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// Styled output cache — preserves ANSI colors for static terminal cards
+// ---------------------------------------------------------------------------
+
+/// Cache of styled terminal output captured when a display-only terminal is
+/// evicted. Keyed by tool_id, this allows the terminal card renderer to
+/// display colored output after the live terminal entity is gone.
+static STYLED_OUTPUT_CACHE: OnceLock<Mutex<HashMap<String, Vec<StyledLine>>>> = OnceLock::new();
+
+fn styled_output_cache() -> &'static Mutex<HashMap<String, Vec<StyledLine>>> {
+    STYLED_OUTPUT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Maximum entries in the styled output cache. If this is exceeded, the
+/// oldest entries are evicted. This prevents unbounded memory growth if
+/// `take_cached_styled_output` is never called for some tool_ids.
+const MAX_STYLED_CACHE_ENTRIES: usize = 32;
+
+/// Store styled output for a tool_id, evicting old entries beyond the cap.
+pub fn cache_styled_output(tool_id: &str, styled_lines: Vec<StyledLine>) {
+    if let Ok(mut cache) = styled_output_cache().lock() {
+        while cache.len() >= MAX_STYLED_CACHE_ENTRIES {
+            if let Some(key) = cache.keys().next().cloned() {
+                cache.remove(&key);
+            } else {
+                break;
+            }
+        }
+        cache.insert(tool_id.to_string(), styled_lines);
+    }
+}
+
+/// Retrieve and remove cached styled output for a tool_id.
+/// Called by the terminal card renderer when transitioning to static display.
+pub fn take_cached_styled_output(tool_id: &str) -> Option<Vec<StyledLine>> {
+    styled_output_cache()
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.remove(tool_id))
+}
 
 /// Metadata associated with a terminal in the pool.
 pub struct TerminalEntry {
@@ -129,29 +170,120 @@ impl TerminalPool {
     }
 }
 
-/// Convenience: spawn a PTY terminal and add it to the global pool.
-/// Must be called on the GPUI foreground thread.
-pub fn spawn_terminal_in_pool(
-    command: &str,
-    working_dir: Option<&std::path::Path>,
-    cx: &mut App,
-) -> Result<(String, Entity<Terminal>), anyhow::Error> {
-    let options = terminal::TerminalOptions {
-        command: Some(command.to_string()),
-        working_dir: working_dir.map(|p| p.to_path_buf()),
-        env: vec![("TERM".into(), "xterm-256color".into())],
-        scroll_history: Some(10_000),
+/// Cap on display-only terminals kept alive for tool cards. Beyond this,
+/// the oldest one is snapshotted into the styled-output cache (so its card
+/// falls back to static colored rendering) and dropped.
+const MAX_DISPLAY_TERMINALS: usize = 32;
+
+/// Insertion-ordered ids of display-only terminals, for LRU-style eviction.
+static DISPLAY_TERMINAL_ORDER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn display_terminal_order() -> &'static Mutex<Vec<String>> {
+    DISPLAY_TERMINAL_ORDER.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Get the display-only terminal for a tool card, creating (and pooling)
+/// it if it doesn't exist yet. Called on the terminal-attached signal —
+/// which arrives before any output — and by [`feed_display_terminal`], so
+/// a card has a live terminal (with running state and stop button) even
+/// for commands that stay silent.
+/// Called from the UI event loop; must run on the GPUI foreground thread.
+pub fn ensure_display_terminal(
+    session_id: &str,
+    tool_id: &str,
+    cx: &mut gpui::AsyncApp,
+) -> Option<Entity<Terminal>> {
+    let existing = TerminalPool::global().lock().ok().and_then(|pool| {
+        pool.get_terminal_by_tool_id_any_session(tool_id)
+            .map(|entry| entry.terminal.clone())
+    });
+    if let Some(terminal) = existing {
+        return Some(terminal);
+    }
+
+    let created = cx.update(|cx| {
+        let builder = terminal::TerminalBuilder::new_display_only(Some(10_000));
+        cx.new(|cx| builder.subscribe(cx))
+    });
+    let evict = {
+        let mut pool = TerminalPool::global().lock().ok()?;
+        let terminal_id = pool.insert(created.clone(), String::new());
+        pool.register_tool_mapping(
+            session_id.to_string(),
+            tool_id.to_string(),
+            terminal_id.clone(),
+        );
+        let mut order = display_terminal_order().lock().unwrap();
+        order.push(terminal_id);
+        if order.len() > MAX_DISPLAY_TERMINALS {
+            Some(order.remove(0))
+        } else {
+            None
+        }
+    };
+    if let Some(victim_id) = evict {
+        evict_display_terminal(&victim_id, cx);
+    }
+    Some(created)
+}
+
+/// Feed backend-streamed raw terminal output (ANSI escapes included) into
+/// the display-only terminal of a tool card, creating it on first use.
+/// Called from the UI event loop; must run on the GPUI foreground thread.
+pub fn feed_display_terminal(
+    session_id: &str,
+    tool_id: &str,
+    bytes: &[u8],
+    cx: &mut gpui::AsyncApp,
+) {
+    let Some(terminal) = ensure_display_terminal(session_id, tool_id, cx) else {
+        return;
     };
 
-    let builder = terminal::TerminalBuilder::new(options)?;
-    let terminal = cx.new(|cx| builder.subscribe(cx));
+    let bytes = bytes.to_vec();
+    cx.update_entity(&terminal, |terminal, cx| {
+        terminal.write_output(&bytes, cx);
+    });
+}
 
-    let terminal_id = {
-        let mut pool = TerminalPool::global()
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Terminal pool lock poisoned: {e}"))?;
-        pool.insert(terminal.clone(), command.to_string())
+/// Tell the display-only terminal for a tool that its process exited, so
+/// its card stops rendering the running spinner/stop button. No-op if no
+/// display terminal exists for the tool (e.g. it was already evicted, or
+/// the command produced no output and never created one).
+pub fn mark_display_terminal_exited(
+    tool_id: &str,
+    exit_code: Option<i32>,
+    cx: &mut gpui::AsyncApp,
+) {
+    let terminal = TerminalPool::global().lock().ok().and_then(|pool| {
+        pool.get_terminal_by_tool_id_any_session(tool_id)
+            .map(|entry| entry.terminal.clone())
+    });
+    if let Some(terminal) = terminal {
+        cx.update_entity(&terminal, |terminal, cx| {
+            terminal.set_exit_status(exit_code, cx);
+        });
+    }
+}
+
+/// Snapshot a display-only terminal into the styled-output cache and drop
+/// it, so its (old) tool card falls back to static colored rendering.
+fn evict_display_terminal(terminal_id: &str, cx: &mut gpui::AsyncApp) {
+    let terminal = TerminalPool::global()
+        .lock()
+        .ok()
+        .and_then(|pool| pool.get(terminal_id).map(|entry| entry.terminal.clone()));
+    let Some(terminal) = terminal else {
+        return;
     };
 
-    Ok((terminal_id, terminal))
+    let styled = cx.update(|cx| terminal.read(cx).get_styled_content());
+    let tool_ids = TerminalPool::global()
+        .lock()
+        .map(|mut pool| pool.remove(terminal_id))
+        .unwrap_or_default();
+    for tool_id in tool_ids {
+        cache_styled_output(&tool_id, styled.clone());
+        crate::tool_cards::terminal_card::evict_cached_terminal_view_for_tool(&tool_id);
+    }
 }

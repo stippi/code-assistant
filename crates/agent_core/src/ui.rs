@@ -50,8 +50,18 @@ pub enum DisplayFragment {
     },
     /// End of a tool invocation
     ToolEnd { id: String },
-    /// Streaming tool output chunk
+    /// Streaming tool output chunk (plain text, safe for text frontends)
     ToolOutput { tool_id: String, chunk: String },
+    /// Streaming raw terminal output chunk (ANSI escape sequences
+    /// included). Emitted alongside the plain `ToolOutput` for frontends
+    /// with a terminal emulator (GPUI feeds these into a display-only
+    /// terminal for live colored output); text frontends ignore it.
+    ToolTerminalOutput { tool_id: String, bytes: Vec<u8> },
+    /// The process backing a tool's terminal exited.
+    ToolTerminalExited {
+        tool_id: String,
+        exit_code: Option<i32>,
+    },
     /// Tool attached a terminal on the client side
     ToolTerminal {
         tool_id: String,

@@ -17,7 +17,10 @@ pub struct CodeAssistantToolServices {
     pub project_manager: Arc<dyn ProjectManager>,
     pub ui: Arc<dyn UserInterface>,
     pub sub_agent_runner: Option<Arc<dyn SubAgentRunner>>,
+
     pub wakeups: Option<SessionWakeups>,
+    pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
+    pub terminal_interrupts: Option<Arc<crate::tools::TerminalInterrupts>>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -29,6 +32,8 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             ui: Some(self.ui.clone()),
             sub_agent_runner: self.sub_agent_runner.clone(),
             wakeups: self.wakeups.clone(),
+            pty_sessions: self.pty_sessions.clone(),
+            terminal_interrupts: self.terminal_interrupts.clone(),
         })
     }
 
@@ -43,8 +48,11 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             project_manager: self.project_manager.clone(),
             plan: None, // No plan access in detached execution
             ui: Some(self.ui.clone()),
+
             sub_agent_runner: self.sub_agent_runner.clone(),
             wakeups: self.wakeups.clone(),
+            pty_sessions: self.pty_sessions.clone(),
+            terminal_interrupts: self.terminal_interrupts.clone(),
         })
     }
 }

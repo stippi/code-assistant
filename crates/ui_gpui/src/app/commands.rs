@@ -127,6 +127,20 @@ impl Gpui {
         });
     }
 
+    /// Interrupt (Ctrl-C) the `execute_command` terminal identified by
+    /// `tool_id` — the terminal card's stop button. Works for both
+    /// foreground (blocking) and background (session-mode) commands.
+    pub(crate) fn cmd_interrupt_terminal(&self, session_id: String, tool_id: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        self.dispatch(async move {
+            if let Err(e) = service.interrupt_terminal(session_id, tool_id).await {
+                debug!("Failed to interrupt terminal: {e:#}");
+            }
+        });
+    }
+
     /// Delete a session. The caller is responsible for disconnecting the
     /// messages view first if the session is currently shown (see the
     /// sidebar delete handler in `main_screen`).

@@ -260,6 +260,11 @@ enum TerminalType {
 pub struct Terminal {
     terminal_type: TerminalType,
     term: Arc<FairMutex<Term<Listener>>>,
+    /// Persistent ANSI parser for `write_output` (display-only injection).
+    /// Escape sequences can be split across chunks; the parser state must
+    /// survive between calls or the tail of a split sequence is mis-parsed.
+    display_processor:
+        alacritty_terminal::vte::ansi::Processor<alacritty_terminal::vte::ansi::StdSyncHandler>,
     events: VecDeque<InternalEvent>,
     /// The most recent content snapshot, updated by `sync()`.
     pub last_content: TerminalContent,
@@ -327,6 +332,20 @@ impl Terminal {
     /// Whether the child process has exited.
     pub fn has_exited(&self) -> bool {
         self.exit_status.is_some()
+    }
+
+    /// Mark the child process as exited. Terminals backed by a real PTY
+    /// learn this from `AlacTermEvent::ChildExit`; the display-only
+    /// terminals used for backend-streamed tool output have no event loop,
+    /// so the backend tells them explicitly when the process ends. No-op if
+    /// the exit status was already set.
+    pub fn set_exit_status(&mut self, code: Option<i32>, cx: &mut Context<Self>) {
+        if self.exit_status.is_some() {
+            return;
+        }
+        self.exit_status = Some(code);
+        cx.emit(Event::ChildExit(code));
+        cx.notify();
     }
 
     /// Get the full terminal text content as a string.
@@ -485,20 +504,18 @@ impl Terminal {
     pub fn write_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         // Convert bare LF to CRLF for proper line wrapping without a PTY.
         let mut converted = Vec::with_capacity(bytes.len());
+        let mut prev = 0u8;
         for &b in bytes {
-            if b == b'\n' {
+            if b == b'\n' && prev != b'\r' {
                 converted.push(b'\r');
             }
             converted.push(b);
+            prev = b;
         }
-
-        let mut processor = alacritty_terminal::vte::ansi::Processor::<
-            alacritty_terminal::vte::ansi::StdSyncHandler,
-        >::new();
 
         {
             let mut term = self.term.lock();
-            processor.advance(&mut *term, &converted);
+            self.display_processor.advance(&mut *term, &converted);
         }
 
         cx.emit(Event::Wakeup);
@@ -722,6 +739,7 @@ impl TerminalBuilder {
         let _io_thread = event_loop.spawn();
 
         let terminal = Terminal {
+            display_processor: alacritty_terminal::vte::ansi::Processor::new(),
             terminal_type: TerminalType::Pty {
                 pty_tx: Notifier(pty_tx),
             },
@@ -759,6 +777,7 @@ impl TerminalBuilder {
         let term = Arc::new(FairMutex::new(term));
 
         let terminal = Terminal {
+            display_processor: alacritty_terminal::vte::ansi::Processor::new(),
             terminal_type: TerminalType::DisplayOnly,
             term,
             events: VecDeque::new(),

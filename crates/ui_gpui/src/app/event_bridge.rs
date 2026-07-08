@@ -233,9 +233,26 @@ impl Gpui {
                     chunk: chunk.clone(),
                 });
             }
-            DisplayFragment::ToolTerminal { .. } => {
-                // The GPUI terminal executor registers the tool→terminal
-                // mapping directly in the TerminalPool, so no event needed.
+            DisplayFragment::ToolTerminalOutput { tool_id, bytes } => {
+                self.push_event(UiEvent::AppendToolTerminalOutput {
+                    tool_id: tool_id.clone(),
+                    bytes: bytes.clone(),
+                });
+            }
+            DisplayFragment::ToolTerminalExited { tool_id, exit_code } => {
+                self.push_event(UiEvent::SetToolTerminalExited {
+                    tool_id: tool_id.clone(),
+                    exit_code: *exit_code,
+                });
+            }
+            DisplayFragment::ToolTerminal { tool_id, .. } => {
+                // A backend terminal exists for this tool (possibly before
+                // any output). Create the card's display terminal now so
+                // the card leaves its skeleton state and shows the running
+                // terminal with its stop button — even for silent commands.
+                self.push_event(UiEvent::AttachToolTerminal {
+                    tool_id: tool_id.clone(),
+                });
             }
             DisplayFragment::CompactionDivider { summary } => {
                 self.push_event(UiEvent::DisplayCompactionSummary {

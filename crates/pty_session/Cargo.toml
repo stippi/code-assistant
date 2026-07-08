@@ -1,0 +1,25 @@
+[package]
+name = "pty_session"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.95"
+portable-pty = "0.9"
+rand = "0.9"
+strip-ansi-escapes = "0.2"
+tokio = { version = "1.40.0", features = [
+    "macros",
+    "process",
+    "rt",
+    "sync",
+    "time",
+    "io-util",
+] }
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1.40.0", features = ["rt-multi-thread"] }

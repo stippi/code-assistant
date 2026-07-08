@@ -185,6 +185,17 @@ pub struct SessionInstance {
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 
+    /// Live PTY sessions started by this session's agents (execute_command
+    /// session mode). Survives across agent runs; dropping the instance
+    /// terminates all remaining sessions.
+    pub pty_sessions: Arc<pty_session::PtySessionManager>,
+
+    /// Cancel flags for in-flight blocking (foreground) `execute_command`
+    /// invocations, so the UI's terminal-card stop button can interrupt a
+    /// foreground command by tool_id (background ones go through
+    /// `pty_sessions`).
+    pub terminal_interrupts: Arc<crate::tools::TerminalInterrupts>,
+
     /// Exclusive cross-process lock held while an agent is running.
     ///
     /// Acquired before spawning the agent task, released on task completion
@@ -236,6 +247,8 @@ impl SessionInstance {
                 crate::session::permissions::PendingPermissionRequests::default(),
             ),
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
+            pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
+            terminal_interrupts: Arc::new(crate::tools::TerminalInterrupts::default()),
             agent_lock: None,
             last_ui_synced_path: initial_path,
             last_ui_synced_tool_count: initial_tool_count,
@@ -996,12 +1009,14 @@ impl UserInterface for SessionEventPublisher {
             DisplayFragment::ReasoningSummaryDelta(s) => !s.is_empty(),
             DisplayFragment::ToolParameter { value, .. } => !value.is_empty(),
             DisplayFragment::ToolOutput { chunk, .. } => !chunk.is_empty(),
+            DisplayFragment::ToolTerminalOutput { bytes, .. } => !bytes.is_empty(),
             DisplayFragment::Image { .. }
             | DisplayFragment::ToolName { .. }
             | DisplayFragment::ReasoningSummaryStart
             | DisplayFragment::CompactionDivider { .. } => true,
             DisplayFragment::ToolEnd { .. }
             | DisplayFragment::ToolTerminal { .. }
+            | DisplayFragment::ToolTerminalExited { .. }
             | DisplayFragment::ReasoningComplete
             | DisplayFragment::HiddenToolCompleted => false,
         };
@@ -1011,6 +1026,37 @@ impl UserInterface for SessionEventPublisher {
         }
 
         Ok(())
+    }
+
+    fn stream_terminal_output(&self, tool_id: &str, bytes: &[u8]) {
+        // Publish straight to the broadcast stream, bypassing the in-flight
+        // fragment buffer: a background process streams for its whole life,
+        // and buffering that (unbounded, replayed in every snapshot) would
+        // be wrong. Frontends rebuild the card from the persisted result on
+        // reconnect; live colored output is best-effort on the stream.
+        self.events.publish(
+            Some(self.session_id.clone()),
+            crate::session::event_stream::EventPayload::Fragment(
+                DisplayFragment::ToolTerminalOutput {
+                    tool_id: tool_id.to_string(),
+                    bytes: bytes.to_vec(),
+                },
+            ),
+        );
+    }
+
+    fn stream_terminal_exit(&self, tool_id: &str, exit_code: Option<i32>) {
+        // Direct publish, bypassing the in-flight fragment buffer — same
+        // rationale as stream_terminal_output above.
+        self.events.publish(
+            Some(self.session_id.clone()),
+            crate::session::event_stream::EventPayload::Fragment(
+                DisplayFragment::ToolTerminalExited {
+                    tool_id: tool_id.to_string(),
+                    exit_code,
+                },
+            ),
+        );
     }
 
     fn should_streaming_continue(&self) -> bool {

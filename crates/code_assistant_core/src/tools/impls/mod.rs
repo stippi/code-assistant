@@ -20,6 +20,7 @@ pub mod wakeup;
 pub mod web_fetch;
 pub mod web_search;
 pub mod write_file;
+pub mod write_stdin;
 
 // Re-export all tools for registration
 pub use delete_files::DeleteFilesTool;
@@ -43,3 +44,4 @@ pub use wakeup::{CancelWakeupTool, ScheduleWakeupTool};
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;
+pub use write_stdin::WriteStdinTool;

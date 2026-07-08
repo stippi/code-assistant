@@ -12,12 +12,7 @@ use tracing::warn;
 use crate::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCallback};
 
 #[cfg(target_os = "macos")]
-use {
-    sandbox::SeatbeltInvocation,
-    std::process::Stdio,
-    tokio::io::{AsyncBufReadExt, BufReader},
-    tokio::process::Command as TokioCommand,
-};
+use {sandbox::SeatbeltInvocation, tokio::process::Command as TokioCommand};
 
 /// Wraps a command executor with sandbox policy metadata. Actual enforcement will be
 /// introduced per-platform; for now this records intent and keeps the policy accessible.
@@ -77,7 +72,7 @@ impl CommandExecutor for SandboxedCommandExecutor {
         #[cfg(target_os = "macos")]
         {
             return self
-                .execute_with_seatbelt(&policy, command_line, working_dir, true, None)
+                .execute_with_seatbelt(&policy, command_line, working_dir)
                 .await;
         }
 
@@ -114,24 +109,74 @@ impl CommandExecutor for SandboxedCommandExecutor {
                 .await;
         }
 
-        let policy = self.effective_policy(sandbox_request);
-
+        // Restricted streaming runs on the shared backend-PTY path with a
+        // seatbelt-wrapped spawn spec — sandboxed commands are no special
+        // case: they get the same live raw-output streaming, terminal
+        // lifecycle callbacks, and `should_continue` cancellation as
+        // unsandboxed blocking commands.
         #[cfg(target_os = "macos")]
         {
-            return self
-                .execute_with_seatbelt(&policy, command_line, working_dir, false, callback)
-                .await;
+            let cwd = canonical_working_dir(working_dir)?;
+            let spec = self.prepare_pty_spawn(command_line, &cwd, sandbox_request)?;
+            return crate::pty_executor::run_pty_streaming(spec, working_dir, callback).await;
         }
 
         #[cfg(not(target_os = "macos"))]
         {
             warn!(
                 "Sandbox policy {:?} requested but sandboxing is not supported on this platform; running unrestricted",
-                policy
+                self.policy
             );
             self.inner
                 .execute_streaming(command_line, working_dir, callback, sandbox_request)
                 .await
+        }
+    }
+
+    fn prepare_pty_spawn(
+        &self,
+        command_line: &str,
+        working_dir: &std::path::Path,
+        sandbox_request: Option<&SandboxCommandRequest>,
+    ) -> Result<crate::PtySpawnSpec> {
+        if self.should_bypass(sandbox_request) || !self.policy.requires_restrictions() {
+            return self
+                .inner
+                .prepare_pty_spawn(command_line, working_dir, sandbox_request);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let policy = self.effective_policy(sandbox_request);
+            let mut spec = crate::PtySpawnSpec::shell(command_line);
+            let invocation = sandbox::build_seatbelt_invocation(spec.argv, &policy, working_dir)
+                .map_err(|e| anyhow::anyhow!("Failed to prepare seatbelt invocation: {e}"))?;
+
+            let mut argv = vec![invocation.executable.to_string_lossy().into_owned()];
+            argv.extend(invocation.args);
+            spec.argv = argv;
+            spec.env
+                .push(("CODE_ASSISTANT_SANDBOX".to_string(), "seatbelt".to_string()));
+            if !policy.has_full_network_access() {
+                spec.env.push((
+                    "CODE_ASSISTANT_SANDBOX_NETWORK_DISABLED".to_string(),
+                    "1".to_string(),
+                ));
+            }
+            // The profile temp file must outlive the session, not just the
+            // spawn: sandbox-exec reads it during startup.
+            spec.keep_alive = Some(Box::new(invocation.policy_path));
+            Ok(spec)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            warn!(
+                "Sandbox policy {:?} requested but sandboxing is not supported on this platform; running PTY session unrestricted",
+                self.policy
+            );
+            self.inner
+                .prepare_pty_spawn(command_line, working_dir, sandbox_request)
         }
     }
 }
@@ -180,16 +225,18 @@ fn push_unique_root(roots: &mut Vec<PathBuf>, candidate: PathBuf) {
 
 #[cfg(target_os = "macos")]
 impl SandboxedCommandExecutor {
+    /// Non-streaming (blocking) seatbelt execution, used by `execute` only
+    /// (e.g. format-on-save). Streaming executions go through
+    /// [`crate::pty_executor::run_pty_streaming`] with a spec from
+    /// [`CommandExecutor::prepare_pty_spawn`] instead.
     async fn execute_with_seatbelt(
         &self,
         policy: &SandboxPolicy,
         command_line: &str,
         working_dir: Option<&PathBuf>,
-        redirect_stderr: bool,
-        callback: Option<&dyn StreamingCallback>,
     ) -> Result<CommandOutput> {
         let cwd = canonical_working_dir(working_dir)?;
-        let (shell, shell_args) = shell_command(command_line, redirect_stderr);
+        let (shell, shell_args) = shell_command(command_line, true);
         let mut command_vec = Vec::with_capacity(shell_args.len() + 1);
         command_vec.push(shell);
         command_vec.extend(shell_args);
@@ -197,11 +244,7 @@ impl SandboxedCommandExecutor {
         let invocation = sandbox::build_seatbelt_invocation(command_vec, policy, &cwd)
             .map_err(|e| anyhow::anyhow!("Failed to prepare seatbelt invocation: {e}"))?;
 
-        if redirect_stderr {
-            self.run_blocking(policy, invocation, &cwd).await
-        } else {
-            self.run_streaming(invocation, &cwd, callback, policy).await
-        }
+        self.run_blocking(policy, invocation, &cwd).await
     }
 
     async fn run_blocking(
@@ -236,93 +279,6 @@ impl SandboxedCommandExecutor {
         Ok(CommandOutput {
             success: output.status.success(),
             output: combined,
-        })
-    }
-
-    async fn run_streaming(
-        &self,
-        invocation: SeatbeltInvocation,
-        cwd: &PathBuf,
-        callback: Option<&dyn StreamingCallback>,
-        policy: &SandboxPolicy,
-    ) -> Result<CommandOutput> {
-        let SeatbeltInvocation {
-            executable,
-            args,
-            policy_path,
-        } = invocation;
-
-        let mut cmd = TokioCommand::new(executable);
-        cmd.args(&args);
-        cmd.current_dir(cwd);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.stdin(Stdio::null());
-        cmd.env("CODE_ASSISTANT_SANDBOX", "seatbelt");
-        if !policy.has_full_network_access() {
-            cmd.env("CODE_ASSISTANT_SANDBOX_NETWORK_DISABLED", "1");
-        }
-
-        let mut child = cmd.spawn()?;
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
-        let mut accumulated_output = String::new();
-
-        if let Some(callback) = callback {
-            let stdout_reader = BufReader::new(stdout);
-            let stderr_reader = BufReader::new(stderr);
-
-            let mut stdout_lines = stdout_reader.lines();
-            let mut stderr_lines = stderr_reader.lines();
-
-            let mut stdout_done = false;
-            let mut stderr_done = false;
-
-            while !stdout_done || !stderr_done {
-                tokio::select! {
-                    line = stdout_lines.next_line(), if !stdout_done => {
-                        match line? {
-                            Some(line) => {
-                                let line_with_newline = format!("{line}\n");
-                                accumulated_output.push_str(&line_with_newline);
-                                let _ = callback.on_output_chunk(&line_with_newline);
-                            }
-                            None => stdout_done = true,
-                        }
-                    }
-                    line = stderr_lines.next_line(), if !stderr_done => {
-                        match line? {
-                            Some(line) => {
-                                let line_with_newline = format!("{line}\n");
-                                accumulated_output.push_str(&line_with_newline);
-                                let _ = callback.on_output_chunk(&line_with_newline);
-                            }
-                            None => stderr_done = true,
-                        }
-                    }
-                }
-            }
-        } else {
-            let output = child.wait_with_output().await?;
-            accumulated_output = String::from_utf8_lossy(&output.stdout).into_owned();
-            let stderr_output = String::from_utf8_lossy(&output.stderr);
-            if !stderr_output.is_empty() {
-                accumulated_output.push_str(&stderr_output);
-            }
-            drop(policy_path);
-            return Ok(CommandOutput {
-                success: output.status.success(),
-                output: accumulated_output,
-            });
-        }
-
-        let status = child.wait().await?;
-        drop(policy_path);
-
-        Ok(CommandOutput {
-            success: status.success(),
-            output: accumulated_output,
         })
     }
 }

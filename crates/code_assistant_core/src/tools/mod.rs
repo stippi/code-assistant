@@ -17,6 +17,9 @@ pub mod impls;
 // Application services handed to tools through ToolContext::extensions
 pub mod services;
 
+// Per-session cancel flags for blocking execute_command invocations
+pub mod terminal_interrupts;
+
 // code-assistant's tool selection vocabulary (ToolScope, scope:* tags)
 pub mod scope;
 
@@ -25,6 +28,7 @@ mod tests;
 
 pub use parse::parse_search_replace_blocks;
 pub use services::{ToolServices, ToolServicesAccess};
+pub use terminal_interrupts::TerminalInterrupts;
 
 // The loop-side tool vocabulary lives in the agent core.
 pub use agent_core::ToolRequest;
@@ -73,7 +77,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
         ListFilesTool, ListProjectsTool, ListSkillsTool, NameSessionTool, PerplexityAskTool,
         ReadFilesTool, ReadSkillTool, ReplaceInFileTool, ScheduleWakeupTool, SearchFilesTool,
         SpawnAgentTool, UpdatePlanTool, ViewDocumentsTool, ViewImagesTool, WebFetchTool,
-        WebSearchTool, WriteFileTool,
+        WebSearchTool, WriteFileTool, WriteStdinTool,
     };
 
     registry.register(Box::new(DeleteFilesTool));
@@ -103,4 +107,5 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
     registry.register(Box::new(WebFetchTool));
     registry.register(Box::new(WebSearchTool));
     registry.register(Box::new(WriteFileTool));
+    registry.register(Box::new(WriteStdinTool));
 }

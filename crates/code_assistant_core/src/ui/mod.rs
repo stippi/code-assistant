@@ -16,6 +16,22 @@ pub trait UserInterface: Send + Sync {
     /// Display a streaming fragment with specific type information
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;
 
+    /// Stream raw terminal output (ANSI bytes) for a tool's card.
+    ///
+    /// Unlike [`display_fragment`](Self::display_fragment), this bypasses
+    /// the in-flight fragment buffer used for snapshots, so a background
+    /// process can keep streaming to its terminal card between turns
+    /// without growing that buffer unboundedly. Default no-op; only
+    /// terminal-emulator frontends implement it.
+    fn stream_terminal_output(&self, _tool_id: &str, _bytes: &[u8]) {}
+
+    /// Signal that the process backing a tool's terminal exited. Like
+    /// [`stream_terminal_output`](Self::stream_terminal_output) this bypasses
+    /// the in-flight fragment buffer. Lets a terminal-emulator frontend mark
+    /// the card finished (stop the spinner/stop button) even for a background
+    /// session the agent never polls again. Default no-op.
+    fn stream_terminal_exit(&self, _tool_id: &str, _exit_code: Option<i32>) {}
+
     /// Check if streaming should continue
     fn should_streaming_continue(&self) -> bool;
 

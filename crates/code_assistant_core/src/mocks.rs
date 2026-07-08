@@ -208,6 +208,7 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
 pub struct MockUI {
     events: Arc<Mutex<Vec<UiEvent>>>,
     streaming: Arc<Mutex<Vec<String>>>,
+    terminal_output: Arc<Mutex<Vec<u8>>>,
 }
 
 #[async_trait]
@@ -249,6 +250,18 @@ impl UserInterface for MockUI {
             crate::ui::DisplayFragment::ToolOutput { chunk, .. } => {
                 self.streaming.lock().unwrap().push(chunk.clone());
             }
+            crate::ui::DisplayFragment::ToolTerminalOutput { bytes, .. } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("[terminal-bytes:{}]", bytes.len()));
+            }
+            crate::ui::DisplayFragment::ToolTerminalExited { exit_code, .. } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("[terminal-exit:{exit_code:?}]"));
+            }
             crate::ui::DisplayFragment::ToolTerminal { terminal_id, .. } => {
                 self.streaming
                     .lock()
@@ -281,6 +294,17 @@ impl UserInterface for MockUI {
         Ok(())
     }
 
+    fn stream_terminal_output(&self, _tool_id: &str, bytes: &[u8]) {
+        self.streaming
+            .lock()
+            .unwrap()
+            .push(format!("[terminal-bytes:{}]", bytes.len()));
+        self.terminal_output
+            .lock()
+            .unwrap()
+            .extend_from_slice(bytes);
+    }
+
     fn should_streaming_continue(&self) -> bool {
         // Mock implementation always continues streaming
         true
@@ -302,6 +326,12 @@ impl MockUI {
 
     pub fn get_streaming_output(&self) -> Vec<String> {
         self.streaming.lock().unwrap().clone()
+    }
+
+    /// Raw terminal bytes received via `stream_terminal_output`, as lossy
+    /// UTF-8 (for asserting on background-streamed content in tests).
+    pub fn get_terminal_output_text(&self) -> String {
+        String::from_utf8_lossy(&self.terminal_output.lock().unwrap()).into_owned()
     }
 }
 
@@ -1132,6 +1162,17 @@ impl ToolTestFixture {
             session_id: "test-session".to_string(),
         });
         self
+    }
+
+    /// Attach a PTY session registry, as agent sessions have one.
+    pub fn with_pty_sessions(mut self) -> Self {
+        self.services.pty_sessions = Some(Arc::new(pty_session::PtySessionManager::default()));
+        self
+    }
+
+    /// The PTY session registry, for assertions.
+    pub fn pty_sessions(&self) -> Option<&pty_session::PtySessionManager> {
+        self.services.pty_sessions.as_deref()
     }
 
     /// Add a UI mock to this fixture
