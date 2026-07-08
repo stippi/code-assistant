@@ -1189,11 +1189,41 @@ impl<'a> StreamProcessor<'a> {
     }
 
     fn process_line(&mut self, line: &str) -> Result<()> {
-        if let Some(data) = line.strip_prefix("data: ") {
-            debug!("received event: {data}");
+        // Log the raw SSE line so we can inspect the exact framing produced by
+        // the server (Azure-fronted deployments sometimes differ from OpenAI:
+        // `event:`/`id:`/`retry:` fields, comment lines starting with `:`,
+        // `data:` without a space, `[DONE]` sentinels, etc.).
+        debug!("SSE line: {line:?}");
 
-            let event: StreamEvent = serde_json::from_str(data)
-                .map_err(|e| anyhow::anyhow!("Failed to parse SSE event: {e}"))?;
+        // Per the SSE spec the space after `data:` is optional, so accept both
+        // `data: ` and `data:` framings. Also trim a trailing `\r` that some
+        // servers include (CRLF line endings).
+        let data = line
+            .strip_prefix("data:")
+            .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+            .map(|rest| rest.strip_suffix('\r').unwrap_or(rest));
+
+        if let Some(data) = data {
+            debug!("received event data: {data}");
+
+            // The `[DONE]` sentinel is used by the Chat Completions API and by
+            // some proxies in front of the Responses API. It is not valid JSON
+            // (it would fail with "expected value at line 1 column 2"), so skip
+            // it explicitly instead of trying to parse it as an event.
+            if data.trim() == "[DONE]" {
+                debug!("received [DONE] sentinel, ending stream");
+                return Ok(());
+            }
+
+            // Ignore empty data lines (keep-alive / blank separators).
+            if data.trim().is_empty() {
+                return Ok(());
+            }
+
+            let event: StreamEvent = serde_json::from_str(data).map_err(|e| {
+                warn!("Failed to parse SSE event (raw data: {data:?}): {e}");
+                anyhow::anyhow!("Failed to parse SSE event: {e} (raw data: {data:?})")
+            })?;
 
             match event.event_type.as_str() {
                 "error" => {
@@ -2261,6 +2291,66 @@ mod tests {
         // this behaviour.
         let info = ResponsesRateLimitInfo::default();
         assert_eq!(info.get_retry_delay(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_process_line_ignores_done_sentinel() {
+        // Azure-fronted Responses API deployments emit a trailing `data: [DONE]`
+        // line (the Chat Completions convention) that the native OpenAI
+        // Responses API does not. `[DONE]` is not valid JSON and previously
+        // aborted an already-complete turn with "expected value at line 1
+        // column 2". It must be skipped without error.
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+        let mut content_blocks = Vec::new();
+        let mut usage = Usage::zero();
+        let callback: StreamingCallback = Box::new(|_chunk| Ok(()));
+
+        let mut processor =
+            StreamProcessor::new(&client, &mut content_blocks, &mut usage, &callback);
+
+        // With trailing space (matches SSE framing observed in the logs).
+        processor
+            .process_line("data: [DONE]")
+            .expect("[DONE] sentinel must be ignored");
+        // Without a space after the colon (SSE spec allows the space to be omitted).
+        processor
+            .process_line("data:[DONE]")
+            .expect("[DONE] sentinel must be ignored even without a space");
+    }
+
+    #[test]
+    fn test_process_line_accepts_data_without_space() {
+        // Per the SSE spec the space after `data:` is optional. Ensure events
+        // framed as `data:{...}` (no space) are parsed just like `data: {...}`.
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+        let mut content_blocks = Vec::new();
+        let mut usage = Usage::zero();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let seen_cb = seen.clone();
+        let callback: StreamingCallback = Box::new(move |chunk| {
+            if let StreamingChunk::Text(text) = chunk {
+                seen_cb.lock().unwrap().push_str(text);
+            }
+            Ok(())
+        });
+
+        {
+            let mut processor =
+                StreamProcessor::new(&client, &mut content_blocks, &mut usage, &callback);
+            processor
+                .process_line(r#"data:{"type":"response.output_text.delta","delta":"hi"}"#)
+                .expect("event without a space after data: must parse");
+        }
+
+        assert_eq!(seen.lock().unwrap().as_str(), "hi");
     }
 
     #[test]
