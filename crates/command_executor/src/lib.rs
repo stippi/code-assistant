@@ -47,6 +47,13 @@ pub trait StreamingCallback: Send + Sync {
     fn tool_id(&self) -> Option<&str> {
         None
     }
+
+    /// Whether the command should keep running. A streaming executor polls
+    /// this between output windows; returning `false` makes it interrupt the
+    /// process (used by the UI's terminal-card stop button). Default `true`.
+    fn should_continue(&self) -> bool {
+        true
+    }
 }
 
 /// A prepared spawn for a long-lived interactive (PTY) session: the argv to

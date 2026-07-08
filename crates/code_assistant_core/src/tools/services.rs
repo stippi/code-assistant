@@ -10,6 +10,7 @@ use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
 use crate::session::wakeup::SessionWakeups;
 use crate::tools::core::ToolContext;
+use crate::tools::terminal_interrupts::TerminalInterrupts;
 use crate::types::PlanState;
 use crate::ui::UserInterface;
 use pty_session::PtySessionManager;
@@ -36,6 +37,10 @@ pub struct ToolServices {
     /// session mode and the `write_stdin` tool. Lives on the session
     /// instance so sessions survive across agent runs.
     pub pty_sessions: Option<Arc<PtySessionManager>>,
+    /// Optional registry of cancel flags for in-flight blocking
+    /// `execute_command` invocations, so the UI can interrupt a foreground
+    /// command by tool_id. Lives on the session instance.
+    pub terminal_interrupts: Option<Arc<TerminalInterrupts>>,
 }
 
 impl ToolServices {
@@ -47,6 +52,7 @@ impl ToolServices {
             sub_agent_runner: None,
             wakeups: None,
             pty_sessions: None,
+            terminal_interrupts: None,
         }
     }
 }

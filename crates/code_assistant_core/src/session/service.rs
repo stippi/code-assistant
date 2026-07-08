@@ -195,7 +195,30 @@ impl SessionService {
             let session = manager
                 .get_session(&session_id)
                 .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
+
             session.request_stop();
+            Ok(())
+        })
+        .await
+    }
+
+    /// Interrupt (Ctrl-C) the `execute_command` terminal identified by
+    /// `tool_id` in the given session — the UI's terminal-card stop button.
+    /// Tries the background PTY session first, then a foreground blocking
+    /// command. Returns `Ok(())` regardless of whether a match was found
+    /// (the process may have already finished).
+    pub async fn interrupt_terminal(&self, session_id: String, tool_id: String) -> Result<()> {
+        self.call(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            let session = manager
+                .get_session(&session_id)
+                .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
+            // Background (session-mode) command: signal its PtySession.
+            if session.pty_sessions.interrupt_by_tool_id(&tool_id) {
+                return Ok(());
+            }
+            // Foreground (blocking) command: set its cancel flag.
+            session.terminal_interrupts.request(&tool_id);
             Ok(())
         })
         .await

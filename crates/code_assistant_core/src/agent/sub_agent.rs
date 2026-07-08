@@ -231,6 +231,7 @@ impl DefaultSubAgentRunner {
             // Sub-agents get their own registry: dropping it when the
             // sub-agent finishes terminates any PTY sessions it left behind.
             pty_sessions: Some(Arc::new(pty_session::PtySessionManager::default())),
+            terminal_interrupts: Some(Arc::new(crate::tools::TerminalInterrupts::default())),
             hooks_factory: self.hooks_factory.clone(),
         };
 

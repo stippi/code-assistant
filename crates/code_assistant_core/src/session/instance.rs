@@ -190,6 +190,12 @@ pub struct SessionInstance {
     /// terminates all remaining sessions.
     pub pty_sessions: Arc<pty_session::PtySessionManager>,
 
+    /// Cancel flags for in-flight blocking (foreground) `execute_command`
+    /// invocations, so the UI's terminal-card stop button can interrupt a
+    /// foreground command by tool_id (background ones go through
+    /// `pty_sessions`).
+    pub terminal_interrupts: Arc<crate::tools::TerminalInterrupts>,
+
     /// Exclusive cross-process lock held while an agent is running.
     ///
     /// Acquired before spawning the agent task, released on task completion
@@ -242,6 +248,7 @@ impl SessionInstance {
             ),
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
+            terminal_interrupts: Arc::new(crate::tools::TerminalInterrupts::default()),
             agent_lock: None,
             last_ui_synced_path: initial_path,
             last_ui_synced_tool_count: initial_tool_count,
