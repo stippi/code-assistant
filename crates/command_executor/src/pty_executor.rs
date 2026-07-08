@@ -55,6 +55,31 @@ impl CommandExecutor for PtyCommandExecutor {
         let mut output = String::new();
 
         loop {
+            // A UI stop button (or other canceller) can ask us to abort
+            // between windows: interrupt the process, drain a final window,
+            // and return what we have so far.
+            if callback.is_some_and(|c| !c.should_continue()) {
+                session.interrupt();
+                let collected = session.collect_output(Duration::from_millis(500)).await;
+                if !collected.output.is_empty() {
+                    if let Some(callback) = callback {
+                        let _ = callback.on_output_chunk(&collected.output);
+                    }
+                    output.push_str(&collected.output);
+                }
+                if let PtySessionStatus::Exited(code) = collected.status
+                    && let Some(callback) = callback
+                {
+                    let _ = callback.on_terminal_exit(code);
+                }
+                // Dropping `session` on return kills any process that
+                // ignored the interrupt.
+                return Ok(CommandOutput {
+                    success: false,
+                    output,
+                });
+            }
+
             let now = tokio::time::Instant::now();
             let window = (deadline - now).min(STREAM_WINDOW);
 

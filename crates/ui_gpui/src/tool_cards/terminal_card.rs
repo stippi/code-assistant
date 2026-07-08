@@ -398,37 +398,40 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         }
 
         // Stop button (only while running)
-        if let Some(ref terminal) = live_terminal {
-            if is_running {
-                let term_for_stop = terminal.clone();
-                header_right = header_right.child(
-                    div()
-                        .id(SharedString::from(format!("stop-{}", tool.id)))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(20.0))
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.2)))
-                        .child({
-                            let stop_icon = file_icons::get().get_type_icon(file_icons::STOP);
-                            file_icons::render_icon(
-                                &stop_icon,
-                                12.0,
-                                gpui::hsla(0.0, 0.7, 0.55, 1.0),
-                                "■",
-                            )
-                        })
-                        .on_click(move |_event, _window, cx| {
-                            cx.stop_propagation();
-                            // Send Ctrl-C (ETX) to the PTY to terminate the running process
-                            term_for_stop.update(cx, |terminal, _cx| {
-                                terminal.write_to_pty(&b"\x03"[..]);
-                            });
-                        }),
-                );
-            }
+        if live_terminal.is_some() && is_running {
+            let tool_id_for_stop = tool.id.clone();
+            header_right = header_right.child(
+                div()
+                    .id(SharedString::from(format!("stop-{}", tool.id)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(20.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.2)))
+                    .child({
+                        let stop_icon = file_icons::get().get_type_icon(file_icons::STOP);
+                        file_icons::render_icon(
+                            &stop_icon,
+                            12.0,
+                            gpui::hsla(0.0, 0.7, 0.55, 1.0),
+                            "■",
+                        )
+                    })
+                    .on_click(move |_event, _window, cx| {
+                        cx.stop_propagation();
+                        // Route the interrupt to the backend process: the
+                        // pool terminal is display-only (write_to_pty is a
+                        // no-op), so the real PTY (foreground or background)
+                        // is reached via the session service by tool_id.
+                        if let Some(gpui) = cx.try_global::<Gpui>().cloned() {
+                            if let Some(session_id) = gpui.get_current_session_id() {
+                                gpui.cmd_interrupt_terminal(session_id, tool_id_for_stop.clone());
+                            }
+                        }
+                    }),
+            );
         }
 
         // Copy button — visible on header hover

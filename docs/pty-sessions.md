@@ -90,3 +90,11 @@ round-trip, a recurring source of stalls, is gone):
   `UserInterface::stream_terminal_exit` → `DisplayFragment::ToolTerminalExited`
   (published directly, bypassing the in-flight buffer like the raw output),
   which GPUI turns into `Terminal::set_exit_status`.
+- The terminal card's **stop button** interrupts the real backend process
+  (the pool terminal is display-only, so writing to it is a no-op). The
+  click routes through `SessionService::interrupt_terminal(session_id,
+  tool_id)`, which sends Ctrl-C to a background `PtySession` via
+  `PtySessionManager::interrupt_by_tool_id`, or — for a classic blocking
+  command whose PTY lives in the executor — sets a per-tool cancel flag
+  (`TerminalInterrupts`, on the session instance) that the executor polls
+  via `StreamingCallback::should_continue` and then interrupts.

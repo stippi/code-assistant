@@ -43,6 +43,11 @@ pub struct AgentComponents {
     /// instance so interactive sessions survive across agent runs.
     pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
 
+    /// Optional registry of cancel flags for blocking `execute_command`
+    /// invocations, shared with the owning session instance so the UI can
+    /// interrupt a foreground command by tool_id.
+    pub terminal_interrupts: Option<Arc<crate::tools::TerminalInterrupts>>,
+
     /// Hook set for this agent; `None` uses code-assistant's default hooks.
     /// Embedders install a factory to customize e.g. the system
     /// prompt while reusing the rest of the runtime.
@@ -68,9 +73,11 @@ impl Agent {
             permission_handler,
             permissions,
             tool_registry,
+
             sub_agent_runner,
             wakeups,
             pty_sessions,
+            terminal_interrupts,
             hooks_factory,
         } = components;
 
@@ -81,9 +88,11 @@ impl Agent {
         let services_provider = Arc::new(crate::plugins::CodeAssistantToolServices {
             project_manager: project_manager.clone(),
             ui,
+
             sub_agent_runner,
             wakeups,
             pty_sessions,
+            terminal_interrupts,
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {

@@ -121,6 +121,8 @@ impl ToolResult for ExecuteCommandOutput {
 struct ToolOutputStreamer<'a> {
     ui: &'a dyn UserInterface,
     tool_id: String,
+    /// Set by the UI's terminal-card stop button to interrupt this command.
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl<'a> StreamingCallback for ToolOutputStreamer<'a> {
@@ -165,6 +167,13 @@ impl<'a> StreamingCallback for ToolOutputStreamer<'a> {
 
     fn tool_id(&self) -> Option<&str> {
         Some(&self.tool_id)
+    }
+
+    fn should_continue(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .map(|flag| !flag.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(true)
     }
 }
 
@@ -312,6 +321,17 @@ impl Tool for ExecuteCommandTool {
                 .await;
         }
 
+        // A cancel flag lets the UI's stop button interrupt this foreground
+        // command; registered under the tool_id, polled by the callback,
+        // removed once the command returns.
+        let interrupts = context
+            .extension::<crate::tools::ToolServices>()
+            .and_then(|services| services.terminal_interrupts.clone());
+        let cancel = match (&interrupts, &context.tool_id) {
+            (Some(interrupts), Some(tool_id)) => Some(interrupts.register(tool_id)),
+            _ => None,
+        };
+
         // Execute the command using streaming
         let result = match (context.ui(), &context.tool_id) {
             (Some(ui), Some(tool_id)) => {
@@ -319,6 +339,7 @@ impl Tool for ExecuteCommandTool {
                 let callback = ToolOutputStreamer {
                     ui,
                     tool_id: tool_id.clone(),
+                    cancel: cancel.clone(),
                 };
 
                 context
@@ -329,7 +350,7 @@ impl Tool for ExecuteCommandTool {
                         Some(&callback),
                         Some(&sandbox_request),
                     )
-                    .await?
+                    .await
             }
             _ => {
                 // No UI available, use regular execution
@@ -341,9 +362,16 @@ impl Tool for ExecuteCommandTool {
                         None,
                         Some(&sandbox_request),
                     )
-                    .await?
+                    .await
             }
         };
+
+        // Always stop tracking the cancel flag, whether the command
+        // succeeded, failed, or was interrupted.
+        if let (Some(interrupts), Some(tool_id)) = (&interrupts, &context.tool_id) {
+            interrupts.unregister(tool_id);
+        }
+        let result = result?;
 
         Ok(ExecuteCommandOutput {
             project: input.project.clone(),
@@ -453,7 +481,11 @@ impl ExecuteCommandTool {
 
         let output = match collected.status {
             pty_session::PtySessionStatus::Running => {
-                let session_id = manager.register(session, &input.command_line);
+                let session_id = manager.register_with_tool_id(
+                    session,
+                    &input.command_line,
+                    context.tool_id.clone(),
+                );
                 ExecuteCommandOutput {
                     project: input.project.clone(),
                     command_line: input.command_line.clone(),

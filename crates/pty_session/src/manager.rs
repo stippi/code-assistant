@@ -13,6 +13,10 @@ struct PtyEntry {
     session: Arc<PtySession>,
     command_line: String,
     last_used: Instant,
+    /// The `execute_command` tool invocation that owns this session, if any.
+    /// Lets a UI interrupt the session's process by tool_id (the card's key)
+    /// without knowing the numeric session id.
+    tool_id: Option<String>,
 }
 
 /// Info about a tracked session, for listing/UI purposes.
@@ -46,6 +50,18 @@ impl PtySessionManager {
     /// Ids are random (not sequential) so an id from a restored transcript
     /// never silently aliases a fresh session after a restart.
     pub fn register(&self, session: Arc<PtySession>, command_line: impl Into<String>) -> u32 {
+        self.register_with_tool_id(session, command_line, None)
+    }
+
+    /// Like [`register`](Self::register), but records the owning
+    /// `execute_command` tool_id so the session can later be interrupted by
+    /// that id (see [`interrupt_by_tool_id`](Self::interrupt_by_tool_id)).
+    pub fn register_with_tool_id(
+        &self,
+        session: Arc<PtySession>,
+        command_line: impl Into<String>,
+        tool_id: Option<String>,
+    ) -> u32 {
         let mut entries = self.entries.lock().unwrap();
 
         while entries.len() >= self.max_sessions {
@@ -69,9 +85,26 @@ impl PtySessionManager {
                 session,
                 command_line: command_line.into(),
                 last_used: Instant::now(),
+                tool_id,
             },
         );
         id
+    }
+
+    /// Interrupt (Ctrl-C / SIGINT) the still-running session owned by the
+    /// given tool_id. Returns `true` if a matching running session was found
+    /// and signalled. Used by the UI's terminal-card stop button.
+    pub fn interrupt_by_tool_id(&self, tool_id: &str) -> bool {
+        let entries = self.entries.lock().unwrap();
+        for entry in entries.values() {
+            if entry.tool_id.as_deref() == Some(tool_id)
+                && entry.session.status() == PtySessionStatus::Running
+            {
+                entry.session.interrupt();
+                return true;
+            }
+        }
+        false
     }
 
     /// Prefer evicting an already-exited session; fall back to the least
@@ -195,6 +228,31 @@ mod tests {
         );
         assert!(manager.get(live_id).is_some());
         assert!(manager.get(third_id).is_some());
+        manager.terminate_all();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrupt_by_tool_id_stops_the_matching_session() {
+        let manager = PtySessionManager::new(4);
+        let mut config = PtySpawnConfig::shell_command("sleep 30");
+        config.tty = true;
+        let session = Arc::new(PtySession::spawn(config).unwrap());
+        let id = manager.register_with_tool_id(session.clone(), "sleep 30", Some("tool-42".into()));
+
+        // Unknown tool_id: nothing to interrupt.
+        assert!(!manager.interrupt_by_tool_id("nope"));
+
+        // Matching tool_id: the session is signalled and exits.
+        assert!(manager.interrupt_by_tool_id("tool-42"));
+        let out = manager
+            .get(id)
+            .unwrap()
+            .collect_output(Duration::from_secs(10))
+            .await;
+        assert!(matches!(out.status, PtySessionStatus::Exited(_)));
+
+        // Once exited, interrupt_by_tool_id reports no running match.
+        assert!(!manager.interrupt_by_tool_id("tool-42"));
         manager.terminate_all();
     }
 
