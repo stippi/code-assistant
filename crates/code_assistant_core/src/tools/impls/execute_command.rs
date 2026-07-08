@@ -458,6 +458,17 @@ impl ExecuteCommandTool {
 
         let session = std::sync::Arc::new(pty_session::PtySession::spawn(config)?);
 
+        // Announce the terminal before any output exists, so a UI can show
+        // the live terminal card (with its stop button) even while the
+        // process stays silent. Same signal the blocking PTY executor sends
+        // via StreamingCallback::on_terminal_attached.
+        if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
+            let _ = ui.display_fragment(&DisplayFragment::ToolTerminal {
+                tool_id: tool_id.clone(),
+                terminal_id: "backend-pty".to_string(),
+            });
+        }
+
         let yield_time = std::time::Duration::from_millis(
             input
                 .yield_time_ms

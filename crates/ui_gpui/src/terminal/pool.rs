@@ -182,6 +182,51 @@ fn display_terminal_order() -> &'static Mutex<Vec<String>> {
     DISPLAY_TERMINAL_ORDER.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Get the display-only terminal for a tool card, creating (and pooling)
+/// it if it doesn't exist yet. Called on the terminal-attached signal —
+/// which arrives before any output — and by [`feed_display_terminal`], so
+/// a card has a live terminal (with running state and stop button) even
+/// for commands that stay silent.
+/// Called from the UI event loop; must run on the GPUI foreground thread.
+pub fn ensure_display_terminal(
+    session_id: &str,
+    tool_id: &str,
+    cx: &mut gpui::AsyncApp,
+) -> Option<Entity<Terminal>> {
+    let existing = TerminalPool::global().lock().ok().and_then(|pool| {
+        pool.get_terminal_by_tool_id_any_session(tool_id)
+            .map(|entry| entry.terminal.clone())
+    });
+    if let Some(terminal) = existing {
+        return Some(terminal);
+    }
+
+    let created = cx.update(|cx| {
+        let builder = terminal::TerminalBuilder::new_display_only(Some(10_000));
+        cx.new(|cx| builder.subscribe(cx))
+    });
+    let evict = {
+        let mut pool = TerminalPool::global().lock().ok()?;
+        let terminal_id = pool.insert(created.clone(), String::new());
+        pool.register_tool_mapping(
+            session_id.to_string(),
+            tool_id.to_string(),
+            terminal_id.clone(),
+        );
+        let mut order = display_terminal_order().lock().unwrap();
+        order.push(terminal_id);
+        if order.len() > MAX_DISPLAY_TERMINALS {
+            Some(order.remove(0))
+        } else {
+            None
+        }
+    };
+    if let Some(victim_id) = evict {
+        evict_display_terminal(&victim_id, cx);
+    }
+    Some(created)
+}
+
 /// Feed backend-streamed raw terminal output (ANSI escapes included) into
 /// the display-only terminal of a tool card, creating it on first use.
 /// Called from the UI event loop; must run on the GPUI foreground thread.
@@ -191,41 +236,8 @@ pub fn feed_display_terminal(
     bytes: &[u8],
     cx: &mut gpui::AsyncApp,
 ) {
-    let existing = TerminalPool::global().lock().ok().and_then(|pool| {
-        pool.get_terminal_by_tool_id_any_session(tool_id)
-            .map(|entry| entry.terminal.clone())
-    });
-
-    let terminal = match existing {
-        Some(terminal) => terminal,
-        None => {
-            let created = cx.update(|cx| {
-                let builder = terminal::TerminalBuilder::new_display_only(Some(10_000));
-                cx.new(|cx| builder.subscribe(cx))
-            });
-            let evict = {
-                let Ok(mut pool) = TerminalPool::global().lock() else {
-                    return;
-                };
-                let terminal_id = pool.insert(created.clone(), String::new());
-                pool.register_tool_mapping(
-                    session_id.to_string(),
-                    tool_id.to_string(),
-                    terminal_id.clone(),
-                );
-                let mut order = display_terminal_order().lock().unwrap();
-                order.push(terminal_id);
-                if order.len() > MAX_DISPLAY_TERMINALS {
-                    Some(order.remove(0))
-                } else {
-                    None
-                }
-            };
-            if let Some(victim_id) = evict {
-                evict_display_terminal(&victim_id, cx);
-            }
-            created
-        }
+    let Some(terminal) = ensure_display_terminal(session_id, tool_id, cx) else {
+        return;
     };
 
     let bytes = bytes.to_vec();

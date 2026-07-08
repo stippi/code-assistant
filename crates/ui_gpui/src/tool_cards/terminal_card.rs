@@ -187,6 +187,10 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                         &command_line_param,
                         working_dir_param.as_deref(),
                         status_text,
+                        // Fallback: even without a display terminal (e.g.
+                        // the attach signal was lost to stream lag), a
+                        // locally running command must stay cancellable.
+                        !is_external,
                         theme,
                     )
                     .into_any_element(),
@@ -546,10 +550,11 @@ impl TerminalCardRenderer {
     /// (e.g. during the brief period before the PTY is created).
     fn render_skeleton(
         &self,
-        _tool_id: &str,
+        tool_id: &str,
         command: &str,
         working_dir: Option<&str>,
         status_text: &str,
+        show_stop: bool,
         theme: &gpui_component::theme::Theme,
     ) -> gpui::Div {
         let is_dark = is_dark_theme(theme);
@@ -607,9 +612,56 @@ impl TerminalCardRenderer {
                     )
                     .child(
                         div()
-                            .text_size(rems(0.6875))
-                            .text_color(theme.muted_foreground)
-                            .child(status_text.to_string()),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(rems(0.6875))
+                                    .text_color(theme.muted_foreground)
+                                    .child(status_text.to_string()),
+                            )
+                            .when(show_stop, |el| {
+                                let tool_id_for_stop = tool_id.to_string();
+                                el.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "skeleton-stop-{}",
+                                            tool_id
+                                        )))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(20.0))
+                                        .rounded(px(4.0))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.2)))
+                                        .child({
+                                            let stop_icon =
+                                                file_icons::get().get_type_icon(file_icons::STOP);
+                                            file_icons::render_icon(
+                                                &stop_icon,
+                                                12.0,
+                                                gpui::hsla(0.0, 0.7, 0.55, 1.0),
+                                                "■",
+                                            )
+                                        })
+                                        .on_click(move |_event, _window, cx| {
+                                            cx.stop_propagation();
+                                            if let Some(gpui) = cx.try_global::<Gpui>().cloned() {
+                                                if let Some(session_id) =
+                                                    gpui.get_current_session_id()
+                                                {
+                                                    gpui.cmd_interrupt_terminal(
+                                                        session_id,
+                                                        tool_id_for_stop.clone(),
+                                                    );
+                                                }
+                                            }
+                                        }),
+                                )
+                            }),
                     ),
             )
             // Command line

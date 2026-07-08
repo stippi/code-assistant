@@ -805,6 +805,7 @@ impl UserInterface for ACPUserUI {
             UiEvent::EndTool { .. }
             | UiEvent::AddImage { .. }
             | UiEvent::AppendToolOutput { .. }
+            | UiEvent::AttachToolTerminal { .. }
             | UiEvent::AppendToolTerminalOutput { .. }
             | UiEvent::SetToolTerminalExited { .. }
             | UiEvent::StartReasoningSummaryItem

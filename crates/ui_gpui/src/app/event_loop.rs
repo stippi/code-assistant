@@ -665,6 +665,21 @@ impl Gpui {
                 self.auto_scroll_if_following(cx);
             }
 
+            UiEvent::AttachToolTerminal { tool_id } => {
+                // A backend terminal exists for this tool — create the
+                // card's display terminal even before any output arrives,
+                // so silent commands (e.g. `sleep`) get a running card
+                // with a working stop button instead of a skeleton.
+                let session_id = self
+                    .current_session_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                crate::terminal::pool::ensure_display_terminal(&session_id, &tool_id, cx);
+                self.auto_scroll_if_following(cx);
+            }
+
             UiEvent::AppendToolTerminalOutput { tool_id, bytes } => {
                 // Raw ANSI bytes stream into a display-only terminal that
                 // the tool card picks up from the pool — live colored
@@ -1168,10 +1183,18 @@ impl Gpui {
                     crate::terminal::pool::mark_display_terminal_exited(&tool_id, exit_code, cx);
                 }
 
-                DisplayFragment::ToolTerminal { .. } => {
-                    // The GPUI terminal executor registers the tool→terminal
-                    // mapping directly in the TerminalPool, so no action needed
-                    // during fragment replay.
+                DisplayFragment::ToolTerminal { tool_id, .. } => {
+                    // Replay of the terminal-attached signal (e.g.
+                    // reconnecting while a command is still running):
+                    // make sure the card has its display terminal even if
+                    // the command hasn't produced output.
+                    let session_id = self
+                        .current_session_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_default();
+                    crate::terminal::pool::ensure_display_terminal(&session_id, &tool_id, cx);
                 }
 
                 DisplayFragment::ReasoningComplete => {

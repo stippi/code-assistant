@@ -173,6 +173,12 @@ pub enum UiEvent {
     AddImage { media_type: String, data: String },
     /// Append streaming tool output
     AppendToolOutput { tool_id: String, chunk: String },
+    /// A backend terminal was attached for a tool (`execute_command`),
+    /// possibly before any output exists. Frontends with a terminal
+    /// emulator create the tool card's display terminal on this signal so
+    /// the card shows a running terminal (and its stop button) even for
+    /// commands that stay silent.
+    AttachToolTerminal { tool_id: String },
     /// Append raw terminal output (ANSI escapes included) for frontends
     /// that render it in a terminal emulator
     AppendToolTerminalOutput { tool_id: String, bytes: Vec<u8> },

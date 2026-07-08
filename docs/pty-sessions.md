@@ -79,14 +79,36 @@ round-trip, a recurring source of stalls, is gone):
 - Classic blocking commands in GPUI run through
   `command_executor::PtyCommandExecutor` (backend PTY, 5-minute
   timeout), streaming the same way via
-  `StreamingCallback::on_terminal_output_chunk`.
+  `StreamingCallback::on_terminal_output_chunk`. Since blocking commands
+  can never receive input, pagers are disabled for them
+  (`PAGER=cat`/`GIT_PAGER=cat`) so PTY-detecting tools like git don't
+  hang waiting for a keypress; interactive sessions keep pagers enabled.
+- **Sandboxed blocking commands are no special case**: when restrictions
+  apply, `SandboxedCommandExecutor::execute_streaming` prepares its
+  seatbelt spec via `prepare_pty_spawn` and runs it through the same
+  shared `run_pty_streaming` path — identical streaming, terminal
+  lifecycle, and cancellation behavior as unsandboxed commands. (Only the
+  non-streaming `execute`, used by format-on-save, keeps a plain seatbelt
+  subprocess.)
+- The display terminal for a card is created **eagerly at spawn**, not on
+  first output: both the blocking runner (via
+  `StreamingCallback::on_terminal_attached`) and session mode emit a
+  `DisplayFragment::ToolTerminal` right after spawning, which GPUI turns
+  into `UiEvent::AttachToolTerminal` → `pool::ensure_display_terminal`.
+  A silent command (e.g. `sleep 20`) therefore shows a running terminal
+  card — with elapsed time and a working stop button — instead of a
+  "Starting…" skeleton. As a fallback (e.g. the attach signal was lost to
+  stream lag), the skeleton itself renders a stop button while the tool
+  is running locally.
 - Process exit is propagated to the display-only terminal so the card can
   stop the running spinner/stop button (the display terminal has no PTY
   event loop, so it never learns of the exit on its own). Both transports
   signal it: session mode via `TerminalOutputSink::on_exit` (driven from
   `PtySession`'s exit waiter, so even a background process the agent never
   polls again updates its card), classic blocking via
-  `StreamingCallback::on_terminal_exit`. Both funnel through
+  `StreamingCallback::on_terminal_exit` — which the blocking runner fires
+  on **every** path (normal exit, cancellation, timeout) so a card never
+  keeps spinning. Both funnel through
   `UserInterface::stream_terminal_exit` → `DisplayFragment::ToolTerminalExited`
   (published directly, bypassing the in-flight buffer like the raw output),
   which GPUI turns into `Terminal::set_exit_status`.
