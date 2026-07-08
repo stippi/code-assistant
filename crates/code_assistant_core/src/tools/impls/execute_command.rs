@@ -158,6 +158,11 @@ impl<'a> StreamingCallback for ToolOutputStreamer<'a> {
         Ok(())
     }
 
+    fn on_terminal_exit(&self, exit_code: Option<i32>) -> Result<()> {
+        self.ui.stream_terminal_exit(&self.tool_id, exit_code);
+        Ok(())
+    }
+
     fn tool_id(&self) -> Option<&str> {
         Some(&self.tool_id)
     }
@@ -371,6 +376,10 @@ struct UiTerminalSink {
 impl pty_session::TerminalOutputSink for UiTerminalSink {
     fn emit(&self, bytes: &[u8]) {
         self.ui.stream_terminal_output(&self.tool_id, bytes);
+    }
+
+    fn on_exit(&self, exit_code: Option<i32>) {
+        self.ui.stream_terminal_exit(&self.tool_id, exit_code);
     }
 }
 

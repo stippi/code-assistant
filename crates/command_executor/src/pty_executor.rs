@@ -75,6 +75,9 @@ impl CommandExecutor for PtyCommandExecutor {
 
             match collected.status {
                 PtySessionStatus::Exited(code) => {
+                    if let Some(callback) = callback {
+                        let _ = callback.on_terminal_exit(code);
+                    }
                     return Ok(CommandOutput {
                         success: code == Some(0),
                         output,

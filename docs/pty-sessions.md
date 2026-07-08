@@ -80,3 +80,13 @@ round-trip, a recurring source of stalls, is gone):
   `command_executor::PtyCommandExecutor` (backend PTY, 5-minute
   timeout), streaming the same way via
   `StreamingCallback::on_terminal_output_chunk`.
+- Process exit is propagated to the display-only terminal so the card can
+  stop the running spinner/stop button (the display terminal has no PTY
+  event loop, so it never learns of the exit on its own). Both transports
+  signal it: session mode via `TerminalOutputSink::on_exit` (driven from
+  `PtySession`'s exit waiter, so even a background process the agent never
+  polls again updates its card), classic blocking via
+  `StreamingCallback::on_terminal_exit`. Both funnel through
+  `UserInterface::stream_terminal_exit` → `DisplayFragment::ToolTerminalExited`
+  (published directly, bypassing the in-flight buffer like the raw output),
+  which GPUI turns into `Terminal::set_exit_status`.

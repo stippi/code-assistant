@@ -57,6 +57,11 @@ pub enum DisplayFragment {
     /// with a terminal emulator (GPUI feeds these into a display-only
     /// terminal for live colored output); text frontends ignore it.
     ToolTerminalOutput { tool_id: String, bytes: Vec<u8> },
+    /// The process backing a tool's terminal exited.
+    ToolTerminalExited {
+        tool_id: String,
+        exit_code: Option<i32>,
+    },
     /// Tool attached a terminal on the client side
     ToolTerminal {
         tool_id: String,

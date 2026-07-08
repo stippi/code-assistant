@@ -806,6 +806,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::AddImage { .. }
             | UiEvent::AppendToolOutput { .. }
             | UiEvent::AppendToolTerminalOutput { .. }
+            | UiEvent::SetToolTerminalExited { .. }
             | UiEvent::StartReasoningSummaryItem
             | UiEvent::AppendReasoningSummaryDelta { .. }
             | UiEvent::CompleteReasoning => {
@@ -1090,9 +1091,15 @@ impl UserInterface for ACPUserUI {
 
                 self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
             }
+
             DisplayFragment::ToolTerminalOutput { .. } => {
                 // Raw ANSI bytes are for frontends with a terminal
                 // emulator; ACP clients get the plain ToolOutput chunks.
+            }
+            DisplayFragment::ToolTerminalExited { .. } => {
+                // Terminal exit is for frontends with a display-only
+                // terminal card; ACP clients track completion via ToolCall
+                // status updates.
             }
             DisplayFragment::ToolTerminal {
                 tool_id,

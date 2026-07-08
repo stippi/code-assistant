@@ -234,6 +234,26 @@ pub fn feed_display_terminal(
     });
 }
 
+/// Tell the display-only terminal for a tool that its process exited, so
+/// its card stops rendering the running spinner/stop button. No-op if no
+/// display terminal exists for the tool (e.g. it was already evicted, or
+/// the command produced no output and never created one).
+pub fn mark_display_terminal_exited(
+    tool_id: &str,
+    exit_code: Option<i32>,
+    cx: &mut gpui::AsyncApp,
+) {
+    let terminal = TerminalPool::global().lock().ok().and_then(|pool| {
+        pool.get_terminal_by_tool_id_any_session(tool_id)
+            .map(|entry| entry.terminal.clone())
+    });
+    if let Some(terminal) = terminal {
+        cx.update_entity(&terminal, |terminal, cx| {
+            terminal.set_exit_status(exit_code, cx);
+        });
+    }
+}
+
 /// Snapshot a display-only terminal into the styled-output cache and drop
 /// it, so its (old) tool card falls back to static colored rendering.
 fn evict_display_terminal(terminal_id: &str, cx: &mut gpui::AsyncApp) {

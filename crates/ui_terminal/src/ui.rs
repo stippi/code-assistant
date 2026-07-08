@@ -134,6 +134,7 @@ impl TerminalUI {
                         DisplayFragment::ToolEnd { .. }
                         | DisplayFragment::ToolTerminal { .. }
                         | DisplayFragment::ToolTerminalOutput { .. }
+                        | DisplayFragment::ToolTerminalExited { .. }
                         | DisplayFragment::ReasoningSummaryStart
                         | DisplayFragment::ReasoningComplete => {}
                     }
@@ -688,6 +689,10 @@ impl UserInterface for TerminalUI {
             DisplayFragment::ToolTerminalOutput { .. } => {
                 // Raw ANSI bytes are for frontends with a terminal
                 // emulator; the TUI renders the plain ToolOutput chunks.
+            }
+            DisplayFragment::ToolTerminalExited { .. } => {
+                // Terminal exit is for frontends with a display-only
+                // terminal card; the TUI has no live terminal view.
             }
             DisplayFragment::CompactionDivider { summary } => {
                 self.push_event(UiEvent::DisplayCompactionSummary {

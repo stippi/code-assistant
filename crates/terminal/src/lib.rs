@@ -334,6 +334,20 @@ impl Terminal {
         self.exit_status.is_some()
     }
 
+    /// Mark the child process as exited. Terminals backed by a real PTY
+    /// learn this from `AlacTermEvent::ChildExit`; the display-only
+    /// terminals used for backend-streamed tool output have no event loop,
+    /// so the backend tells them explicitly when the process ends. No-op if
+    /// the exit status was already set.
+    pub fn set_exit_status(&mut self, code: Option<i32>, cx: &mut Context<Self>) {
+        if self.exit_status.is_some() {
+            return;
+        }
+        self.exit_status = Some(code);
+        cx.emit(Event::ChildExit(code));
+        cx.notify();
+    }
+
     /// Get the full terminal text content as a string.
     pub fn get_content_text(&self) -> String {
         let term = self.term.lock_unfair();

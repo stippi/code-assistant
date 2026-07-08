@@ -948,6 +948,7 @@ impl CaretStreamProcessor {
                     }
                     DisplayFragment::ToolOutput { .. }
                     | DisplayFragment::ToolTerminalOutput { .. }
+                    | DisplayFragment::ToolTerminalExited { .. }
                     | DisplayFragment::ToolTerminal { .. } => {
                         // Tool output - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;

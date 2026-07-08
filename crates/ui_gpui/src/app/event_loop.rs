@@ -679,6 +679,12 @@ impl Gpui {
                 self.auto_scroll_if_following(cx);
             }
 
+            UiEvent::SetToolTerminalExited { tool_id, exit_code } => {
+                // Mark the display-only terminal finished so the card stops
+                // showing the running spinner and stop button.
+                crate::terminal::pool::mark_display_terminal_exited(&tool_id, exit_code, cx);
+            }
+
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
                 // Store the error message in state
@@ -1154,7 +1160,12 @@ impl Gpui {
                         .unwrap()
                         .clone()
                         .unwrap_or_default();
+
                     crate::terminal::pool::feed_display_terminal(&session_id, &tool_id, &bytes, cx);
+                }
+
+                DisplayFragment::ToolTerminalExited { tool_id, exit_code } => {
+                    crate::terminal::pool::mark_display_terminal_exited(&tool_id, exit_code, cx);
                 }
 
                 DisplayFragment::ToolTerminal { .. } => {

@@ -60,6 +60,12 @@ pub struct CollectedOutput {
 /// block (a UI sink should hand the bytes to a channel/broadcast).
 pub trait TerminalOutputSink: Send + Sync {
     fn emit(&self, bytes: &[u8]);
+
+    /// Called once when the process exits, with its exit code (`None` when
+    /// no code is known, e.g. killed by a signal). Lets a UI sink mark its
+    /// terminal card finished even for a background session the agent never
+    /// polls again. Default no-op for sinks that only care about output.
+    fn on_exit(&self, _exit_code: Option<i32>) {}
 }
 
 /// Strip ANSI escape sequences and normalize line endings for LLM/text
@@ -296,10 +302,15 @@ impl PtySession {
             }
         });
 
-        // Waiter: reports the exit code.
+        // Waiter: reports the exit code (and tells the output sink, so a
+        // live terminal card can mark itself finished).
+        let waiter_sink = config.output_sink.clone();
         std::thread::spawn(move || {
             let code = child.wait().ok().map(|status| status.exit_code() as i32);
             let _ = exit_tx.send(Some(code));
+            if let Some(sink) = &waiter_sink {
+                sink.on_exit(code);
+            }
         });
 
         Ok(Self {
@@ -362,9 +373,13 @@ impl PtySession {
             );
         }
 
+        let waiter_sink = config.output_sink.clone();
         tokio::spawn(async move {
             let code = child.wait().await.ok().and_then(|status| status.code());
             let _ = exit_tx.send(Some(code));
+            if let Some(sink) = &waiter_sink {
+                sink.on_exit(code);
+            }
         });
 
         Ok(Self {

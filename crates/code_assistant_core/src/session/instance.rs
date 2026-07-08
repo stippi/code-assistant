@@ -1009,6 +1009,7 @@ impl UserInterface for SessionEventPublisher {
             | DisplayFragment::CompactionDivider { .. } => true,
             DisplayFragment::ToolEnd { .. }
             | DisplayFragment::ToolTerminal { .. }
+            | DisplayFragment::ToolTerminalExited { .. }
             | DisplayFragment::ReasoningComplete
             | DisplayFragment::HiddenToolCompleted => false,
         };
@@ -1032,6 +1033,20 @@ impl UserInterface for SessionEventPublisher {
                 DisplayFragment::ToolTerminalOutput {
                     tool_id: tool_id.to_string(),
                     bytes: bytes.to_vec(),
+                },
+            ),
+        );
+    }
+
+    fn stream_terminal_exit(&self, tool_id: &str, exit_code: Option<i32>) {
+        // Direct publish, bypassing the in-flight fragment buffer — same
+        // rationale as stream_terminal_output above.
+        self.events.publish(
+            Some(self.session_id.clone()),
+            crate::session::event_stream::EventPayload::Fragment(
+                DisplayFragment::ToolTerminalExited {
+                    tool_id: tool_id.to_string(),
+                    exit_code,
                 },
             ),
         );

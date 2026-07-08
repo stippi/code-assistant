@@ -36,6 +36,13 @@ pub trait StreamingCallback: Send + Sync {
         Ok(())
     }
 
+    /// The process exited (`exit_code` is `None` when no code is known).
+    /// Lets a terminal-emulator frontend mark its display-only terminal
+    /// finished; plain-text consumers can ignore it.
+    fn on_terminal_exit(&self, _exit_code: Option<i32>) -> Result<()> {
+        Ok(())
+    }
+
     /// Returns the tool invocation ID associated with this callback, if any.
     fn tool_id(&self) -> Option<&str> {
         None

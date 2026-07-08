@@ -256,6 +256,12 @@ impl UserInterface for MockUI {
                     .unwrap()
                     .push(format!("[terminal-bytes:{}]", bytes.len()));
             }
+            crate::ui::DisplayFragment::ToolTerminalExited { exit_code, .. } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("[terminal-exit:{exit_code:?}]"));
+            }
             crate::ui::DisplayFragment::ToolTerminal { terminal_id, .. } => {
                 self.streaming
                     .lock()

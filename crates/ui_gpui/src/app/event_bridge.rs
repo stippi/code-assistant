@@ -239,6 +239,12 @@ impl Gpui {
                     bytes: bytes.clone(),
                 });
             }
+            DisplayFragment::ToolTerminalExited { tool_id, exit_code } => {
+                self.push_event(UiEvent::SetToolTerminalExited {
+                    tool_id: tool_id.clone(),
+                    exit_code: *exit_code,
+                });
+            }
             DisplayFragment::ToolTerminal { .. } => {
                 // The GPUI terminal executor registers the tool→terminal
                 // mapping directly in the TerminalPool, so no event needed.

@@ -196,6 +196,9 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                     bytes.len()
                 )
             }
+            DisplayFragment::ToolTerminalExited { tool_id, exit_code } => {
+                println!("  [{i}] ToolTerminalExited(tool_id: {tool_id}, exit_code: {exit_code:?})")
+            }
             DisplayFragment::ToolTerminal {
                 tool_id,
                 terminal_id,

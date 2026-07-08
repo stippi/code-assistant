@@ -176,6 +176,12 @@ pub enum UiEvent {
     /// Append raw terminal output (ANSI escapes included) for frontends
     /// that render it in a terminal emulator
     AppendToolTerminalOutput { tool_id: String, bytes: Vec<u8> },
+    /// The process backing a tool's terminal exited; mark the display-only
+    /// terminal finished so the card stops showing the running spinner.
+    SetToolTerminalExited {
+        tool_id: String,
+        exit_code: Option<i32>,
+    },
     /// Update the session plan display
     UpdatePlan { plan: PlanState },
     /// Set all messages at once (for session loading, clears existing)
