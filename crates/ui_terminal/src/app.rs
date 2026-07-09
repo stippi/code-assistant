@@ -1021,15 +1021,20 @@ impl TerminalTuiApp {
             ..SessionConfig::default()
         };
 
-        // Create session manager
+        // Create session manager. The registry provider rebuilds the tool
+        // set from the current configuration at the start of every agent run,
+        // so settings edits (e.g. adding an MCP server) apply on the next run
+        // without restarting.
         let events = code_assistant_core::session::event_stream::EventStream::new();
-        let session_manager = SessionManager::new(
+        let registry_provider = code_assistant_core::tools::ConfigToolRegistry::new();
+        let mut session_manager = SessionManager::new(
             session_persistence,
             session_config_template,
             config.model.clone(),
-            code_assistant_core::tools::default_registry_with_mcp().await,
+            registry_provider.current().await,
             events.clone(),
         );
+        session_manager.set_tool_registry_provider(registry_provider.as_provider());
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
         // Create terminal UI and wrap as UserInterface

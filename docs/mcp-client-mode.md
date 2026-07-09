@@ -125,8 +125,12 @@ What landed (step 2 of the order above, plus code-assistant UI):
   (`Cow`) for runtime-discovered tools.
 - **code-assistant binding** (`code_assistant_core::tools::mcp`):
   `<config_dir>/mcp-servers.json` with `${ENV_VAR}` substitution in `env`
-  values; `tools::default_registry_with_mcp()` for the wiring layers. The
-  registry stays immutable per process — config changes apply on restart.
+  values; `tools::default_registry_with_mcp()` builds the registry. The
+  wiring layers install `tools::ConfigToolRegistry` as the session
+  manager's `ToolRegistryProvider`, which rebuilds the registry (behind a
+  fingerprint cache) at the start of every agent run — so config changes
+  apply on the next run, not only on restart. A running agent keeps the
+  registry it started with.
 - **gpui settings page** ("MCP Servers"): expandable card per server with
   enable switch, add/edit/delete, live tool discovery and per-tool
   toggles persisted to `disabled_tools`.

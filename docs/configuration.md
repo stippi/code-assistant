@@ -93,32 +93,6 @@ code-assistant --list-models
 code-assistant --list-providers
 ```
 
-### Note on Claude Opus 4.7+ extended thinking
-
-Starting with Claude Opus 4.7, Anthropic no longer accepts the manual
-`thinking: { type: "enabled", budget_tokens: N }` form (it returns a 400 error).
-These models require *adaptive* thinking, where depth is controlled via
-`output_config.effort` (`low`, `medium`, `high`, `xhigh`, `max`):
-
-```json
-{
-  "Claude Opus 4.8": {
-    "provider": "anthropic-main",
-    "id": "claude-opus-4-7",
-    "config": {
-      "max_tokens": 64000,
-      "thinking": { "type": "adaptive", "display": "summarized" },
-      "output_config": { "effort": "medium" }
-    }
-  }
-}
-```
-
-code-assistant detects Opus 4.7+ model IDs (`claude-opus-4-7`, `claude-opus-4-8`,
-`claude-opus-latest`) and emits the correct request shape by default. See
-Anthropic's [extended thinking](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking)
-and [effort](https://docs.anthropic.com/en/docs/build-with-claude/effort) docs.
-
 ## Tool settings — `tools.json`
 
 Some tools need external API keys:
@@ -181,8 +155,9 @@ code-assistant can connect to external Model Context Protocol servers and
 register their tools. Configure them via the Settings screen ("MCP Servers") or
 in `~/.config/code-assistant/mcp-servers.json` (per-server `enabled`,
 `enabled_tools` allowlist, `disabled_tools` denylist, and `${ENV_VAR}`
-substitution in `env` values). Servers connect at process start; config changes
-require a restart.
+substitution in `env` values). Configuration changes apply on the next agent
+run — no restart required. A running agent keeps the tool set it started with;
+the next message picks up added, removed or re-configured servers.
 
 ## Advanced CLI options
 
