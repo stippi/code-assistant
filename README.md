@@ -3,28 +3,32 @@
 [![CI](https://github.com/stippi/code-assistant/actions/workflows/build.yml/badge.svg)](https://github.com/stippi/code-assistant/actions/workflows/build.yml)
 [![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/stippi/code-assistant)](https://archestra.ai/mcp-catalog/stippi__code-assistant)
 
-An AI coding assistant built in Rust that provides both command-line and graphical interfaces for autonomous code analysis and modification.
+An open-source AI coding agent, written in Rust, with a native GUI, a terminal
+mode, and integrations for editors and MCP clients. It runs an autonomous agent
+loop over your codebase — reading, searching, editing files, and running
+commands — while keeping you in the loop about what it is actually doing.
 
-## Key Features
+## Getting started
 
-**Multi-Modal Tool Execution**: Adapts to different LLM capabilities with pluggable tool invocation modes - native function calling, XML-style tags, and triple-caret blocks - ensuring compatibility across various AI providers.
+The quickest way to try it is a prebuilt download — no toolchain required:
 
-**Real-Time Streaming Interface**: Advanced streaming processors parse and display tool invocations as they stream from the LLM, with smart filtering to prevent unsafe tool combinations.
+1. Grab the latest build from the [**Releases page**](https://github.com/stippi/code-assistant/releases/latest):
+   - **macOS:** `Code-Assistant-macos-aarch64.app.zip` (Apple Silicon) or `Code-Assistant-macos-x86_64.app.zip` (Intel)
+   - **Linux:** `code-assistant-linux-x86_64.zip`
+   - **Windows:** `code-assistant-windows-x86_64.zip`
+2. Launch it. On first start, code-assistant opens its **Settings** screen.
+   Pick a provider (there are one-click suggestions for the common ones), paste
+   an API key, and choose a model — that's it.
+3. Add your project folder from within the app and start a chat.
 
-**Session-Based Project Management**: Each chat session is tied to a specific project and maintains persistent state, working memory, and draft messages with attachment support.
+No hand-editing of JSON files required to get going. (You still can, if you
+prefer — see the [Configuration guide](docs/configuration.md).)
 
-**Multiple Interface Options**: Choose between a modern GUI built on Zed's GPUI framework, traditional terminal interface, or headless MCP server mode for integration with MCP clients such as Claude Desktop.
-
-**Agent Client Protocol (ACP) Support**: Full compatibility with the [Agent Client Protocol](https://agentclientprotocol.com/) standard, enabling seamless integration with ACP-compatible editors like [Zed](https://zed.dev). See Zed's documentation on [adding custom agents](https://zed.dev/docs/ai/external-agents#add-custom-agents) for setup instructions.
-
-**Session Compaction**: Before running out of context space, the agent generates a session summary and continues work.
-
-**Auto-Loaded Repository Guidance**: Automatically includes `AGENTS.md` (or `CLAUDE.md` fallback) from the project root in the assistant's system context to align behavior with repo-specific instructions.
-
-## Installation
+<details>
+<summary>Build from source instead</summary>
 
 ```bash
-# On macOS or Linux, install Rust tool chain via rustup:
+# Install the Rust toolchain (macOS/Linux)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # On Linux (Debian/Ubuntu), install the system libraries gpui needs:
@@ -33,364 +37,140 @@ sudo apt-get install -y --no-install-recommends \
     libfontconfig-dev libwayland-dev libx11-xcb-dev \
     libxkbcommon-x11-dev libasound2-dev libvulkan1
 
-# On macOS, you need the metal tool chain:
+# On macOS, install the metal toolchain:
 xcodebuild -downloadComponent MetalToolchain
 
-# Then clone the repo and build it:
+# Clone and build
 git clone https://github.com/stippi/code-assistant
 cd code-assistant
 cargo build --release
 ```
 
-The binary will be available at `target/release/code-assistant`.
-
-### Building a macOS .app Bundle
-
-A self-contained `.app` bundle (with proper dock icon, Info.plist and ad-hoc
-code signature) can be built from any release binary:
-
-```bash
-# Build the binary first (per-target build, picks up the icon assets)
-cargo build --locked --release --target aarch64-apple-darwin   # Apple Silicon
-# or
-cargo build --locked --release --target x86_64-apple-darwin    # Intel
-
-# Wrap it into a .app bundle
-./scripts/bundle-macos.sh aarch64
-# Other options: x86_64, universal, --no-build (reuse the binary you just built)
-```
-
-The result lands in `target/macos-bundle/Code Assistant.app` plus a zipped copy
-ready for distribution. The script uses only stock macOS tools (`sips`,
-`iconutil`, `plutil`, `codesign`) so it requires no extra installs.
-
-The icon source is `crates/code_assistant/assets/app_icon.svg`. Re-run
-`./scripts/generate-app-icon.sh` after editing it to refresh the
-`AppIcon.icns` checked into the repo.
-
-### Initial Setup
-
-After building, create your configuration files:
-
-```bash
-# Create config directory
-mkdir -p ~/.config/code-assistant
-
-# Copy example configurations
-cp providers.example.json ~/.config/code-assistant/providers.json
-cp models.example.json ~/.config/code-assistant/models.json
-
-# Edit the files to add your API keys
-# Set environment variables or update the JSON files directly
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-```
-
-See the [Configuration](#configuration) section for detailed setup instructions.
-
-## Project Configuration
-
-Create `~/.config/code-assistant/projects.json` to define available projects:
-
-```jsonc
-{
-  "code-assistant": {
-    "path": "/Users/<username>/workspace/code-assistant",
-    "format_on_save": {
-      "**/*.rs": "cargo fmt" // Formats all files in project, so make sure files are already formatted
-    }
-  },
-  "my-project": {
-    "path": "/Users/<username>/workspace/my-project",
-    "format_on_save": {
-      "**/*.ts": "prettier --write {path}" // If the formatter accepts a path, provide "{path}"
-    }
-  }
-}
-```
-
-### Format-on-Save Feature
-
-The _optional_ `format_on_save` field allows automatic formatting of files after modifications. It maps file patterns (using glob syntax) to shell commands:
-- Files matching the glob patterns will be automatically formatted after being modified by the assistant
-- The tool parameters are updated to reflect the formatted content, keeping the LLM's mental model in sync
-- This prevents edit conflicts caused by auto-formatting
-
-See [docs/format-on-save-feature.md](docs/format-on-save-feature.md) for detailed documentation.
-
-**Important Notes:**
-- When launching from a folder not in this configuration, a temporary project is created automatically
-- The assistant has access to the current project (including temporary ones) plus all configured projects
-- Each chat session is permanently associated with its initial project and folder - this cannot be changed later
-- Tool syntax (native/xml/caret) is also fixed per session at creation time
-
-## Usage
-
-### GUI Mode (Recommended)
-
-```bash
-# Start with graphical interface (default)
-code-assistant
-
-# Start GUI with initial task
-code-assistant --task "Analyze the authentication system"
-```
-
-### Terminal Mode
-
-```bash
-# Start with terminal interface
-code-assistant --tui --task "Explain the purpose of this codebase"
-
-# With specific model
-code-assistant --tui --task "Add error handling" --model "GPT-5"
-```
-
-### Working Directory Matters
-
-The directory from which you launch `code-assistant` determines the project context for your session. The assistant uses your current working directory (PWD) to understand which codebase you're working on — it scopes file operations, searches, and tool execution to that directory.
-
-**Best practice:** Always `cd` into your project's root directory before starting `code-assistant`.
-
-```bash
-cd ~/workspace/my-project
-code-assistant
-```
-
-Chats are **grouped by directory**, so starting a new chat from the correct project directory ensures:
-- The assistant has the right file context and can navigate your codebase
-- Your conversation history stays organized per project
-- `AGENTS.md` or `CLAUDE.md` guidance files from that project are automatically loaded
-
-If you need to work on a different project, open a new chat from that project's directory rather than reusing an existing session from another location.
-
-### MCP Server Mode
-
-```bash
-code-assistant server
-```
-
-### ACP Agent Mode
-
-```bash
-# Run as ACP-compatible agent
-code-assistant acp
-
-# With specific model
-code-assistant acp --model "Claude Sonnet 4.5"
-```
-
-The ACP mode enables integration with editors that support the [Agent Client Protocol](https://agentclientprotocol.com/), such as [Zed](https://zed.dev). When running in ACP mode, the code-assistant communicates via JSON-RPC over stdin/stdout, supporting features like pending messages, real-time streaming, and tool execution with proper permission handling.
-
-## Configuration
-
-### Model Configuration
-
-The code-assistant uses two JSON configuration files to manage LLM providers and models:
-
-**`~/.config/code-assistant/providers.json`** - Configure provider credentials and endpoints:
-```json
-{
-  "anthropic": {
-    "label": "Anthropic Claude",
-    "provider": "anthropic",
-    "config": {
-      "api_key": "${ANTHROPIC_API_KEY}",
-      "base_url": "https://api.anthropic.com/v1"
-    }
-  },
-  "openai": {
-    "label": "OpenAI",
-    "provider": "openai-responses",
-    "config": {
-      "api_key": "${OPENAI_API_KEY}"
-    }
-  }
-}
-```
-
-**`~/.config/code-assistant/models.json`** - Define available models:
-```json
-{
-  "Claude Opus 4.7 (Adaptive Thinking)": {
-    "provider": "anthropic",
-    "id": "claude-opus-4-7",
-    "config": {
-      "max_tokens": 64000,
-      "thinking": {
-        "type": "adaptive"
-      },
-      "output_config": {
-        "effort": "high"
-      }
-    }
-  },
-  "Claude Sonnet 4.5 (Thinking)": {
-    "provider": "anthropic",
-    "id": "claude-sonnet-4-5",
-    "config": {
-      "max_tokens": 32768,
-      "thinking": {
-        "type": "enabled",
-        "budget_tokens": 8192
-      }
-    }
-  },
-  "Claude Sonnet 4.5": {
-    "provider": "anthropic",
-    "id": "claude-sonnet-4-5",
-    "config": {
-      "max_tokens": 32768
-    }
-  },
-  "GPT-5": {
-    "provider": "openai",
-    "id": "gpt-5-codex",
-    "config": {
-      "temperature": 0.7
-    }
-  }
-}
-```
-
-**Note on Claude Opus 4.7+ extended thinking**: Starting with Claude Opus 4.7, Anthropic
-no longer accepts the manual `thinking: { type: "enabled", budget_tokens: N }` form
-(it returns a 400 error). These models require *adaptive* thinking, where depth is
-controlled via the `output_config.effort` parameter (`low`, `medium`, `high`, `xhigh`,
-`max`). code-assistant detects Opus 4.7+ model IDs (`claude-opus-4-7`,
-`claude-opus-4-8`, `claude-opus-latest`) and emits the correct request shape by default.
-You can override the effort level (or any other field) via the model's `config` block,
-as shown in the example above. See Anthropic's [extended thinking](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking)
-and [effort](https://docs.anthropic.com/en/docs/build-with-claude/effort) docs for details.
-
-**Environment Variable Substitution**: Use `${VAR_NAME}` in provider configs to reference environment variables for API keys.
-
-**Full Examples**: See [`providers.example.json`](providers.example.json) and [`models.example.json`](models.example.json) for complete configuration examples with all supported providers (Anthropic, OpenAI, Ollama, SAP AI Core, Vertex AI, Groq, Cerebras, MistralAI, OpenRouter).
-
-### Tool Configuration
-
-Some tools require external API keys to function. Configure these in `~/.config/code-assistant/tools.json`:
-
-```json
-{
-  "perplexity_api_key": "${PERPLEXITY_API_KEY}"
-}
-```
-
-**Available Tool Settings**:
-- `perplexity_api_key` - Enables the `perplexity_ask` tool for AI-powered web search
-
-Tools without their required configuration will not be available to the assistant.
-
-**List Available Models**:
-```bash
-# See all configured models
-code-assistant --list-models
-
-# See all configured providers
-code-assistant --list-providers
-```
-
-<details>
-<summary>Claude Desktop Integration (MCP)</summary>
-
-Configure in Claude Desktop settings (**Developer** tab → **Edit Config**):
-
-```jsonc
-{
-  "mcpServers": {
-    "code-assistant": {
-      "command": "/path/to/code-assistant/target/release/code-assistant",
-      "args": ["server"],
-      "env": {
-        "SHELL": "/bin/zsh"                 // Your login shell
-      }
-    }
-  }
-}
-```
+The binary lands at `target/release/code-assistant`. See the
+[Configuration guide](docs/configuration.md) for building a self-contained
+macOS `.app` bundle.
 
 </details>
 
-<details>
-<summary>Zed Editor Integration (ACP)</summary>
+## What makes it different
 
-Configure in Zed settings:
+A handful of things we care about:
+
+- **A UI you can actually follow.** Instead of a terse "Called 5 tools",
+  code-assistant shows which tools ran and what each of them
+  handed back to the model as context. When it goes off the rails, you can see
+  why.
+- **Format-on-save that stays token-efficient.** When your project auto-formats
+  code, an agent's mental picture of a file goes stale and its follow-up edits
+  start failing for non-obvious reasons. code-assistant runs your formatter and
+  then reconciles the model's own edits with the formatted result — without
+  wasting tokens on re-reading files. See
+  [docs/format-on-save-feature.md](docs/format-on-save-feature.md).
+- **Transparent file encoding & line endings.** It reads a file however it is
+  stored (encoding, BOM, CRLF/LF), gives the model clean text, and writes it
+  back the way it was — so it never silently rewrites your line endings.
+- **Searches and reads documents, not just code.** Word, Excel, PowerPoint, 
+  PDF and more are consumed automatically as Markdown, so you can point the 
+  agent at real-world documents alongside your source.
+
+## Features
+
+- **Multiple LLM providers:** Anthropic, OpenAI, Google Vertex AI, Ollama,
+  OpenRouter, SAP AI Core, Groq, Cerebras, Mistral, and more.
+- **Four ways to work:** a native GUI (built on Zed's GPUI), a terminal mode, a
+  headless MCP server, and an ACP agent for editors like [Zed](https://zed.dev).
+- **Adaptive tool syntax:** native function calling, XML tags, or triple-caret
+  blocks — chosen per session to fit the model.
+- **Real-time streaming** with smart filtering that blocks unsafe tool
+  combinations (e.g. editing a file before reading it).
+- **Sessions per project** with branching, persistent state, and draft messages
+  with attachments.
+- **Sub-agents, permission tiers, a command sandbox,** and automatic context
+  compaction when the window fills up.
+- **MCP client mode:** plug in external Model Context Protocol servers and use
+  their tools.
+- **Skills:** reusable, task-specific playbooks the agent can load on demand.
+- **Auto-loaded guidance:** picks up `AGENTS.md` (or `CLAUDE.md`) from your
+  project root to align with repo-specific instructions.
+
+## Interfaces
+
+```bash
+code-assistant                     # native GUI (default)
+code-assistant --tui               # terminal interface
+code-assistant acp                 # ACP agent for editors like Zed
+code-assistant server              # headless MCP server (e.g. Claude Desktop)
+```
+
+Any mode can take an initial task: `code-assistant --task "Explain this codebase"`.
+
+<details>
+<summary>Connect to Zed (ACP)</summary>
+
+Add to your Zed settings:
 
 ```json
 {
   "agent_servers": {
     "Code-Assistant": {
-      "command": "/path/to/code-assistant/target/release/code-assistant",
+      "command": "/path/to/code-assistant",
       "args": ["acp", "--model", "Claude Sonnet 4.5"],
-      "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
     }
   }
 }
 ```
 
-Make sure your `providers.json` and `models.json` are configured with the model you specify. The agent will appear in Zed's assistant panel with full ACP support.
+See [Zed's docs on custom agents](https://zed.dev/docs/ai/external-agents#add-custom-agents).
 
-For detailed setup instructions, see [Zed's documentation on adding custom agents](https://zed.dev/docs/ai/external-agents#add-custom-agents).
 </details>
 
 <details>
-<summary>Advanced Options</summary>
+<summary>Connect to Claude Desktop (MCP)</summary>
 
-**Tool Syntax Modes**:
-- `--tool-syntax native`: Use the provider's built-in tool calling (most reliable, but streaming of parameters depends on provider)
-- `--tool-syntax xml`: XML-style tags for streaming of parameters
-- `--tool-syntax caret`: Triple-caret blocks for token-efficiency and streaming of parameters
+In Claude Desktop settings (**Developer** tab → **Edit Config**):
 
-**Session Recording**:
-```bash
-# Record session (Anthropic only)
-code-assistant --record session.json --model "Claude Sonnet 4.5" --task "Optimize database queries"
-
-# Playback session
-code-assistant --playback session.json --fast-playback
+```json
+{
+  "mcpServers": {
+    "code-assistant": {
+      "command": "/path/to/code-assistant",
+      "args": ["server"],
+      "env": { "SHELL": "/bin/zsh" }
+    }
+  }
+}
 ```
 
-**Other Options**:
-- `--model <name>`: Specify model from models.json (use `--list-models` to see available options)
-- `--continue-task`: Resume from previous session state
-- `--use-diff-format`: Enable alternative diff format for file editing
-- `--sandbox-mode <danger-full-access|read-only|workspace-write>`: Choose the sandbox policy for command execution (default `danger-full-access`)
-- `--sandbox-network`: When combined with `--sandbox-mode workspace-write`, allow outbound network access - inside the sandbox
-- `--verbose` / `-v`: Enable detailed logging (use multiple times for more verbosity)
 </details>
 
-## Architecture Highlights
+## Configuration
 
-The code-assistant features several innovative architectural decisions:
+For most people the in-app **Settings** screen is enough — it manages providers,
+models, MCP servers and skills for you. Everything can also be configured via
+JSON files, and there are more advanced options (project setup, sandbox modes,
+tool syntax, session recording, CLI flags):
 
-**Adaptive Tool Syntax**: Automatically generates different system prompts and streaming processors based on the target LLM's capabilities, allowing the same core logic to work across providers with varying function calling support.
-
-**Smart Tool Filtering**: Real-time analysis of tool invocation patterns prevents logical errors like attempting to edit files before reading them, with the ability to truncate responses mid-stream when unsafe combinations are detected.
-
-**Multi-Threaded Streaming**: Sophisticated async architecture that handles real-time parsing of tool invocations while maintaining responsive UI updates and proper state management across multiple chat sessions.
+**→ See the [Configuration guide](docs/configuration.md).**
 
 ## Contributing
 
-Contributions are welcome! The codebase demonstrates advanced patterns in async Rust, AI agent architecture, and cross-platform UI development.
+Contributions are welcome! The codebase is a decent tour of async Rust, AI agent 
+architecture, and cross-platform UI. If something about the agent's behaviour 
+annoys you, that is exactly the kind of detail this project cares about: please
+open an issue.
 
 ## Roadmap
 
-This section is not really a roadmap, as the items are in no particular order.
-Below are some topics that are likely the next focus.
+Not really a roadmap — just a few directions, in no particular order:
 
-- **Block Replacing in Changed Files**: When streaming a tool use block, we already know the LLM attempts to use `replace_in_file` and we know in which file quite early.
-  If we also know this file has changed since the LLM last read it, we can block the attempt with an appropriate error message.
-- **Compact Tool Use Failures**: When the LLM produces an invalid tool call, or a mismatching search block, we should be able to strip the failed attempt from the message history, saving tokens.
-- **Improve UI**: There are various ways in which the UI can be improved.
-- **Add Memory Tools**: Add tools that facilitate building up a knowledge base useful work working in a given project.
-- **Security**: Ideally, the execution for all tools would run in some sort of sandbox that restricts access to the files in the project tracked by git.
-  Currently, the tools reject absolute paths, but do not check whether the relative paths point outside the project or try to access git-ignored files.
-  The `execute_command` tool runs a shell with the provided command line, which at the moment is completely unchecked.
-- **Fuzzy matching search blocks**: Investigate the benefit of fuzzy matching search blocks.
-  Currently, files are normalized (always `\n` line endings, no trailing white space).
-  This increases the success rate of matching search blocks quite a bit, but certain ways of fuzzy matching might increase the success even more.
-  Failed matches introduce quite a bit of inefficiency, since they almost always trigger the LLM to re-read a file.
-  Even when the error output of the `replace_in_file` tool includes the complete file and tells the LLM *not* to re-read the file.
+- **Block replacing in stale files:** detect early when the model is about to
+  `replace_in_file` a file that changed since it last read it, and reject with a
+  helpful message.
+- **Compact tool-use failures:** strip failed tool calls / mismatched search
+  blocks from the history to save tokens.
+- **Memory tools:** help the agent build up a knowledge base for a project.
+- **Tighter sandboxing:** restrict tool access to git-tracked files within the
+  project.
+- **Fuzzy matching of search blocks:** reduce the re-reads caused by failed
+  exact matches.
