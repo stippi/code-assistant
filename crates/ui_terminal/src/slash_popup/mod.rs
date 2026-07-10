@@ -173,10 +173,7 @@ impl PopupStack {
     ///   commit).
     /// - `Some(CommandResult)` — caller should run this command.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<CommandResult> {
-        let action = match self.top_mut() {
-            Some(top) => top.handle_key(key),
-            None => return None,
-        };
+        let action = self.top_mut()?.handle_key(key);
         self.apply(action)
     }
 
