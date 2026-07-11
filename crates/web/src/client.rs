@@ -1,48 +1,27 @@
+use crate::browser::{BrowserLaunchConfig, LaunchedBrowser};
 use anyhow::Result;
-use chromiumoxide::{Browser, BrowserConfig};
-use futures::StreamExt;
 use htmd::{Element, HtmlToMarkdown};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use tempfile::TempDir;
 use url::Url;
 
 pub struct WebClient {
     http_client: Client,
-    browser: Browser,
-    _user_data_dir: TempDir,
+    browser: LaunchedBrowser,
 }
 
 impl WebClient {
     pub async fn new() -> Result<Self> {
-        // Create temporary user data directory
-        let user_data_dir = tempfile::tempdir()?;
-
-        let (browser, mut handler) = Browser::launch(
-            BrowserConfig::builder()
-                //.with_head()
-                .user_data_dir(user_data_dir.path())
-                .build()
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
-        )
-        .await?;
-
-        // Run browser handler in background
-        tokio::spawn(async move {
-            while let Some(event) = handler.next().await {
-                if let Err(e) = event {
-                    eprintln!("Browser handler error: {e}");
-                }
-            }
-        });
+        // Ephemeral, headless profile: the old behavior, now expressed through
+        // the shared launch path (see `browser::LaunchedBrowser`).
+        let browser = LaunchedBrowser::launch(BrowserLaunchConfig::default()).await?;
 
         Ok(Self {
             http_client: Client::new(),
             browser,
-            _user_data_dir: user_data_dir,
         })
     }
 
@@ -97,7 +76,7 @@ impl WebClient {
 
     pub async fn fetch(&self, url: &str) -> Result<WebPage> {
         let url = Url::parse(url)?;
-        let page = self.browser.new_page(url.as_str()).await?;
+        let page = self.browser.browser.new_page(url.as_str()).await?;
 
         // Wait for page to load
         let page = page.wait_for_navigation().await?;
