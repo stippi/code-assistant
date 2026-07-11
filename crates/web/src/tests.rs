@@ -2,6 +2,100 @@
 use super::WebClient;
 #[cfg(test)]
 use super::{BrowserLaunchConfig, LaunchedBrowser};
+#[cfg(test)]
+use super::{BrowserSession, BrowserSessionManager};
+
+/// Spawn a tiny site: a page with a form, and a submit endpoint that echoes the
+/// typed value. Returns the bound address. Used to drive an interactive session
+/// deterministically (no real network).
+#[cfg(test)]
+async fn spawn_form_site() -> std::net::SocketAddr {
+    use axum::extract::Query;
+    use axum::response::Html;
+    use axum::{routing::get, Router};
+    use std::collections::HashMap;
+
+    async fn index() -> Html<&'static str> {
+        Html(
+            "<html><head><title>Login Demo</title></head><body>\
+             <h1>Welcome</h1>\
+             <form action=\"/submit\" method=\"get\">\
+             <input id=\"user\" name=\"user\">\
+             <button id=\"go\" type=\"submit\">Go</button>\
+             </form></body></html>",
+        )
+    }
+    async fn submit(Query(params): Query<HashMap<String, String>>) -> Html<String> {
+        let user = params.get("user").cloned().unwrap_or_default();
+        Html(format!(
+            "<html><head><title>Submitted</title></head><body>\
+             Hello <span id=\"who\">{user}</span></body></html>"
+        ))
+    }
+
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/submit", get(submit));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// Drive a full interaction: navigate, read, type into a field, click submit,
+/// observe the result, take a screenshot — then track it through the manager.
+#[tokio::test]
+async fn interactive_session_navigates_types_clicks_and_observes() {
+    use std::time::Duration;
+
+    let addr = spawn_form_site().await;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+
+    // Navigate + read.
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+    let obs = session.observe().await.unwrap();
+    assert_eq!(obs.title, "Login Demo");
+    assert!(obs.text.contains("Welcome"), "got text: {}", obs.text);
+
+    // Type into the field and submit the form.
+    session.type_text("#user", "stephan").await.unwrap();
+    session.click("#go").await.unwrap();
+
+    // Wait for the result page, then read the echoed value.
+    assert!(
+        session
+            .wait_for("#who", Duration::from_secs(5))
+            .await
+            .unwrap(),
+        "result element should appear after submit"
+    );
+    let result = session.observe().await.unwrap();
+    assert_eq!(result.title, "Submitted");
+    assert!(
+        result.text.contains("Hello stephan"),
+        "form value should round-trip, got: {}",
+        result.text
+    );
+
+    // Screenshot returns real PNG bytes.
+    let png = session.screenshot().await.unwrap();
+    assert!(png.starts_with(b"\x89PNG"), "screenshot should be a PNG");
+
+    // Manager tracks the session by id and hands back the same instance.
+    let manager = BrowserSessionManager::new(4);
+    let session = std::sync::Arc::new(session);
+    let id = manager.register(session.clone(), "test");
+    let fetched = manager.get(id).expect("session should be tracked");
+    assert!(std::sync::Arc::ptr_eq(&session, &fetched));
+    assert!(manager.remove(id).is_some());
+    assert!(manager.get(id).is_none(), "removed session is gone");
+
+    manager.close_all().await;
+    session.close().await;
+}
 
 /// A persistent profile must carry a logged-in session between launches — the
 /// foundation of "act as me". We prove it with a persistent cookie: set it in
