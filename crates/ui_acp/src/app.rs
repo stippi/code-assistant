@@ -70,15 +70,21 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     // Create session manager
     let persistence = FileSessionPersistence::new();
     let persistence_for_watcher = FileSessionPersistence::new();
-    let tool_registry = code_assistant_core::tools::default_registry_with_mcp().await;
+    // The registry provider rebuilds the tool set from the current
+    // configuration at the start of every agent run, so settings edits
+    // (e.g. adding an MCP server) apply on the next run without restarting.
+    let registry_provider = code_assistant_core::tools::ConfigToolRegistry::new();
+    let tool_registry = registry_provider.current().await;
     let events = code_assistant_core::session::event_stream::EventStream::new();
-    let session_manager = Arc::new(Mutex::new(SessionManager::new(
+    let mut manager = SessionManager::new(
         persistence,
         session_config_template.clone(),
         model_name.clone(),
         tool_registry.clone(),
         events.clone(),
-    )));
+    );
+    manager.set_tool_registry_provider(registry_provider.as_provider());
+    let session_manager = Arc::new(Mutex::new(manager));
 
     // Channel for session notifications: `ACPUserUI` instances push into the
     // sender; the forwarding task (below) drains and sends to the client.

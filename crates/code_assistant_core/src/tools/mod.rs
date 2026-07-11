@@ -14,6 +14,9 @@ pub mod mcp;
 pub mod core;
 pub mod impls;
 
+// ToolRegistryProvider that rebuilds the registry from the current config
+pub mod registry_provider;
+
 // Application services handed to tools through ToolContext::extensions
 pub mod services;
 
@@ -27,6 +30,7 @@ pub mod scope;
 mod tests;
 
 pub use parse::parse_search_replace_blocks;
+pub use registry_provider::ConfigToolRegistry;
 pub use services::{ToolServices, ToolServicesAccess};
 pub use terminal_interrupts::TerminalInterrupts;
 

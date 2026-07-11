@@ -243,15 +243,13 @@ pub fn reconstruct_formatted_replacements(
         // Normalize the stable content for matching (handle potential whitespace changes)
         let normalized_stable = encoding::normalize_content(&stable_range.content);
 
-        // Find this stable content in the formatted file
-        if let Some(pos) = normalized_formatted[search_start..].find(&normalized_stable) {
-            let absolute_pos = search_start + pos;
-            stable_positions.push((absolute_pos, absolute_pos + normalized_stable.len()));
-            search_start = absolute_pos + normalized_stable.len();
-        } else {
-            // Stable range not found - formatting changed supposedly stable content
-            return None;
-        }
+        // Find this stable content in the formatted file. If a supposedly
+        // stable range is no longer present, formatting changed it and we
+        // cannot safely reconstruct the replacements.
+        let pos = normalized_formatted[search_start..].find(&normalized_stable)?;
+        let absolute_pos = search_start + pos;
+        stable_positions.push((absolute_pos, absolute_pos + normalized_stable.len()));
+        search_start = absolute_pos + normalized_stable.len();
     }
 
     // Now reconstruct the formatted replacements

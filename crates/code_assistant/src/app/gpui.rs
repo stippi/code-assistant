@@ -31,17 +31,24 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     let persistence_for_watcher = persistence.clone();
 
     let events = EventStream::new();
-    let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
+    // Rebuilds the tool registry from the current configuration at the start
+    // of every agent run (connecting configured MCP servers), so settings
+    // edits apply on the next run without restarting the app.
+    let registry_provider = code_assistant_core::tools::ConfigToolRegistry::new();
+    let mut session_manager = SessionManager::new(
         persistence,
         session_config_template,
         config.model.clone(),
         code_assistant_core::tools::default_registry(),
         events.clone(),
-    )));
+    );
+    session_manager.set_tool_registry_provider(registry_provider.as_provider());
+    let multi_session_manager = Arc::new(Mutex::new(session_manager));
     // Connecting configured MCP servers is async; it happens on the backend
     // runtime below (before the service worker starts) so the GUI comes up
     // immediately.
     let manager_for_mcp = multi_session_manager.clone();
+    let registry_provider_for_warm = registry_provider.clone();
 
     // Create the session command service. The GUI gets the handle; the
     // worker runs on the backend tokio runtime below. The GUI consumes the
@@ -67,12 +74,14 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
-            // Build the full registry (defaults + configured MCP servers)
-            // and swap it in before the service worker processes its first
-            // command, so every agent sees the MCP tools. Commands the GUI
-            // issues in the meantime queue in the service channel.
-            let registry = code_assistant_core::tools::default_registry_with_mcp().await;
-            manager_for_mcp.lock().await.set_tool_registry(registry);
+            // Pre-warm the registry (connects configured MCP servers) and
+            // swap it in before the service worker processes its first
+            // command, so every agent sees the MCP tools immediately. Later
+            // runs re-consult the provider, so settings edits apply without
+            // restarting the app. Commands the GUI issues in the meantime
+            // queue in the service channel.
+            let warmed = registry_provider_for_warm.current().await;
+            manager_for_mcp.lock().await.set_tool_registry(warmed);
 
             // Wakeup scheduler: lets agents arm timed continuations of their
             // session (schedule_wakeup tool).

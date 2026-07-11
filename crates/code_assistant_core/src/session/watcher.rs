@@ -112,7 +112,8 @@ impl SessionWatcher {
     }
 
     /// Start a separate watcher for the config directory (providers.json,
-    /// models.json, skills.json) and the skills subtree (SKILL.md files).
+    /// models.json, tools.json, mcp-servers.json, skills.json) and the skills
+    /// subtree (SKILL.md files).
     fn start_config_watcher(
         event_tx: async_channel::Sender<UiEvent>,
         rt: &tokio::runtime::Handle,
@@ -194,12 +195,20 @@ impl SessionWatcher {
 /// Whether a changed file (by name) within the config directory or skills
 /// subtree should trigger a `ConfigChanged` event.
 ///
-/// Covers the provider/model config, the skills toggle (`skills.json`), and
-/// any `SKILL.md` so live edits to skills refresh the UI catalog.
+/// Covers the provider/model config, the tool config (`tools.json`,
+/// `mcp-servers.json`), the skills toggle (`skills.json`), and any `SKILL.md`
+/// so live edits to skills refresh the UI catalog. The agent picks up
+/// tool-config changes on its next run via the registry provider; this event
+/// only keeps the UI in sync.
 fn is_watched_config_change(file_name: &str) -> bool {
     matches!(
         file_name,
-        "providers.json" | "models.json" | "skills.json" | "SKILL.md"
+        "providers.json"
+            | "models.json"
+            | "tools.json"
+            | "mcp-servers.json"
+            | "skills.json"
+            | "SKILL.md"
     )
 }
 
@@ -400,6 +409,8 @@ mod tests {
     fn watched_config_changes_cover_skills() {
         assert!(is_watched_config_change("providers.json"));
         assert!(is_watched_config_change("models.json"));
+        assert!(is_watched_config_change("tools.json"));
+        assert!(is_watched_config_change("mcp-servers.json"));
         assert!(is_watched_config_change("skills.json"));
         assert!(is_watched_config_change("SKILL.md"));
         assert!(!is_watched_config_change("projects.json"));

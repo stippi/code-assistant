@@ -82,8 +82,12 @@ headless binary without gpui.
   `enabled_tools` allowlist, `disabled_tools` denylist; `${ENV_VAR}`
   substitution in `env` values) or programmatically via
   `mcp_client::register_mcp_tools`
-- Servers connect at process start (`tools::default_registry_with_mcp`);
-  config changes need a restart. The gpui settings page ("MCP Servers")
+- The tool registry is rebuilt from the current config at the start of
+  every agent run via the `ToolRegistryProvider` seam
+  (`tools::ConfigToolRegistry`, a fingerprint cache over `tools.json` +
+  `mcp-servers.json`; wired in all three frontends). MCP config changes
+  therefore apply on the next run without a restart; a running agent keeps
+  the registry it started with. The gpui settings page ("MCP Servers")
   edits the file and discovers tools over ephemeral connections
 
 ### Agent Mode
