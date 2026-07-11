@@ -180,27 +180,43 @@ this plan covers only the former.
 
 ## Rollout (suggested checkpoints)
 
+**Status (2026-07-12):** checkpoints 1–4 landed on `feature/browser-agency`
+(engine + tools + login handoff, all with tests). Checkpoint 5 (pal wiring) and
+the outward-gating note below remain.
+
 Following the repo's TDD/checkpoint working style — each step compiles, is
 tested, and is committable on its own:
 
-1. **Persistent profiles.** Add a profile abstraction to `web`; make the
+1. **Persistent profiles.** ✅ Add a profile abstraction to `web`; make the
    user-data-dir named/persistent with the `TempDir` path kept as the ephemeral
    default. Existing `fetch`/`search` behavior unchanged. Tests: profile dir
    created/reused; cookies survive a relaunch (spin a local axum server that
    sets a cookie, as in the existing dev-dependency).
-2. **Interactive `BrowserSession` + `BrowserSessionManager`.** Long-lived page,
-   navigate/read/screenshot/click/type/wait/eval/close; id-keyed registry with
-   LRU, one per agent session, dropped with the agent session. Tests drive the
-   local axum app.
-3. **Browser tools.** Wire the `browser_*` `DynTool`s into
-   `register_default_tools()` with capability tags; screenshots return image
-   content. Tests via `tools::test_registry()`.
-4. **Login handoff.** Headful mode + `browser_login_handoff` on the
-   `PermissionMediator` seam (pause → human → resume). Verify end-to-end in
-   code-assistant against a site that needs a manual login.
-5. **pal wiring.** pal registers the tools, defines `$PAL_HOME/profiles/*`,
-   routes the handoff prompt over Telegram, and tags Elster submit actions
-   `outward`. Dogfood the Elster login-and-navigate loop on the NUC.
+2. **Interactive `BrowserSession` + `BrowserSessionManager`.** ✅ Long-lived
+   page, navigate/observe/screenshot/click/type/press/wait/eval/close; id-keyed
+   registry with LRU, one per agent session. Tests drive a local axum app.
+3. **Browser tools.** ✅ `browser_navigate` / `browser_read` / `browser_act` /
+   `browser_close` in `register_default_tools()`, keyed by profile name;
+   screenshots return image content via `render_images`. One live browser per
+   profile; a named profile persists under `<config_dir>/browser-profiles/<name>`.
+4. **Login handoff.** ✅ `browser_login`: headful window + pause on the
+   `PermissionMediator` seam (pause → human → resume authenticated). Grant/deny
+   verified headlessly via an extracted `login_handoff()`.
+5. **pal wiring.** *(remaining)* pal registers the tools, defines its own
+   `browser-profiles` dir, routes the handoff prompt over Telegram, and tags
+   consequential browser actions `outward` via its extra-capabilities hook.
+   Dogfood the Elster login-and-navigate loop on the NUC.
+
+## Known limitation — outward gating
+
+Capability tags are static per tool, so `browser_act` cannot know per-call
+whether a click merely navigates or *submits* (an outward effect). It ships as a
+normal write tool (not `read_only`, not `outward`): in code-assistant's default
+`bypass-all` tier it runs freely. An embedder that wants consequential browser
+actions gated (pal, in `outward-tools` tier) adds the `outward` tag to
+`browser_act` through the extra-capabilities hook rather than us hardcoding a
+prompt on every click. `browser_login` is the exception — it always prompts, via
+its own explicit handoff request, independent of the tier.
 
 ## Open questions
 
