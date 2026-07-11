@@ -11,8 +11,9 @@
 //! - `browser_read` — re-observe the current page without acting.
 //! - `browser_act` — click / type / press / wait, a sequence per call.
 //! - `browser_close` — close a profile's browser (flushing a persistent one).
-//! - `browser_login` — headful human-in-the-loop login handoff (see
-//!   `browser_login.rs`).
+//! - `browser_login` — headful human-in-the-loop login handoff: opens a visible
+//!   window, pauses on the `PermissionMediator` seam for the user to log in,
+//!   resumes authenticated. The model never sees credentials.
 //!
 //! Every tool returns a screenshot (the model's eyes, via `render_images`)
 //! plus the page's url/title/text.
@@ -27,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use tools_core::permissions::{
+    PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
+};
 use web::{
     BrowserLaunchConfig, BrowserProfile, BrowserSession, BrowserSessionManager, PageObservation,
 };
@@ -538,10 +542,159 @@ impl Tool for BrowserCloseTool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// browser_login — human-in-the-loop login handoff
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Serialize)]
+pub struct BrowserLoginInput {
+    pub url: String,
+    pub profile: String,
+}
+
+pub struct BrowserLoginTool;
+
+/// The handoff itself, factored out so tests can drive it headlessly. In
+/// production `headful` is always true: a visible window opens, the human logs
+/// in, and only their approval lets the agent continue in that same
+/// authenticated session.
+async fn login_handoff(
+    manager: &BrowserSessionManager,
+    handler: &dyn PermissionMediator,
+    tool_id: Option<&str>,
+    profile: &str,
+    url: &str,
+    headful: bool,
+) -> Result<BrowserOutput> {
+    // A login needs a fresh window: replace any existing (possibly headless)
+    // session for this profile.
+    if let Some(existing) = manager.remove_by_label(profile) {
+        existing.close().await;
+    }
+    let session = match BrowserSession::open(launch_config_for(profile, headful), profile).await {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            return Ok(BrowserOutput::failure(
+                profile,
+                format!("Failed to open browser: {e}"),
+            ))
+        }
+    };
+    if let Err(e) = session.navigate(url).await {
+        session.close().await;
+        return Ok(BrowserOutput::failure(
+            profile,
+            format!("Navigation failed: {e}"),
+        ));
+    }
+
+    // Pause for the human to log in, then resume on approval. This travels the
+    // same seam as any other permission prompt (TUI prompt / Telegram keyboard).
+    let params = json!({
+        "action": "browser_login",
+        "profile": profile,
+        "url": url,
+        "instructions": "A browser window has opened. Log in there (password, 2FA, \
+                         certificate as needed), then approve to let the agent continue.",
+    });
+    let decision = handler
+        .request_permission(PermissionRequest {
+            tool_id,
+            tool_name: "browser_login",
+            reason: PermissionRequestReason::ToolInvocation { params: &params },
+        })
+        .await?;
+
+    match decision {
+        PermissionDecision::Denied => {
+            session.close().await;
+            Ok(BrowserOutput::failure(
+                profile,
+                "User declined the login handoff.",
+            ))
+        }
+        PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession => {
+            // Keep the now-authenticated session for reuse by the other tools.
+            manager.register(session.clone(), profile);
+            Ok(BrowserOutput::capture(profile, &session).await)
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for BrowserLoginTool {
+    type Input = BrowserLoginInput;
+    type Output = BrowserOutput;
+
+    fn spec(&self) -> ToolSpec {
+        let mut caps = vec![capabilities::READ_ONLY];
+        caps.extend(agent_scopes());
+        ToolSpec {
+            name: "browser_login".into(),
+            description: concat!(
+                "Log in to a website AS THE USER without ever seeing their credentials. ",
+                "Opens a VISIBLE browser window on the named persistent profile, navigates to ",
+                "the login URL, then pauses and asks the user to complete the login (password, ",
+                "2FA, certificate — whatever the site needs) in that window and approve. On ",
+                "approval the agent continues in the same authenticated window, and the session ",
+                "is saved under the profile for reuse.\n",
+                "Tell the user what you are doing before calling this. Afterwards use the same ",
+                "`profile` name with browser_navigate / browser_act."
+            )
+            .into(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Login page URL"},
+                    "profile": {
+                        "type": "string",
+                        "description": "Persistent profile name to store the login under (e.g. \"elster\")"
+                    }
+                },
+                "required": ["url", "profile"]
+            }),
+            annotations: Some(json!({"readOnlyHint": true, "openWorldHint": true})),
+            capabilities: ToolSpec::capabilities(&caps),
+            multiline_params: &[],
+            hidden: false,
+            title_template: Some("Logging in at {url}"),
+        }
+    }
+
+    async fn execute<'a>(
+        &self,
+        context: &mut ToolContext<'a>,
+        input: &mut Self::Input,
+    ) -> Result<Self::Output> {
+        let profile = input.profile.clone();
+        // The handoff needs a frontend that can prompt the human.
+        let Some(handler) = context.permission_handler else {
+            return Ok(BrowserOutput::failure(
+                &profile,
+                "Login handoff needs an interactive frontend, which this context does not have.",
+            ));
+        };
+        let tool_id = context.tool_id.clone();
+        let Some(manager) = context.browser_sessions() else {
+            return Ok(BrowserOutput::unavailable(&profile));
+        };
+        login_handoff(
+            manager,
+            handler,
+            tool_id.as_deref(),
+            &profile,
+            &input.url,
+            true,
+        )
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mocks::ToolTestFixture;
+    use tools_core::permissions::PermissionDecision;
 
     /// A self-contained page (base64 data URL, no server): a field, a button
     /// whose JS writes the typed value into a result span, and a title.
@@ -659,6 +812,80 @@ mod tests {
         let mut read = BrowserReadInput { profile: None };
         let out = BrowserReadTool.execute(&mut context, &mut read).await?;
         assert!(out.error.unwrap().contains("browser_navigate"));
+        Ok(())
+    }
+
+    /// Mediator returning a fixed decision, standing in for the human at the
+    /// browser. Lets us drive the handoff headlessly (no window popped).
+    struct ScriptedMediator(PermissionDecision);
+
+    #[async_trait::async_trait]
+    impl PermissionMediator for ScriptedMediator {
+        async fn request_permission(
+            &self,
+            _request: PermissionRequest<'_>,
+        ) -> Result<PermissionDecision> {
+            Ok(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn login_handoff_grant_keeps_authenticated_session() -> Result<()> {
+        let manager = BrowserSessionManager::new(4);
+        let mediator = ScriptedMediator(PermissionDecision::GrantedOnce);
+        // Ephemeral profile ("default") so the test touches no config dir.
+        let out = login_handoff(
+            &manager,
+            &mediator,
+            None,
+            "default",
+            &demo_page_url(),
+            false,
+        )
+        .await?;
+        assert!(out.error.is_none(), "grant error: {:?}", out.error);
+        assert!(out.observation.is_some(), "authenticated page observed");
+        assert!(
+            manager.get_by_label("default").is_some(),
+            "session should be kept after approval"
+        );
+        manager.close_all().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn login_handoff_deny_closes_and_reports() -> Result<()> {
+        let manager = BrowserSessionManager::new(4);
+        let mediator = ScriptedMediator(PermissionDecision::Denied);
+        let out = login_handoff(
+            &manager,
+            &mediator,
+            None,
+            "default",
+            &demo_page_url(),
+            false,
+        )
+        .await?;
+        assert!(out.error.unwrap().contains("declined"));
+        assert!(
+            manager.get_by_label("default").is_none(),
+            "no session should remain after a denied handoff"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn browser_login_without_a_handler_is_a_clear_error() -> Result<()> {
+        // No permission handler ⇒ no way to ask the human ⇒ graceful error,
+        // and crucially no browser is launched.
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        let mut context = fixture.context();
+        let mut input = BrowserLoginInput {
+            url: demo_page_url(),
+            profile: "elster".into(),
+        };
+        let out = BrowserLoginTool.execute(&mut context, &mut input).await?;
+        assert!(out.error.unwrap().contains("interactive frontend"));
         Ok(())
     }
 }

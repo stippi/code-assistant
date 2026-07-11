@@ -77,18 +77,19 @@ pub fn test_registry() -> Arc<ToolRegistry> {
 /// missing.
 pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig) {
     use impls::{
-        BrowserActTool, BrowserCloseTool, BrowserNavigateTool, BrowserReadTool, CancelWakeupTool,
-        DeleteFilesTool, EditTool, ExecuteCommandTool, GlobFilesTool, ListFilesTool,
-        ListProjectsTool, ListSkillsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool,
-        ReadSkillTool, ReplaceInFileTool, ScheduleWakeupTool, SearchFilesTool, SpawnAgentTool,
-        UpdatePlanTool, ViewDocumentsTool, ViewImagesTool, WebFetchTool, WebSearchTool,
-        WriteFileTool, WriteStdinTool,
+        BrowserActTool, BrowserCloseTool, BrowserLoginTool, BrowserNavigateTool, BrowserReadTool,
+        CancelWakeupTool, DeleteFilesTool, EditTool, ExecuteCommandTool, GlobFilesTool,
+        ListFilesTool, ListProjectsTool, ListSkillsTool, NameSessionTool, PerplexityAskTool,
+        ReadFilesTool, ReadSkillTool, ReplaceInFileTool, ScheduleWakeupTool, SearchFilesTool,
+        SpawnAgentTool, UpdatePlanTool, ViewDocumentsTool, ViewImagesTool, WebFetchTool,
+        WebSearchTool, WriteFileTool, WriteStdinTool,
     };
 
     registry.register(Box::new(BrowserNavigateTool));
     registry.register(Box::new(BrowserReadTool));
     registry.register(Box::new(BrowserActTool));
     registry.register(Box::new(BrowserCloseTool));
+    registry.register(Box::new(BrowserLoginTool));
     registry.register(Box::new(DeleteFilesTool));
     registry.register(Box::new(EditTool));
     registry.register(Box::new(ExecuteCommandTool));
