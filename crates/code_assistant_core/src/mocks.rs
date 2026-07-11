@@ -1175,6 +1175,16 @@ impl ToolTestFixture {
         self.services.pty_sessions.as_deref()
     }
 
+    pub fn with_browser_sessions(mut self) -> Self {
+        self.services.browser_sessions = Some(Arc::new(web::BrowserSessionManager::default()));
+        self
+    }
+
+    /// The browser session registry, for assertions.
+    pub fn browser_sessions(&self) -> Option<&web::BrowserSessionManager> {
+        self.services.browser_sessions.as_deref()
+    }
+
     /// Add a UI mock to this fixture
     pub fn with_ui(mut self) -> Self {
         let ui = Arc::new(MockUI::default());

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
 /// What the model sees after acting: where it is and what's on the page.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PageObservation {
     pub url: String,
     pub title: String,
@@ -222,6 +222,26 @@ impl BrowserSessionManager {
         let entry = entries.get_mut(&id)?;
         entry.last_used = Instant::now();
         Some(entry.session.clone())
+    }
+
+    /// Look up a session by its label, refreshing its LRU timestamp. Tools key
+    /// one live browser per profile name, so this is the primary lookup for
+    /// them.
+    pub fn get_by_label(&self, label: &str) -> Option<Arc<BrowserSession>> {
+        let mut entries = self.entries.lock().unwrap();
+        let entry = entries.values_mut().find(|entry| entry.label == label)?;
+        entry.last_used = Instant::now();
+        Some(entry.session.clone())
+    }
+
+    /// Stop tracking the session with the given label and return it.
+    pub fn remove_by_label(&self, label: &str) -> Option<Arc<BrowserSession>> {
+        let mut entries = self.entries.lock().unwrap();
+        let id = *entries
+            .iter()
+            .find(|(_, entry)| entry.label == label)
+            .map(|(id, _)| id)?;
+        entries.remove(&id).map(|entry| entry.session)
     }
 
     /// Stop tracking a session and return it, so the caller can close it

@@ -927,6 +927,10 @@ impl SessionManager {
                 .active_sessions
                 .get(session_id)
                 .map(|instance| instance.pty_sessions.clone()),
+            browser_sessions: self
+                .active_sessions
+                .get(session_id)
+                .map(|instance| instance.browser_sessions.clone()),
             terminal_interrupts: self
                 .active_sessions
                 .get(session_id)

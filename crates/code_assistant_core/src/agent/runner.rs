@@ -48,6 +48,10 @@ pub struct AgentComponents {
     /// interrupt a foreground command by tool_id.
     pub terminal_interrupts: Option<Arc<crate::tools::TerminalInterrupts>>,
 
+    /// Optional browser session registry, shared with the owning session
+    /// instance so an authenticated browser survives across agent runs.
+    pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
+
     /// Hook set for this agent; `None` uses code-assistant's default hooks.
     /// Embedders install a factory to customize e.g. the system
     /// prompt while reusing the rest of the runtime.
@@ -78,6 +82,7 @@ impl Agent {
             wakeups,
             pty_sessions,
             terminal_interrupts,
+            browser_sessions,
             hooks_factory,
         } = components;
 
@@ -93,6 +98,7 @@ impl Agent {
             wakeups,
             pty_sessions,
             terminal_interrupts,
+            browser_sessions,
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {
