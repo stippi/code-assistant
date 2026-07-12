@@ -14,6 +14,7 @@
 use crate::browser::LaunchedBrowser;
 use anyhow::Result;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::element::Element;
 use chromiumoxide::page::{Page, ScreenshotParams};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -88,17 +89,25 @@ impl BrowserSession {
         Ok(PageObservation { url, title, text })
     }
 
+    /// Find an element, turning chromiumoxide's opaque CDP miss ("Could not
+    /// find node with given id") into a message that names the selector.
+    async fn find(&self, selector: &str) -> Result<Element> {
+        self.page
+            .find_element(selector)
+            .await
+            .map_err(|_| anyhow::anyhow!("no element matches selector '{selector}'"))
+    }
+
     /// Click the first element matching a CSS selector.
     pub async fn click(&self, selector: &str) -> Result<()> {
-        let element = self.page.find_element(selector).await?;
-        element.click().await?;
+        self.find(selector).await?.click().await?;
         Ok(())
     }
 
     /// Focus a field and type text into it. Never used for credentials — those
     /// go through the human-in-the-loop login handoff.
     pub async fn type_text(&self, selector: &str, text: &str) -> Result<()> {
-        let element = self.page.find_element(selector).await?;
+        let element = self.find(selector).await?;
         element.focus().await?;
         element.type_str(text).await?;
         Ok(())
@@ -106,9 +115,37 @@ impl BrowserSession {
 
     /// Press a key (e.g. `"Enter"`) on the element matching a selector.
     pub async fn press_key(&self, selector: &str, key: &str) -> Result<()> {
-        let element = self.page.find_element(selector).await?;
-        element.press_key(key).await?;
+        self.find(selector).await?.press_key(key).await?;
         Ok(())
+    }
+
+    /// Wait (bounded) for the page to reach a stable state after a navigation
+    /// or an action that may have triggered one.
+    ///
+    /// Fixes the race where [`observe`](Self::observe) reads an empty body
+    /// while a new document is still loading: a short head start lets a
+    /// click-triggered navigation actually begin, then we poll until
+    /// `document.readyState` is `complete`. An eval failure (the execution
+    /// context is torn down mid-navigation) counts as "not ready yet"; the
+    /// deadline bounds the wait so a perpetually-loading page can't hang us.
+    pub async fn settle(&self) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let start = Instant::now();
+        let deadline = Duration::from_millis(3000);
+        loop {
+            let complete = self
+                .page
+                .evaluate("document.readyState")
+                .await
+                .ok()
+                .and_then(|r| r.into_value::<String>().ok())
+                .as_deref()
+                == Some("complete");
+            if complete || start.elapsed() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        }
     }
 
     /// Poll until an element matching `selector` exists or `timeout` elapses.

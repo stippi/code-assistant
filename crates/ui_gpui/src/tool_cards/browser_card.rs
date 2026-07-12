@@ -1,9 +1,11 @@
-//! Browser card renderer for the `browser_*` tool blocks.
+//! Browser card renderer for the heavier `browser_*` tool blocks
+//! (`browser_navigate`, `browser_act`, `browser_login`).
 //!
-//! Each browser action (navigate / read / act / close / login) is its own tool
-//! call, so it already gets its own block. This renders that block as a
-//! collapsible card: a header with the action and status, and — on expand — the
-//! page screenshot captured at that step, plus a short URL/title caption.
+//! Each is its own tool call, so it already gets its own block. This renders
+//! that block as a collapsible card: a header with the action and status, and —
+//! on expand — the page screenshot captured at that step, plus a short URL/title
+//! caption. The lightweight `browser_read` / `browser_close` render inline
+//! instead (see [`super::inline_renderer`]).
 
 use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
@@ -17,13 +19,9 @@ use gpui::{
 };
 use std::time::Duration;
 
-const BROWSER_TOOLS: [&str; 5] = [
-    "browser_navigate",
-    "browser_read",
-    "browser_act",
-    "browser_close",
-    "browser_login",
-];
+// Only the tools whose screenshot is worth a card. browser_read and
+// browser_close render inline (see InlineToolRenderer).
+const BROWSER_TOOLS: [&str; 3] = ["browser_navigate", "browser_act", "browser_login"];
 
 /// Maximum height of a screenshot inside a card body.
 const SCREENSHOT_MAX_HEIGHT: f32 = 380.0;
@@ -270,8 +268,6 @@ fn describe(tool: &ToolUseBlock) -> String {
             Some(url) => format!("Log in at {}", truncate(&url, 60)),
             None => "Log in".to_string(),
         },
-        "browser_read" => "Read page".to_string(),
-        "browser_close" => "Close browser".to_string(),
         "browser_act" => describe_act(param("actions").as_deref()),
         other => other.to_string(),
     };
@@ -338,8 +334,11 @@ mod tests {
 
     #[test]
     fn describe_default_profile_has_no_suffix() {
-        let t = make_tool("browser_read", &[("profile", "default")]);
-        assert_eq!(describe(&t), "Read page");
+        let t = make_tool(
+            "browser_navigate",
+            &[("url", "https://x.com"), ("profile", "default")],
+        );
+        assert_eq!(describe(&t), "Navigate to https://x.com");
     }
 
     #[test]

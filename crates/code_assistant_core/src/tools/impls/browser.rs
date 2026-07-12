@@ -119,6 +119,10 @@ impl BrowserOutput {
     /// Observe + screenshot the session into a success output. Any capture
     /// error is folded into `error` rather than failing the whole tool call.
     async fn capture(profile: &str, session: &BrowserSession) -> Self {
+        // Let a navigation triggered by the preceding action settle first, so
+        // the text (`observe`) and the screenshot show the same page rather
+        // than racing a mid-transition document.
+        session.settle().await;
         let observation = session.observe().await.ok();
         let screenshot_base64 = match session.screenshot().await {
             Ok(png) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
