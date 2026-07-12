@@ -204,6 +204,13 @@ tested, and is committable on its own:
    `browser_close` in `register_default_tools()`, keyed by profile name;
    screenshots return image content via `render_images`. One live browser per
    profile; a named profile persists under `<config_dir>/browser-profiles/<name>`.
+   Plus `browser_profiles`: lists the persistent profiles on disk and, for each,
+   how long ago it was last logged in and to which site (recorded on a
+   successful `browser_login` in a `<name>.meta.json` sidecar, shown humanized
+   as "N days ago"). A fresh session has no live browsers, so this is how the
+   agent rediscovers an existing login instead of re-prompting the user — the
+   "last login" is last-recorded, not a guarantee, so it says "verify by
+   navigating".
 4. **Login handoff.** ✅ `browser_login`: headful window + pause on the
    `PermissionMediator` seam (pause → human → resume authenticated). Grant/deny
    verified headlessly via an extracted `login_handoff()`. On approval the

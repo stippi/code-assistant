@@ -89,6 +89,11 @@ impl InlineToolRenderer {
                 template: "Close browser",
                 fallback: "Close browser",
             },
+            DescribeTemplate {
+                tool_name: "browser_profiles",
+                template: "List browser profiles",
+                fallback: "List browser profiles",
+            },
         ];
 
         let tools: Vec<String> = templates.iter().map(|t| t.tool_name.to_string()).collect();
