@@ -93,6 +93,11 @@ pub struct SessionPermissionMediator {
     session_id: String,
     events: EventStream,
     pending: Arc<PendingPermissionRequests>,
+    /// If set, an unanswered prompt fails closed (denied) after this long,
+    /// so a lane driven by a channel or a scheduled job can't block forever
+    /// on a prompt nobody is there to answer. `None` waits indefinitely (the
+    /// right default for an interactive frontend with a human present).
+    timeout: Option<std::time::Duration>,
 }
 
 impl SessionPermissionMediator {
@@ -100,11 +105,13 @@ impl SessionPermissionMediator {
         session_id: String,
         events: EventStream,
         pending: Arc<PendingPermissionRequests>,
+        timeout: Option<std::time::Duration>,
     ) -> Self {
         Self {
             session_id,
             events,
             pending,
+            timeout,
         }
     }
 
@@ -166,7 +173,20 @@ impl PermissionMediator for SessionPermissionMediator {
         );
 
         // A dropped responder (stop request, new agent run) counts as denial.
-        let decision = rx.await.unwrap_or(PermissionDecision::Denied);
+        // With a timeout, an unanswered prompt also fails closed: drop the
+        // pending entry (so a late answer is a no-op) and deny, freeing the
+        // lane's turn instead of blocking it forever.
+        let decision = match self.timeout {
+            Some(dur) => match tokio::time::timeout(dur, rx).await {
+                Ok(result) => result.unwrap_or(PermissionDecision::Denied),
+                Err(_elapsed) => {
+                    self.pending
+                        .resolve(&request_id, PermissionDecision::Denied);
+                    PermissionDecision::Denied
+                }
+            },
+            None => rx.await.unwrap_or(PermissionDecision::Denied),
+        };
 
         // Tell every view the request is settled so open prompts dismiss.
         self.events.publish_ui(
@@ -211,5 +231,64 @@ mod tests {
         assert!(pending.snapshot().is_empty());
         // Sender dropped: the mediator maps this to Denied.
         assert!(rx.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn unanswered_prompt_fails_closed_after_timeout() {
+        use tools_core::permissions::{PermissionRequest, PermissionRequestReason};
+
+        let pending = Arc::new(PendingPermissionRequests::default());
+        let mediator = SessionPermissionMediator::new(
+            "sess-1".to_string(),
+            EventStream::new(),
+            pending.clone(),
+            Some(std::time::Duration::from_millis(50)),
+        );
+        let params = serde_json::json!({});
+        let request = PermissionRequest {
+            tool_id: None,
+            tool_name: "browser_login",
+            reason: PermissionRequestReason::ToolInvocation { params: &params },
+        };
+        // Nobody answers: the prompt denies after the timeout instead of
+        // blocking the turn forever, and the pending entry is cleaned up.
+        let decision = mediator.request_permission(request).await.unwrap();
+        assert_eq!(decision, PermissionDecision::Denied);
+        assert!(pending.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prompt_with_a_timeout_still_honors_an_answer() {
+        use tools_core::permissions::{PermissionRequest, PermissionRequestReason};
+
+        let pending = Arc::new(PendingPermissionRequests::default());
+        let mediator = SessionPermissionMediator::new(
+            "sess-1".to_string(),
+            EventStream::new(),
+            pending.clone(),
+            Some(std::time::Duration::from_secs(30)),
+        );
+        // Answer as soon as the request registers.
+        let pending_for_task = pending.clone();
+        let answer = tokio::spawn(async move {
+            loop {
+                if let Some(req) = pending_for_task.snapshot().first() {
+                    assert!(
+                        pending_for_task.resolve(&req.request_id, PermissionDecision::GrantedOnce)
+                    );
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+        let params = serde_json::json!({});
+        let request = PermissionRequest {
+            tool_id: None,
+            tool_name: "send_email",
+            reason: PermissionRequestReason::ToolInvocation { params: &params },
+        };
+        let decision = mediator.request_permission(request).await.unwrap();
+        answer.await.unwrap();
+        assert_eq!(decision, PermissionDecision::GrantedOnce);
     }
 }

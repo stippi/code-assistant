@@ -120,6 +120,14 @@ pub struct SessionManager {
     /// `schedule_wakeup` / `cancel_wakeup` tools bound to their session.
     wakeup_handle: Option<crate::session::wakeup::WakeupHandle>,
 
+    /// If set, an unanswered permission prompt fails closed after this long
+    /// (see [`SessionPermissionMediator`]). Left `None` for interactive
+    /// frontends; set by embedders that run unattended lanes (channels,
+    /// scheduled jobs) so a prompt nobody answers can't block a turn forever.
+    ///
+    /// [`SessionPermissionMediator`]: crate::session::permissions::SessionPermissionMediator
+    permission_timeout: Option<std::time::Duration>,
+
     /// The core→UI broadcast stream all sessions publish to.
     events: crate::session::event_stream::EventStream,
 }
@@ -168,6 +176,7 @@ impl SessionManager {
             tool_registry_provider: None,
             hooks_factory: None,
             wakeup_handle: None,
+            permission_timeout: None,
             events,
         }
     }
@@ -184,6 +193,13 @@ impl SessionManager {
     /// without the wakeup tools.
     pub fn set_wakeup_handle(&mut self, handle: crate::session::wakeup::WakeupHandle) {
         self.wakeup_handle = Some(handle);
+    }
+
+    /// Fail unanswered permission prompts closed after `timeout`, so unattended
+    /// lanes (channels, scheduled jobs) can't block a turn forever waiting on a
+    /// prompt nobody answers. Unset (the default) waits indefinitely.
+    pub fn set_permission_timeout(&mut self, timeout: std::time::Duration) {
+        self.permission_timeout = Some(timeout);
     }
 
     /// The sleep inhibitor shared by this manager's agents, for other
@@ -927,6 +943,10 @@ impl SessionManager {
                 .active_sessions
                 .get(session_id)
                 .map(|instance| instance.pty_sessions.clone()),
+            browser_sessions: self
+                .active_sessions
+                .get(session_id)
+                .map(|instance| instance.browser_sessions.clone()),
             terminal_interrupts: self
                 .active_sessions
                 .get(session_id)
@@ -1373,6 +1393,7 @@ impl SessionManager {
                 session_id.to_string(),
                 self.events.clone(),
                 instance.pending_permission_requests.clone(),
+                self.permission_timeout,
             ),
         ))
     }

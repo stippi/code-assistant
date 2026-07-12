@@ -21,6 +21,7 @@ pub struct CodeAssistantToolServices {
     pub wakeups: Option<SessionWakeups>,
     pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
     pub terminal_interrupts: Option<Arc<crate::tools::TerminalInterrupts>>,
+    pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -34,6 +35,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             wakeups: self.wakeups.clone(),
             pty_sessions: self.pty_sessions.clone(),
             terminal_interrupts: self.terminal_interrupts.clone(),
+            browser_sessions: self.browser_sessions.clone(),
         })
     }
 
@@ -53,6 +55,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             wakeups: self.wakeups.clone(),
             pty_sessions: self.pty_sessions.clone(),
             terminal_interrupts: self.terminal_interrupts.clone(),
+            browser_sessions: self.browser_sessions.clone(),
         })
     }
 }

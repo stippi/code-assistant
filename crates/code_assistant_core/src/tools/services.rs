@@ -41,6 +41,10 @@ pub struct ToolServices {
     /// `execute_command` invocations, so the UI can interrupt a foreground
     /// command by tool_id. Lives on the session instance.
     pub terminal_interrupts: Option<Arc<TerminalInterrupts>>,
+    /// Optional registry of live browser sessions for the `browser_*` tools.
+    /// Lives on the session instance so an authenticated browser survives
+    /// across agent runs.
+    pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
 }
 
 impl ToolServices {
@@ -53,6 +57,7 @@ impl ToolServices {
             wakeups: None,
             pty_sessions: None,
             terminal_interrupts: None,
+            browser_sessions: None,
         }
     }
 }
@@ -68,6 +73,7 @@ pub trait ToolServicesAccess {
     fn ui(&self) -> Option<&dyn UserInterface>;
     fn sub_agent_runner(&self) -> Option<&dyn SubAgentRunner>;
     fn pty_sessions(&self) -> Option<&PtySessionManager>;
+    fn browser_sessions(&self) -> Option<&web::BrowserSessionManager>;
 }
 
 impl ToolServicesAccess for ToolContext<'_> {
@@ -98,5 +104,10 @@ impl ToolServicesAccess for ToolContext<'_> {
     fn pty_sessions(&self) -> Option<&PtySessionManager> {
         self.extension::<ToolServices>()
             .and_then(|services| services.pty_sessions.as_deref())
+    }
+
+    fn browser_sessions(&self) -> Option<&web::BrowserSessionManager> {
+        self.extension::<ToolServices>()
+            .and_then(|services| services.browser_sessions.as_deref())
     }
 }

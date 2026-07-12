@@ -76,6 +76,24 @@ impl InlineToolRenderer {
                 template: "List skills in {project}",
                 fallback: "List skills",
             },
+            // Lightweight browser tools: no card, just a line you can expand
+            // (browser_read shows its screenshot inline; browser_close is a
+            // one-liner). The heavier browser_navigate/act/login use cards.
+            DescribeTemplate {
+                tool_name: "browser_read",
+                template: "Read browser page",
+                fallback: "Read browser page",
+            },
+            DescribeTemplate {
+                tool_name: "browser_close",
+                template: "Close browser",
+                fallback: "Close browser",
+            },
+            DescribeTemplate {
+                tool_name: "browser_profiles",
+                template: "List browser profiles",
+                fallback: "List browser profiles",
+            },
         ];
 
         let tools: Vec<String> = templates.iter().map(|t| t.tool_name.to_string()).collect();

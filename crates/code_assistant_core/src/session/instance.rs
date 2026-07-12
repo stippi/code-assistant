@@ -190,6 +190,11 @@ pub struct SessionInstance {
     /// terminates all remaining sessions.
     pub pty_sessions: Arc<pty_session::PtySessionManager>,
 
+    /// Live browser sessions started by this session's agents (`browser_*`
+    /// tools). Survives across agent runs so an authenticated browser can be
+    /// reused; dropping the instance kills any remaining browser processes.
+    pub browser_sessions: Arc<web::BrowserSessionManager>,
+
     /// Cancel flags for in-flight blocking (foreground) `execute_command`
     /// invocations, so the UI's terminal-card stop button can interrupt a
     /// foreground command by tool_id (background ones go through
@@ -248,6 +253,7 @@ impl SessionInstance {
             ),
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
+            browser_sessions: Arc::new(web::BrowserSessionManager::default()),
             terminal_interrupts: Arc::new(crate::tools::TerminalInterrupts::default()),
             agent_lock: None,
             last_ui_synced_path: initial_path,

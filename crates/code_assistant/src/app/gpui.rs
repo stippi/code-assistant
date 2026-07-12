@@ -60,6 +60,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             playback_path: config.playback.clone(),
             fast_playback: config.fast_playback,
             command_executor_factory: super::session_command_executor_factory(),
+            project_manager_factory:
+                code_assistant_core::session::service::default_project_manager_factory(),
         }),
         events,
     );

@@ -1,4 +1,5 @@
 // Tool implementations
+pub mod browser;
 pub mod delete_files;
 pub mod edit;
 pub mod execute_command;
@@ -23,6 +24,10 @@ pub mod write_file;
 pub mod write_stdin;
 
 // Re-export all tools for registration
+pub use browser::{
+    BrowserActTool, BrowserCloseTool, BrowserLoginTool, BrowserNavigateTool, BrowserProfilesTool,
+    BrowserReadTool,
+};
 pub use delete_files::DeleteFilesTool;
 pub use edit::EditTool;
 pub use execute_command::ExecuteCommandTool;

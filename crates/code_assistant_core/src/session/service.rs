@@ -14,7 +14,7 @@
 //! tokio. Core→UI notifications keep flowing through [`UiEvent`] and are
 //! not part of this API.
 
-use crate::config::{save_project, DefaultProjectManager};
+use crate::config::{save_project, DefaultProjectManager, ProjectManager};
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
 use crate::session::event_stream::EventStream;
 use crate::session::SessionManager;
@@ -42,8 +42,21 @@ use tracing::{debug, error, info, warn};
 /// executor that can attach commands to live terminal views).
 pub type CommandExecutorFactory = Arc<dyn Fn(&str) -> Box<dyn CommandExecutor> + Send + Sync>;
 
+/// Builds the [`ProjectManager`] an agent run (and skill discovery) resolves
+/// its `project` arguments against. Injected by the wiring so a consumer can
+/// supply its own project set — pal, for instance, exposes a fixed
+/// `workspace`/`home` set instead of the config-file-driven default.
+pub type ProjectManagerFactory = Arc<dyn Fn() -> Box<dyn ProjectManager> + Send + Sync>;
+
+/// The default factory: the config-file-driven [`DefaultProjectManager`],
+/// preserving code-assistant's own behavior when a consumer does not override
+/// the project set.
+pub fn default_project_manager_factory() -> ProjectManagerFactory {
+    Arc::new(|| Box::new(DefaultProjectManager::new()))
+}
+
 /// Options for running agents: LLM recording/playback plus the command
-/// executor factory.
+/// executor and project-manager factories.
 #[derive(Clone)]
 pub struct AgentRuntimeOptions {
     pub record_path: Option<PathBuf>,
@@ -51,6 +64,9 @@ pub struct AgentRuntimeOptions {
     pub fast_playback: bool,
     /// Builds the command executor for a session id when an agent is started.
     pub command_executor_factory: CommandExecutorFactory,
+    /// Builds the project manager an agent run resolves `project` arguments
+    /// against. See [`default_project_manager_factory`].
+    pub project_manager_factory: ProjectManagerFactory,
 }
 
 /// A single entry in the input-area skill picker.
@@ -540,16 +556,18 @@ impl SessionService {
                     .ok_or_else(|| anyhow!("Session {session_id} not found"))?
             };
             let config = SkillsConfig::load();
-            let pm = DefaultProjectManager::new();
-            Ok(discover_session_catalog(&pm, &project_name, &config)
-                .into_iter()
-                .map(|(skill, scope_token)| SkillCatalogEntry {
-                    name: skill.name,
-                    description: skill.description,
-                    scope_label: skill.scope.label().to_string(),
-                    scope_token,
-                })
-                .collect())
+            let pm = (ctx.runtime.project_manager_factory)();
+            Ok(
+                discover_session_catalog(pm.as_ref(), &project_name, &config)
+                    .into_iter()
+                    .map(|(skill, scope_token)| SkillCatalogEntry {
+                        name: skill.name,
+                        description: skill.description,
+                        scope_label: skill.scope.label().to_string(),
+                        scope_token,
+                    })
+                    .collect(),
+            )
         })
         .await
     }
@@ -565,8 +583,8 @@ impl SessionService {
     ) -> Result<()> {
         self.call(move |ctx| async move {
             let config = SkillsConfig::load();
-            let pm = DefaultProjectManager::new();
-            let payload = load_skill_payload(&pm, &scope, &name, &config)
+            let pm = (ctx.runtime.project_manager_factory)();
+            let payload = load_skill_payload(pm.as_ref(), &scope, &name, &config)
                 .with_context(|| format!("Failed to load skill `{name}`"))?;
             let message = render_skill_invocation_message(&payload);
 
@@ -1231,7 +1249,7 @@ async fn start_agent_impl(
     .await
     .context("Failed to create LLM client")?;
 
-    let project_manager = Box::new(DefaultProjectManager::new());
+    let project_manager = (ctx.runtime.project_manager_factory)();
     let command_executor = (ctx.runtime.command_executor_factory)(session_id);
 
     let mut manager = ctx.manager.lock().await;
@@ -1281,6 +1299,7 @@ mod tests {
             command_executor_factory: Arc::new(|_| {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
+            project_manager_factory: default_project_manager_factory(),
         });
         let (service, worker) = SessionService::new(manager.clone(), runtime, events);
         tokio::spawn(worker);
@@ -1607,6 +1626,7 @@ mod tests {
             command_executor_factory: Arc::new(|_| {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
+            project_manager_factory: default_project_manager_factory(),
         });
         let (service, worker) = SessionService::new(manager, runtime, events);
         drop(worker); // never spawned

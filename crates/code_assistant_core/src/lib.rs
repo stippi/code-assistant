@@ -6,6 +6,11 @@
 //! `UiEvent` vocabulary. The frontends (GPUI, terminal) and the wiring
 //! binary consume this crate; nothing in here depends on a frontend.
 
+// Re-exported so external implementors of `config::ProjectManager` — whose
+// `get_explorer_for_project` returns a `fs_explorer::CodeExplorer` — can name
+// the explorer types without wiring up a separate dependency on the crate.
+pub use fs_explorer;
+
 pub mod agent;
 pub mod config;
 pub mod config_dir;
