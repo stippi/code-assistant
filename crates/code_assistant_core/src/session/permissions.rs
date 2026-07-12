@@ -180,7 +180,8 @@ impl PermissionMediator for SessionPermissionMediator {
             Some(dur) => match tokio::time::timeout(dur, rx).await {
                 Ok(result) => result.unwrap_or(PermissionDecision::Denied),
                 Err(_elapsed) => {
-                    self.pending.resolve(&request_id, PermissionDecision::Denied);
+                    self.pending
+                        .resolve(&request_id, PermissionDecision::Denied);
                     PermissionDecision::Denied
                 }
             },
@@ -272,8 +273,9 @@ mod tests {
         let answer = tokio::spawn(async move {
             loop {
                 if let Some(req) = pending_for_task.snapshot().first() {
-                    assert!(pending_for_task
-                        .resolve(&req.request_id, PermissionDecision::GrantedOnce));
+                    assert!(
+                        pending_for_task.resolve(&req.request_id, PermissionDecision::GrantedOnce)
+                    );
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;

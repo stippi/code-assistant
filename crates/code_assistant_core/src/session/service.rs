@@ -557,15 +557,17 @@ impl SessionService {
             };
             let config = SkillsConfig::load();
             let pm = (ctx.runtime.project_manager_factory)();
-            Ok(discover_session_catalog(pm.as_ref(), &project_name, &config)
-                .into_iter()
-                .map(|(skill, scope_token)| SkillCatalogEntry {
-                    name: skill.name,
-                    description: skill.description,
-                    scope_label: skill.scope.label().to_string(),
-                    scope_token,
-                })
-                .collect())
+            Ok(
+                discover_session_catalog(pm.as_ref(), &project_name, &config)
+                    .into_iter()
+                    .map(|(skill, scope_token)| SkillCatalogEntry {
+                        name: skill.name,
+                        description: skill.description,
+                        scope_label: skill.scope.label().to_string(),
+                        scope_token,
+                    })
+                    .collect(),
+            )
         })
         .await
     }
