@@ -13,6 +13,7 @@
 
 use crate::browser::LaunchedBrowser;
 use anyhow::Result;
+use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::element::Element;
 use chromiumoxide::layout::Point;
@@ -374,11 +375,118 @@ impl BrowserSession {
         Ok(result.into_value().unwrap_or(serde_json::Value::Null))
     }
 
+    /// Export the whole cookie jar (all domains), including in-memory **session
+    /// cookies** that a graceful close does *not* flush to disk. Used to carry a
+    /// login across a headful→headless relaunch on the same profile without the
+    /// user having to authenticate again.
+    pub async fn export_cookies(&self) -> Result<Vec<CookieParam>> {
+        let resp = self.page.execute(GetAllCookiesRaw {}).await?;
+        Ok(resp
+            .result
+            .cookies
+            .iter()
+            .filter_map(cookie_to_param)
+            .collect())
+    }
+
+    /// Re-inject cookies captured by [`export_cookies`](Self::export_cookies).
+    /// The page must already be on an `http(s)` URL (CDP rejects setting cookies
+    /// from `about:blank`/`data:`); each cookie also carries its own url/domain,
+    /// so cross-domain (SSO) cookies restore correctly. A reload afterwards makes
+    /// them take effect. No-op for an empty jar.
+    pub async fn import_cookies(&self, cookies: Vec<CookieParam>) -> Result<()> {
+        if cookies.is_empty() {
+            return Ok(());
+        }
+        self.page.set_cookies(cookies).await?;
+        Ok(())
+    }
+
     /// Close the browser gracefully so a persistent profile flushes its cookies
     /// to disk. After this the session is dead. Dropping without calling this
     /// still kills the process (via `kill_on_drop`) but skips the flush.
     pub async fn close(&self) {
         self.launched.lock().await.close().await;
+    }
+}
+
+/// Raw `Network.getAllCookies` command. We bypass chromiumoxide's typed `Cookie`
+/// because its 0.5.2 CDP bindings require a `sameParty` field that current Chrome
+/// no longer sends, which fails deserialization. A lenient struct (everything
+/// `#[serde(default)]`) tolerates that protocol drift.
+#[derive(serde::Serialize)]
+struct GetAllCookiesRaw {}
+
+impl chromiumoxide::Method for GetAllCookiesRaw {
+    fn identifier(&self) -> chromiumoxide::types::MethodId {
+        "Network.getAllCookies".into()
+    }
+}
+
+impl chromiumoxide::Command for GetAllCookiesRaw {
+    type Response = RawCookies;
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawCookies {
+    #[serde(default)]
+    cookies: Vec<RawCookie>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCookie {
+    name: String,
+    value: String,
+    #[serde(default)]
+    domain: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    expires: f64,
+    #[serde(default)]
+    http_only: bool,
+    #[serde(default)]
+    secure: bool,
+    #[serde(default)]
+    session: bool,
+    #[serde(default)]
+    same_site: Option<String>,
+}
+
+/// Map a read-back cookie to a settable [`CookieParam`], preserving the fields
+/// that matter for re-injection. A leading-dot domain is kept as-is for the
+/// `domain` field but stripped for the `url` host. Session cookies (no expiry)
+/// are re-injected without an `expires`, so they stay session cookies.
+fn cookie_to_param(c: &RawCookie) -> Option<CookieParam> {
+    let host = c.domain.trim_start_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    let url = format!("http{}://{}", if c.secure { "s" } else { "" }, host);
+    let mut builder = CookieParam::builder()
+        .name(c.name.clone())
+        .value(c.value.clone())
+        .url(url)
+        .domain(c.domain.clone())
+        .path(c.path.clone())
+        .secure(c.secure)
+        .http_only(c.http_only);
+    if let Some(same_site) = c.same_site.as_deref().and_then(parse_same_site) {
+        builder = builder.same_site(same_site);
+    }
+    if !c.session && c.expires > 0.0 {
+        builder = builder.expires(TimeSinceEpoch::new(c.expires));
+    }
+    builder.build().ok()
+}
+
+fn parse_same_site(s: &str) -> Option<CookieSameSite> {
+    match s {
+        "Strict" => Some(CookieSameSite::Strict),
+        "Lax" => Some(CookieSameSite::Lax),
+        "None" => Some(CookieSameSite::None),
+        _ => None,
     }
 }
 

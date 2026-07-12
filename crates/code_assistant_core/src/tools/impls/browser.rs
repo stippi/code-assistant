@@ -13,7 +13,10 @@
 //! - `browser_close` — close a profile's browser (flushing a persistent one).
 //! - `browser_login` — headful human-in-the-loop login handoff: opens a visible
 //!   window, pauses on the `PermissionMediator` seam for the user to log in,
-//!   resumes authenticated. The model never sees credentials.
+//!   then swaps that window for a headless browser on the same profile —
+//!   transferring the cookie jar so the login survives — and resumes
+//!   authenticated. The user can close the login window without killing the
+//!   session, and the model never sees credentials.
 //!
 //! Every tool returns a screenshot (the model's eyes, via `render_images`)
 //! plus the page's url/title/text.
@@ -762,11 +765,63 @@ async fn login_handoff(
             ))
         }
         PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession => {
-            // Keep the now-authenticated session for reuse by the other tools.
-            manager.register(session.clone(), profile);
-            Ok(BrowserOutput::capture(profile, &session, false).await)
+            // Swap the visible login window for a headless browser on the same
+            // profile, carrying the login across. The agent then browses in the
+            // background, and the user can close the login window without killing
+            // the session (the finding this fixes: a user-closed window left a
+            // dead session the manager knew nothing about).
+            match finalize_login_headless(profile, session, url, headful).await {
+                Ok(headless) => {
+                    manager.register(headless.clone(), profile);
+                    Ok(BrowserOutput::capture(profile, &headless, false).await)
+                }
+                Err(e) => Ok(BrowserOutput::failure(
+                    profile,
+                    format!("Login succeeded but switching to a background browser failed: {e}"),
+                )),
+            }
         }
     }
+}
+
+/// Page shown briefly in the login window after a successful handoff, so the
+/// user sees it worked and knows the window is safe to close.
+const LOGIN_SUCCESS_PAGE: &str = "data:text/html,<html><body style='font-family:sans-serif;padding:2rem'>\
+     <h2>&#9989; Login successful</h2>\
+     <p>You can close this window &mdash; the agent now continues in the background.</p>\
+     </body></html>";
+
+/// After a granted login, replace the visible headful browser with a headless
+/// one on the same profile, transferring the full cookie jar (including
+/// in-memory session cookies a disk flush would drop) so the login survives.
+/// Chrome locks the profile dir, so the headful window must fully close before
+/// the headless one can start.
+async fn finalize_login_headless(
+    profile: &str,
+    headful: Arc<BrowserSession>,
+    url: &str,
+    was_headful: bool,
+) -> Result<Arc<BrowserSession>> {
+    // Capture the jar while the authenticated window is still alive.
+    let cookies = headful.export_cookies().await.unwrap_or_default();
+    // Reassure the user in the visible window, give them a moment to read it,
+    // then close (releasing the profile-dir lock).
+    let _ = headful.navigate(LOGIN_SUCCESS_PAGE).await;
+    if was_headful {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+    }
+    headful.close().await;
+
+    // Relaunch the same profile headless and restore the login.
+    let headless = Arc::new(BrowserSession::open(launch_config_for(profile, false), profile).await?);
+    if url.starts_with("http") {
+        // Land on an http origin so cookies can be set, inject the jar, then
+        // reload so the (now present) session cookies take effect.
+        let _ = headless.navigate(url).await;
+        let _ = headless.import_cookies(cookies).await;
+    }
+    headless.navigate(url).await?;
+    Ok(headless)
 }
 
 #[async_trait::async_trait]

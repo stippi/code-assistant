@@ -206,7 +206,12 @@ tested, and is committable on its own:
    profile; a named profile persists under `<config_dir>/browser-profiles/<name>`.
 4. **Login handoff.** ✅ `browser_login`: headful window + pause on the
    `PermissionMediator` seam (pause → human → resume authenticated). Grant/deny
-   verified headlessly via an extracted `login_handoff()`.
+   verified headlessly via an extracted `login_handoff()`. On approval the
+   visible window is swapped for a headless browser on the same profile: the
+   full cookie jar (incl. in-memory session cookies a disk flush would drop) is
+   transferred via CDP, so the login survives and the user can close the login
+   window without leaving the manager with a dead session. Chrome locks the
+   profile dir, so the swap is close-then-relaunch, not concurrent.
 5. **pal wiring.** *(remaining)* pal registers the tools, defines its own
    `browser-profiles` dir, routes the handoff prompt over Telegram, and tags
    consequential browser actions `outward` via its extra-capabilities hook.

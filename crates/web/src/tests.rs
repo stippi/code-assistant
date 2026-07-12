@@ -201,6 +201,71 @@ async fn persistent_profile_preserves_cookies_across_launches() {
     );
 }
 
+/// The login "act as me" flow swaps the visible headful window for a headless
+/// browser on the same profile after approval. A plain relaunch would lose
+/// in-memory **session cookies** (no Max-Age) — so the login would break — which
+/// is why we transfer the whole jar via CDP. This proves that transfer restores
+/// a session cookie a plain relaunch drops.
+#[tokio::test]
+async fn session_cookies_survive_a_headless_swap_via_transfer() {
+    use axum::http::header::{COOKIE, SET_COOKIE};
+    use axum::http::HeaderMap;
+    use axum::response::IntoResponse;
+    use axum::{routing::get, Router};
+
+    async fn login() -> impl IntoResponse {
+        // A session cookie: no Max-Age, so a browser close drops it from disk.
+        ([(SET_COOKIE, "sid=secret; Path=/")], "logged in")
+    }
+    async fn read_cookie(headers: HeaderMap) -> String {
+        headers
+            .get(COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    let app = Router::new()
+        .route("/login", get(login))
+        .route("/read", get(read_cookie));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let base = tempfile::tempdir().unwrap();
+    let profile_dir = base.path().join("profile");
+    let config = BrowserLaunchConfig::persistent(&profile_dir);
+
+    // First (visible) session: log in, capture the jar, close.
+    let s1 = BrowserSession::open(config.clone(), "swap").await.unwrap();
+    s1.navigate(&format!("http://{addr}/login")).await.unwrap();
+    let cookies = s1.export_cookies().await.unwrap();
+    assert!(
+        cookies.iter().any(|c| c.name == "sid"),
+        "the session cookie should be captured before close"
+    );
+    s1.close().await;
+
+    // Second (headless) session on the same profile. Without the transfer the
+    // session cookie is gone after the close — prove that, then restore it.
+    let s2 = BrowserSession::open(config, "swap").await.unwrap();
+    s2.navigate(&format!("http://{addr}/read")).await.unwrap();
+    let before = s2.observe().await.unwrap().text;
+    assert!(
+        !before.contains("sid=secret"),
+        "a plain relaunch should NOT keep the session cookie, got: {before}"
+    );
+
+    s2.import_cookies(cookies).await.unwrap();
+    s2.navigate(&format!("http://{addr}/read")).await.unwrap();
+    let after = s2.observe().await.unwrap().text;
+    assert!(
+        after.contains("sid=secret"),
+        "the transfer should restore the session cookie, got: {after}"
+    );
+    s2.close().await;
+}
+
 #[tokio::test]
 async fn test_web_search() {
     let client = WebClient::new().await.unwrap();
