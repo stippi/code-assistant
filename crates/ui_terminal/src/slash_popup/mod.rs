@@ -18,11 +18,13 @@
 pub mod command_list;
 pub mod model_picker;
 pub mod permission_prompt;
+pub mod session_picker;
 pub mod skill_picker;
 
 pub use command_list::CommandListPopup;
 pub use model_picker::ModelPickerPopup;
 pub use permission_prompt::PermissionPromptPopup;
+pub use session_picker::SessionPickerPopup;
 pub use skill_picker::SkillPickerPopup;
 
 use crate::commands::CommandResult;

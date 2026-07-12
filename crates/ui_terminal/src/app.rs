@@ -50,9 +50,10 @@ async fn handle_slash_prefix_changed(
 
             if state.popup_stack.depth() == 0 {
                 let skills = state.skills.clone();
+                let sessions = state.sessions.clone();
                 state
                     .popup_stack
-                    .push(Box::new(CommandListPopup::with_skills(skills)));
+                    .push(Box::new(CommandListPopup::with_context(skills, sessions)));
             }
             state.popup_stack.set_query(&q);
         }
@@ -105,6 +106,9 @@ struct Actions {
     ui: Arc<dyn UserInterface>,
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: tokio::sync::watch::Sender<()>,
+    /// The session id the filesystem watcher is tracking. Updated on a session
+    /// switch so cross-instance appends follow the newly attached session.
+    watcher_session_ref: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Actions {
@@ -312,6 +316,90 @@ impl Actions {
             }
         });
     }
+
+    /// Switch the terminal to another session: load its snapshot, reset the
+    /// per-session UI, replay its transcript into scrollback, and re-point the
+    /// filesystem watcher at it.
+    fn switch_session(&self, new_session_id: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            // Already attached — nothing to do.
+            if this.app_state.lock().await.current_session_id.as_deref()
+                == Some(new_session_id.as_str())
+            {
+                return;
+            }
+
+            let snapshot = match this
+                .service
+                .load_session(new_session_id.clone(), None)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(e) => {
+                    this.display_error(format!("Failed to load session: {e:#}"));
+                    return;
+                }
+            };
+
+            // Attach the new session id up-front so the event bridge routes the
+            // new session's stream events to us, and reset per-session UI state.
+            {
+                let mut state = this.app_state.lock().await;
+                state.current_session_id = Some(new_session_id.clone());
+                state.set_plan(None);
+                state.plan_expanded = false;
+                state.tool_statuses.clear();
+                state.pending_permission_requests.clear();
+                state.popup_stack.clear();
+                state.update_pending_message(None);
+                state.update_activity_state(None);
+                state.reset_seen_nodes([]);
+            }
+
+            // Clear the visible transcript, then replay the loaded transcript
+            // into scrollback. `AppendMessages` renders the messages and records
+            // tool statuses; the remaining connect events restore plan/model/
+            // tier/etc. `SetMessages` is skipped — it deliberately does not
+            // render, and the session id + seen-node baseline are handled above
+            // and by `AppendMessages`.
+            let _ = this.ui.send_event(UiEvent::ClearMessages).await;
+            if !snapshot.messages.is_empty() {
+                let _ = this
+                    .ui
+                    .send_event(UiEvent::AppendMessages {
+                        messages: snapshot.messages.clone(),
+                        tool_results: snapshot.tool_results.clone(),
+                    })
+                    .await;
+            }
+            for event in snapshot.connect_events() {
+                if matches!(event, UiEvent::SetMessages { .. }) {
+                    continue;
+                }
+                let _ = this.ui.send_event(event).await;
+            }
+
+            // Re-point the filesystem watcher at the newly attached session.
+            if let Ok(mut guard) = this.watcher_session_ref.lock() {
+                *guard = Some(new_session_id.clone());
+            }
+
+            // Refresh the skill catalog for the new session and surface the switch.
+            this.refresh_skills(new_session_id.clone());
+            {
+                let label = snapshot.metadata.name.trim().to_string();
+                let shown = if label.is_empty() {
+                    let short: String = new_session_id.chars().take(8).collect();
+                    format!("Switched to session {short}")
+                } else {
+                    format!("Switched to session: {label}")
+                };
+                this.app_state.lock().await.set_info_message(Some(shown));
+            }
+            let _ = this.redraw_tx.send(());
+        });
+    }
 }
 
 /// Run the side-effects for a [`CommandResult`] produced by either an inline
@@ -413,6 +501,23 @@ async fn handle_command_result(
                     crate::slash_popup::SkillPickerPopup::from_entries(skills),
                 ));
             }
+        }
+        CommandResult::OpenSessionPicker => {
+            // Refresh the list in the background, then open the picker from the
+            // currently cached sessions. If none are known yet, inform the user.
+            actions.refresh_chat_list();
+            let mut state = app_state.lock().await;
+            if state.sessions.is_empty() {
+                state.set_info_message(Some("No other sessions are available.".to_string()));
+            } else {
+                let sessions = state.sessions.clone();
+                state.popup_stack.push(Box::new(
+                    crate::slash_popup::SessionPickerPopup::from_sessions(sessions),
+                ));
+            }
+        }
+        CommandResult::SwitchSession(session_id) => {
+            actions.switch_session(session_id);
         }
         CommandResult::InvokeSkill { scope, name } => {
             let session_id = app_state.lock().await.current_session_id.clone();
@@ -850,6 +955,26 @@ async fn event_loop(
                                     )
                                     .await;
                                 }
+                                KeyEventResult::OpenSessionPicker => {
+                                    // Inline `/sessions` (popup not active): reuse
+                                    // the command-result handler to open the picker.
+                                    handle_command_result(
+                                        crate::commands::CommandResult::OpenSessionPicker,
+                                        &app_state,
+                                        &renderer,
+                                        &actions,
+                                    )
+                                    .await;
+                                }
+                                KeyEventResult::SwitchSession(id) => {
+                                    handle_command_result(
+                                        crate::commands::CommandResult::SwitchSession(id),
+                                        &app_state,
+                                        &renderer,
+                                        &actions,
+                                    )
+                                    .await;
+                                }
                                 KeyEventResult::SlashPrefixChanged(query) => {
                                     handle_slash_prefix_changed(
                                         query,
@@ -1139,11 +1264,18 @@ impl TerminalTuiApp {
         // the event loop after async state updates.
         let (redraw_tx, redraw_rx) = tokio::sync::watch::channel::<()>(());
 
+        // Shared handle to the session the filesystem watcher tracks. Created
+        // here (empty) so `Actions::switch_session` can re-point it; the watcher
+        // is started below with the initial session id written into it.
+        let watcher_session_ref: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
         let actions = Actions {
             service: service.clone(),
             ui: ui.clone(),
             app_state: app_state.clone(),
             redraw_tx: redraw_tx.clone(),
+            watcher_session_ref: watcher_session_ref.clone(),
         };
 
         // Determine which session to use and load it
@@ -1209,13 +1341,13 @@ impl TerminalTuiApp {
         // Start the filesystem watcher for cross-instance awareness, so a
         // session that another code-assistant instance appends to stays in
         // sync here (e.g. `--continue` on a session streamed elsewhere).
-        let watcher_session_ref: Arc<std::sync::Mutex<Option<String>>> =
-            Arc::new(std::sync::Mutex::new(Some(session_id.clone())));
+        // `switch_session` re-points this shared ref when the user switches.
+        *watcher_session_ref.lock().unwrap() = Some(session_id.clone());
         let (watcher_tx, watcher_rx) = async_channel::bounded::<UiEvent>(64);
         let _session_watcher = match code_assistant_core::session::watcher::SessionWatcher::start(
             &FileSessionPersistence::new(),
             watcher_tx,
-            watcher_session_ref,
+            watcher_session_ref.clone(),
         ) {
             Ok(watcher) => {
                 debug!("Filesystem session watcher started (terminal mode)");

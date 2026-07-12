@@ -76,6 +76,11 @@ pub fn all_commands() -> &'static [SlashCommand] {
             aliases: &[],
             description: "Activate a skill: /skill <name> (or pick from the list)",
         },
+        SlashCommand {
+            name: "sessions",
+            aliases: &["resume"],
+            description: "Switch to another session (pick from the list)",
+        },
     ]
 }
 
@@ -105,6 +110,10 @@ pub enum CommandResult {
     CompactContext,
     /// Open the skill picker popup.
     OpenSkillPicker,
+    /// Open the session picker popup.
+    OpenSessionPicker,
+    /// Switch the terminal to another session, loading its transcript.
+    SwitchSession(String),
     /// Activate a skill by name. `scope` is the scope token (project name, or
     /// `:config:` / `:system:`); `None` means resolve it from the cached
     /// catalog by name.
@@ -177,6 +186,9 @@ impl CommandProcessor {
                     CommandResult::OpenSkillPicker
                 }
             }
+            // Both `/sessions` and `/resume` open the session picker; any
+            // trailing text is ignored (selection happens in the picker).
+            "sessions" | "resume" => CommandResult::OpenSessionPicker,
             _ => CommandResult::InvalidCommand(format!("Unknown command: /{}", parts[0])),
         }
     }
@@ -283,5 +295,37 @@ impl CommandProcessor {
             }
         }
         output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_command_is_registered_with_resume_alias() {
+        let cmd = all_commands()
+            .iter()
+            .find(|c| c.name == "sessions")
+            .expect("`sessions` command should be registered");
+        assert!(cmd.aliases.contains(&"resume"));
+    }
+
+    #[test]
+    fn sessions_and_resume_open_the_session_picker() {
+        let processor = CommandProcessor::new().expect("config should load");
+        assert!(matches!(
+            processor.process_command("/sessions"),
+            CommandResult::OpenSessionPicker
+        ));
+        assert!(matches!(
+            processor.process_command("/resume"),
+            CommandResult::OpenSessionPicker
+        ));
+        // Trailing text is ignored — the picker handles selection.
+        assert!(matches!(
+            processor.process_command("/sessions foo bar"),
+            CommandResult::OpenSessionPicker
+        ));
     }
 }

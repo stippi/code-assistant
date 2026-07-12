@@ -41,6 +41,10 @@ pub enum KeyEventResult {
     CompactContext,
     /// Open the skill picker popup.
     OpenSkillPicker,
+    /// Open the session picker popup.
+    OpenSessionPicker,
+    /// Switch to another session by id.
+    SwitchSession(String),
     /// Activate a skill. `scope` is the scope token, or `None` to resolve it
     /// from the cached catalog by name.
     InvokeSkill { scope: Option<String>, name: String },
@@ -205,6 +209,8 @@ impl InputManager {
                             CommandResult::ClearContext => KeyEventResult::ClearContext,
                             CommandResult::CompactContext => KeyEventResult::CompactContext,
                             CommandResult::OpenSkillPicker => KeyEventResult::OpenSkillPicker,
+                            CommandResult::OpenSessionPicker => KeyEventResult::OpenSessionPicker,
+                            CommandResult::SwitchSession(id) => KeyEventResult::SwitchSession(id),
                             CommandResult::InvokeSkill { scope, name } => {
                                 KeyEventResult::InvokeSkill { scope, name }
                             }
