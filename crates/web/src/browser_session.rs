@@ -139,6 +139,12 @@ pub struct BrowserSession {
     /// counted and its methods take `&self`, so all verbs below are `&self`.
     page: Page,
     label: String,
+    /// Whether this is an ephemeral throwaway browser (no persistent profile).
+    /// Ephemeral sessions are dropped at the end of an agent turn (see
+    /// [`BrowserSessionManager::close_ephemeral`]) so a forgotten
+    /// `browser_navigate` on the default profile can't leak a Chrome process;
+    /// persistent named profiles survive across turns on purpose.
+    ephemeral: bool,
 }
 
 impl BrowserSession {
@@ -147,17 +153,24 @@ impl BrowserSession {
         config: crate::browser::BrowserLaunchConfig,
         label: impl Into<String>,
     ) -> Result<Self> {
+        let ephemeral = matches!(config.profile, crate::browser::BrowserProfile::Ephemeral);
         let launched = LaunchedBrowser::launch(config).await?;
         let page = launched.browser.new_page("about:blank").await?;
         Ok(Self {
             launched: AsyncMutex::new(launched),
             page,
             label: label.into(),
+            ephemeral,
         })
     }
 
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// Whether this is an ephemeral throwaway browser (no persistent profile).
+    pub fn is_ephemeral(&self) -> bool {
+        self.ephemeral
     }
 
     /// Navigate to a URL and wait for the load to settle.
@@ -499,6 +512,27 @@ impl BrowserSessionManager {
         let sessions: Vec<Arc<BrowserSession>> = {
             let mut entries = self.entries.lock().unwrap();
             entries.drain().map(|(_, entry)| entry.session).collect()
+        };
+        for session in sessions {
+            session.close().await;
+        }
+    }
+
+    /// Gracefully close and forget every *ephemeral* (throwaway) session,
+    /// leaving persistent named profiles open. Called at the end of an agent
+    /// turn so a forgotten `browser_navigate` on the default profile can't
+    /// leak a Chrome process or spam CDP errors between turns.
+    pub async fn close_ephemeral(&self) {
+        let sessions: Vec<Arc<BrowserSession>> = {
+            let mut entries = self.entries.lock().unwrap();
+            let ids: Vec<u32> = entries
+                .iter()
+                .filter(|(_, entry)| entry.session.is_ephemeral())
+                .map(|(id, _)| *id)
+                .collect();
+            ids.iter()
+                .filter_map(|id| entries.remove(id).map(|entry| entry.session))
+                .collect()
         };
         for session in sessions {
             session.close().await;

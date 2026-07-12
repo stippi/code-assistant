@@ -64,6 +64,9 @@ pub struct Agent {
     /// Translates the loop's events into the application vocabulary and
     /// attaches the session id; kept here to update that id.
     ui_adapter: Arc<AgentUiAdapter>,
+    /// Kept here so ephemeral throwaway browsers can be closed at the end of
+    /// every turn (see [`Agent::run_single_iteration`]).
+    browser_sessions: Option<Arc<web::BrowserSessionManager>>,
 }
 
 impl Agent {
@@ -90,6 +93,9 @@ impl Agent {
         let tool_capability = app_state.tool_scope.tag().to_string();
 
         let ui_adapter = Arc::new(AgentUiAdapter::new(ui.clone()));
+        // Cloned out before the handle moves into the services provider, so the
+        // turn-end cleanup can reach the ephemeral browsers.
+        let browser_sessions_for_cleanup = browser_sessions.clone();
         let services_provider = Arc::new(crate::plugins::CodeAssistantToolServices {
             project_manager: project_manager.clone(),
             ui,
@@ -123,6 +129,7 @@ impl Agent {
             runtime,
             project_manager,
             ui_adapter,
+            browser_sessions: browser_sessions_for_cleanup,
         }
     }
 
@@ -197,9 +204,20 @@ impl Agent {
         self.runtime.append_message(message)
     }
 
-    /// Run a single iteration of the agent loop without waiting for user input
+    /// Run a single iteration of the agent loop without waiting for user input.
+    /// One call drives the full turn (LLM + tool executions) until the agent
+    /// needs user input again.
     pub async fn run_single_iteration(&mut self) -> Result<()> {
-        self.runtime.run_single_iteration().await
+        let result = self.runtime.run_single_iteration().await;
+        // The turn just finished (or errored): drop any ephemeral throwaway
+        // browser so a forgotten `browser_navigate` on the default profile
+        // can't leak a Chrome process or spam CDP errors between turns.
+        // Persistent named profiles (e.g. "elster") survive on purpose, so
+        // multi-turn browsing uses a named profile.
+        if let Some(browsers) = &self.browser_sessions {
+            browsers.close_ephemeral().await;
+        }
+        result
     }
 
     /// Load state from session state
