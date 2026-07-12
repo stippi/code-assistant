@@ -166,6 +166,14 @@ impl Render for BrowserOutput {
     }
 
     fn render_images(&self) -> Vec<ImageData> {
+        // An error tool result must be text-only (Anthropic rejects images in a
+        // tool_result with is_error=true). Some error paths still capture a
+        // screenshot for context (e.g. browser_act showing where a sequence
+        // stopped); drop it here so the result stays valid — the failing
+        // step's text still explains what happened.
+        if self.error.is_some() {
+            return Vec::new();
+        }
         self.screenshot_base64
             .iter()
             .map(|data| ImageData {
@@ -887,5 +895,50 @@ mod tests {
         let out = BrowserLoginTool.execute(&mut context, &mut input).await?;
         assert!(out.error.unwrap().contains("interactive frontend"));
         Ok(())
+    }
+
+    #[test]
+    fn error_output_is_text_only_even_when_a_screenshot_was_captured() {
+        // browser_act's failure path captures a screenshot for context, then
+        // sets an error. Anthropic rejects images in a tool_result with
+        // is_error=true, so render_images must be empty on error.
+        let out = BrowserOutput {
+            profile: "default".into(),
+            observation: None,
+            screenshot_base64: Some("ZmFrZQ==".into()),
+            error: Some("Action 1 failed: no such element '#missing'".into()),
+        };
+        assert!(!out.is_success());
+        assert!(
+            out.render_images().is_empty(),
+            "an error result must carry no images"
+        );
+    }
+}
+
+#[cfg(test)]
+mod registration_check {
+    use crate::tools::scope::ToolScope;
+
+    #[test]
+    fn browser_tools_are_exposed_to_the_agent() {
+        let registry = crate::tools::test_registry();
+        let names: Vec<String> = registry
+            .get_tool_definitions_with_capability(ToolScope::Agent.tag())
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        for expected in [
+            "browser_navigate",
+            "browser_read",
+            "browser_act",
+            "browser_close",
+            "browser_login",
+        ] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "missing {expected}; have: {names:?}"
+            );
+        }
     }
 }
