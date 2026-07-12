@@ -164,9 +164,19 @@ impl Render for BrowserOutput {
             text.push_str("\n… (truncated; see screenshot for the rest)");
         }
         let mut out = format!(
-            "Profile: {}\nURL: {}\nTitle: {}\n\n{}",
-            self.profile, obs.url, obs.title, text
+            "Profile: {}\nURL: {}\nTitle: {}",
+            self.profile, obs.url, obs.title
         );
+        // Disclose the viewport size (CSS px) so the model can address px
+        // coordinates; it can't read the true size off the resized screenshot.
+        if obs.viewport_width > 0.0 && obs.viewport_height > 0.0 {
+            out.push_str(&format!(
+                "\nViewport: {}×{} (CSS px)",
+                obs.viewport_width as i64, obs.viewport_height as i64
+            ));
+        }
+        out.push_str("\n\n");
+        out.push_str(&text);
         // List the actionable elements with their selectors, so the model can
         // target them directly with browser_act instead of guessing.
         if !obs.elements.is_empty() {
@@ -409,12 +419,61 @@ pub enum BrowserAction {
         #[serde(default)]
         dy: Option<f64>,
     },
-    /// Click at viewport coordinates `(x, y)`. For canvas/WebGL surfaces and
-    /// anything without a stable selector (games, maps, drag targets).
-    ClickXy { x: f64, y: f64 },
-    /// Move the mouse to viewport coordinates `(x, y)` without clicking — drives
-    /// hover states and canvas pointer-move handlers.
-    MoveXy { x: f64, y: f64 },
+    /// Click at a coordinate. Each value carries a CSS unit: `"40vw"`/`"50%"`
+    /// (fraction of the viewport axis) or `"640px"` (exact CSS pixels — the
+    /// viewport size is shown in a read). For canvas/WebGL surfaces and anything
+    /// without a stable selector (games, maps, drag targets).
+    ClickAt { x: String, y: String },
+    /// Move the mouse to a coordinate (same unit rules as `click_at`) without
+    /// clicking — drives hover states and canvas pointer-move handlers.
+    MoveAt { x: String, y: String },
+}
+
+/// Which viewport axis a coordinate is measured against.
+#[derive(Clone, Copy)]
+enum Axis {
+    X,
+    Y,
+}
+
+/// Resolve a unit-bearing coordinate (`"40vw"`, `"50%"`, `"640px"`) to CSS
+/// pixels along `axis`, given the viewport size. `vw`/`vh` are always width/
+/// height; `%` follows the axis; `px` passes through. Typographic units
+/// (`rem`/`em`) and bare numbers are rejected so the model states a groundable
+/// unit. The result is clamped to the viewport so a click can't land off-page.
+fn resolve_coord(value: &str, axis: Axis, vw: f64, vh: f64) -> Result<f64> {
+    let s = value.trim();
+    let split = s
+        .find(|c: char| c.is_alphabetic() || c == '%')
+        .unwrap_or(s.len());
+    let (num_str, unit) = s.split_at(split);
+    let num: f64 = num_str.trim().parse().map_err(|_| {
+        anyhow::anyhow!("invalid coordinate '{value}' (expected e.g. \"40vw\", \"50%\", \"640px\")")
+    })?;
+    let px = match unit.trim() {
+        "px" => num,
+        "vw" => num / 100.0 * vw,
+        "vh" => num / 100.0 * vh,
+        "%" => match axis {
+            Axis::X => num / 100.0 * vw,
+            Axis::Y => num / 100.0 * vh,
+        },
+        "" => {
+            return Err(anyhow::anyhow!(
+                "coordinate '{value}' needs a unit — use vw/vh/%/px"
+            ))
+        }
+        other => {
+            return Err(anyhow::anyhow!(
+                "unit '{other}' not supported for coordinates; use vw/vh/%/px"
+            ))
+        }
+    };
+    let max = match axis {
+        Axis::X => vw,
+        Axis::Y => vh,
+    };
+    Ok(px.clamp(0.0, max))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -452,8 +511,18 @@ impl BrowserActTool {
                     .scroll(selector.as_deref(), dx.unwrap_or(0.0), dy.unwrap_or(0.0))
                     .await
             }
-            BrowserAction::ClickXy { x, y } => session.click_at(*x, *y).await,
-            BrowserAction::MoveXy { x, y } => session.move_mouse(*x, *y).await,
+            BrowserAction::ClickAt { x, y } => {
+                let (vw, vh) = session.viewport_size().await?;
+                let px = resolve_coord(x, Axis::X, vw, vh)?;
+                let py = resolve_coord(y, Axis::Y, vw, vh)?;
+                session.click_at(px, py).await
+            }
+            BrowserAction::MoveAt { x, y } => {
+                let (vw, vh) = session.viewport_size().await?;
+                let px = resolve_coord(x, Axis::X, vw, vh)?;
+                let py = resolve_coord(y, Axis::Y, vw, vh)?;
+                session.move_mouse(px, py).await
+            }
         }
     }
 }
@@ -468,7 +537,7 @@ impl Tool for BrowserActTool {
             name: "browser_act".into(),
             description: concat!(
                 "Interact with the current page of a browser profile: a sequence of ",
-                "click / type / press / wait_for / scroll / click_xy / move_xy steps, executed ",
+                "click / type / press / wait_for / scroll / click_at / move_at steps, executed ",
                 "in order. Returns a screenshot and text of the resulting page.\n",
                 "Each action is an object with one key: {\"click\": {\"selector\": \"#go\"}}, ",
                 "{\"type\": {\"selector\": \"#user\", \"text\": \"hello\"}}, ",
@@ -477,11 +546,15 @@ impl Tool for BrowserActTool {
                 "{\"wait_for\": {\"selector\": \"#result\", \"timeout_ms\": 5000}}, ",
                 "{\"scroll\": {\"dy\": 600}} (scroll down 600px) / {\"scroll\": {\"selector\": \"#footer\"}} ",
                 "(scroll an element into view), ",
-                "{\"click_xy\": {\"x\": 120, \"y\": 340}} (click at viewport pixels, for canvas/WebGL ",
-                "surfaces without selectors), or {\"move_xy\": {\"x\": 120, \"y\": 340}} (move the mouse ",
-                "for hover/pointer-move).\n",
-                "Prefer selectors when available (see the interactive-element list from a read); ",
-                "use coordinates only for canvas/game surfaces. ",
+                "{\"click_at\": {\"x\": \"40vw\", \"y\": \"30vh\"}} (click at a coordinate, for ",
+                "canvas/WebGL surfaces without selectors), or {\"move_at\": {\"x\": \"40vw\", ",
+                "\"y\": \"30vh\"}} (move the mouse for hover/pointer-move).\n",
+                "Coordinate values carry a CSS unit — think about which unit you mean: \"40vw\"/",
+                "\"30vh\" or \"50%\" express a fraction of the viewport axis (robust — use these ",
+                "when eyeballing from the screenshot); \"640px\" is exact CSS pixels (only when you ",
+                "know the size — the read output shows the Viewport dimensions). rem/em are not ",
+                "accepted. Prefer selectors when available (see the interactive-element list from a ",
+                "read); use coordinates only for canvas/game surfaces. ",
                 "Do not type passwords or 2FA codes here — use browser_login."
             )
             .into(),
@@ -499,8 +572,8 @@ impl Tool for BrowserActTool {
                                 "press": {"type": "object", "properties": {"selector": {"type": "string"}, "key": {"type": "string"}}, "required": ["key"]},
                                 "wait_for": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout_ms": {"type": "integer"}}, "required": ["selector"]},
                                 "scroll": {"type": "object", "properties": {"selector": {"type": "string"}, "dx": {"type": "number"}, "dy": {"type": "number"}}},
-                                "click_xy": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]},
-                                "move_xy": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]}
+                                "click_at": {"type": "object", "properties": {"x": {"type": "string", "description": "x coordinate with CSS unit: vw/% (of width) or px"}, "y": {"type": "string", "description": "y coordinate with CSS unit: vh/% (of height) or px"}}, "required": ["x", "y"]},
+                                "move_at": {"type": "object", "properties": {"x": {"type": "string"}, "y": {"type": "string"}}, "required": ["x", "y"]}
                             }
                         }
                     },
@@ -980,13 +1053,16 @@ mod tests {
             let mut nav = BrowserNavigateInput { url, profile: None };
             BrowserNavigateTool.execute(&mut context, &mut nav).await?;
 
-            // Click at coordinates inside the pad; the handler records them.
+            // Click at exact CSS pixels inside the pad; the handler records them.
             let mut act = BrowserActInput {
-                actions: vec![BrowserAction::ClickXy { x: 120.0, y: 80.0 }],
+                actions: vec![BrowserAction::ClickAt {
+                    x: "120px".into(),
+                    y: "80px".into(),
+                }],
                 profile: None,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
-            assert!(out.error.is_none(), "click_xy error: {:?}", out.error);
+            assert!(out.error.is_none(), "click_at error: {:?}", out.error);
         }
 
         let session = fixture
@@ -1000,7 +1076,7 @@ mod tests {
         assert_eq!(
             hit.as_str().unwrap_or_default(),
             "120,80",
-            "click_xy should land at the given viewport coordinates"
+            "px click should land at the given CSS-pixel coordinates"
         );
 
         // Focus the field, then a global key press (no selector) lands on the
@@ -1028,6 +1104,85 @@ mod tests {
             "a",
             "selector-less press should reach the focused element"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_coord_maps_units_and_rejects_typographic() {
+        // Viewport 1000 × 500 CSS px.
+        let (vw, vh) = (1000.0, 500.0);
+        // vw/vh are always width/height.
+        assert_eq!(resolve_coord("40vw", Axis::X, vw, vh).unwrap(), 400.0);
+        assert_eq!(resolve_coord("30vh", Axis::Y, vw, vh).unwrap(), 150.0);
+        // % follows the axis.
+        assert_eq!(resolve_coord("50%", Axis::X, vw, vh).unwrap(), 500.0);
+        assert_eq!(resolve_coord("50%", Axis::Y, vw, vh).unwrap(), 250.0);
+        // px passes through unchanged.
+        assert_eq!(resolve_coord("640px", Axis::X, vw, vh).unwrap(), 640.0);
+        // Out-of-range clamps to the viewport.
+        assert_eq!(resolve_coord("150vw", Axis::X, vw, vh).unwrap(), 1000.0);
+        assert_eq!(resolve_coord("-10px", Axis::Y, vw, vh).unwrap(), 0.0);
+        // Typographic units and bare numbers are rejected.
+        assert!(resolve_coord("25rem", Axis::X, vw, vh).is_err());
+        assert!(resolve_coord("2em", Axis::Y, vw, vh).is_err());
+        assert!(resolve_coord("640", Axis::X, vw, vh).is_err());
+    }
+
+    #[tokio::test]
+    async fn coordinate_units_map_to_the_same_css_pixel() -> Result<()> {
+        // A full-viewport pad that records the CSS-pixel coords of the last click.
+        let html = concat!(
+            "<html><head><title>Pad</title></head><body style=\"margin:0\">",
+            "<div id=\"pad\" style=\"position:fixed;inset:0\" ",
+            "onclick=\"document.getElementById('hit').innerText=Math.round(event.clientX)+','+Math.round(event.clientY)\"></div>",
+            "<span id=\"hit\" style=\"position:fixed;right:0;bottom:0\"></span>",
+            "</body></html>"
+        );
+        let url = format!(
+            "data:text/html;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(html)
+        );
+
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        {
+            let mut context = fixture.context();
+            let mut nav = BrowserNavigateInput { url, profile: None };
+            BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+        }
+
+        let session = fixture
+            .browser_sessions()
+            .unwrap()
+            .get_by_label("default")
+            .unwrap();
+        let (vw, vh) = session.viewport_size().await?;
+        assert!(vw > 0.0 && vh > 0.0, "viewport size should be known");
+
+        // The centre of the viewport, expressed three ways, must land on the
+        // same CSS pixel (±1 for rounding).
+        let (cx, cy) = ((vw / 2.0).round(), (vh / 2.0).round());
+        for (xu, yu) in [
+            ("50%".to_string(), "50%".to_string()),
+            ("50vw".to_string(), "50vh".to_string()),
+            (format!("{cx}px"), format!("{cy}px")),
+        ] {
+            session
+                .eval("document.getElementById('hit').innerText=''")
+                .await?;
+            let px = resolve_coord(&xu, Axis::X, vw, vh)?;
+            let py = resolve_coord(&yu, Axis::Y, vw, vh)?;
+            session.click_at(px, py).await?;
+            let hit = session
+                .eval("document.getElementById('hit').innerText")
+                .await?;
+            let got = hit.as_str().unwrap_or_default().to_string();
+            let parts: Vec<f64> = got.split(',').filter_map(|s| s.parse().ok()).collect();
+            assert_eq!(parts.len(), 2, "click {xu},{yu} recorded '{got}'");
+            assert!(
+                (parts[0] - cx).abs() <= 1.0 && (parts[1] - cy).abs() <= 1.0,
+                "unit {xu}/{yu} should land at centre {cx},{cy}, got {got}"
+            );
+        }
         Ok(())
     }
 

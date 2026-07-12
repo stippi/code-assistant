@@ -121,6 +121,13 @@ pub struct PageObservation {
     /// instead of guessing from the screenshot.
     #[serde(default)]
     pub elements: Vec<InteractiveElement>,
+    /// Viewport size in CSS pixels (`window.innerWidth`/`innerHeight`). Disclosed
+    /// so the model can express coordinate clicks in `px` — it cannot read the
+    /// true size off a screenshot the API has already resized.
+    #[serde(default)]
+    pub viewport_width: f64,
+    #[serde(default)]
+    pub viewport_height: f64,
 }
 
 /// One live page on a launched browser, driven across many tool calls.
@@ -222,12 +229,28 @@ impl BrowserSession {
                 .unwrap_or_default(),
             Err(_) => Vec::new(),
         };
+        let (viewport_width, viewport_height) = self.viewport_size().await.unwrap_or((0.0, 0.0));
         Ok(PageObservation {
             url,
             title,
             text,
             elements,
+            viewport_width,
+            viewport_height,
         })
+    }
+
+    /// The viewport size in CSS pixels — the reference frame for coordinate
+    /// clicks (CDP mouse events use CSS pixels, so a coordinate resolved against
+    /// this lands where intended regardless of screenshot scaling or DPR).
+    pub async fn viewport_size(&self) -> Result<(f64, f64)> {
+        let dims = self
+            .page
+            .evaluate("[window.innerWidth, window.innerHeight]")
+            .await?
+            .into_value::<(f64, f64)>()
+            .unwrap_or((0.0, 0.0));
+        Ok(dims)
     }
 
     /// Find an element, turning chromiumoxide's opaque CDP miss ("Could not
