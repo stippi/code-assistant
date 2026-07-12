@@ -15,6 +15,7 @@
 //!   with meaningful visual output (e.g. `execute_command`, `edit`).
 
 pub mod animated_card;
+pub mod browser_card;
 pub mod code_card;
 pub mod diff_card;
 pub mod inline_renderer;
