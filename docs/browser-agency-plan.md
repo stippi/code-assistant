@@ -181,8 +181,11 @@ this plan covers only the former.
 ## Rollout (suggested checkpoints)
 
 **Status (2026-07-12):** checkpoints 1–4 landed on `feature/browser-agency`
-(engine + tools + login handoff, all with tests). Checkpoint 5 (pal wiring) and
-the outward-gating note below remain.
+(engine + tools + login handoff, all with tests), plus three capability
+follow-ups: **CP-A** scroll action + full-page screenshot, **CP-B** interactive
+element/selector discovery in `observe`/`read`, **CP-C** coordinate-based
+interactions (`click_xy`, `move_xy`, selector-less `press`). Checkpoint 5 (pal
+wiring) and the outward-gating note below remain.
 
 Following the repo's TDD/checkpoint working style — each step compiles, is
 tested, and is committable on its own:
@@ -220,9 +223,11 @@ its own explicit handoff request, independent of the tier.
 
 ## Open questions
 
-- **Selector strategy for the model:** screenshot-coordinate clicks vs.
-  accessibility-tree node ids vs. CSS selectors. Likely a mix; the AX tree gives
-  stable handles that pair well with vision. Decide during step 2.
+- **Selector strategy for the model:** *(resolved — CP-B/CP-C)* a mix, as
+  expected. `observe`/`read` surface a bounded list of interactive elements with
+  CSS selectors (`#id` preferred, else an `:nth-of-type` path) and role/label, so
+  the model targets stable selectors; coordinate clicks (`click_xy`/`move_xy`) and
+  selector-less `press` cover canvas/WebGL/game surfaces that have no selectors.
 - **Session-expiry detection:** how the agent recognizes it has been logged out
   (redirect to login URL, a known selector) and re-triggers `login_handoff`
   instead of flailing.

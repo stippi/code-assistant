@@ -385,8 +385,14 @@ pub enum BrowserAction {
     /// Focus a field and type text into it. Not for credentials — use
     /// `browser_login` for those.
     Type { selector: String, text: String },
-    /// Press a key (e.g. "Enter") on the element matching the selector.
-    Press { selector: String, key: String },
+    /// Press a key (e.g. "Enter") on the element matching the selector. The
+    /// element is focused first. Omit `selector` to send the key to whatever is
+    /// currently focused (e.g. arrow keys for a focused game canvas).
+    Press {
+        #[serde(default)]
+        selector: Option<String>,
+        key: String,
+    },
     /// Wait until an element appears (or the timeout elapses).
     WaitFor {
         selector: String,
@@ -403,6 +409,12 @@ pub enum BrowserAction {
         #[serde(default)]
         dy: Option<f64>,
     },
+    /// Click at viewport coordinates `(x, y)`. For canvas/WebGL surfaces and
+    /// anything without a stable selector (games, maps, drag targets).
+    ClickXy { x: f64, y: f64 },
+    /// Move the mouse to viewport coordinates `(x, y)` without clicking — drives
+    /// hover states and canvas pointer-move handlers.
+    MoveXy { x: f64, y: f64 },
 }
 
 #[derive(Deserialize, Serialize)]
@@ -419,7 +431,10 @@ impl BrowserActTool {
         match action {
             BrowserAction::Click { selector } => session.click(selector).await,
             BrowserAction::Type { selector, text } => session.type_text(selector, text).await,
-            BrowserAction::Press { selector, key } => session.press_key(selector, key).await,
+            BrowserAction::Press { selector, key } => match selector {
+                Some(sel) => session.press_key(sel, key).await,
+                None => session.press_key_global(key).await,
+            },
             BrowserAction::WaitFor {
                 selector,
                 timeout_ms,
@@ -437,6 +452,8 @@ impl BrowserActTool {
                     .scroll(selector.as_deref(), dx.unwrap_or(0.0), dy.unwrap_or(0.0))
                     .await
             }
+            BrowserAction::ClickXy { x, y } => session.click_at(*x, *y).await,
+            BrowserAction::MoveXy { x, y } => session.move_mouse(*x, *y).await,
         }
     }
 }
@@ -451,14 +468,20 @@ impl Tool for BrowserActTool {
             name: "browser_act".into(),
             description: concat!(
                 "Interact with the current page of a browser profile: a sequence of ",
-                "click / type / press / wait_for / scroll steps, executed in order. Returns a ",
-                "screenshot and text of the resulting page.\n",
+                "click / type / press / wait_for / scroll / click_xy / move_xy steps, executed ",
+                "in order. Returns a screenshot and text of the resulting page.\n",
                 "Each action is an object with one key: {\"click\": {\"selector\": \"#go\"}}, ",
                 "{\"type\": {\"selector\": \"#user\", \"text\": \"hello\"}}, ",
-                "{\"press\": {\"selector\": \"#user\", \"key\": \"Enter\"}}, ",
-                "{\"wait_for\": {\"selector\": \"#result\", \"timeout_ms\": 5000}}, or ",
+                "{\"press\": {\"selector\": \"#user\", \"key\": \"Enter\"}} (omit selector to send ",
+                "the key to whatever is focused, e.g. arrow keys for a game canvas), ",
+                "{\"wait_for\": {\"selector\": \"#result\", \"timeout_ms\": 5000}}, ",
                 "{\"scroll\": {\"dy\": 600}} (scroll down 600px) / {\"scroll\": {\"selector\": \"#footer\"}} ",
-                "(scroll an element into view).\n",
+                "(scroll an element into view), ",
+                "{\"click_xy\": {\"x\": 120, \"y\": 340}} (click at viewport pixels, for canvas/WebGL ",
+                "surfaces without selectors), or {\"move_xy\": {\"x\": 120, \"y\": 340}} (move the mouse ",
+                "for hover/pointer-move).\n",
+                "Prefer selectors when available (see the interactive-element list from a read); ",
+                "use coordinates only for canvas/game surfaces. ",
                 "Do not type passwords or 2FA codes here — use browser_login."
             )
             .into(),
@@ -473,9 +496,11 @@ impl Tool for BrowserActTool {
                             "properties": {
                                 "click": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
                                 "type": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]},
-                                "press": {"type": "object", "properties": {"selector": {"type": "string"}, "key": {"type": "string"}}, "required": ["selector", "key"]},
+                                "press": {"type": "object", "properties": {"selector": {"type": "string"}, "key": {"type": "string"}}, "required": ["key"]},
                                 "wait_for": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout_ms": {"type": "integer"}}, "required": ["selector"]},
-                                "scroll": {"type": "object", "properties": {"selector": {"type": "string"}, "dx": {"type": "number"}, "dy": {"type": "number"}}}
+                                "scroll": {"type": "object", "properties": {"selector": {"type": "string"}, "dx": {"type": "number"}, "dy": {"type": "number"}}},
+                                "click_xy": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]},
+                                "move_xy": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]}
                             }
                         }
                     },
@@ -925,6 +950,84 @@ mod tests {
         // A full-page screenshot succeeds (captures beyond the viewport).
         let png = session.screenshot(true).await?;
         assert!(png.starts_with(b"\x89PNG"), "full-page screenshot is a PNG");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn coordinate_click_and_global_key_reach_the_page() -> Result<()> {
+        // A full-viewport surface that records the last click's coordinates, plus
+        // a focused input that records the last key it received. No selectors on
+        // the click target — coordinates are the only way to hit it.
+        let html = concat!(
+            "<html><head><title>Canvas</title></head>",
+            "<body style=\"margin:0\">",
+            "<div id=\"pad\" style=\"position:absolute;left:0;top:0;width:300px;height:300px\" ",
+            "onclick=\"document.getElementById('hit').innerText=Math.round(event.clientX)+','+Math.round(event.clientY)\"></div>",
+            "<span id=\"hit\"></span>",
+            "<input id=\"field\" style=\"position:absolute;left:0;top:320px\" ",
+            "onkeydown=\"document.getElementById('key').innerText=event.key\">",
+            "<span id=\"key\" style=\"position:absolute;left:0;top:360px\"></span>",
+            "</body></html>"
+        );
+        let url = format!(
+            "data:text/html;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(html)
+        );
+
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        {
+            let mut context = fixture.context();
+            let mut nav = BrowserNavigateInput { url, profile: None };
+            BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+
+            // Click at coordinates inside the pad; the handler records them.
+            let mut act = BrowserActInput {
+                actions: vec![BrowserAction::ClickXy { x: 120.0, y: 80.0 }],
+                profile: None,
+            };
+            let out = BrowserActTool.execute(&mut context, &mut act).await?;
+            assert!(out.error.is_none(), "click_xy error: {:?}", out.error);
+        }
+
+        let session = fixture
+            .browser_sessions()
+            .unwrap()
+            .get_by_label("default")
+            .unwrap();
+        let hit = session
+            .eval("document.getElementById('hit').innerText")
+            .await?;
+        assert_eq!(
+            hit.as_str().unwrap_or_default(),
+            "120,80",
+            "click_xy should land at the given viewport coordinates"
+        );
+
+        // Focus the field, then a global key press (no selector) lands on the
+        // focused element.
+        session
+            .eval("document.getElementById('field').focus()")
+            .await?;
+        {
+            let mut context = fixture.context();
+            let mut act = BrowserActInput {
+                actions: vec![BrowserAction::Press {
+                    selector: None,
+                    key: "a".into(),
+                }],
+                profile: None,
+            };
+            let out = BrowserActTool.execute(&mut context, &mut act).await?;
+            assert!(out.error.is_none(), "global press error: {:?}", out.error);
+        }
+        let key = session
+            .eval("document.getElementById('key').innerText")
+            .await?;
+        assert_eq!(
+            key.as_str().unwrap_or_default(),
+            "a",
+            "selector-less press should reach the focused element"
+        );
         Ok(())
     }
 

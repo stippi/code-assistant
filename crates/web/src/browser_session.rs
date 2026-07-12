@@ -15,6 +15,7 @@ use crate::browser::LaunchedBrowser;
 use anyhow::Result;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::element::Element;
+use chromiumoxide::layout::Point;
 use chromiumoxide::page::{Page, ScreenshotParams};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -244,6 +245,20 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Click at viewport coordinates `(x, y)`. For canvas/WebGL surfaces and
+    /// anything without a stable selector (games, maps, drag targets).
+    pub async fn click_at(&self, x: f64, y: f64) -> Result<()> {
+        self.page.click(Point { x, y }).await?;
+        Ok(())
+    }
+
+    /// Move the mouse to viewport coordinates `(x, y)` without clicking — drives
+    /// hover states and canvas pointer-move handlers.
+    pub async fn move_mouse(&self, x: f64, y: f64) -> Result<()> {
+        self.page.move_mouse(Point { x, y }).await?;
+        Ok(())
+    }
+
     /// Focus a field and type text into it. Never used for credentials — those
     /// go through the human-in-the-loop login handoff.
     pub async fn type_text(&self, selector: &str, text: &str) -> Result<()> {
@@ -253,9 +268,22 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Press a key (e.g. `"Enter"`) on the element matching a selector.
+    /// Press a key (e.g. `"Enter"`) on the element matching a selector. The
+    /// element is focused first so the key event lands on it — CDP dispatches
+    /// key events to whatever currently has focus, not to a named node.
     pub async fn press_key(&self, selector: &str, key: &str) -> Result<()> {
-        self.find(selector).await?.press_key(key).await?;
+        let element = self.find(selector).await?;
+        element.focus().await?;
+        element.press_key(key).await?;
+        Ok(())
+    }
+
+    /// Press a key without targeting a selector — it goes to whatever element
+    /// currently has focus (e.g. arrow keys for a focused game canvas). Routed
+    /// through `<body>` only because CDP needs a node to dispatch from; the key
+    /// still lands on the focused element.
+    pub async fn press_key_global(&self, key: &str) -> Result<()> {
+        self.find("body").await?.press_key(key).await?;
         Ok(())
     }
 
