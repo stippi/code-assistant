@@ -92,6 +92,14 @@ pub trait ToolBlockRenderer: Send + Sync {
     /// Whether this tool renders as inline or card.
     fn style(&self) -> ToolBlockStyle;
 
+    /// Whether the block starts collapsed when there is no stored user override.
+    /// Inline tools start collapsed, cards start expanded; a card renderer can
+    /// override this to start collapsed (e.g. browser cards, so a run's many
+    /// screenshots don't flood the transcript until expanded).
+    fn starts_collapsed(&self) -> bool {
+        self.style() == ToolBlockStyle::Inline
+    }
+
     /// Generate a one-line description from parameters (for inline tools).
     fn describe(&self, tool: &ToolUseBlock) -> String {
         tool.name.clone()

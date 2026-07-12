@@ -39,6 +39,12 @@ impl ToolBlockRenderer for BrowserCardRenderer {
         ToolBlockStyle::Card
     }
 
+    /// Start collapsed: a browsing run produces many screenshots, so the user
+    /// expands the step they care about rather than seeing them all at once.
+    fn starts_collapsed(&self) -> bool {
+        true
+    }
+
     fn describe(&self, tool: &ToolUseBlock) -> String {
         describe(tool)
     }

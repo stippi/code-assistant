@@ -329,14 +329,17 @@ impl MessageContainer {
         {
             override_state
         } else {
-            let is_card = crate::tool_cards::ToolBlockRendererRegistry::global()
+            // No renderer (unknown tool) → collapsed; otherwise ask the
+            // renderer (cards expanded by default, browser cards collapsed).
+            let starts_collapsed = crate::tool_cards::ToolBlockRendererRegistry::global()
                 .as_ref()
                 .and_then(|registry| registry.get(&name).cloned())
-                .is_some_and(|r| r.style() == crate::tool_cards::ToolBlockStyle::Card);
-            if is_card {
-                ToolBlockState::Expanded
-            } else {
+                .map(|r| r.starts_collapsed())
+                .unwrap_or(true);
+            if starts_collapsed {
                 ToolBlockState::Collapsed
+            } else {
+                ToolBlockState::Expanded
             }
         };
 
