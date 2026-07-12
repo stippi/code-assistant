@@ -21,6 +21,93 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
+/// JS that discovers the actionable elements on the page and returns them as an
+/// array of `{selector, role, label}`. Best-effort: it prefers `#id` selectors,
+/// falls back to an `:nth-of-type` path, skips hidden/disabled elements, and is
+/// bounded so a huge page can't blow up the observation.
+const DISCOVER_ELEMENTS_JS: &str = r#"
+(() => {
+  const MAX = 40;
+  const SEL = 'a,button,input,textarea,select,summary,[role=button],[role=link],[role=checkbox],[role=tab],[role=menuitem],[onclick],[tabindex]';
+  const seen = new Set();
+  const out = [];
+
+  const visible = (el) => {
+    if (el.disabled) return false;
+    const rects = el.getClientRects();
+    if (!rects.length) return false;
+    const r = rects[0];
+    if (r.width < 1 || r.height < 1) return false;
+    const style = getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    return true;
+  };
+
+  const cssPath = (el) => {
+    if (el.id) return '#' + CSS.escape(el.id);
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && node.tagName !== 'HTML') {
+      let sel = node.tagName.toLowerCase();
+      if (node.id) { parts.unshift('#' + CSS.escape(node.id)); break; }
+      const parent = node.parentNode;
+      if (parent) {
+        const sameTag = Array.from(parent.children).filter(c => c.tagName === node.tagName);
+        if (sameTag.length > 1) {
+          sel += ':nth-of-type(' + (sameTag.indexOf(node) + 1) + ')';
+        }
+      }
+      parts.unshift(sel);
+      node = node.parentNode;
+    }
+    return parts.join(' > ');
+  };
+
+  const roleOf = (el) => {
+    const r = el.getAttribute('role');
+    if (r) return r;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input') return (el.getAttribute('type') || 'text');
+    return tag;
+  };
+
+  const labelOf = (el) => {
+    const pick = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    let l = pick(el.getAttribute('aria-label'));
+    if (!l) l = pick(el.textContent);
+    if (!l) l = pick(el.value);
+    if (!l) l = pick(el.getAttribute('placeholder'));
+    if (!l) l = pick(el.getAttribute('name'));
+    if (!l) l = pick(el.getAttribute('alt'));
+    if (!l) l = pick(el.getAttribute('title'));
+    return l.slice(0, 80);
+  };
+
+  for (const el of document.querySelectorAll(SEL)) {
+    if (out.length >= MAX) break;
+    if (!visible(el)) continue;
+    const selector = cssPath(el);
+    if (!selector || seen.has(selector)) continue;
+    seen.add(selector);
+    out.push({ selector, role: roleOf(el), label: labelOf(el) });
+  }
+  return out;
+})()
+"#;
+
+/// One actionable element discovered on the page, so the model can target it by
+/// selector instead of guessing.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InteractiveElement {
+    /// A CSS selector that resolves to this element (`#id` when available, else
+    /// an `:nth-of-type` path).
+    pub selector: String,
+    /// The element's ARIA role or tag name (button, a, input, checkbox, …).
+    pub role: String,
+    /// A short human label: visible text, aria-label, placeholder, name, …
+    pub label: String,
+}
+
 /// What the model sees after acting: where it is and what's on the page.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PageObservation {
@@ -29,6 +116,10 @@ pub struct PageObservation {
     /// Visible text (`document.body.innerText`), the cheap textual companion to
     /// a screenshot.
     pub text: String,
+    /// Actionable elements (bounded), so the model targets real selectors
+    /// instead of guessing from the screenshot.
+    #[serde(default)]
+    pub elements: Vec<InteractiveElement>,
 }
 
 /// One live page on a launched browser, driven across many tool calls.
@@ -111,7 +202,8 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Read the current location, title, and visible text.
+    /// Read the current location, title, visible text, and the actionable
+    /// elements on the page.
     pub async fn observe(&self) -> Result<PageObservation> {
         let url = self.page.url().await?.unwrap_or_default();
         let title = self.page.get_title().await?.unwrap_or_default();
@@ -121,7 +213,20 @@ impl BrowserSession {
             .await?
             .into_value::<String>()
             .unwrap_or_default();
-        Ok(PageObservation { url, title, text })
+        // Element discovery is best-effort: a failure (e.g. mid-navigation)
+        // just yields an empty list rather than failing the observation.
+        let elements = match self.page.evaluate(DISCOVER_ELEMENTS_JS).await {
+            Ok(v) => v
+                .into_value::<Vec<InteractiveElement>>()
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        Ok(PageObservation {
+            url,
+            title,
+            text,
+            elements,
+        })
     }
 
     /// Find an element, turning chromiumoxide's opaque CDP miss ("Could not

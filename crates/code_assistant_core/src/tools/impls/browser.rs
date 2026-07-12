@@ -163,10 +163,26 @@ impl Render for BrowserOutput {
             text.truncate(MAX);
             text.push_str("\n… (truncated; see screenshot for the rest)");
         }
-        format!(
+        let mut out = format!(
             "Profile: {}\nURL: {}\nTitle: {}\n\n{}",
             self.profile, obs.url, obs.title, text
-        )
+        );
+        // List the actionable elements with their selectors, so the model can
+        // target them directly with browser_act instead of guessing.
+        if !obs.elements.is_empty() {
+            out.push_str("\n\nInteractive elements:");
+            for el in &obs.elements {
+                if el.label.is_empty() {
+                    out.push_str(&format!("\n  [{}] {}", el.role, el.selector));
+                } else {
+                    out.push_str(&format!(
+                        "\n  [{}] \"{}\" → {}",
+                        el.role, el.label, el.selector
+                    ));
+                }
+            }
+        }
+        out
     }
 
     fn render_images(&self) -> Vec<ImageData> {
@@ -787,6 +803,18 @@ mod tests {
         let obs = out.observation.as_ref().expect("observation");
         assert_eq!(obs.title, "Login Demo");
         assert!(obs.text.contains("Welcome"), "text: {}", obs.text);
+        // The observation surfaces the actionable elements, and render() lists
+        // them with their selectors so the model can target them directly.
+        assert!(
+            obs.elements.iter().any(|e| e.selector == "#go"),
+            "should discover the submit button, got: {:?}",
+            obs.elements
+        );
+        let rendered = out.render(&mut ResourcesTracker::default());
+        assert!(
+            rendered.contains("Interactive elements:") && rendered.contains("#go"),
+            "render should list interactive elements, got:\n{rendered}"
+        );
         assert_eq!(
             out.render_images().len(),
             1,

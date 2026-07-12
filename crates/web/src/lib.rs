@@ -6,7 +6,7 @@ mod perplexity;
 mod tests;
 pub use browser::{BrowserLaunchConfig, BrowserProfile, LaunchedBrowser};
 pub use browser_session::{
-    BrowserSession, BrowserSessionInfo, BrowserSessionManager, PageObservation,
+    BrowserSession, BrowserSessionInfo, BrowserSessionManager, InteractiveElement, PageObservation,
     DEFAULT_MAX_SESSIONS,
 };
 pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};

@@ -97,6 +97,43 @@ async fn interactive_session_navigates_types_clicks_and_observes() {
     session.close().await;
 }
 
+/// observe() should surface the page's actionable elements with usable
+/// selectors, so the model can target them instead of guessing from a
+/// screenshot. The form page has a named input and a submit button.
+#[tokio::test]
+async fn observe_discovers_interactive_elements_with_selectors() {
+    let addr = spawn_form_site().await;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+
+    let obs = session.observe().await.unwrap();
+    assert!(
+        !obs.elements.is_empty(),
+        "should discover elements, got none"
+    );
+
+    // The text input has id=user → selector "#user".
+    let input = obs
+        .elements
+        .iter()
+        .find(|e| e.selector == "#user")
+        .expect("input #user should be discovered");
+    assert_eq!(input.role, "text", "input role from its type");
+
+    // The submit button has id=go, text "Go".
+    let button = obs
+        .elements
+        .iter()
+        .find(|e| e.selector == "#go")
+        .expect("button #go should be discovered");
+    assert_eq!(button.label, "Go", "button label from its text");
+
+    session.close().await;
+}
+
 /// A persistent profile must carry a logged-in session between launches — the
 /// foundation of "act as me". We prove it with a persistent cookie: set it in
 /// one browser, then read it back in a fresh browser on the same profile dir.
