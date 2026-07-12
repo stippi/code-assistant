@@ -68,12 +68,47 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Capture a PNG screenshot of the current viewport — the model's eyes.
-    pub async fn screenshot(&self) -> Result<Vec<u8>> {
+    /// Capture a PNG screenshot — the model's eyes. `full_page` captures the
+    /// entire scrollable page instead of just the current viewport.
+    pub async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>> {
         let params = ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
+            .full_page(full_page)
             .build();
         Ok(self.page.screenshot(params).await?)
+    }
+
+    /// Scroll the page. With a `selector`, scroll that element into view;
+    /// otherwise scroll by `(dx, dy)` pixels relative to the current position
+    /// (positive `dy` scrolls down). The selector is JSON-encoded into the
+    /// script, so it cannot break out of the string.
+    pub async fn scroll(&self, selector: Option<&str>, dx: f64, dy: f64) -> Result<()> {
+        match selector {
+            Some(sel) => {
+                let sel_json = serde_json::to_string(sel)?;
+                let js = format!(
+                    "(() => {{ const e = document.querySelector({sel_json}); \
+                     if (!e) return false; \
+                     e.scrollIntoView({{block: 'center', inline: 'center'}}); \
+                     return true; }})()"
+                );
+                let found = self
+                    .page
+                    .evaluate(js)
+                    .await?
+                    .into_value::<bool>()
+                    .unwrap_or(false);
+                if !found {
+                    anyhow::bail!("no element matches selector '{sel}'");
+                }
+            }
+            None => {
+                self.page
+                    .evaluate(format!("window.scrollBy({dx}, {dy})"))
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// Read the current location, title, and visible text.

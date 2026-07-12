@@ -81,7 +81,7 @@ async fn interactive_session_navigates_types_clicks_and_observes() {
     );
 
     // Screenshot returns real PNG bytes.
-    let png = session.screenshot().await.unwrap();
+    let png = session.screenshot(false).await.unwrap();
     assert!(png.starts_with(b"\x89PNG"), "screenshot should be a PNG");
 
     // Manager tracks the session by id and hands back the same instance.

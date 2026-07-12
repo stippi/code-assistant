@@ -118,13 +118,13 @@ impl BrowserOutput {
 
     /// Observe + screenshot the session into a success output. Any capture
     /// error is folded into `error` rather than failing the whole tool call.
-    async fn capture(profile: &str, session: &BrowserSession) -> Self {
+    async fn capture(profile: &str, session: &BrowserSession, full_page: bool) -> Self {
         // Let a navigation triggered by the preceding action settle first, so
         // the text (`observe`) and the screenshot show the same page rather
         // than racing a mid-transition document.
         session.settle().await;
         let observation = session.observe().await.ok();
-        let screenshot_base64 = match session.screenshot().await {
+        let screenshot_base64 = match session.screenshot(full_page).await {
             Ok(png) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
             Err(_) => None,
         };
@@ -283,7 +283,7 @@ impl Tool for BrowserNavigateTool {
                 format!("Navigation failed: {e}"),
             ));
         }
-        Ok(BrowserOutput::capture(&profile, &session).await)
+        Ok(BrowserOutput::capture(&profile, &session, false).await)
     }
 }
 
@@ -295,6 +295,9 @@ impl Tool for BrowserNavigateTool {
 pub struct BrowserReadInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Capture the entire scrollable page instead of just the viewport.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_page: bool,
 }
 
 pub struct BrowserReadTool;
@@ -318,7 +321,8 @@ impl Tool for BrowserReadTool {
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
-                    "profile": {"type": "string", "description": "Profile to read; omit for the throwaway browser"}
+                    "profile": {"type": "string", "description": "Profile to read; omit for the throwaway browser"},
+                    "full_page": {"type": "boolean", "description": "Capture the whole scrollable page instead of just the viewport"}
                 }
             }),
             annotations: Some(json!({"readOnlyHint": true})),
@@ -343,7 +347,7 @@ impl Tool for BrowserReadTool {
             return Ok(BrowserOutput::unavailable(&profile));
         };
         match manager.get_by_label(&profile) {
-            Some(session) => Ok(BrowserOutput::capture(&profile, &session).await),
+            Some(session) => Ok(BrowserOutput::capture(&profile, &session, input.full_page).await),
             None => Ok(BrowserOutput::failure(
                 &profile,
                 "No open browser for this profile. Use browser_navigate first.",
@@ -372,6 +376,16 @@ pub enum BrowserAction {
         selector: String,
         #[serde(default)]
         timeout_ms: Option<u64>,
+    },
+    /// Scroll the page: with `selector`, scroll that element into view;
+    /// otherwise scroll by `(dx, dy)` pixels (positive `dy` scrolls down).
+    Scroll {
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        dx: Option<f64>,
+        #[serde(default)]
+        dy: Option<f64>,
     },
 }
 
@@ -402,6 +416,11 @@ impl BrowserActTool {
                     Err(anyhow::anyhow!("timed out waiting for '{selector}'"))
                 }
             }
+            BrowserAction::Scroll { selector, dx, dy } => {
+                session
+                    .scroll(selector.as_deref(), dx.unwrap_or(0.0), dy.unwrap_or(0.0))
+                    .await
+            }
         }
     }
 }
@@ -416,12 +435,14 @@ impl Tool for BrowserActTool {
             name: "browser_act".into(),
             description: concat!(
                 "Interact with the current page of a browser profile: a sequence of ",
-                "click / type / press / wait_for steps, executed in order. Returns a ",
+                "click / type / press / wait_for / scroll steps, executed in order. Returns a ",
                 "screenshot and text of the resulting page.\n",
                 "Each action is an object with one key: {\"click\": {\"selector\": \"#go\"}}, ",
                 "{\"type\": {\"selector\": \"#user\", \"text\": \"hello\"}}, ",
-                "{\"press\": {\"selector\": \"#user\", \"key\": \"Enter\"}}, or ",
-                "{\"wait_for\": {\"selector\": \"#result\", \"timeout_ms\": 5000}}.\n",
+                "{\"press\": {\"selector\": \"#user\", \"key\": \"Enter\"}}, ",
+                "{\"wait_for\": {\"selector\": \"#result\", \"timeout_ms\": 5000}}, or ",
+                "{\"scroll\": {\"dy\": 600}} (scroll down 600px) / {\"scroll\": {\"selector\": \"#footer\"}} ",
+                "(scroll an element into view).\n",
                 "Do not type passwords or 2FA codes here — use browser_login."
             )
             .into(),
@@ -437,7 +458,8 @@ impl Tool for BrowserActTool {
                                 "click": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
                                 "type": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]},
                                 "press": {"type": "object", "properties": {"selector": {"type": "string"}, "key": {"type": "string"}}, "required": ["selector", "key"]},
-                                "wait_for": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout_ms": {"type": "integer"}}, "required": ["selector"]}
+                                "wait_for": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout_ms": {"type": "integer"}}, "required": ["selector"]},
+                                "scroll": {"type": "object", "properties": {"selector": {"type": "string"}, "dx": {"type": "number"}, "dy": {"type": "number"}}}
                             }
                         }
                     },
@@ -477,12 +499,12 @@ impl Tool for BrowserActTool {
             if let Err(e) = Self::run_action(&session, action).await {
                 // Capture the page as it stands so the model can see where the
                 // sequence stopped, but report the failing step.
-                let mut out = BrowserOutput::capture(&profile, &session).await;
+                let mut out = BrowserOutput::capture(&profile, &session, false).await;
                 out.error = Some(format!("Action {} failed: {e}", i + 1));
                 return Ok(out);
             }
         }
-        Ok(BrowserOutput::capture(&profile, &session).await)
+        Ok(BrowserOutput::capture(&profile, &session, false).await)
     }
 }
 
@@ -628,7 +650,7 @@ async fn login_handoff(
         PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession => {
             // Keep the now-authenticated session for reuse by the other tools.
             manager.register(session.clone(), profile);
-            Ok(BrowserOutput::capture(profile, &session).await)
+            Ok(BrowserOutput::capture(profile, &session, false).await)
         }
     }
 }
@@ -793,7 +815,10 @@ mod tests {
         assert!(out.error.is_none(), "act error: {:?}", out.error);
 
         // Read: the typed value round-tripped into the page.
-        let mut read = BrowserReadInput { profile: None };
+        let mut read = BrowserReadInput {
+            profile: None,
+            full_page: false,
+        };
         let out = BrowserReadTool.execute(&mut context, &mut read).await?;
         let obs = out.observation.as_ref().expect("observation");
         assert!(
@@ -818,10 +843,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scroll_moves_the_viewport_and_full_page_capture_works() -> Result<()> {
+        // A page much taller than the viewport.
+        let html = "<html><body style=\"height:5000px;margin:0\">\
+                    <div id=\"top\">TOP</div>\
+                    <div id=\"bottom\" style=\"position:absolute;top:4500px\">BOTTOM</div>\
+                    </body></html>";
+        let url = format!(
+            "data:text/html;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(html)
+        );
+
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        {
+            let mut context = fixture.context();
+            let mut nav = BrowserNavigateInput { url, profile: None };
+            BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+
+            // Scroll down by pixels.
+            let mut act = BrowserActInput {
+                actions: vec![BrowserAction::Scroll {
+                    selector: None,
+                    dx: None,
+                    dy: Some(1200.0),
+                }],
+                profile: None,
+            };
+            let out = BrowserActTool.execute(&mut context, &mut act).await?;
+            assert!(out.error.is_none(), "scroll error: {:?}", out.error);
+        }
+
+        let session = fixture
+            .browser_sessions()
+            .unwrap()
+            .get_by_label("default")
+            .unwrap();
+
+        // The viewport actually moved down.
+        let y = session.eval("window.scrollY").await?;
+        assert!(
+            y.as_f64().unwrap_or(0.0) >= 900.0,
+            "page should have scrolled down, scrollY={y}"
+        );
+
+        // Scrolling an element into view reaches the bottom element.
+        session.scroll(Some("#bottom"), 0.0, 0.0).await?;
+        let y2 = session.eval("window.scrollY").await?;
+        assert!(
+            y2.as_f64().unwrap_or(0.0) > 3000.0,
+            "scroll-into-view should reach the bottom element, scrollY={y2}"
+        );
+
+        // A full-page screenshot succeeds (captures beyond the viewport).
+        let png = session.screenshot(true).await?;
+        assert!(png.starts_with(b"\x89PNG"), "full-page screenshot is a PNG");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn acting_without_an_open_browser_is_a_clear_error() -> Result<()> {
         let mut fixture = ToolTestFixture::new().with_browser_sessions();
         let mut context = fixture.context();
-        let mut read = BrowserReadInput { profile: None };
+        let mut read = BrowserReadInput {
+            profile: None,
+            full_page: false,
+        };
         let out = BrowserReadTool.execute(&mut context, &mut read).await?;
         assert!(out.error.unwrap().contains("browser_navigate"));
         Ok(())
