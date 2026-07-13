@@ -110,7 +110,10 @@ fn generate_tool_diff_lines(tool_block: &ToolUseBlock) -> Vec<DiffLine> {
             if old.is_empty() && new.is_empty() {
                 return Vec::new();
             }
-            generate_diff_lines(old, new)
+            // Real file line numbers come from the tool output (after execution);
+            // before that the diff is numbered from 1.
+            let start_line = parse_match_start_lines(tool_block).first().copied();
+            generate_diff_lines(old, new, start_line)
         }
         "replace_in_file" => {
             let diff = tool_block
@@ -121,7 +124,8 @@ fn generate_tool_diff_lines(tool_block: &ToolUseBlock) -> Vec<DiffLine> {
             if diff.is_empty() {
                 return Vec::new();
             }
-            generate_search_replace_diff_lines(diff)
+            let start_lines = parse_match_start_lines(tool_block);
+            generate_search_replace_diff_lines(diff, &start_lines)
         }
 
         "write_file" => {
@@ -144,7 +148,8 @@ fn generate_tool_diff_lines(tool_block: &ToolUseBlock) -> Vec<DiffLine> {
                         .map(String::from)
                 });
             if let Some(ref original) = original_content {
-                generate_diff_lines(original, content)
+                // Overwriting an existing file — diff the whole file from line 1.
+                generate_diff_lines(original, content, Some(1))
             } else {
                 generate_write_file_diff_lines(content)
             }
@@ -153,15 +158,55 @@ fn generate_tool_diff_lines(tool_block: &ToolUseBlock) -> Vec<DiffLine> {
     }
 }
 
+/// Extract match start line numbers from the tool's output JSON.
+///
+/// After execution, `edit` and `replace_in_file` emit their output as JSON
+/// containing a `match_start_lines` array (see `edit.rs::render_for_ui`), which
+/// gives the real file offsets the change was applied at. Returns an empty vec
+/// when the output is missing or not yet available (streaming).
+fn parse_match_start_lines(tool_block: &ToolUseBlock) -> Vec<usize> {
+    tool_block
+        .output
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("match_start_lines").cloned())
+        .and_then(|v| serde_json::from_value::<Vec<usize>>(v).ok())
+        .unwrap_or_default()
+}
+
+/// Normalize text for diff display.
+///
+/// LLMs frequently emit a spurious leading `\n` and inconsistent trailing
+/// newlines across the old/new sides of an edit. We strip one leading `\n` and
+/// any trailing `\n`, then re-add exactly one trailing `\n`, so `TextDiff` with
+/// `newline_terminated(true)` treats the last line consistently and does not
+/// report an unchanged final line as a delete+insert. Interior blank lines
+/// (intentional insertions) are preserved.
+pub fn normalize_for_diff(text: &str) -> String {
+    let trimmed = text.strip_prefix('\n').unwrap_or(text);
+    let trimmed = trimmed.strip_suffix('\n').unwrap_or(trimmed);
+    format!("{trimmed}\n")
+}
+
 /// Generate diff lines from old/new text using the `similar` crate.
-pub fn generate_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
+///
+/// `start_line` is the 1-based file line the change begins at (from the tool's
+/// `match_start_lines`); `None` numbers from line 1.
+pub fn generate_diff_lines(
+    old_text: &str,
+    new_text: &str,
+    start_line: Option<usize>,
+) -> Vec<DiffLine> {
+    let old_norm = normalize_for_diff(old_text);
+    let new_norm = normalize_for_diff(new_text);
     let diff = TextDiff::configure()
         .newline_terminated(true)
-        .diff_lines(old_text, new_text);
+        .diff_lines(&old_norm, &new_norm);
 
+    let base = start_line.unwrap_or(1);
     let mut lines = Vec::new();
-    let mut old_ln: usize = 1;
-    let mut new_ln: usize = 1;
+    let mut old_ln: usize = base;
+    let mut new_ln: usize = base;
 
     for change in diff.iter_all_changes() {
         let text = change.value().trim_end_matches('\n').to_string();
@@ -195,7 +240,13 @@ pub fn generate_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
 
 /// Parse the `<<<<<<< SEARCH` / `=======` / `>>>>>>> REPLACE` format used by
 /// `replace_in_file` and emit diff lines.
-pub fn generate_search_replace_diff_lines(diff_param: &str) -> Vec<DiffLine> {
+///
+/// `start_lines[i]` is the real file line the i-th block was matched at (from
+/// the tool's `match_start_lines`); blocks without an entry number from 1.
+pub fn generate_search_replace_diff_lines(
+    diff_param: &str,
+    start_lines: &[usize],
+) -> Vec<DiffLine> {
     let mut lines = Vec::new();
     let mut block_idx: usize = 0;
 
@@ -222,18 +273,19 @@ pub fn generate_search_replace_diff_lines(diff_param: &str) -> Vec<DiffLine> {
         }
         if raw.starts_with(">>>>>>> REPLACE") && in_replace {
             in_replace = false;
+            let base = start_lines.get(block_idx).copied().unwrap_or(1);
             block_idx += 1;
-            // Emit search lines as deletions
+            // Emit search lines as deletions, numbered from the match offset.
             for (i, s) in search_lines.iter().enumerate() {
                 lines.push(DiffLine::Delete {
-                    line_num: i + 1,
+                    line_num: base + i,
                     text: s.clone(),
                 });
             }
-            // Emit replace lines as insertions
+            // Emit replace lines as insertions, numbered from the match offset.
             for (i, r) in replace_lines.iter().enumerate() {
                 lines.push(DiffLine::Insert {
-                    line_num: i + 1,
+                    line_num: base + i,
                     text: r.clone(),
                 });
             }
@@ -496,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_edit_diff_lines() {
-        let lines = generate_diff_lines("hello\nworld\n", "hello\nearth\n");
+        let lines = generate_diff_lines("hello\nworld\n", "hello\nearth\n", None);
         assert_eq!(lines.len(), 3); // context + delete + insert
         match &lines[0] {
             DiffLine::Context { line_num, text } => {
@@ -518,7 +570,7 @@ mod tests {
     #[test]
     fn test_search_replace_diff_lines() {
         let diff = "<<<<<<< SEARCH\nold line 1\nold line 2\n=======\nnew line 1\n>>>>>>> REPLACE";
-        let lines = generate_search_replace_diff_lines(diff);
+        let lines = generate_search_replace_diff_lines(diff, &[]);
         assert_eq!(lines.len(), 3);
         match &lines[0] {
             DiffLine::Delete { text, .. } => assert_eq!(text, "old line 1"),
@@ -537,10 +589,67 @@ mod tests {
     #[test]
     fn test_search_replace_multiple_blocks() {
         let diff = "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n<<<<<<< SEARCH\nc\n=======\nd\n>>>>>>> REPLACE";
-        let lines = generate_search_replace_diff_lines(diff);
+        let lines = generate_search_replace_diff_lines(diff, &[]);
         // block1: Delete(a), Insert(b), HunkSeparator, block2: Delete(c), Insert(d)
         assert_eq!(lines.len(), 5);
         matches!(&lines[2], DiffLine::HunkSeparator);
+    }
+
+    #[test]
+    fn test_edit_diff_uses_match_start_line_and_no_trailing_newline_artifact() {
+        // An edit at line 90: old_text lacks a trailing newline (typical LLM
+        // output). The unchanged first line must NOT show as delete+insert, and
+        // line numbers must start at the real file offset (90), not 1.
+        let lines = generate_diff_lines(
+            "their tools.",
+            "their tools.\n- **Browser sessions:** drives a browser",
+            Some(90),
+        );
+        assert_eq!(lines.len(), 2, "expected one context + one insert");
+        match &lines[0] {
+            DiffLine::Context { line_num, text } => {
+                assert_eq!(*line_num, 90);
+                assert_eq!(text, "their tools.");
+            }
+            _ => panic!("expected Context, got a delete/insert artifact"),
+        }
+        match &lines[1] {
+            DiffLine::Insert { line_num, text } => {
+                assert_eq!(*line_num, 91);
+                assert_eq!(text, "- **Browser sessions:** drives a browser");
+            }
+            _ => panic!("expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_generate_tool_diff_lines_reads_match_start_from_output() {
+        let mut tool = make_tool(
+            "edit",
+            &[
+                ("file_path", "README.md"),
+                ("old_text", "their tools."),
+                ("new_text", "their tools.\n- **Browser sessions**"),
+            ],
+        );
+        tool.output = Some(r#"{"match_start_lines":[91]}"#.to_string());
+        let lines = generate_tool_diff_lines(&tool);
+        assert_eq!(lines.len(), 2);
+        match &lines[0] {
+            DiffLine::Context { line_num, .. } => assert_eq!(*line_num, 91),
+            _ => panic!("expected Context at line 91"),
+        }
+        match &lines[1] {
+            DiffLine::Insert { line_num, .. } => assert_eq!(*line_num, 92),
+            _ => panic!("expected Insert at line 92"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_for_diff_strips_and_pads() {
+        assert_eq!(normalize_for_diff("\nfoo\n"), "foo\n");
+        assert_eq!(normalize_for_diff("foo"), "foo\n");
+        assert_eq!(normalize_for_diff("foo\nbar"), "foo\nbar\n");
     }
 
     #[test]
