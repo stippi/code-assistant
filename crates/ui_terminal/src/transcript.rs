@@ -25,6 +25,27 @@ impl TranscriptState {
         self.active_message.as_mut()
     }
 
+    /// Find a tool block by id among committed messages that have not yet been
+    /// flushed to scrollback. Used when replaying a transcript, where earlier
+    /// messages are committed before their tool_results are applied — searching
+    /// only the active message would leave those blocks stuck as Pending.
+    ///
+    /// Searches newest-first so a re-used id resolves to the most recent block.
+    pub fn find_unrendered_committed_tool_block_mut(
+        &mut self,
+        tool_id: &str,
+    ) -> Option<&mut crate::message::ToolUseBlock> {
+        for message in self.committed_messages[self.committed_rendered_count..]
+            .iter_mut()
+            .rev()
+        {
+            if let Some(block) = message.get_tool_block_mut(tool_id) {
+                return Some(block);
+            }
+        }
+        None
+    }
+
     pub fn start_active_message(&mut self) {
         self.finalize_active_if_content();
         self.active_message = Some(LiveMessage::default());

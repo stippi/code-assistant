@@ -454,16 +454,29 @@ impl TerminalRenderer {
         message: Option<String>,
         output: Option<String>,
     ) {
-        let Some(live_message) = self.transcript.active_message_mut() else {
-            tracing::warn!("Ignoring tool status update without active message");
-            return;
-        };
-
-        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+        // Try the active message first (the live case), then not-yet-flushed
+        // committed messages. The latter matters when replaying a transcript
+        // (session switch), where AppendMessages renders every message before
+        // applying tool_results, so all but the last block are already
+        // committed by the time their status/output arrives.
+        if let Some(active) = self.transcript.active_message_mut() {
+            if let Some(tool_block) = active.get_tool_block_mut(tool_id) {
+                tool_block.status = status;
+                tool_block.status_message = message;
+                tool_block.output = output;
+                return;
+            }
+        }
+        if let Some(tool_block) = self
+            .transcript
+            .find_unrendered_committed_tool_block_mut(tool_id)
+        {
             tool_block.status = status;
             tool_block.status_message = message;
             tool_block.output = output;
+            return;
         }
+        tracing::warn!("Ignoring tool status update for unknown tool {tool_id}");
     }
 
     /// Append streaming output to a tool block (used by execute_command).
@@ -1739,6 +1752,66 @@ mod tests {
         assert!(
             text.contains("Done — the file is updated."),
             "final message missing from scrollback:\n{text}"
+        );
+    }
+
+    /// Pinpoints the replay tool-status bug: AppendMessages renders every
+    /// message first, then applies tool_results. By then all but the last
+    /// message are committed, so a status update must reach BOTH the active
+    /// message and committed (not-yet-flushed) messages.
+    #[test]
+    fn replay_applies_tool_status_to_committed_and_active_blocks() {
+        use code_assistant_core::ui::ToolStatus;
+        let mut h = create_default_test_harness();
+        // Message 1: assistant with tool t1 (will be committed by msg 2).
+        h.start_new_message(1);
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "a.rs".to_string());
+        // Message 2: assistant with tool t2 (stays active — the "last" block).
+        h.start_new_message(2);
+        h.start_tool_use_block("edit".to_string(), "t2".to_string());
+        h.add_or_update_tool_parameter("t2", "file_path".to_string(), "b.rs".to_string());
+
+        // AppendMessages applies tool_results AFTER rendering all messages.
+        h.update_tool_status(
+            "t1",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[10]}"#.to_string()),
+        );
+        h.update_tool_status(
+            "t2",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[20]}"#.to_string()),
+        );
+
+        // t2 is in the active message.
+        let active = h.transcript.active_message().unwrap();
+        let t2 = active.blocks.iter().find_map(|b| match b {
+            MessageBlock::ToolUse(t) if t.id == "t2" => Some(t),
+            _ => None,
+        });
+        assert_eq!(
+            t2.map(|t| t.status),
+            Some(ToolStatus::Success),
+            "last (active) tool block should be marked Success"
+        );
+
+        // t1 is in a committed message — must also have been updated.
+        let t1 = h
+            .transcript
+            .committed_messages()
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .find_map(|b| match b {
+                MessageBlock::ToolUse(t) if t.id == "t1" => Some(t),
+                _ => None,
+            });
+        assert_eq!(
+            t1.map(|t| t.status),
+            Some(ToolStatus::Success),
+            "committed tool block should also be marked Success"
         );
     }
 
