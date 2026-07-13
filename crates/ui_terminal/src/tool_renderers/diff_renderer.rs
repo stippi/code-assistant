@@ -83,9 +83,21 @@ impl ToolRenderer for DiffToolRenderer {
 // ---------------------------------------------------------------------------
 
 pub enum DiffLine {
-    Context { line_num: usize, text: String },
-    Insert { line_num: usize, text: String },
-    Delete { line_num: usize, text: String },
+    /// `line_num` is `Some` once the real file offset is known (from the tool
+    /// output); `None` while streaming, in which case no gutter is rendered
+    /// (matching the GPUI card, which shows numbers only once resolved).
+    Context {
+        line_num: Option<usize>,
+        text: String,
+    },
+    Insert {
+        line_num: Option<usize>,
+        text: String,
+    },
+    Delete {
+        line_num: Option<usize>,
+        text: String,
+    },
     HunkSeparator,
 }
 
@@ -111,7 +123,7 @@ fn generate_tool_diff_lines(tool_block: &ToolUseBlock) -> Vec<DiffLine> {
                 return Vec::new();
             }
             // Real file line numbers come from the tool output (after execution);
-            // before that the diff is numbered from 1.
+            // before that the diff is shown without a gutter (no start line).
             let start_line = parse_match_start_lines(tool_block).first().copied();
             generate_diff_lines(old, new, start_line)
         }
@@ -191,7 +203,8 @@ pub fn normalize_for_diff(text: &str) -> String {
 /// Generate diff lines from old/new text using the `similar` crate.
 ///
 /// `start_line` is the 1-based file line the change begins at (from the tool's
-/// `match_start_lines`); `None` numbers from line 1.
+/// `match_start_lines`); `None` suppresses the gutter entirely (streaming,
+/// before the offset is known).
 pub fn generate_diff_lines(
     old_text: &str,
     new_text: &str,
@@ -203,6 +216,10 @@ pub fn generate_diff_lines(
         .newline_terminated(true)
         .diff_lines(&old_norm, &new_norm);
 
+    // Numbers are only shown once the real file offset is known; until then
+    // (`start_line == None`, i.e. streaming before execution) the gutter is
+    // suppressed rather than shown as a misleading 1-based count.
+    let known = start_line.is_some();
     let base = start_line.unwrap_or(1);
     let mut lines = Vec::new();
     let mut old_ln: usize = base;
@@ -213,7 +230,7 @@ pub fn generate_diff_lines(
         match change.tag() {
             ChangeTag::Equal => {
                 lines.push(DiffLine::Context {
-                    line_num: new_ln,
+                    line_num: known.then_some(new_ln),
                     text,
                 });
                 old_ln += 1;
@@ -221,14 +238,14 @@ pub fn generate_diff_lines(
             }
             ChangeTag::Delete => {
                 lines.push(DiffLine::Delete {
-                    line_num: old_ln,
+                    line_num: known.then_some(old_ln),
                     text,
                 });
                 old_ln += 1;
             }
             ChangeTag::Insert => {
                 lines.push(DiffLine::Insert {
-                    line_num: new_ln,
+                    line_num: known.then_some(new_ln),
                     text,
                 });
                 new_ln += 1;
@@ -273,19 +290,21 @@ pub fn generate_search_replace_diff_lines(
         }
         if raw.starts_with(">>>>>>> REPLACE") && in_replace {
             in_replace = false;
-            let base = start_lines.get(block_idx).copied().unwrap_or(1);
+            // Offset is only known once the tool has executed; until then the
+            // gutter is suppressed (None) rather than shown from 1.
+            let base = start_lines.get(block_idx).copied();
             block_idx += 1;
             // Emit search lines as deletions, numbered from the match offset.
             for (i, s) in search_lines.iter().enumerate() {
                 lines.push(DiffLine::Delete {
-                    line_num: base + i,
+                    line_num: base.map(|b| b + i),
                     text: s.clone(),
                 });
             }
             // Emit replace lines as insertions, numbered from the match offset.
             for (i, r) in replace_lines.iter().enumerate() {
                 lines.push(DiffLine::Insert {
-                    line_num: base + i,
+                    line_num: base.map(|b| b + i),
                     text: r.clone(),
                 });
             }
@@ -300,13 +319,14 @@ pub fn generate_search_replace_diff_lines(
     lines
 }
 
-/// For write_file: all lines are insertions.
+/// For write_file: all lines are insertions. A newly written file's line
+/// numbers are known from the start (1..), so the gutter is always shown.
 pub fn generate_write_file_diff_lines(content: &str) -> Vec<DiffLine> {
     content
         .lines()
         .enumerate()
         .map(|(i, line)| DiffLine::Insert {
-            line_num: i + 1,
+            line_num: Some(i + 1),
             text: line.to_string(),
         })
         .collect()
@@ -373,11 +393,44 @@ fn max_line_number(diff_lines: &[DiffLine]) -> usize {
         .filter_map(|l| match l {
             DiffLine::Context { line_num, .. }
             | DiffLine::Insert { line_num, .. }
-            | DiffLine::Delete { line_num, .. } => Some(*line_num),
+            | DiffLine::Delete { line_num, .. } => *line_num,
             DiffLine::HunkSeparator => None,
         })
         .max()
         .unwrap_or(0)
+}
+
+/// Whether any diff line carries a known line number. When false the gutter is
+/// omitted entirely (streaming, before the tool resolved file offsets).
+fn has_line_numbers(diff_lines: &[DiffLine]) -> bool {
+    diff_lines.iter().any(|l| {
+        matches!(
+            l,
+            DiffLine::Context {
+                line_num: Some(_),
+                ..
+            } | DiffLine::Insert {
+                line_num: Some(_),
+                ..
+            } | DiffLine::Delete {
+                line_num: Some(_),
+                ..
+            }
+        )
+    })
+}
+
+/// Format the gutter cell for a diff row. Returns an empty string when the
+/// gutter is suppressed, a right-aligned number when known, or blank padding
+/// when this particular row has no number but others in the diff do.
+fn gutter_cell(line_num: Option<usize>, gw: usize, show: bool) -> String {
+    if !show {
+        String::new()
+    } else if let Some(n) = line_num {
+        format!("{n:>gw$} ")
+    } else {
+        format!("{:>gw$} ", "")
+    }
 }
 
 /// Render diff lines into a ratatui Buffer with line numbers and background.
@@ -389,8 +442,8 @@ pub fn render_diff_to_buffer(
     mut y: u16,
     bg: Color,
 ) -> u16 {
-    let max_ln = max_line_number(diff_lines);
-    let gw = line_number_width(max_ln);
+    let show = has_line_numbers(diff_lines);
+    let gw = line_number_width(max_line_number(diff_lines));
 
     for diff_line in diff_lines {
         if y >= area.y + area.height {
@@ -402,30 +455,16 @@ pub fn render_diff_to_buffer(
         let bg_style = Style::default().bg(bg);
         buf.set_string(x, y, " ".repeat(row_width as usize), bg_style);
 
+        let dim_bg = Style::default().add_modifier(Modifier::DIM).bg(bg);
         match diff_line {
             DiffLine::HunkSeparator => {
-                let spacer = format!("{:width$} ", "", width = gw);
-                buf.set_string(
-                    x,
-                    y,
-                    &spacer,
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                );
-                buf.set_string(
-                    x + spacer.len() as u16,
-                    y,
-                    "⋮",
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                );
+                let spacer = gutter_cell(None, gw, show);
+                buf.set_string(x, y, &spacer, dim_bg);
+                buf.set_string(x + spacer.len() as u16, y, "⋮", dim_bg);
             }
             DiffLine::Context { line_num, text } => {
-                let gutter = format!("{:>width$} ", line_num, width = gw);
-                buf.set_string(
-                    x,
-                    y,
-                    &gutter,
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                );
+                let gutter = gutter_cell(*line_num, gw, show);
+                buf.set_string(x, y, &gutter, dim_bg);
                 let content = format!(" {}", expand_tabs(text));
                 buf.set_string(
                     x + gutter.len() as u16,
@@ -435,13 +474,8 @@ pub fn render_diff_to_buffer(
                 );
             }
             DiffLine::Insert { line_num, text } => {
-                let gutter = format!("{:>width$} ", line_num, width = gw);
-                buf.set_string(
-                    x,
-                    y,
-                    &gutter,
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                );
+                let gutter = gutter_cell(*line_num, gw, show);
+                buf.set_string(x, y, &gutter, dim_bg);
                 let content = format!("+{}", expand_tabs(text));
                 buf.set_string(
                     x + gutter.len() as u16,
@@ -451,13 +485,8 @@ pub fn render_diff_to_buffer(
                 );
             }
             DiffLine::Delete { line_num, text } => {
-                let gutter = format!("{:>width$} ", line_num, width = gw);
-                buf.set_string(
-                    x,
-                    y,
-                    &gutter,
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                );
+                let gutter = gutter_cell(*line_num, gw, show);
+                buf.set_string(x, y, &gutter, dim_bg);
                 let content = format!("-{}", expand_tabs(text));
                 buf.set_string(
                     x + gutter.len() as u16,
@@ -474,45 +503,36 @@ pub fn render_diff_to_buffer(
 
 /// Produce styled Lines for scrollback history.
 pub fn render_diff_to_history_lines(diff_lines: &[DiffLine], lines: &mut Vec<Line<'static>>) {
-    let max_ln = max_line_number(diff_lines);
-    let gw = line_number_width(max_ln);
+    let show = has_line_numbers(diff_lines);
+    let gw = line_number_width(max_line_number(diff_lines));
     let bg = terminal_color::tool_content_bg();
     let bg_style = Style::default().bg(bg);
+    let dim_bg = Style::default().add_modifier(Modifier::DIM).bg(bg);
+    // History lines carry a 2-space indent; the gutter (when shown) follows it.
+    let gutter = |line_num: Option<usize>| format!("  {}", gutter_cell(line_num, gw, show));
 
     for diff_line in diff_lines {
         let line = match diff_line {
             DiffLine::HunkSeparator => Line::from(vec![
-                Span::styled(
-                    format!("  {:width$} ", "", width = gw),
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                ),
-                Span::styled("⋮", Style::default().add_modifier(Modifier::DIM).bg(bg)),
+                Span::styled(gutter(None), dim_bg),
+                Span::styled("⋮", dim_bg),
             ]),
             DiffLine::Context { line_num, text } => Line::from(vec![
-                Span::styled(
-                    format!("  {:>width$} ", line_num, width = gw),
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                ),
+                Span::styled(gutter(*line_num), dim_bg),
                 Span::styled(
                     format!(" {}", expand_tabs(text)),
                     Style::default().fg(Color::Gray).bg(bg),
                 ),
             ]),
             DiffLine::Insert { line_num, text } => Line::from(vec![
-                Span::styled(
-                    format!("  {:>width$} ", line_num, width = gw),
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                ),
+                Span::styled(gutter(*line_num), dim_bg),
                 Span::styled(
                     format!("+{}", expand_tabs(text)),
                     Style::default().fg(Color::Green).bg(bg),
                 ),
             ]),
             DiffLine::Delete { line_num, text } => Line::from(vec![
-                Span::styled(
-                    format!("  {:>width$} ", line_num, width = gw),
-                    Style::default().add_modifier(Modifier::DIM).bg(bg),
-                ),
+                Span::styled(gutter(*line_num), dim_bg),
                 Span::styled(
                     format!("-{}", expand_tabs(text)),
                     Style::default().fg(Color::Red).bg(bg),
@@ -548,11 +568,12 @@ mod tests {
 
     #[test]
     fn test_edit_diff_lines() {
-        let lines = generate_diff_lines("hello\nworld\n", "hello\nearth\n", None);
+        // With a known start line, numbers are emitted from it.
+        let lines = generate_diff_lines("hello\nworld\n", "hello\nearth\n", Some(1));
         assert_eq!(lines.len(), 3); // context + delete + insert
         match &lines[0] {
             DiffLine::Context { line_num, text } => {
-                assert_eq!(*line_num, 1);
+                assert_eq!(*line_num, Some(1));
                 assert_eq!(text, "hello");
             }
             _ => panic!("expected Context"),
@@ -564,6 +585,19 @@ mod tests {
         match &lines[2] {
             DiffLine::Insert { text, .. } => assert_eq!(text, "earth"),
             _ => panic!("expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_edit_diff_lines_unnumbered_while_streaming() {
+        // Before the tool runs (no start line known), no gutter numbers are
+        // emitted — matching the GPUI card, which shows numbers only once
+        // resolved rather than a misleading 1-based count.
+        let lines = generate_diff_lines("hello\nworld\n", "hello\nearth\n", None);
+        assert!(!has_line_numbers(&lines));
+        match &lines[0] {
+            DiffLine::Context { line_num, .. } => assert_eq!(*line_num, None),
+            _ => panic!("expected Context"),
         }
     }
 
@@ -608,14 +642,14 @@ mod tests {
         assert_eq!(lines.len(), 2, "expected one context + one insert");
         match &lines[0] {
             DiffLine::Context { line_num, text } => {
-                assert_eq!(*line_num, 90);
+                assert_eq!(*line_num, Some(90));
                 assert_eq!(text, "their tools.");
             }
             _ => panic!("expected Context, got a delete/insert artifact"),
         }
         match &lines[1] {
             DiffLine::Insert { line_num, text } => {
-                assert_eq!(*line_num, 91);
+                assert_eq!(*line_num, Some(91));
                 assert_eq!(text, "- **Browser sessions:** drives a browser");
             }
             _ => panic!("expected Insert"),
@@ -636,13 +670,33 @@ mod tests {
         let lines = generate_tool_diff_lines(&tool);
         assert_eq!(lines.len(), 2);
         match &lines[0] {
-            DiffLine::Context { line_num, .. } => assert_eq!(*line_num, 91),
+            DiffLine::Context { line_num, .. } => assert_eq!(*line_num, Some(91)),
             _ => panic!("expected Context at line 91"),
         }
         match &lines[1] {
-            DiffLine::Insert { line_num, .. } => assert_eq!(*line_num, 92),
+            DiffLine::Insert { line_num, .. } => assert_eq!(*line_num, Some(92)),
             _ => panic!("expected Insert at line 92"),
         }
+    }
+
+    #[test]
+    fn test_edit_without_output_has_no_gutter() {
+        // A streaming edit (no output yet) shows the diff but suppresses the
+        // gutter until the real offsets are known.
+        let tool = make_tool(
+            "edit",
+            &[
+                ("file_path", "README.md"),
+                ("old_text", "their tools."),
+                ("new_text", "their tools.\n- **Browser sessions**"),
+            ],
+        );
+        let lines = generate_tool_diff_lines(&tool);
+        assert!(!lines.is_empty());
+        assert!(
+            !has_line_numbers(&lines),
+            "streaming edit should not show line numbers yet"
+        );
     }
 
     #[test]
@@ -658,7 +712,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
         for (i, line) in lines.iter().enumerate() {
             match line {
-                DiffLine::Insert { line_num, .. } => assert_eq!(*line_num, i + 1),
+                DiffLine::Insert { line_num, .. } => assert_eq!(*line_num, Some(i + 1)),
                 _ => panic!("expected Insert"),
             }
         }
