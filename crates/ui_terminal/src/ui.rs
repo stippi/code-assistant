@@ -102,8 +102,14 @@ impl TerminalUI {
                 renderer.start_new_message(message.node_id.unwrap_or_default());
                 for fragment in message.fragments {
                     match fragment {
-                        DisplayFragment::PlainText(text) => renderer.queue_text_delta(text),
+                        DisplayFragment::PlainText(text) => {
+                            // A tool call within this message paused the stream;
+                            // resume it so prose following the tool is not dropped.
+                            renderer.resume_stream();
+                            renderer.queue_text_delta(text)
+                        }
                         DisplayFragment::ThinkingText { text, .. } => {
+                            renderer.resume_stream();
                             renderer.queue_thinking_delta(text)
                         }
                         DisplayFragment::ToolName { name, id, .. } => {
@@ -118,6 +124,7 @@ impl TerminalUI {
                             renderer.append_tool_output(&tool_id, &chunk)
                         }
                         DisplayFragment::ReasoningSummaryDelta(text) => {
+                            renderer.resume_stream();
                             renderer.queue_thinking_delta(text)
                         }
                         DisplayFragment::CompactionDivider { summary } => {

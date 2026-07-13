@@ -408,6 +408,20 @@ impl TerminalRenderer {
         self.streaming_open = false;
     }
 
+    /// Re-open a stream that a tool block paused mid-message, so continuation
+    /// text/thinking is appended to the active message instead of being dropped
+    /// by the `queue_*_delta` guard. Used when replaying/rebuilding a transcript
+    /// (session switch, watcher append), where an assistant message groups prose
+    /// that follows a tool call into a single message.
+    ///
+    /// No-op when there is no active message — a genuinely stray late delta
+    /// (e.g. after `StreamingStopped`) is still dropped.
+    pub fn resume_stream(&mut self) {
+        if self.transcript.active_message().is_some() {
+            self.streaming_open = true;
+        }
+    }
+
     /// Add or update a tool parameter in the current message (append semantics).
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
         let Some(live_message) = self.transcript.active_message_mut() else {
@@ -1688,6 +1702,66 @@ mod tests {
 
     fn create_test_harness(width: u16, height: u16) -> TestHarness {
         TestHarness::new(width, height)
+    }
+
+    /// Join all scrollback (pending history) lines a harness has accumulated
+    /// into a single string, after a render tick flushes finalized messages.
+    fn scrollback_text(h: &mut TestHarness) -> String {
+        let ta = TextArea::new();
+        h.render(&ta); // prepare() flushes finalized messages to scrollback
+        h.drain_pending_history_lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Regression for session-switch replay: the final assistant message that
+    /// follows a tool call must appear in scrollback (separate message case).
+    #[test]
+    fn replay_shows_final_message_after_tool_call() {
+        let mut h = create_default_test_harness();
+        h.start_new_message(1);
+        h.queue_text_delta("Let me edit the file.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+        // Separate final assistant message (text only).
+        h.start_new_message(2);
+        h.queue_text_delta("Done — the file is updated.".to_string());
+        h.flush_streaming_pending();
+
+        let text = scrollback_text(&mut h);
+        assert!(
+            text.contains("Done — the file is updated."),
+            "final message missing from scrollback:\n{text}"
+        );
+    }
+
+    /// Regression for session-switch replay: assistant text that comes *after*
+    /// a tool call within the SAME message must not be dropped.
+    #[test]
+    fn replay_shows_text_after_tool_in_same_message() {
+        let mut h = create_default_test_harness();
+        h.start_new_message(1);
+        h.queue_text_delta("Before the tool.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+        // Mirrors render_message_data: resume the paused stream before prose
+        // that follows a tool call, so it is not dropped.
+        h.resume_stream();
+        h.queue_text_delta("After the tool answer.".to_string());
+        h.flush_streaming_pending();
+
+        let text = scrollback_text(&mut h);
+        assert!(
+            text.contains("After the tool answer."),
+            "text after tool call was dropped:\n{text}"
+        );
     }
 
     fn create_default_test_harness() -> TestHarness {
