@@ -630,9 +630,10 @@ async fn event_loop(
                 let mut renderer_guard = renderer.lock().await;
                 let mut state = app_state.lock().await;
 
-                // Sync info message from state to renderer
-                if let Some(ref info_msg) = state.info_message {
-                    renderer_guard.set_info(info_msg.clone());
+                // Expire any auto-dismissing info message, then sync to renderer.
+                state.expire_info_message(std::time::Instant::now());
+                if let Some(info_msg) = state.info_text() {
+                    renderer_guard.set_info(info_msg.to_string());
                 } else {
                     renderer_guard.clear_info();
                 }
@@ -689,11 +690,23 @@ async fn event_loop(
         // === PHASE 2: Determine animation timer ===
         let animation_delay = {
             let renderer_guard = renderer.lock().await;
-            if renderer_guard.needs_animation_timer() {
-                Duration::from_millis(50)
+            let spinner_tick = if renderer_guard.needs_animation_timer() {
+                Some(Duration::from_millis(50))
             } else {
+                None
+            };
+            // Wake exactly when the info toast auto-dismisses so it clears
+            // promptly without busy-polling.
+            let toast_tick = app_state
+                .lock()
+                .await
+                .info_remaining(std::time::Instant::now());
+            match (spinner_tick, toast_tick) {
+                (Some(a), Some(b)) => a.min(b),
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
                 // Effectively infinite - no animation needed
-                Duration::from_secs(86400)
+                (None, None) => Duration::from_secs(86400),
             }
         };
 
@@ -723,7 +736,7 @@ async fn event_loop(
 
                                     let has_info = {
                                         let state = app_state.lock().await;
-                                        state.info_message.is_some()
+                                        state.has_info()
                                     };
 
                                     if has_error {

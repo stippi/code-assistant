@@ -799,6 +799,19 @@ impl TerminalRenderer {
         }
     }
 
+    /// Whether the current info message is short enough to show on the composer
+    /// footer row (single line, fits the width) instead of above the input.
+    /// Longer / multi-line info still renders in the status area above the input.
+    fn info_in_footer(&self, width: u16) -> bool {
+        match &self.info_message {
+            // "  ● " prefix (4 cols) + text + 1 right margin.
+            Some(msg) => {
+                !msg.contains('\n') && (msg.chars().count() as u16).saturating_add(5) <= width
+            }
+            None => false,
+        }
+    }
+
     fn measure_status_height(&self, width: u16) -> u16 {
         let mut height: u16 = 0;
         if self.current_error.is_some() {
@@ -814,7 +827,8 @@ impl TerminalRenderer {
                 height = height.saturating_add(h);
                 has_any = true;
             }
-            if let Some(ref info_msg) = self.info_message {
+            let show_status_info = self.info_message.is_some() && !self.info_in_footer(width);
+            if let (true, Some(ref info_msg)) = (show_status_info, &self.info_message) {
                 if has_any {
                     height = height.saturating_add(1);
                 }
@@ -861,7 +875,10 @@ impl TerminalRenderer {
             });
         }
 
-        if let Some(ref info_msg) = self.info_message {
+        // A short single-line info message is shown on the composer footer row
+        // instead of here; only longer/multi-line info occupies the status area.
+        let show_status_info = self.info_message.is_some() && !self.info_in_footer(width);
+        if let (true, Some(ref info_msg)) = (show_status_info, &self.info_message) {
             status_entries.push(StatusEntry {
                 kind: StatusKind::Info,
                 content: info_msg.clone(),
@@ -1015,8 +1032,14 @@ impl TerminalRenderer {
             Self::render_status_entries(f, status_area, &status_entries);
         }
 
-        // Render input area (block + textarea)
-        self.composer.render(f, input_area, textarea);
+        // Render input area (block + textarea). A short info message temporarily
+        // replaces the footer hint line as an accented, self-dismissing toast.
+        let footer_info = if self.info_in_footer(width) {
+            self.info_message.as_deref()
+        } else {
+            None
+        };
+        self.composer.render(f, input_area, textarea, footer_info);
 
         // Render slash-command popup (above the composer) when a snapshot is set.
         if let Some(snap) = self.popup.clone() {
@@ -1764,6 +1787,28 @@ mod tests {
         assert!(
             text.contains("Done — the file is updated."),
             "final message missing from scrollback:\n{text}"
+        );
+    }
+
+    /// A short single-line info message routes to the composer footer; a
+    /// multi-line or over-wide one falls back to the status area above the input.
+    #[test]
+    fn info_message_routes_footer_vs_status_area() {
+        let mut h = create_default_test_harness();
+
+        h.set_info("Switched to session: Foo".to_string());
+        assert!(h.info_in_footer(80), "short info should use the footer");
+
+        h.set_info("line one\nline two".to_string());
+        assert!(
+            !h.info_in_footer(80),
+            "multi-line info should use the status area"
+        );
+
+        h.set_info("a fairly long single-line status message here".to_string());
+        assert!(
+            !h.info_in_footer(20),
+            "info too wide for the row should use the status area"
         );
     }
 
