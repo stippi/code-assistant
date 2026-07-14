@@ -521,6 +521,18 @@ impl TerminalRenderer {
         Ok(())
     }
 
+    /// Push an already-complete message (all blocks finalized) into the
+    /// transcript as a committed message, WITHOUT going through the live
+    /// streaming path. Used to replay a session snapshot or render a watcher
+    /// append: those messages arrive complete, so simulating streaming would
+    /// interleave their text into scrollback out of order (text flushed
+    /// immediately, tool/user blocks deferred to the next redraw). Rendering
+    /// them as committed messages preserves block order and leaves no phantom
+    /// active/streaming state (no stuck loading spinner).
+    pub fn push_complete_message(&mut self, message: LiveMessage) {
+        self.transcript.push_committed_message(message);
+    }
+
     /// Add an instruction/informational message as a finalized message
     /// This is for system messages, welcome text, etc.
     pub fn add_instruction_message(&mut self, content: &str) -> Result<()> {
@@ -1755,6 +1767,58 @@ mod tests {
         );
     }
 
+    /// Regression for the session-switch scramble: replaying a snapshot must
+    /// preserve message and block order in scrollback. The buggy streaming
+    /// replay flushed prose immediately but deferred tool/user blocks to the
+    /// next redraw, so a whole transcript's text landed before its tool blocks
+    /// and the final message ended up above earlier user messages. The fix
+    /// renders complete messages as committed blocks (push_complete_message),
+    /// so a single ordered flush keeps text → tool → next-message text in order.
+    #[test]
+    fn replay_preserves_message_and_block_order() {
+        use code_assistant_core::ui::ToolStatus;
+
+        let mut h = create_default_test_harness();
+
+        // assistant msg A: prose, then a tool call in the SAME message.
+        let mut msg_a = LiveMessage {
+            finalized: true,
+            ..LiveMessage::default()
+        };
+        msg_a.add_block(MessageBlock::PlainText(PlainTextBlock {
+            content: "Ich fuege einen Punkt hinzu.".to_string(),
+        }));
+        let mut tool = ToolUseBlock::new("edit".to_string(), "t1".to_string());
+        tool.add_or_update_parameter("path".to_string(), "README.md".to_string());
+        msg_a.add_block(MessageBlock::ToolUse(tool));
+        h.push_complete_message(msg_a);
+
+        // assistant msg B: the final prose, a separate message.
+        let mut msg_b = LiveMessage {
+            finalized: true,
+            ..LiveMessage::default()
+        };
+        msg_b.add_block(MessageBlock::PlainText(PlainTextBlock {
+            content: "Erledigt. Der Punkt ist drin.".to_string(),
+        }));
+        h.push_complete_message(msg_b);
+
+        // tool_results are applied after all messages are rendered.
+        h.update_tool_status("t1", ToolStatus::Success, None, None);
+
+        let text = scrollback_text(&mut h);
+        let pos_prose = text.find("Ich fuege einen Punkt hinzu.");
+        let pos_tool = text.find("README.md");
+        let pos_final = text.find("Erledigt. Der Punkt ist drin.");
+        assert!(pos_prose.is_some(), "opening prose missing:\n{text}");
+        assert!(pos_tool.is_some(), "tool block missing:\n{text}");
+        assert!(pos_final.is_some(), "final message missing:\n{text}");
+        assert!(
+            pos_prose < pos_tool && pos_tool < pos_final,
+            "replay order scrambled (prose→tool→final expected):\n{text}"
+        );
+    }
+
     /// Pinpoints the replay tool-status bug: AppendMessages renders every
     /// message first, then applies tool_results. By then all but the last
     /// message are committed, so a status update must reach BOTH the active
@@ -1812,6 +1876,105 @@ mod tests {
             t1.map(|t| t.status),
             Some(ToolStatus::Success),
             "committed tool block should also be marked Success"
+        );
+    }
+
+    /// Like the faithful reproduction, but with redraws interleaved between the
+    /// event groups (ClearMessages / AppendMessages), mirroring the real event
+    /// loop where the composer redraws between separate send_event calls.
+    #[test]
+    fn replay_shows_final_text_with_interleaved_redraws() {
+        use code_assistant_core::ui::ToolStatus;
+        let ta = TextArea::new();
+        let mut h = create_default_test_harness();
+        let mut scrollback = String::new();
+        let mut capture = |h: &mut TestHarness| {
+            h.render(&ta);
+            for l in h.drain_pending_history_lines() {
+                scrollback.push_str(
+                    &l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>(),
+                );
+                scrollback.push('\n');
+            }
+        };
+
+        // --- ClearMessages ---
+        h.clear_all_messages();
+        capture(&mut h); // redraw between events
+
+        // --- AppendMessages (render all, then tool_results, then flush) ---
+        h.start_new_message(62);
+        h.resume_stream();
+        h.queue_thinking_delta("planning".to_string());
+        h.resume_stream();
+        h.queue_text_delta("Ich füge einen Punkt hinzu.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+        let _ = h.add_user_message("");
+        h.start_new_message(64);
+        h.resume_stream();
+        h.queue_text_delta("Erledigt. Ich habe den Punkt hinzugefügt.".to_string());
+        h.update_tool_status(
+            "t1",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[90]}"#.to_string()),
+        );
+        h.flush_streaming_pending();
+        capture(&mut h); // redraw after append
+
+        assert!(
+            scrollback.contains("Erledigt. Ich habe den Punkt hinzugefügt."),
+            "final assistant text missing across redraws:\n{scrollback}"
+        );
+    }
+
+    /// Faithful reproduction of the real switched-session tail:
+    ///   assistant[text, tool] · user[tool_result] · assistant[final text]
+    /// The intervening user (tool_result) message runs add_user_message, which
+    /// clears the stream controller and flushes finalized messages — the final
+    /// assistant text must still reach scrollback and the tool block must keep
+    /// its resolved status.
+    #[test]
+    fn replay_shows_final_text_after_tool_result_user_message() {
+        use code_assistant_core::ui::ToolStatus;
+        let mut h = create_default_test_harness();
+        let ta = TextArea::new();
+        h.render(&ta); // establish a non-zero width for finalized flushing
+
+        // node 62 — assistant [thinking, text, tool_use(edit)]
+        h.start_new_message(62);
+        h.resume_stream();
+        h.queue_thinking_delta("planning".to_string());
+        h.resume_stream();
+        h.queue_text_delta("Ich füge einen Punkt hinzu.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+
+        // node 63 — user [tool_result] → empty user text
+        let _ = h.add_user_message("");
+
+        // node 64 — assistant [final text]
+        h.start_new_message(64);
+        h.resume_stream();
+        h.queue_text_delta("Erledigt. Ich habe den Punkt hinzugefügt.".to_string());
+
+        // AppendMessages applies tool_results after rendering all messages.
+        h.update_tool_status(
+            "t1",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[90]}"#.to_string()),
+        );
+        h.flush_streaming_pending();
+
+        let text = scrollback_text(&mut h);
+        assert!(
+            text.contains("Erledigt. Ich habe den Punkt hinzugefügt."),
+            "final assistant text missing from scrollback:\n{text}"
         );
     }
 

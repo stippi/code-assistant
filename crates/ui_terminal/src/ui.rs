@@ -7,6 +7,7 @@ use std::sync::{
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, warn};
 
+use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ThinkingBlock, ToolUseBlock};
 use super::renderer::ProductionTerminalRenderer;
 use super::state::AppState;
 
@@ -81,6 +82,15 @@ impl TerminalUI {
     /// Render a complete message (appended by another code-assistant
     /// instance) into the scrollback, mapping its fragments onto the same
     /// renderer calls the live-streaming path uses.
+    /// Render a complete message (from a session snapshot replay or a watcher
+    /// append) directly into the transcript as a committed message.
+    ///
+    /// These messages arrive complete, so we do NOT simulate live streaming:
+    /// the streaming path flushes text/thinking to scrollback immediately but
+    /// defers tool/user blocks to the next redraw, which scrambles block and
+    /// message order during a replay (no redraws happen mid-replay) and leaves
+    /// the final message stuck in a live/spinner state. Building committed
+    /// messages preserves order and lets `prepare()` flush them cleanly.
     fn render_message_data(
         &self,
         renderer: &mut ProductionTerminalRenderer,
@@ -88,55 +98,64 @@ impl TerminalUI {
     ) {
         use code_assistant_core::ui::ui_events::MessageRole;
 
+        let mut live = LiveMessage {
+            finalized: true,
+            ..LiveMessage::default()
+        };
+
         match message.role {
             MessageRole::User => {
-                let text = plain_text_of(&message.fragments);
-                let _ = renderer.add_user_message(&text);
+                let mut block = PlainTextBlock::new();
+                block.content = plain_text_of(&message.fragments);
+                live.add_block(MessageBlock::UserText(block));
             }
             MessageRole::System => {
-                let text = plain_text_of(&message.fragments);
-                let _ = renderer.add_instruction_message(&text);
+                let mut block = PlainTextBlock::new();
+                block.content = plain_text_of(&message.fragments);
+                live.add_block(MessageBlock::PlainText(block));
             }
             MessageRole::Assistant => {
-                // Finalizes any previous live message, like StreamingStarted.
-                renderer.start_new_message(message.node_id.unwrap_or_default());
                 for fragment in message.fragments {
                     match fragment {
                         DisplayFragment::PlainText(text) => {
-                            // A tool call within this message paused the stream;
-                            // resume it so prose following the tool is not dropped.
-                            renderer.resume_stream();
-                            renderer.queue_text_delta(text)
+                            append_text_block(&mut live, &text);
                         }
-                        DisplayFragment::ThinkingText { text, .. } => {
-                            renderer.resume_stream();
-                            renderer.queue_thinking_delta(text)
+                        DisplayFragment::ThinkingText { text, .. }
+                        | DisplayFragment::ReasoningSummaryDelta(text) => {
+                            append_thinking_block(&mut live, &text);
                         }
                         DisplayFragment::ToolName { name, id, .. } => {
-                            renderer.start_tool_use_block(name, id)
+                            live.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
                         }
                         DisplayFragment::ToolParameter {
                             name,
                             value,
                             tool_id,
-                        } => renderer.add_or_update_tool_parameter(&tool_id, name, value),
-                        DisplayFragment::ToolOutput { tool_id, chunk } => {
-                            renderer.append_tool_output(&tool_id, &chunk)
+                        } => {
+                            if let Some(tool) = live.get_tool_block_mut(&tool_id) {
+                                tool.add_or_update_parameter(name, value);
+                            }
                         }
-                        DisplayFragment::ReasoningSummaryDelta(text) => {
-                            renderer.resume_stream();
-                            renderer.queue_thinking_delta(text)
+                        DisplayFragment::ToolOutput { tool_id, chunk } => {
+                            if let Some(tool) = live.get_tool_block_mut(&tool_id) {
+                                tool.output.get_or_insert_with(String::new).push_str(&chunk);
+                            }
                         }
                         DisplayFragment::CompactionDivider { summary } => {
-                            let _ = renderer.add_instruction_message(&format!(
-                                "\n\n[conversation compacted]\n{summary}\n"
-                            ));
+                            append_text_block(
+                                &mut live,
+                                &format!("\n\n[conversation compacted]\n{summary}\n"),
+                            );
                         }
                         DisplayFragment::HiddenToolCompleted => {
-                            renderer.mark_hidden_tool_completed()
+                            // Preserve a paragraph break where a hidden tool sat
+                            // between two prose fragments.
+                            if let Some(MessageBlock::PlainText(block)) = live.get_last_block_mut() {
+                                block.content.push_str("\n\n");
+                            }
                         }
                         DisplayFragment::Image { media_type, .. } => {
-                            renderer.queue_text_delta(format!("[image ({media_type})]"))
+                            append_text_block(&mut live, &format!("[image ({media_type})]"));
                         }
                         DisplayFragment::ToolEnd { .. }
                         | DisplayFragment::ToolTerminal { .. }
@@ -148,6 +167,33 @@ impl TerminalUI {
                 }
             }
         }
+
+        if live.has_content() {
+            renderer.push_complete_message(live);
+        }
+    }
+}
+
+/// Append plain text to the message, extending the trailing PlainText block if
+/// there is one, otherwise starting a new block.
+fn append_text_block(message: &mut LiveMessage, text: &str) {
+    if let Some(MessageBlock::PlainText(block)) = message.get_last_block_mut() {
+        block.content.push_str(text);
+    } else {
+        let mut block = PlainTextBlock::new();
+        block.content.push_str(text);
+        message.add_block(MessageBlock::PlainText(block));
+    }
+}
+
+/// Append thinking text, extending the trailing Thinking block if there is one.
+fn append_thinking_block(message: &mut LiveMessage, text: &str) {
+    if let Some(MessageBlock::Thinking(block)) = message.get_last_block_mut() {
+        block.content.push_str(text);
+    } else {
+        let mut block = ThinkingBlock::new();
+        block.content.push_str(text);
+        message.add_block(MessageBlock::Thinking(block));
     }
 }
 
@@ -222,6 +268,9 @@ impl UserInterface for TerminalUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
+                    // Build committed messages first, then apply tool results to
+                    // them so they carry the correct status/output when the next
+                    // redraw flushes them to scrollback in order.
                     for message in fresh {
                         self.render_message_data(&mut renderer_guard, message);
                     }
@@ -233,7 +282,6 @@ impl UserInterface for TerminalUI {
                             tool_result.output,
                         );
                     }
-                    renderer_guard.flush_streaming_pending();
                 }
             }
 
