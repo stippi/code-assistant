@@ -174,7 +174,7 @@ pub struct Wait {
     pub goal_id: String,
     /// The goal's owner, denormalised so the human-input path can find the wait
     /// by owner without loading the goal store.
-    #[serde(alias = "owner")]
+    #[serde(alias = "lane")]
     pub owner: OwnerKey,
     pub kind: WaitKind,
     pub state: WaitState,
@@ -646,6 +646,26 @@ mod tests {
             .unwrap()
             .and_hms_opt(h, mi, 0)
             .unwrap()
+    }
+
+    /// PAL's existing waits.json predates the OwnerKey generalization and
+    /// keys the owner as "lane" — the serde alias must keep those files
+    /// readable.
+    #[test]
+    fn legacy_lane_keyed_json_still_deserializes() {
+        let wait = Wait::new(
+            "w-legacy",
+            "g1",
+            owner(),
+            WaitKind::HumanInput,
+            None,
+            at(2026, 7, 15, 8, 0),
+        );
+        let json = serde_json::to_string(&wait)
+            .unwrap()
+            .replace("\"owner\"", "\"lane\"");
+        let restored: Wait = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.owner, wait.owner);
     }
 
     fn owner() -> OwnerKey {

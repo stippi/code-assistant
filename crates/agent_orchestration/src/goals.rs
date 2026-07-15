@@ -230,7 +230,7 @@ pub struct Goal {
     pub revision: u64,
     /// The owner whose incarnations pursue this goal (and whose channel hears
     /// about it).
-    #[serde(alias = "owner")]
+    #[serde(alias = "lane")]
     pub owner: OwnerKey,
     /// The user's objective, verbatim intent.
     pub objective: String,
@@ -1134,6 +1134,26 @@ mod tests {
             .unwrap()
             .and_hms_opt(h, mi, 0)
             .unwrap()
+    }
+
+    /// PAL's existing goals.json predates the OwnerKey generalization and
+    /// keys the owner as "lane" — the serde alias must keep those files
+    /// readable.
+    #[test]
+    fn legacy_lane_keyed_json_still_deserializes() {
+        let goal = Goal::new(
+            "g-legacy",
+            owner(),
+            "objective",
+            CompletionContract::new("outcome", "verify", "stop"),
+            Budget::turns(3),
+            at(2026, 7, 15, 8, 0),
+        );
+        let json = serde_json::to_string(&goal)
+            .unwrap()
+            .replace("\"owner\"", "\"lane\"");
+        let restored: Goal = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.owner, goal.owner);
     }
 
     fn owner() -> OwnerKey {
