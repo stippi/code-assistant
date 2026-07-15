@@ -339,6 +339,13 @@ impl TerminalRenderer {
 
     /// Queue a text delta for commit-tick-based streaming.
     pub fn queue_text_delta(&mut self, content: String) {
+        // Content is on its way into the viewport, so the "waiting for the
+        // LLM" spinner has served its purpose. Empty deltas don't count:
+        // some providers open a content block with one, and hiding on that
+        // would blank the spinner while the wait is still going on.
+        if !content.is_empty() {
+            self.hide_loading_spinner_if_active();
+        }
         if !self.streaming_open {
             if self.transcript.active_message().is_none() {
                 warn!(
@@ -371,6 +378,9 @@ impl TerminalRenderer {
 
     /// Queue a thinking delta for commit-tick-based streaming.
     pub fn queue_thinking_delta(&mut self, content: String) {
+        if !content.is_empty() {
+            self.hide_loading_spinner_if_active();
+        }
         if !self.streaming_open {
             if self.transcript.active_message().is_none() {
                 warn!(
@@ -582,6 +592,22 @@ impl TerminalRenderer {
         if matches!(self.spinner_state, SpinnerState::Loading { .. }) {
             self.spinner_state = SpinnerState::Hidden;
         }
+    }
+
+    /// Hide the spinner only if it is showing a rate-limit countdown.
+    /// The loading spinner has its own lifecycle (request sent → first content)
+    /// and must survive an unrelated rate-limit clear.
+    pub fn hide_rate_limit_spinner_if_active(&mut self) {
+        if matches!(self.spinner_state, SpinnerState::RateLimit { .. }) {
+            self.spinner_state = SpinnerState::Hidden;
+        }
+    }
+
+    /// Whether the loading spinner ("request sent, nothing streamed back yet")
+    /// is currently showing.
+    #[cfg(test)]
+    pub fn is_loading_spinner_visible(&self) -> bool {
+        matches!(self.spinner_state, SpinnerState::Loading { .. })
     }
 
     fn flush_deferred_history_lines(&mut self) {
@@ -2625,6 +2651,58 @@ mod tests {
                     ..
                 }
             ));
+        }
+
+        /// The loading spinner covers "request sent, nothing streamed yet".
+        /// A rate-limit clear arrives on every activity-state change (the
+        /// agent reports WaitingForResponse right after StreamingStarted), so
+        /// it must leave the loading spinner alone or the spinner never shows.
+        #[test]
+        fn clearing_the_rate_limit_spinner_keeps_the_loading_spinner() {
+            let mut renderer = create_default_test_harness();
+
+            renderer.start_new_message(1);
+            renderer.hide_rate_limit_spinner_if_active();
+            assert!(
+                matches!(renderer.spinner_state, SpinnerState::Loading { .. }),
+                "loading spinner must survive a rate-limit clear"
+            );
+
+            renderer.show_rate_limit_spinner(30);
+            renderer.hide_rate_limit_spinner_if_active();
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+        }
+
+        /// The spinner is hidden by content actually arriving. Providers may
+        /// open a content block with an empty delta; that is not content.
+        #[test]
+        fn loading_spinner_hides_on_first_non_empty_delta() {
+            let mut renderer = create_default_test_harness();
+
+            renderer.start_new_message(1);
+            renderer.queue_text_delta(String::new());
+            assert!(
+                matches!(renderer.spinner_state, SpinnerState::Loading { .. }),
+                "an empty delta must not hide the spinner"
+            );
+
+            renderer.queue_text_delta("hello".to_string());
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+        }
+
+        #[test]
+        fn loading_spinner_hides_on_first_thinking_delta() {
+            let mut renderer = create_default_test_harness();
+
+            renderer.start_new_message(1);
+            renderer.queue_thinking_delta(String::new());
+            assert!(matches!(
+                renderer.spinner_state,
+                SpinnerState::Loading { .. }
+            ));
+
+            renderer.queue_thinking_delta("pondering".to_string());
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
         }
 
         #[test]

@@ -210,9 +210,13 @@ fn plain_text_of(fragments: &[DisplayFragment]) -> String {
     text
 }
 
-#[async_trait]
-impl UserInterface for TerminalUI {
-    async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+impl TerminalUI {
+    /// Apply a single event to the app state and the renderer.
+    ///
+    /// Only the task draining the event queue calls this: every producer
+    /// enqueues via [`Self::send_event`] / [`Self::display_fragment`] so that
+    /// events are applied in emission order.
+    pub async fn handle_event(&self, event: UiEvent) -> Result<(), UIError> {
         match event {
             UiEvent::SetMessages {
                 messages,
@@ -628,18 +632,23 @@ impl UserInterface for TerminalUI {
 
         Ok(())
     }
+}
+
+#[async_trait]
+impl UserInterface for TerminalUI {
+    /// Enqueue an event for the drain task instead of applying it here.
+    ///
+    /// Fragments can only reach the renderer through the queue (they arrive on
+    /// a sync call that cannot take the async renderer lock), so applying
+    /// events inline would let a lifecycle event overtake fragments emitted
+    /// before it — `StreamingStopped` closing the stream while the tail deltas
+    /// are still queued, which drops them.
+    async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+        self.push_event(event);
+        Ok(())
+    }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Hide spinner when first content arrives
-        let rt = tokio::runtime::Handle::current();
-        let renderer = self.renderer.clone();
-        rt.spawn(async move {
-            if let Some(renderer) = renderer.lock().await.as_ref() {
-                let mut renderer_guard = renderer.lock().await;
-                renderer_guard.hide_loading_spinner_if_active();
-            }
-        });
-
         // Convert display fragments to UI events using push_event (like GPUI)
         match fragment {
             DisplayFragment::PlainText(text) => {
@@ -793,8 +802,126 @@ impl UserInterface for TerminalUI {
         rt.spawn(async move {
             if let Some(renderer) = renderer.lock().await.as_ref() {
                 let mut renderer_guard = renderer.lock().await;
-                renderer_guard.hide_spinner();
+                renderer_guard.hide_rate_limit_spinner_if_active();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_assistant_core::ui::DisplayFragment;
+
+    /// Wire a `TerminalUI` to a renderer and an event queue, mirroring how
+    /// `app.rs` assembles them.
+    async fn harness() -> (
+        TerminalUI,
+        async_channel::Receiver<UiEvent>,
+        Arc<Mutex<ProductionTerminalRenderer>>,
+    ) {
+        let ui = TerminalUI::new_with_state(Arc::new(Mutex::new(AppState::new())));
+        let (tx, rx) = async_channel::unbounded();
+        ui.set_event_sender(tx);
+        let renderer = Arc::new(Mutex::new(
+            ProductionTerminalRenderer::new().expect("renderer"),
+        ));
+        ui.set_renderer_async(renderer.clone()).await;
+        (ui, rx, renderer)
+    }
+
+    /// Apply everything queued, in order, the way the app's drain task does.
+    async fn drain(ui: &TerminalUI, rx: &async_channel::Receiver<UiEvent>) {
+        while let Ok(event) = rx.try_recv() {
+            ui.handle_event(event).await.expect("handle event");
+        }
+    }
+
+    fn history_text(lines: &[ratatui::text::Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `StreamingStopped` closes the stream, and the renderer drops any delta
+    /// that arrives after it. Fragments can only reach the renderer through the
+    /// queue, so a stop applied ahead of the queue would cut the tail off the
+    /// final message. Every producer must go through the same queue.
+    #[tokio::test]
+    async fn streaming_stop_does_not_overtake_queued_fragments() {
+        let (ui, rx, renderer) = harness().await;
+
+        // Emission order, as the agent produces it: start, text…, stop.
+        ui.send_event(UiEvent::StreamingStarted {
+            request_id: 1,
+            node_id: 0,
+        })
+        .await
+        .expect("start");
+        ui.display_fragment(&DisplayFragment::PlainText("hello ".to_string()))
+            .expect("fragment");
+        ui.display_fragment(&DisplayFragment::PlainText("world".to_string()))
+            .expect("fragment");
+        ui.send_event(UiEvent::StreamingStopped {
+            id: 1,
+            cancelled: false,
+            error: None,
+        })
+        .await
+        .expect("stop");
+
+        drain(&ui, &rx).await;
+
+        let mut guard = renderer.lock().await;
+        let history = history_text(&guard.drain_pending_history_lines());
+        assert!(
+            history.contains("hello world"),
+            "streamed text was dropped by an out-of-order stop; scrollback was {history:?}"
+        );
+    }
+
+    /// Same ordering guarantee, seen from the spinner: a stale fragment from
+    /// the previous request must not hide the spinner of the next one.
+    #[tokio::test]
+    async fn spinner_survives_a_stale_fragment_from_the_previous_request() {
+        let (ui, rx, renderer) = harness().await;
+
+        ui.send_event(UiEvent::StreamingStarted {
+            request_id: 1,
+            node_id: 0,
+        })
+        .await
+        .expect("start");
+        ui.display_fragment(&DisplayFragment::PlainText("first".to_string()))
+            .expect("fragment");
+        ui.send_event(UiEvent::StreamingStopped {
+            id: 1,
+            cancelled: false,
+            error: None,
+        })
+        .await
+        .expect("stop");
+        // Next request goes out; its spinner must be showing afterwards.
+        ui.send_event(UiEvent::StreamingStarted {
+            request_id: 2,
+            node_id: 1,
+        })
+        .await
+        .expect("start 2");
+
+        drain(&ui, &rx).await;
+
+        let guard = renderer.lock().await;
+        assert!(
+            guard.is_loading_spinner_visible(),
+            "request 1's fragment hid the spinner request 2 had just put up"
+        );
     }
 }
