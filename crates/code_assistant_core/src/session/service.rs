@@ -560,6 +560,29 @@ impl SessionService {
         .await
     }
 
+    /// Whether the session is currently running a turn, decided from the live
+    /// in-memory activity state inside the service actor (authoritative). This
+    /// is the same ground truth [`Self::try_send_user_message_if_idle`] gates
+    /// on, exposed as a read-only probe.
+    ///
+    /// A frontend's event-derived activity mirror is a *lossy* substitute: a
+    /// lagging broadcast receiver can drop the running transition and leave the
+    /// mirror frozen at a stale terminal state. A caller that gates an
+    /// autonomous action on "is the session free" (a controller pass) must read
+    /// this rather than a mirror, or it will act on a session the atomic send
+    /// then refuses. Loads the session on demand, like the send paths.
+    pub async fn is_session_busy(&self, session_id: String) -> Result<bool> {
+        self.call(move |ctx| async move {
+            let mut manager = ctx.manager.lock().await;
+            manager.ensure_session_loaded(&session_id)?;
+            let instance = manager
+                .get_session(&session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+            Ok(!instance.get_activity_state().is_terminal())
+        })
+        .await
+    }
+
     /// Queue a user message while the agent is running. Returns the updated
     /// pending-message summary.
     pub async fn queue_user_message(
@@ -1577,6 +1600,27 @@ mod tests {
         );
         let snapshot = service.load_session(id, None).await.unwrap();
         assert!(snapshot.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn is_session_busy_reads_the_authoritative_activity_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        // A freshly created session is idle.
+        assert!(!service.is_session_busy(id.clone()).await.unwrap());
+
+        // Flip the live state to running; the probe reflects it even though no
+        // activity event was published to any mirror.
+        {
+            let mut manager = manager.lock().await;
+            manager
+                .get_session_mut(&id)
+                .unwrap()
+                .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+        }
+        assert!(service.is_session_busy(id.clone()).await.unwrap());
     }
 
     #[tokio::test]
