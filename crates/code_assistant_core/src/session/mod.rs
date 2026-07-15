@@ -15,6 +15,7 @@ pub mod manager;
 pub mod permissions;
 pub mod service;
 pub mod sleep_inhibitor;
+pub mod turn;
 pub mod wakeup;
 pub mod watcher;
 
@@ -23,6 +24,10 @@ pub mod watcher;
 pub use event_stream::{EventPayload, EventStream, SessionEvent, StreamError, Subscription};
 pub use manager::SessionManager;
 pub use service::SessionService;
+pub use turn::{
+    ResourceRef, ToolRecord, TurnDispatch, TurnHandle, TurnOutcome, TurnRequest, TurnStatus,
+    TurnUsage,
+};
 pub use wakeup::{spawn_wakeup_scheduler, SessionWakeups, WakeupHandle};
 
 /// Owned snapshot of everything a frontend needs to render a session.

@@ -416,9 +416,15 @@ impl SessionInstance {
     /// Create the publisher this session's agent talks to: it records
     /// in-flight state for snapshots and publishes everything session-tagged
     /// to the core→UI broadcast stream.
+    ///
+    /// `turn_recorder` is the synchronous tee for a controller-started turn
+    /// (see [`crate::session::turn`]): it sees the run's events *before* the
+    /// lossy broadcast, so a turn outcome never depends on a subscriber
+    /// keeping up.
     pub fn create_publisher(
         &self,
         events: crate::session::event_stream::EventStream,
+        turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
     ) -> Arc<dyn UserInterface> {
         Arc::new(SessionEventPublisher {
             events,
@@ -428,6 +434,7 @@ impl SessionInstance {
             activity: self.activity.clone(),
             stop_requested: self.stop_requested.clone(),
             session_id: self.session.id.clone(),
+            turn_recorder,
         })
     }
 
@@ -885,6 +892,9 @@ struct SessionEventPublisher {
     activity: SessionActivity,
     stop_requested: Arc<std::sync::atomic::AtomicBool>,
     session_id: String,
+    /// Synchronous tee for a controller-started turn (see
+    /// [`crate::session::turn`]); `None` for ordinary user turns.
+    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
 }
 
 impl SessionEventPublisher {
@@ -906,6 +916,9 @@ impl SessionEventPublisher {
 #[async_trait]
 impl UserInterface for SessionEventPublisher {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+        if let Some(recorder) = &self.turn_recorder {
+            recorder.observe(&event);
+        }
         // Handle special events that need buffer management and activity state updates
         match &event {
             UiEvent::StreamingStarted { node_id, .. } => {
@@ -992,6 +1005,9 @@ impl UserInterface for SessionEventPublisher {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
+        if let Some(recorder) = &self.turn_recorder {
+            recorder.observe_fragment(fragment);
+        }
         // Record the in-flight fragment for snapshots. Cleared on streaming
         // start/stop/rollback, so the buffer is bounded by one response.
         if let Ok(mut buffer) = self.fragment_buffer.lock() {
@@ -1205,6 +1221,7 @@ mod tests {
             activity,
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_id: session_id.to_string(),
+            turn_recorder: None,
         }
     }
 
@@ -1217,7 +1234,8 @@ mod tests {
             None,
         );
         let instance = SessionInstance::new(session, crate::tools::test_registry());
-        let publisher = instance.create_publisher(crate::session::event_stream::EventStream::new());
+        let publisher =
+            instance.create_publisher(crate::session::event_stream::EventStream::new(), None);
 
         // The agent announces the request with the node id the message will
         // be persisted under, then streams fragments.

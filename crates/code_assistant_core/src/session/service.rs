@@ -55,6 +55,11 @@ pub fn default_project_manager_factory() -> ProjectManagerFactory {
     Arc::new(|| Box::new(DefaultProjectManager::new()))
 }
 
+/// Builds the LLM client for a model name when an agent run starts. `None`
+/// uses the configured providers (`create_llm_client_from_model`); tests and
+/// fault-injection harnesses supply scripted providers here.
+pub type LlmClientFactory = Arc<dyn Fn(&str) -> Result<Box<dyn llm::LLMProvider>> + Send + Sync>;
+
 /// Options for running agents: LLM recording/playback plus the command
 /// executor and project-manager factories.
 #[derive(Clone)]
@@ -67,6 +72,8 @@ pub struct AgentRuntimeOptions {
     /// Builds the project manager an agent run resolves `project` arguments
     /// against. See [`default_project_manager_factory`].
     pub project_manager_factory: ProjectManagerFactory,
+    /// Overrides LLM client construction per run. See [`LlmClientFactory`].
+    pub llm_client_factory: Option<LlmClientFactory>,
 }
 
 /// A single entry in the input-area skill picker.
@@ -494,6 +501,7 @@ impl SessionService {
                 &attachments,
                 branch_parent_id,
                 None,
+                None,
             )
             .await
         })
@@ -519,6 +527,7 @@ impl SessionService {
                 &attachments,
                 None,
                 Some(tool_scope),
+                None,
             )
             .await
         })
@@ -556,6 +565,30 @@ impl SessionService {
     ) -> Result<bool> {
         self.call(move |ctx| async move {
             try_send_user_message_if_idle_impl(&ctx, &session_id, &message, &attachments).await
+        })
+        .await
+    }
+
+    /// The typed sibling of [`Self::try_send_user_message_if_idle`]: start a
+    /// turn only when the session is idle (atomically, inside the actor) and
+    /// return a [`crate::session::TurnHandle`] identifying exactly the turn
+    /// that was started. The handle resolves once with a bounded
+    /// [`crate::session::TurnOutcome`] — final narration, tool and resource
+    /// evidence, usage, and whether user input was absorbed — collected
+    /// synchronously at the publisher, so the caller never infers "its" turn
+    /// from the lossy broadcast stream.
+    ///
+    /// This is the dispatch seam for autonomous controllers (goal passes,
+    /// delegated child runs, work-graph workers) and for tests/automation
+    /// that need an exact turn result.
+    pub async fn start_turn_if_idle(
+        &self,
+        session_id: String,
+        request: crate::session::TurnRequest,
+    ) -> Result<crate::session::TurnDispatch> {
+        let service = self.clone();
+        self.call(move |ctx| async move {
+            start_turn_if_idle_impl(&ctx, service, session_id, request).await
         })
         .await
     }
@@ -699,7 +732,7 @@ impl SessionService {
                 }
             }
 
-            send_user_message_impl(&ctx, &session_id, &message, &[], None, None).await
+            send_user_message_impl(&ctx, &session_id, &message, &[], None, None, None).await
         })
         .await
     }
@@ -1160,6 +1193,7 @@ async fn send_user_message_impl(
     attachments: &[DraftAttachment],
     branch_parent_id: Option<NodeId>,
     tool_scope_override: Option<crate::tools::core::ToolScope>,
+    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
 ) -> Result<()> {
     debug!(
         "User message for session {}: {} (with {} attachments, branch_parent: {:?})",
@@ -1211,7 +1245,7 @@ async fn send_user_message_impl(
         );
     }
 
-    start_agent_impl(ctx, session_id, tool_scope_override).await
+    start_agent_impl(ctx, session_id, tool_scope_override, turn_recorder).await
 }
 
 /// Shared by [`SessionService::send_or_queue_user_message`] and the wakeup
@@ -1248,7 +1282,7 @@ async fn send_or_queue_user_message_impl(
         return Ok(());
     }
 
-    send_user_message_impl(ctx, session_id, message, attachments, None, None).await
+    send_user_message_impl(ctx, session_id, message, attachments, None, None, None).await
 }
 
 async fn try_send_user_message_if_idle_impl(
@@ -1269,8 +1303,51 @@ async fn try_send_user_message_if_idle_impl(
         return Ok(false);
     }
 
-    send_user_message_impl(ctx, session_id, message, attachments, None, None).await?;
+    send_user_message_impl(ctx, session_id, message, attachments, None, None, None).await?;
     Ok(true)
+}
+
+async fn start_turn_if_idle_impl(
+    ctx: &ServiceCtx,
+    service: SessionService,
+    session_id: String,
+    request: crate::session::TurnRequest,
+) -> Result<crate::session::TurnDispatch> {
+    use crate::session::turn::TurnRecorder;
+    use crate::session::{TurnDispatch, TurnHandle};
+
+    // The idle check and the usage baseline for the outcome's token delta
+    // come from the same lock scope; the actor serializes commands, so no
+    // other dispatch can slip in before the send below.
+    let baseline_usage = {
+        let mut manager = ctx.manager.lock().await;
+        manager.ensure_session_loaded(&session_id)?;
+        let instance = manager
+            .get_session(&session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        if !instance.get_activity_state().is_terminal() {
+            return Ok(TurnDispatch::Busy);
+        }
+        instance.calculate_total_usage()
+    };
+
+    let (recorder, parts) = TurnRecorder::arm(baseline_usage);
+    send_user_message_impl(
+        ctx,
+        &session_id,
+        &request.message,
+        &request.attachments,
+        None,
+        request.tool_scope,
+        Some(recorder),
+    )
+    .await?;
+    Ok(TurnDispatch::Started(TurnHandle::new(
+        session_id,
+        parts.turn_id,
+        service,
+        parts.outcome,
+    )))
 }
 
 async fn inject_wakeup_impl(ctx: &ServiceCtx, session_id: &str, message: &str) -> Result<()> {
@@ -1308,7 +1385,7 @@ async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
         }
     }
 
-    start_agent_impl(ctx, session_id, None).await
+    start_agent_impl(ctx, session_id, None, None).await
 }
 
 /// Start the agent loop for a session against its current message history.
@@ -1337,6 +1414,7 @@ async fn start_agent_impl(
     ctx: &ServiceCtx,
     session_id: &str,
     tool_scope_override: Option<crate::tools::core::ToolScope>,
+    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
 ) -> Result<()> {
     let (session_config, default_model_name) = {
         let manager = ctx.manager.lock().await;
@@ -1359,14 +1437,18 @@ async fn start_agent_impl(
         });
     }
 
-    let llm_client = create_llm_client_from_model(
-        &session_config.model_name,
-        ctx.runtime.playback_path.clone(),
-        ctx.runtime.fast_playback,
-        ctx.runtime.record_path.clone(),
-    )
-    .await
-    .context("Failed to create LLM client")?;
+    let llm_client = match &ctx.runtime.llm_client_factory {
+        Some(factory) => factory(&session_config.model_name)
+            .context("Failed to create LLM client from injected factory")?,
+        None => create_llm_client_from_model(
+            &session_config.model_name,
+            ctx.runtime.playback_path.clone(),
+            ctx.runtime.fast_playback,
+            ctx.runtime.record_path.clone(),
+        )
+        .await
+        .context("Failed to create LLM client")?,
+    };
 
     let project_manager = (ctx.runtime.project_manager_factory)();
     let command_executor = (ctx.runtime.command_executor_factory)(session_id);
@@ -1386,6 +1468,7 @@ async fn start_agent_impl(
             command_executor,
             permission_handler,
             tool_scope_override,
+            turn_recorder,
         )
         .await
         .context("Failed to start agent")?;
@@ -1419,6 +1502,7 @@ mod tests {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
             project_manager_factory: default_project_manager_factory(),
+            llm_client_factory: None,
         });
         let (service, worker) = SessionService::new(manager.clone(), runtime, events);
         tokio::spawn(worker);
@@ -1427,6 +1511,176 @@ mod tests {
 
     fn test_service(root: &std::path::Path) -> SessionService {
         test_service_with_manager(root).0
+    }
+
+    /// A provider that streams its scripted text through the callback (like
+    /// a real provider) and returns it as the response — enough to drive a
+    /// complete agent turn without any network.
+    struct StreamingScriptedProvider {
+        text: String,
+    }
+
+    #[async_trait::async_trait]
+    impl llm::LLMProvider for StreamingScriptedProvider {
+        async fn send_message(
+            &mut self,
+            _request: llm::LLMRequest,
+            streaming_callback: Option<&llm::StreamingCallback>,
+        ) -> Result<llm::LLMResponse> {
+            if let Some(callback) = streaming_callback {
+                callback(&llm::StreamingChunk::Text(self.text.clone()))?;
+                callback(&llm::StreamingChunk::StreamingComplete)?;
+            }
+            Ok(llm::LLMResponse {
+                content: vec![llm::ContentBlock::new_text(&self.text)],
+                usage: llm::Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                },
+                rate_limit_info: None,
+            })
+        }
+    }
+
+    /// Service whose agent runs use the injected LLM factory instead of the
+    /// configured providers.
+    fn test_service_with_llm(
+        root: &std::path::Path,
+        factory: LlmClientFactory,
+    ) -> (SessionService, Arc<Mutex<SessionManager>>) {
+        let events = EventStream::new();
+        let persistence = FileSessionPersistence::new_with_root_dir(root.to_path_buf());
+        let manager = Arc::new(Mutex::new(SessionManager::new(
+            persistence,
+            SessionConfig::default(),
+            "test-model".to_string(),
+            crate::tools::test_registry(),
+            events.clone(),
+        )));
+        let runtime = Arc::new(AgentRuntimeOptions {
+            record_path: None,
+            playback_path: None,
+            fast_playback: false,
+            command_executor_factory: Arc::new(|_| {
+                Box::new(crate::mocks::create_command_executor_mock())
+            }),
+            project_manager_factory: default_project_manager_factory(),
+            llm_client_factory: Some(factory),
+        });
+        let (service, worker) = SessionService::new(manager.clone(), runtime, events);
+        tokio::spawn(worker);
+        (service, manager)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_turn_if_idle_resolves_the_exact_outcome() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) = test_service_with_llm(
+            tmp.path(),
+            Arc::new(|_model| {
+                Ok(Box::new(StreamingScriptedProvider {
+                    text: "Considered it carefully; done.".to_string(),
+                }))
+            }),
+        );
+        let id = service.create_session(None, None).await.unwrap();
+
+        let dispatch = service
+            .start_turn_if_idle(
+                id.clone(),
+                crate::session::TurnRequest::text("please do the thing"),
+            )
+            .await
+            .unwrap();
+        let handle = match dispatch {
+            crate::session::TurnDispatch::Started(handle) => handle,
+            crate::session::TurnDispatch::Busy => panic!("fresh session reported busy"),
+        };
+        assert_eq!(handle.session_id(), id);
+
+        let outcome = handle.wait().await.unwrap();
+        assert_eq!(outcome.status, crate::session::TurnStatus::Completed);
+        assert_eq!(outcome.final_response, "Considered it carefully; done.");
+        assert_eq!(outcome.usage.llm_requests, 1);
+        assert!(!outcome.user_preempted);
+        // The token delta comes from the persisted-state notifications.
+        let tokens = outcome.usage.tokens.expect("usage recorded");
+        assert_eq!(tokens.output_tokens, 5);
+
+        // The turn is over: the session is idle again and a second turn gets
+        // a distinct turn id.
+        match service
+            .start_turn_if_idle(id.clone(), crate::session::TurnRequest::text("again"))
+            .await
+            .unwrap()
+        {
+            crate::session::TurnDispatch::Started(second) => {
+                assert_ne!(second.turn_id(), outcome.turn_id);
+                let _ = second.wait().await.unwrap();
+            }
+            crate::session::TurnDispatch::Busy => panic!("session still busy after outcome"),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_turn_if_idle_refuses_a_busy_session_without_queueing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+        {
+            let mut manager = manager.lock().await;
+            manager
+                .get_session_mut(&id)
+                .unwrap()
+                .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+        }
+
+        match service
+            .start_turn_if_idle(id.clone(), crate::session::TurnRequest::text("nope"))
+            .await
+            .unwrap()
+        {
+            crate::session::TurnDispatch::Busy => {}
+            crate::session::TurnDispatch::Started(_) => panic!("dispatched into a busy session"),
+        }
+        // Nothing was appended or queued.
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        assert!(snapshot.messages.is_empty());
+        assert_eq!(service.take_pending_message(id).await.unwrap(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failing_turn_still_resolves_with_a_failed_outcome() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) = test_service_with_llm(
+            tmp.path(),
+            Arc::new(|_model| {
+                Ok(Box::new(crate::mocks::MockLLMProvider::new(vec![Err(
+                    anyhow::anyhow!("model exploded"),
+                )])))
+            }),
+        );
+        let id = service.create_session(None, None).await.unwrap();
+
+        let handle = match service
+            .start_turn_if_idle(id, crate::session::TurnRequest::text("try"))
+            .await
+            .unwrap()
+        {
+            crate::session::TurnDispatch::Started(handle) => handle,
+            crate::session::TurnDispatch::Busy => panic!("fresh session reported busy"),
+        };
+        match handle.wait().await.unwrap().status {
+            crate::session::TurnStatus::Failed { error } => {
+                assert!(
+                    error.contains("model exploded"),
+                    "unexpected error: {error}"
+                )
+            }
+            status => panic!("expected Failed, got {status:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1794,6 +2048,7 @@ mod tests {
                 Box::new(crate::mocks::create_command_executor_mock())
             }),
             project_manager_factory: default_project_manager_factory(),
+            llm_client_factory: None,
         });
         let (service, worker) = SessionService::new(manager, runtime, events);
         drop(worker); // never spawned

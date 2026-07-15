@@ -716,6 +716,7 @@ impl SessionManager {
             command_executor,
             permission_handler,
             None,
+            None,
         )
         .await
     }
@@ -728,6 +729,11 @@ impl SessionManager {
     /// instead of the scope derived from the session config. Per-run only:
     /// nothing is persisted, the next run derives its scope normally. Used
     /// for system-initiated turns such as a memory-only session wrap-up.
+    ///
+    /// `turn_recorder` is the synchronous outcome tee of a controller-started
+    /// turn (see [`crate::session::turn`]): it is wired into the run's
+    /// publisher and finished when the agent task ends. `None` for ordinary
+    /// user turns.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_agent_for_session(
         &mut self,
@@ -737,6 +743,7 @@ impl SessionManager {
         command_executor: Box<dyn CommandExecutor>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         tool_scope_override: Option<crate::tools::core::ToolScope>,
+        turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
     ) -> Result<()> {
         // A new run is the point where configuration changes take effect:
         // pull the current registry before anything below binds to it.
@@ -780,7 +787,8 @@ impl SessionManager {
             // previous run's live tool statuses.
             session_instance.begin_agent_run();
 
-            let publisher = session_instance.create_publisher(self.events.clone());
+            let publisher =
+                session_instance.create_publisher(self.events.clone(), turn_recorder.clone());
             let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
 
@@ -852,6 +860,10 @@ impl SessionManager {
             self.tool_registry.clone(),
             self.events.clone(),
         )));
+        // For the turn outcome's token delta: the agent saves synchronously
+        // through this manager, so its persisted state is complete when the
+        // run ends.
+        let manager_for_outcome = session_manager_ref.clone();
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
             session_manager_ref,
@@ -1064,6 +1076,22 @@ impl SessionManager {
                         },
                     );
                 }
+            }
+
+            // Resolve the turn outcome for a controller-started turn. All of
+            // the run's events already passed through the recorder tee (the
+            // publisher is synchronous), so the record is complete here; the
+            // token delta comes from the state the run persisted.
+            if let Some(recorder) = turn_recorder {
+                let final_usage = {
+                    let mut manager = manager_for_outcome.lock().await;
+                    manager
+                        .ensure_session_loaded(&session_id_clone)
+                        .ok()
+                        .and_then(|_| manager.get_session(&session_id_clone))
+                        .map(|instance| instance.calculate_total_usage())
+                };
+                recorder.finish(result.as_ref().err().map(|e| format!("{e:#}")), final_usage);
             }
 
             // Signal that this agent is no longer running so the system sleep
