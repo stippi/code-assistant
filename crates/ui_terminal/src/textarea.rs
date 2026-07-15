@@ -8,6 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::WidgetRef;
+use std::cell::Cell;
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::ops::Range;
@@ -50,6 +51,9 @@ pub struct TextArea {
     preferred_col: Option<usize>,
     kill_buffer: String,
     elements: Vec<TextElement>,
+    /// First wrapped row shown when the text is taller than the composer
+    /// allows. Recomputed from the cursor at render time, hence the `Cell`.
+    scroll_top: Cell<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +74,7 @@ impl TextArea {
         self.preferred_col = None;
         self.kill_buffer.clear();
         self.elements.clear();
+        self.scroll_top.set(0);
     }
 
     pub fn text(&self) -> &str {
@@ -162,16 +167,39 @@ impl TextArea {
         self.wrapped_lines(width).len().max(1) as u16
     }
 
-    /// Compute the on-screen cursor position.
+    /// Compute the on-screen cursor position, relative to the scrolled viewport.
     pub fn cursor_position(&self, area: Rect) -> Option<(u16, u16)> {
         if area.width == 0 {
             return Some((area.x, area.y));
         }
+        let top = self.scroll_top_for(area.width, area.height);
         let lines = self.wrapped_lines(area.width);
         let i = Self::wrapped_line_index_by_start(&lines, self.cursor_pos)?;
         let ls = &lines[i];
         let col = self.text[ls.start..self.cursor_pos].width() as u16;
-        Some((area.x + col, area.y + i as u16))
+        Some((area.x + col, area.y + i.saturating_sub(top) as u16))
+    }
+
+    /// First wrapped row to display for a viewport of `height` rows.
+    ///
+    /// The composer caps the textarea height, so long input has to scroll.
+    /// The viewport follows the cursor and only moves when the cursor would
+    /// otherwise fall outside it, which keeps the view stable while editing
+    /// within the visible rows.
+    fn scroll_top_for(&self, width: u16, height: u16) -> usize {
+        let height = (height as usize).max(1);
+        let lines = self.wrapped_lines(width);
+        let cursor_row = Self::wrapped_line_index_by_start(&lines, self.cursor_pos).unwrap_or(0);
+
+        let max_top = lines.len().saturating_sub(height);
+        let mut top = self.scroll_top.get().min(max_top);
+        if cursor_row < top {
+            top = cursor_row;
+        } else if cursor_row >= top + height {
+            top = cursor_row + 1 - height;
+        }
+        self.scroll_top.set(top);
+        top
     }
 
     /// Returns the text of the logical line the cursor is currently on.
@@ -930,8 +958,9 @@ fn element_style() -> Style {
 
 impl WidgetRef for &TextArea {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        let top = self.scroll_top_for(area.width, area.height);
         let lines = self.wrapped_lines(area.width);
-        for (row, idx) in (0..lines.len()).enumerate() {
+        for (row, idx) in (top..lines.len()).enumerate() {
             if row as u16 >= area.height {
                 break;
             }
@@ -1175,5 +1204,104 @@ mod tests {
     fn test_current_line_empty() {
         let ta = TextArea::new();
         assert_eq!(ta.current_line(), "");
+    }
+
+    /// Renders the textarea into a buffer and returns the visible rows.
+    fn rendered_rows(ta: &TextArea, area: Rect) -> Vec<String> {
+        let mut buf = Buffer::empty(area);
+        (&ta).render_ref(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cursor_stays_inside_viewport_when_text_exceeds_height() {
+        let mut ta = TextArea::new();
+        ta.insert_str("l1\nl2\nl3\nl4\nl5\nl6\nl7");
+        // Composer caps the textarea at 5 rows; cursor sits on the last line.
+        let area = Rect::new(0, 0, 20, 5);
+        let (_, cursor_y) = ta.cursor_position(area).expect("cursor visible");
+        assert!(
+            cursor_y < area.y + area.height,
+            "cursor at row {cursor_y} escaped the {}-row viewport",
+            area.height
+        );
+    }
+
+    #[test]
+    fn viewport_follows_cursor_to_the_last_line() {
+        let mut ta = TextArea::new();
+        ta.insert_str("l1\nl2\nl3\nl4\nl5\nl6\nl7");
+        let area = Rect::new(0, 0, 20, 5);
+        // 7 lines, 5 rows: the tail is shown, the head has scrolled off.
+        assert_eq!(rendered_rows(&ta, area), vec!["l3", "l4", "l5", "l6", "l7"]);
+    }
+
+    #[test]
+    fn viewport_scrolls_back_up_with_the_cursor() {
+        let mut ta = TextArea::new();
+        ta.insert_str("l1\nl2\nl3\nl4\nl5\nl6\nl7");
+        let area = Rect::new(0, 0, 20, 5);
+        // Render once at the bottom so a scroll offset is established.
+        let _ = rendered_rows(&ta, area);
+
+        ta.set_cursor(0);
+        assert_eq!(rendered_rows(&ta, area), vec!["l1", "l2", "l3", "l4", "l5"]);
+        assert_eq!(ta.cursor_position(area), Some((0, 0)));
+    }
+
+    #[test]
+    fn viewport_is_stable_while_editing_within_visible_rows() {
+        let mut ta = TextArea::new();
+        ta.insert_str("l1\nl2\nl3\nl4\nl5\nl6\nl7");
+        let area = Rect::new(0, 0, 20, 5);
+        let _ = rendered_rows(&ta, area);
+
+        // Moving up one row from the last line stays inside the viewport,
+        // so the shown rows must not change.
+        ta.move_cursor_up();
+        assert_eq!(rendered_rows(&ta, area), vec!["l3", "l4", "l5", "l6", "l7"]);
+    }
+
+    #[test]
+    fn wrapped_long_line_scrolls_with_the_cursor() {
+        let mut ta = TextArea::new();
+        // One logical line that wraps well past the viewport height.
+        ta.insert_str(&"word ".repeat(40));
+        let area = Rect::new(0, 0, 20, 5);
+        let (_, cursor_y) = ta.cursor_position(area).expect("cursor visible");
+        assert!(
+            cursor_y < area.y + area.height,
+            "cursor at row {cursor_y} escaped the viewport on a wrapped line"
+        );
+    }
+
+    #[test]
+    fn no_scroll_when_text_fits() {
+        let mut ta = TextArea::new();
+        ta.insert_str("l1\nl2");
+        let area = Rect::new(0, 0, 20, 5);
+        assert_eq!(rendered_rows(&ta, area), vec!["l1", "l2", "", "", ""]);
+        assert_eq!(ta.cursor_position(area), Some((2, 1)));
+    }
+
+    #[test]
+    fn clear_resets_scroll() {
+        let mut ta = TextArea::new();
+        ta.insert_str("l1\nl2\nl3\nl4\nl5\nl6\nl7");
+        let area = Rect::new(0, 0, 20, 5);
+        let _ = rendered_rows(&ta, area);
+        assert!(ta.scroll_top.get() > 0);
+
+        ta.clear();
+        assert_eq!(ta.scroll_top.get(), 0);
+        assert_eq!(ta.cursor_position(area), Some((0, 0)));
     }
 }
