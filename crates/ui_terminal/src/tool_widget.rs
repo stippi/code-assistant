@@ -164,97 +164,27 @@ impl<'a> ToolWidget<'a> {
             }
         }
 
-        // Tool output (used by spawn_agent for streaming sub-agent activity)
+        // Generic tool output rendered verbatim. Tools with richer output
+        // (e.g. spawn_agent's sub-agent activity) register their own
+        // `ToolRenderer` and never reach this fallback.
         if let Some(ref output) = self.tool_block.output {
-            if current_y < area.y + area.height && !output.is_empty() {
-                if let Some(sub_agent_output) =
-                    code_assistant_core::agent::sub_agent::SubAgentOutput::from_json(output)
-                {
-                    for tool in &sub_agent_output.tools {
-                        if current_y >= area.y + area.height {
-                            break;
-                        }
-
-                        let (sym, color) = match tool.status {
-                            code_assistant_core::agent::sub_agent::SubAgentToolStatus::Running => {
-                                ("●", Color::Blue)
-                            }
-                            code_assistant_core::agent::sub_agent::SubAgentToolStatus::Success => {
-                                ("●", Color::Green)
-                            }
-                            code_assistant_core::agent::sub_agent::SubAgentToolStatus::Error => {
-                                ("●", Color::Red)
-                            }
-                        };
-
-                        let display_text = tool
-                            .title
-                            .as_ref()
-                            .filter(|t| !t.is_empty())
-                            .cloned()
-                            .or_else(|| tool.message.as_ref().filter(|m| !m.is_empty()).cloned())
-                            .unwrap_or_else(|| tool.name.replace('_', " "));
-
-                        let full_text = format!("{sym} {display_text}");
-                        let truncated = if full_text.len() > (area.width.saturating_sub(4)) as usize
-                        {
-                            format!(
-                                "{}...",
-                                &full_text[..(area.width.saturating_sub(7)) as usize]
-                            )
-                        } else {
-                            full_text
-                        };
-
-                        buf.set_string(
-                            area.x + 2,
-                            current_y,
-                            &truncated,
-                            Style::default().fg(color),
-                        );
-                        current_y += 1;
+            if !output.is_empty() {
+                for line in output.lines() {
+                    if current_y >= area.y + area.height {
+                        break;
                     }
-
-                    if sub_agent_output.cancelled == Some(true) && current_y < area.y + area.height
-                    {
-                        buf.set_string(
-                            area.x + 2,
-                            current_y,
-                            "Sub-agent cancelled",
-                            Style::default().fg(Color::Yellow),
-                        );
-                        current_y += 1;
-                    }
-
-                    if let Some(error) = &sub_agent_output.error {
-                        if current_y < area.y + area.height {
-                            let error_text = format!("Error: {error}");
-                            buf.set_string(
-                                area.x + 2,
-                                current_y,
-                                &error_text,
-                                Style::default().fg(Color::Red),
-                            );
-                        }
-                    }
-                } else {
-                    for line in output.lines() {
-                        if current_y >= area.y + area.height {
-                            break;
-                        }
-                        let truncated = if line.len() > (area.width.saturating_sub(4)) as usize {
-                            format!("{}...", &line[..(area.width.saturating_sub(7)) as usize])
-                        } else {
-                            line.to_string()
-                        };
-                        buf.set_string(
-                            area.x + 2,
-                            current_y,
-                            &truncated,
-                            Style::default().fg(Color::Gray),
-                        );
-                        current_y += 1;
-                    }
+                    let truncated = if line.len() > (area.width.saturating_sub(4)) as usize {
+                        format!("{}...", &line[..(area.width.saturating_sub(7)) as usize])
+                    } else {
+                        line.to_string()
+                    };
+                    buf.set_string(
+                        area.x + 2,
+                        current_y,
+                        &truncated,
+                        Style::default().fg(Color::Gray),
+                    );
+                    current_y += 1;
                 }
             }
         }

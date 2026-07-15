@@ -408,6 +408,20 @@ impl TerminalRenderer {
         self.streaming_open = false;
     }
 
+    /// Re-open a stream that a tool block paused mid-message, so continuation
+    /// text/thinking is appended to the active message instead of being dropped
+    /// by the `queue_*_delta` guard. Used when replaying/rebuilding a transcript
+    /// (session switch, watcher append), where an assistant message groups prose
+    /// that follows a tool call into a single message.
+    ///
+    /// No-op when there is no active message — a genuinely stray late delta
+    /// (e.g. after `StreamingStopped`) is still dropped.
+    pub fn resume_stream(&mut self) {
+        if self.transcript.active_message().is_some() {
+            self.streaming_open = true;
+        }
+    }
+
     /// Add or update a tool parameter in the current message (append semantics).
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
         let Some(live_message) = self.transcript.active_message_mut() else {
@@ -440,16 +454,29 @@ impl TerminalRenderer {
         message: Option<String>,
         output: Option<String>,
     ) {
-        let Some(live_message) = self.transcript.active_message_mut() else {
-            tracing::warn!("Ignoring tool status update without active message");
-            return;
-        };
-
-        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+        // Try the active message first (the live case), then not-yet-flushed
+        // committed messages. The latter matters when replaying a transcript
+        // (session switch), where AppendMessages renders every message before
+        // applying tool_results, so all but the last block are already
+        // committed by the time their status/output arrives.
+        if let Some(active) = self.transcript.active_message_mut() {
+            if let Some(tool_block) = active.get_tool_block_mut(tool_id) {
+                tool_block.status = status;
+                tool_block.status_message = message;
+                tool_block.output = output;
+                return;
+            }
+        }
+        if let Some(tool_block) = self
+            .transcript
+            .find_unrendered_committed_tool_block_mut(tool_id)
+        {
             tool_block.status = status;
             tool_block.status_message = message;
             tool_block.output = output;
+            return;
         }
+        tracing::warn!("Ignoring tool status update for unknown tool {tool_id}");
     }
 
     /// Append streaming output to a tool block (used by execute_command).
@@ -492,6 +519,18 @@ impl TerminalRenderer {
         self.transcript.push_committed_message(user_message);
         self.pending_user_message = None; // Clear pending message when it becomes finalized
         Ok(())
+    }
+
+    /// Push an already-complete message (all blocks finalized) into the
+    /// transcript as a committed message, WITHOUT going through the live
+    /// streaming path. Used to replay a session snapshot or render a watcher
+    /// append: those messages arrive complete, so simulating streaming would
+    /// interleave their text into scrollback out of order (text flushed
+    /// immediately, tool/user blocks deferred to the next redraw). Rendering
+    /// them as committed messages preserves block order and leaves no phantom
+    /// active/streaming state (no stuck loading spinner).
+    pub fn push_complete_message(&mut self, message: LiveMessage) {
+        self.transcript.push_committed_message(message);
     }
 
     /// Add an instruction/informational message as a finalized message
@@ -760,6 +799,19 @@ impl TerminalRenderer {
         }
     }
 
+    /// Whether the current info message is short enough to show on the composer
+    /// footer row (single line, fits the width) instead of above the input.
+    /// Longer / multi-line info still renders in the status area above the input.
+    fn info_in_footer(&self, width: u16) -> bool {
+        match &self.info_message {
+            // "  ● " prefix (4 cols) + text + 1 right margin.
+            Some(msg) => {
+                !msg.contains('\n') && (msg.chars().count() as u16).saturating_add(5) <= width
+            }
+            None => false,
+        }
+    }
+
     fn measure_status_height(&self, width: u16) -> u16 {
         let mut height: u16 = 0;
         if self.current_error.is_some() {
@@ -775,7 +827,8 @@ impl TerminalRenderer {
                 height = height.saturating_add(h);
                 has_any = true;
             }
-            if let Some(ref info_msg) = self.info_message {
+            let show_status_info = self.info_message.is_some() && !self.info_in_footer(width);
+            if let (true, Some(ref info_msg)) = (show_status_info, &self.info_message) {
                 if has_any {
                     height = height.saturating_add(1);
                 }
@@ -822,7 +875,10 @@ impl TerminalRenderer {
             });
         }
 
-        if let Some(ref info_msg) = self.info_message {
+        // A short single-line info message is shown on the composer footer row
+        // instead of here; only longer/multi-line info occupies the status area.
+        let show_status_info = self.info_message.is_some() && !self.info_in_footer(width);
+        if let (true, Some(ref info_msg)) = (show_status_info, &self.info_message) {
             status_entries.push(StatusEntry {
                 kind: StatusKind::Info,
                 content: info_msg.clone(),
@@ -976,8 +1032,14 @@ impl TerminalRenderer {
             Self::render_status_entries(f, status_area, &status_entries);
         }
 
-        // Render input area (block + textarea)
-        self.composer.render(f, input_area, textarea);
+        // Render input area (block + textarea). A short info message temporarily
+        // replaces the footer hint line as an accented, self-dismissing toast.
+        let footer_info = if self.info_in_footer(width) {
+            self.info_message.as_deref()
+        } else {
+            None
+        };
+        self.composer.render(f, input_area, textarea, footer_info);
 
         // Render slash-command popup (above the composer) when a snapshot is set.
         if let Some(snap) = self.popup.clone() {
@@ -1688,6 +1750,299 @@ mod tests {
 
     fn create_test_harness(width: u16, height: u16) -> TestHarness {
         TestHarness::new(width, height)
+    }
+
+    /// Join all scrollback (pending history) lines a harness has accumulated
+    /// into a single string, after a render tick flushes finalized messages.
+    fn scrollback_text(h: &mut TestHarness) -> String {
+        let ta = TextArea::new();
+        h.render(&ta); // prepare() flushes finalized messages to scrollback
+        h.drain_pending_history_lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Regression for session-switch replay: the final assistant message that
+    /// follows a tool call must appear in scrollback (separate message case).
+    #[test]
+    fn replay_shows_final_message_after_tool_call() {
+        let mut h = create_default_test_harness();
+        h.start_new_message(1);
+        h.queue_text_delta("Let me edit the file.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+        // Separate final assistant message (text only).
+        h.start_new_message(2);
+        h.queue_text_delta("Done — the file is updated.".to_string());
+        h.flush_streaming_pending();
+
+        let text = scrollback_text(&mut h);
+        assert!(
+            text.contains("Done — the file is updated."),
+            "final message missing from scrollback:\n{text}"
+        );
+    }
+
+    /// A short single-line info message routes to the composer footer; a
+    /// multi-line or over-wide one falls back to the status area above the input.
+    #[test]
+    fn info_message_routes_footer_vs_status_area() {
+        let mut h = create_default_test_harness();
+
+        h.set_info("Switched to session: Foo".to_string());
+        assert!(h.info_in_footer(80), "short info should use the footer");
+
+        h.set_info("line one\nline two".to_string());
+        assert!(
+            !h.info_in_footer(80),
+            "multi-line info should use the status area"
+        );
+
+        h.set_info("a fairly long single-line status message here".to_string());
+        assert!(
+            !h.info_in_footer(20),
+            "info too wide for the row should use the status area"
+        );
+    }
+
+    /// Regression for the session-switch scramble: replaying a snapshot must
+    /// preserve message and block order in scrollback. The buggy streaming
+    /// replay flushed prose immediately but deferred tool/user blocks to the
+    /// next redraw, so a whole transcript's text landed before its tool blocks
+    /// and the final message ended up above earlier user messages. The fix
+    /// renders complete messages as committed blocks (push_complete_message),
+    /// so a single ordered flush keeps text → tool → next-message text in order.
+    #[test]
+    fn replay_preserves_message_and_block_order() {
+        use code_assistant_core::ui::ToolStatus;
+
+        let mut h = create_default_test_harness();
+
+        // assistant msg A: prose, then a tool call in the SAME message.
+        let mut msg_a = LiveMessage {
+            finalized: true,
+            ..LiveMessage::default()
+        };
+        msg_a.add_block(MessageBlock::PlainText(PlainTextBlock {
+            content: "Ich fuege einen Punkt hinzu.".to_string(),
+        }));
+        let mut tool = ToolUseBlock::new("edit".to_string(), "t1".to_string());
+        tool.add_or_update_parameter("path".to_string(), "README.md".to_string());
+        msg_a.add_block(MessageBlock::ToolUse(tool));
+        h.push_complete_message(msg_a);
+
+        // assistant msg B: the final prose, a separate message.
+        let mut msg_b = LiveMessage {
+            finalized: true,
+            ..LiveMessage::default()
+        };
+        msg_b.add_block(MessageBlock::PlainText(PlainTextBlock {
+            content: "Erledigt. Der Punkt ist drin.".to_string(),
+        }));
+        h.push_complete_message(msg_b);
+
+        // tool_results are applied after all messages are rendered.
+        h.update_tool_status("t1", ToolStatus::Success, None, None);
+
+        let text = scrollback_text(&mut h);
+        let pos_prose = text.find("Ich fuege einen Punkt hinzu.");
+        let pos_tool = text.find("README.md");
+        let pos_final = text.find("Erledigt. Der Punkt ist drin.");
+        assert!(pos_prose.is_some(), "opening prose missing:\n{text}");
+        assert!(pos_tool.is_some(), "tool block missing:\n{text}");
+        assert!(pos_final.is_some(), "final message missing:\n{text}");
+        assert!(
+            pos_prose < pos_tool && pos_tool < pos_final,
+            "replay order scrambled (prose→tool→final expected):\n{text}"
+        );
+    }
+
+    /// Pinpoints the replay tool-status bug: AppendMessages renders every
+    /// message first, then applies tool_results. By then all but the last
+    /// message are committed, so a status update must reach BOTH the active
+    /// message and committed (not-yet-flushed) messages.
+    #[test]
+    fn replay_applies_tool_status_to_committed_and_active_blocks() {
+        use code_assistant_core::ui::ToolStatus;
+        let mut h = create_default_test_harness();
+        // Message 1: assistant with tool t1 (will be committed by msg 2).
+        h.start_new_message(1);
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "a.rs".to_string());
+        // Message 2: assistant with tool t2 (stays active — the "last" block).
+        h.start_new_message(2);
+        h.start_tool_use_block("edit".to_string(), "t2".to_string());
+        h.add_or_update_tool_parameter("t2", "file_path".to_string(), "b.rs".to_string());
+
+        // AppendMessages applies tool_results AFTER rendering all messages.
+        h.update_tool_status(
+            "t1",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[10]}"#.to_string()),
+        );
+        h.update_tool_status(
+            "t2",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[20]}"#.to_string()),
+        );
+
+        // t2 is in the active message.
+        let active = h.transcript.active_message().unwrap();
+        let t2 = active.blocks.iter().find_map(|b| match b {
+            MessageBlock::ToolUse(t) if t.id == "t2" => Some(t),
+            _ => None,
+        });
+        assert_eq!(
+            t2.map(|t| t.status),
+            Some(ToolStatus::Success),
+            "last (active) tool block should be marked Success"
+        );
+
+        // t1 is in a committed message — must also have been updated.
+        let t1 = h
+            .transcript
+            .committed_messages()
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .find_map(|b| match b {
+                MessageBlock::ToolUse(t) if t.id == "t1" => Some(t),
+                _ => None,
+            });
+        assert_eq!(
+            t1.map(|t| t.status),
+            Some(ToolStatus::Success),
+            "committed tool block should also be marked Success"
+        );
+    }
+
+    /// Like the faithful reproduction, but with redraws interleaved between the
+    /// event groups (ClearMessages / AppendMessages), mirroring the real event
+    /// loop where the composer redraws between separate send_event calls.
+    #[test]
+    fn replay_shows_final_text_with_interleaved_redraws() {
+        use code_assistant_core::ui::ToolStatus;
+        let ta = TextArea::new();
+        let mut h = create_default_test_harness();
+        let mut scrollback = String::new();
+        let mut capture = |h: &mut TestHarness| {
+            h.render(&ta);
+            for l in h.drain_pending_history_lines() {
+                scrollback.push_str(
+                    &l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>(),
+                );
+                scrollback.push('\n');
+            }
+        };
+
+        // --- ClearMessages ---
+        h.clear_all_messages();
+        capture(&mut h); // redraw between events
+
+        // --- AppendMessages (render all, then tool_results, then flush) ---
+        h.start_new_message(62);
+        h.resume_stream();
+        h.queue_thinking_delta("planning".to_string());
+        h.resume_stream();
+        h.queue_text_delta("Ich füge einen Punkt hinzu.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+        let _ = h.add_user_message("");
+        h.start_new_message(64);
+        h.resume_stream();
+        h.queue_text_delta("Erledigt. Ich habe den Punkt hinzugefügt.".to_string());
+        h.update_tool_status(
+            "t1",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[90]}"#.to_string()),
+        );
+        h.flush_streaming_pending();
+        capture(&mut h); // redraw after append
+
+        assert!(
+            scrollback.contains("Erledigt. Ich habe den Punkt hinzugefügt."),
+            "final assistant text missing across redraws:\n{scrollback}"
+        );
+    }
+
+    /// Faithful reproduction of the real switched-session tail:
+    ///   assistant[text, tool] · user[tool_result] · assistant[final text]
+    /// The intervening user (tool_result) message runs add_user_message, which
+    /// clears the stream controller and flushes finalized messages — the final
+    /// assistant text must still reach scrollback and the tool block must keep
+    /// its resolved status.
+    #[test]
+    fn replay_shows_final_text_after_tool_result_user_message() {
+        use code_assistant_core::ui::ToolStatus;
+        let mut h = create_default_test_harness();
+        let ta = TextArea::new();
+        h.render(&ta); // establish a non-zero width for finalized flushing
+
+        // node 62 — assistant [thinking, text, tool_use(edit)]
+        h.start_new_message(62);
+        h.resume_stream();
+        h.queue_thinking_delta("planning".to_string());
+        h.resume_stream();
+        h.queue_text_delta("Ich füge einen Punkt hinzu.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+
+        // node 63 — user [tool_result] → empty user text
+        let _ = h.add_user_message("");
+
+        // node 64 — assistant [final text]
+        h.start_new_message(64);
+        h.resume_stream();
+        h.queue_text_delta("Erledigt. Ich habe den Punkt hinzugefügt.".to_string());
+
+        // AppendMessages applies tool_results after rendering all messages.
+        h.update_tool_status(
+            "t1",
+            ToolStatus::Success,
+            None,
+            Some(r#"{"match_start_lines":[90]}"#.to_string()),
+        );
+        h.flush_streaming_pending();
+
+        let text = scrollback_text(&mut h);
+        assert!(
+            text.contains("Erledigt. Ich habe den Punkt hinzugefügt."),
+            "final assistant text missing from scrollback:\n{text}"
+        );
+    }
+
+    /// Regression for session-switch replay: assistant text that comes *after*
+    /// a tool call within the SAME message must not be dropped.
+    #[test]
+    fn replay_shows_text_after_tool_in_same_message() {
+        let mut h = create_default_test_harness();
+        h.start_new_message(1);
+        h.queue_text_delta("Before the tool.".to_string());
+        h.start_tool_use_block("edit".to_string(), "t1".to_string());
+        h.add_or_update_tool_parameter("t1", "file_path".to_string(), "README.md".to_string());
+        // Mirrors render_message_data: resume the paused stream before prose
+        // that follows a tool call, so it is not dropped.
+        h.resume_stream();
+        h.queue_text_delta("After the tool answer.".to_string());
+        h.flush_streaming_pending();
+
+        let text = scrollback_text(&mut h);
+        assert!(
+            text.contains("After the tool answer."),
+            "text after tool call was dropped:\n{text}"
+        );
     }
 
     fn create_default_test_harness() -> TestHarness {

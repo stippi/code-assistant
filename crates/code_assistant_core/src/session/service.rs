@@ -290,6 +290,63 @@ impl SessionService {
         .await
     }
 
+    /// Create a session from a fully specified [`SessionConfig`] and an
+    /// optional model override, for callers that must place a session in a
+    /// specific sandbox / workdir / project rather than inheriting the
+    /// deployment default — e.g. a supervised-delegation child that runs
+    /// read-only, or confined to its own workdir, on its own model.
+    ///
+    /// Thin wrapper over [`SessionManager::create_session_with_config`]:
+    /// unlike [`Self::create_session`] the caller owns the whole config. When
+    /// `model` is `None` the manager's default model is used, so the session is
+    /// always runnable (a session without a model configuration cannot start an
+    /// agent).
+    ///
+    /// [`SessionConfig`]: crate::session::SessionConfig
+    pub async fn create_session_with_config(
+        &self,
+        name: Option<String>,
+        config: crate::session::SessionConfig,
+        model: Option<String>,
+    ) -> Result<String> {
+        self.call(move |ctx| async move {
+            let mut manager = ctx.manager.lock().await;
+            let model_name = model.unwrap_or_else(|| manager.default_model_name().to_string());
+            let model_config = Some(SessionModelConfig::new(model_name));
+            manager.create_session_with_config(name, Some(config), model_config)
+        })
+        .await
+    }
+
+    /// The session-config template new sessions are minted from (sandbox
+    /// policy, tool syntax, permission tier, project root). Callers building a
+    /// [`SessionConfig`] for [`Self::create_session_with_config`] start from
+    /// this so a specialised session (e.g. a delegation child) overrides only
+    /// what it must and otherwise matches the deployment's normal sessions.
+    ///
+    /// [`SessionConfig`]: crate::session::SessionConfig
+    pub async fn session_config_template(&self) -> Result<crate::session::SessionConfig> {
+        self.call(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            Ok(manager.session_config_template().clone())
+        })
+        .await
+    }
+
+    /// Terminate the running agent on a session (best-effort): aborts the
+    /// in-flight turn and releases the cross-process agent lock. A session that
+    /// is already idle is unaffected. Used to reclaim compute when a
+    /// system-initiated turn — such as an isolated supervised-delegation child —
+    /// is cancelled from the outside.
+    pub async fn terminate_agent(&self, session_id: String) -> Result<()> {
+        self.call(move |ctx| async move {
+            let mut manager = ctx.manager.lock().await;
+            manager.terminate_session_agent(&session_id);
+            Ok(())
+        })
+        .await
+    }
+
     /// Connect a session and return an owned snapshot for rendering. After
     /// applying the snapshot, the frontend follows the session on the
     /// broadcast stream (see [`SessionService::subscribe`]).
@@ -482,6 +539,23 @@ impl SessionService {
     ) -> Result<()> {
         self.call(move |ctx| async move {
             send_or_queue_user_message_impl(&ctx, &session_id, &message, &attachments).await
+        })
+        .await
+    }
+
+    /// Start a turn only when the session is idle, decided inside the service
+    /// actor. Unlike [`Self::send_or_queue_user_message`], a busy session is
+    /// neither appended to nor queued and returns `false`. This is the atomic
+    /// claim used by autonomous controllers that must never mistake another
+    /// turn's completion for their own.
+    pub async fn try_send_user_message_if_idle(
+        &self,
+        session_id: String,
+        message: String,
+        attachments: Vec<DraftAttachment>,
+    ) -> Result<bool> {
+        self.call(move |ctx| async move {
+            try_send_user_message_if_idle_impl(&ctx, &session_id, &message, &attachments).await
         })
         .await
     }
@@ -1154,6 +1228,28 @@ async fn send_or_queue_user_message_impl(
     send_user_message_impl(ctx, session_id, message, attachments, None, None).await
 }
 
+async fn try_send_user_message_if_idle_impl(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    message: &str,
+    attachments: &[DraftAttachment],
+) -> Result<bool> {
+    let idle = {
+        let mut manager = ctx.manager.lock().await;
+        manager.ensure_session_loaded(session_id)?;
+        let instance = manager
+            .get_session(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        instance.get_activity_state().is_terminal()
+    };
+    if !idle {
+        return Ok(false);
+    }
+
+    send_user_message_impl(ctx, session_id, message, attachments, None, None).await?;
+    Ok(true)
+}
+
 async fn inject_wakeup_impl(ctx: &ServiceCtx, session_id: &str, message: &str) -> Result<()> {
     // Session deleted since the wakeup was armed — drop silently.
     if ctx.manager.lock().await.get_session(session_id).is_none() {
@@ -1454,6 +1550,33 @@ mod tests {
 
         let pending = service.take_pending_message(id).await.unwrap();
         assert_eq!(pending.as_deref(), Some("while busy"));
+    }
+
+    #[tokio::test]
+    async fn try_send_if_idle_refuses_busy_session_without_queueing_or_appending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+        {
+            let mut manager = manager.lock().await;
+            manager
+                .get_session_mut(&id)
+                .unwrap()
+                .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+        }
+
+        let started = service
+            .try_send_user_message_if_idle(id.clone(), "controller turn".to_string(), Vec::new())
+            .await
+            .unwrap();
+
+        assert!(!started);
+        assert_eq!(
+            service.take_pending_message(id.clone()).await.unwrap(),
+            None
+        );
+        let snapshot = service.load_session(id, None).await.unwrap();
+        assert!(snapshot.messages.is_empty());
     }
 
     #[tokio::test]

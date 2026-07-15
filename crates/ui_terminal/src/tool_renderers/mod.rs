@@ -6,6 +6,7 @@
 pub mod command_renderer;
 pub mod compact_renderer;
 pub mod diff_renderer;
+pub mod sub_agent_renderer;
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -188,5 +189,6 @@ pub fn init_registry() {
     registry.register(Arc::new(compact_renderer::CompactToolRenderer));
     registry.register(Arc::new(diff_renderer::DiffToolRenderer));
     registry.register(Arc::new(command_renderer::CommandToolRenderer));
+    registry.register(Arc::new(sub_agent_renderer::SubAgentToolRenderer));
     ToolRendererRegistry::set_global(registry);
 }

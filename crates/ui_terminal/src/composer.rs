@@ -40,7 +40,13 @@ impl Composer {
         total.clamp(4, self.max_input_rows + 3)
     }
 
-    pub fn render(&self, f: &mut custom_terminal::Frame, area: Rect, textarea: &TextArea) {
+    pub fn render(
+        &self,
+        f: &mut custom_terminal::Frame,
+        area: Rect,
+        textarea: &TextArea,
+        footer_info: Option<&str>,
+    ) {
         // Layout:
         //   Row 0:          empty (top padding, bg)
         //   Row 1..N:       › textarea content (bg)
@@ -101,21 +107,32 @@ impl Composer {
             }
         }
 
-        // Render footer hints below the background area (dimmed, no bg)
-        let action_style = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM);
-        let mapping_style = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
-        let footer_line = Line::from(vec![
-            Span::styled("  Enter", action_style),
-            Span::styled(" send  ", mapping_style),
-            Span::styled("Shift+Enter", action_style),
-            Span::styled(" newline  ", mapping_style),
-            Span::styled("Esc", action_style),
-            Span::styled(" dismiss  ", mapping_style),
-            Span::styled("/help", action_style),
-            Span::styled(" commands", mapping_style),
-        ]);
+        // Footer row: normally the key hints, but a short info message
+        // temporarily replaces them as an accented, self-dismissing toast.
+        let footer_line = if let Some(info) = footer_info {
+            let accent = Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            Line::from(vec![
+                Span::styled("  ● ", accent),
+                Span::styled(info.to_string(), accent),
+            ])
+        } else {
+            let action_style = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM);
+            let mapping_style = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
+            Line::from(vec![
+                Span::styled("  Enter", action_style),
+                Span::styled(" send  ", mapping_style),
+                Span::styled("Shift+Enter", action_style),
+                Span::styled(" newline  ", mapping_style),
+                Span::styled("Esc", action_style),
+                Span::styled(" dismiss  ", mapping_style),
+                Span::styled("/help", action_style),
+                Span::styled(" commands", mapping_style),
+            ])
+        };
         let footer_rect = Rect {
             x: area.x,
             y: footer_y,

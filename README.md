@@ -89,6 +89,9 @@ A handful of things we care about:
   compaction when the window fills up.
 - **MCP client mode:** plug in external Model Context Protocol servers and use
   their tools.
+- **Browser sessions:** the agent drives a real browser (navigate, read, click,
+  type) to test web apps, with a human-in-the-loop login handoff so it acts as
+  you without ever seeing your credentials.
 - **Skills:** reusable, task-specific playbooks the agent can load on demand.
 - **Auto-loaded guidance:** picks up `AGENTS.md` (or `CLAUDE.md`) from your
   project root to align with repo-specific instructions.

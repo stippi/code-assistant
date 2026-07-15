@@ -26,6 +26,8 @@ impl ToolRenderer for CompactToolRenderer {
             "glob_files",
             "web_search",
             "web_fetch",
+            "view_images",
+            "perplexity_ask",
         ]
     }
 
@@ -190,6 +192,21 @@ fn compact_lines(tool_block: &ToolUseBlock) -> Vec<CompactLine> {
                 out.push(CompactLine::KeyValue("url".into(), url.value.clone()));
             }
         }
+        "view_images" => {
+            // `paths` is a string array serialized newline-joined, like read_files.
+            if let Some(paths) = tool_block.parameters.get("paths") {
+                for path in paths.value.lines() {
+                    let path = path.trim();
+                    if !path.is_empty() {
+                        out.push(CompactLine::Item(path.to_string()));
+                    }
+                }
+            }
+        }
+        "perplexity_ask" => {
+            // `messages` is a complex JSON array; showing only the clean header
+            // (handled by render_tool_header) beats dumping the raw blob.
+        }
         "list_projects" => {
             // No additional parameters to show
         }
@@ -265,6 +282,38 @@ mod tests {
     #[test]
     fn test_list_projects_empty() {
         let tool = make_tool("list_projects", &[]);
+        let lines = compact_lines(&tool);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_supports_view_images_and_perplexity() {
+        let renderer = CompactToolRenderer;
+        assert!(renderer.supported_tools().contains(&"view_images"));
+        assert!(renderer.supported_tools().contains(&"perplexity_ask"));
+    }
+
+    #[test]
+    fn test_view_images_compact() {
+        // view_images serializes its `paths` array newline-joined, like read_files.
+        let tool = make_tool("view_images", &[("paths", "shot1.png\nshot2.png")]);
+        let lines = compact_lines(&tool);
+        assert_eq!(lines.len(), 2);
+        match &lines[0] {
+            CompactLine::Item(p) => assert_eq!(p, "shot1.png"),
+            _ => panic!("expected Item"),
+        }
+        match &lines[1] {
+            CompactLine::Item(p) => assert_eq!(p, "shot2.png"),
+            _ => panic!("expected Item"),
+        }
+    }
+
+    #[test]
+    fn test_perplexity_compact_header_only() {
+        // `messages` is a complex JSON array; the clean header alone is the
+        // whole point (the generic fallback would dump the raw blob).
+        let tool = make_tool("perplexity_ask", &[("messages", "[{\"role\":\"user\"}]")]);
         let lines = compact_lines(&tool);
         assert!(lines.is_empty());
     }

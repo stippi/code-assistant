@@ -1,8 +1,10 @@
 //! Root popup that lists all known slash commands.
 
 use crate::commands::{all_commands, CommandResult};
+use crate::slash_popup::session_picker::SessionPickerPopup;
 use crate::slash_popup::skill_picker::SkillPickerPopup;
 use crate::slash_popup::{PopupAction, PopupRow, SlashPopup};
+use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::service::SkillCatalogEntry;
 
 pub struct CommandListPopup {
@@ -18,6 +20,8 @@ pub struct CommandListPopup {
     selected: usize,
     /// Cached skill catalog used to build the `/skill` sub-popup.
     skills: Vec<SkillCatalogEntry>,
+    /// Cached session list used to build the `/sessions` sub-popup.
+    sessions: Vec<ChatMetadata>,
 }
 
 impl Default for CommandListPopup {
@@ -28,12 +32,19 @@ impl Default for CommandListPopup {
 
 impl CommandListPopup {
     pub fn new() -> Self {
-        Self::with_skills(Vec::new())
+        Self::with_context(Vec::new(), Vec::new())
     }
 
     /// Construct the command list with a cached skill catalog so activating
     /// `/skill` can open a populated picker without a backend round-trip.
     pub fn with_skills(skills: Vec<SkillCatalogEntry>) -> Self {
+        Self::with_context(skills, Vec::new())
+    }
+
+    /// Construct the command list with cached skill and session catalogs so
+    /// activating `/skill` or `/sessions` can open a populated picker without a
+    /// backend round-trip.
+    pub fn with_context(skills: Vec<SkillCatalogEntry>, sessions: Vec<ChatMetadata>) -> Self {
         let mut all_rows = Vec::new();
         let mut all_names = Vec::new();
         for cmd in all_commands() {
@@ -53,6 +64,7 @@ impl CommandListPopup {
             visible_indices,
             selected: 0,
             skills,
+            sessions,
         }
     }
 
@@ -66,7 +78,7 @@ impl CommandListPopup {
 /// Returns true if the command should open a sub-popup when activated without
 /// arguments (instead of running immediately).
 fn command_has_submenu(name: &str) -> bool {
-    matches!(name, "model" | "skill")
+    matches!(name, "model" | "skill" | "sessions")
 }
 
 /// Build the [`PopupAction`] for activating a slash command by name.
@@ -135,6 +147,11 @@ impl SlashPopup for CommandListPopup {
             // the cached entries instead.
             Some("skill") => PopupAction::Push(Box::new(SkillPickerPopup::from_entries(
                 self.skills.clone(),
+            ))),
+            // The session picker needs the cached session list, which the
+            // static `dispatch_command` table can't provide; build it here.
+            Some("sessions") => PopupAction::Push(Box::new(SessionPickerPopup::from_sessions(
+                self.sessions.clone(),
             ))),
             Some(name) => dispatch_command(name),
             None => PopupAction::Continue,
@@ -207,7 +224,7 @@ mod tests {
     fn non_submenu_commands_are_not_marked() {
         let popup = CommandListPopup::new();
         for row in popup.rows() {
-            if row.label != "/model" && row.label != "/skill" {
+            if row.label != "/model" && row.label != "/skill" && row.label != "/sessions" {
                 assert!(
                     !row.has_submenu,
                     "{} should not be marked as having a sub-menu",
@@ -222,6 +239,17 @@ mod tests {
         let popup = CommandListPopup::new();
         let skill_row = popup.rows().iter().find(|r| r.label == "/skill").unwrap();
         assert!(skill_row.has_submenu);
+    }
+
+    #[test]
+    fn sessions_command_opens_a_submenu() {
+        let popup = CommandListPopup::new();
+        let sessions_row = popup
+            .rows()
+            .iter()
+            .find(|r| r.label == "/sessions")
+            .unwrap();
+        assert!(sessions_row.has_submenu);
     }
 
     #[test]
