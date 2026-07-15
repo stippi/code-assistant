@@ -45,17 +45,23 @@ yet fully met.
 assistant cannot clear by itself (a missing document, a failing external \
 service, a required credential). Not for ordinary difficulty.
   - \"needs_input\": the work cannot continue without a decision or answer \
-from the user.
+from the user, and the goal must stay stopped until it is deliberately \
+resumed. It parks with the open question as its status; an arbitrary next \
+message on the channel does NOT resume it. (If the assistant just asked the \
+user a concrete question and the next reply is expected to be the answer, \
+use \"waiting\" with the \"human_input\" barrier instead — that resumes \
+automatically on the reply.)
   - \"stopped\": the completion contract's explicit Stop-if condition has been \
 met. Continuing would violate the user's envelope; cite the observed fact in \
 the summary.
   - \"waiting\": the turn set up a durable dependency and there is genuinely \
 nothing more to do until it resolves — a background build or process must \
-finish, a scheduled job or child agent must complete, an external event or a \
-reply from the user must arrive, or work should simply resume at a later time. \
-Prefer this over \"progressed\" when the next step is only to wait: it parks \
-the goal so it burns no turns polling. Do NOT use it to avoid hard work. When \
-you use it, include a \"wait\" object naming the barrier.
+finish, a scheduled job or child agent must complete, an external event must \
+arrive, the user was just asked a question whose next reply will answer it \
+(\"human_input\"), or work should simply resume at a later time. Prefer this \
+over \"progressed\" when the next step is only to wait: it parks the goal so \
+it burns no turns polling. Do NOT use it to avoid hard work. When you use \
+it, include a \"wait\" object naming the barrier.
 - wait: only with the \"waiting\" verdict. A JSON object naming exactly one \
 barrier (add an optional ISO-8601 \"timeout\" after which the goal should wake \
 even if the barrier has not fired):
@@ -69,7 +75,10 @@ finishes.
   - {\"barrier\": \"sub_agent_completion\", \"agent_id\": \"<id>\"} — a child \
 agent finishes.
   - {\"barrier\": \"event\", \"key\": \"<event key>\"} — an external event arrives.
-  - {\"barrier\": \"human_input\"} — the user replies on this channel.
+  - {\"barrier\": \"human_input\"} — the user's next reply on this channel \
+resumes the goal automatically. Only for a just-asked, concrete question; \
+for a decision the user must make in their own time, use \"needs_input\", \
+which stays stopped until deliberately resumed.
 - summary: a short, factual account of what the turn did (one or two \
 sentences). No speculation, no chain-of-thought.
 - artifacts: file paths or references the turn produced or changed, as stated \
