@@ -150,7 +150,8 @@ impl TerminalUI {
                         DisplayFragment::HiddenToolCompleted => {
                             // Preserve a paragraph break where a hidden tool sat
                             // between two prose fragments.
-                            if let Some(MessageBlock::PlainText(block)) = live.get_last_block_mut() {
+                            if let Some(MessageBlock::PlainText(block)) = live.get_last_block_mut()
+                            {
                                 block.content.push_str("\n\n");
                             }
                         }

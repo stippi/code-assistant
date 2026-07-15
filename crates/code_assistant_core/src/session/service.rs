@@ -311,8 +311,7 @@ impl SessionService {
     ) -> Result<String> {
         self.call(move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
-            let model_name =
-                model.unwrap_or_else(|| manager.default_model_name().to_string());
+            let model_name = model.unwrap_or_else(|| manager.default_model_name().to_string());
             let model_config = Some(SessionModelConfig::new(model_name));
             manager.create_session_with_config(name, Some(config), model_config)
         })
