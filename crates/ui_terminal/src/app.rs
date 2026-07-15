@@ -1397,12 +1397,14 @@ impl TerminalTuiApp {
             });
         }
 
-        // Spawn a background task to process UI events from display fragments
+        // Drain the UI event queue. This is the only place events are applied,
+        // which is what keeps fragments ordered against the lifecycle events
+        // (StreamingStarted/Stopped) that bracket them.
         {
             let terminal_ui_clone = terminal_ui.clone();
             tokio::spawn(async move {
                 while let Ok(event) = ui_event_rx.recv().await {
-                    let _ = terminal_ui_clone.send_event(event).await;
+                    let _ = terminal_ui_clone.handle_event(event).await;
                 }
             });
         }
