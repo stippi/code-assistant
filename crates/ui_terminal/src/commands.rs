@@ -302,6 +302,17 @@ impl CommandProcessor {
 mod tests {
     use super::*;
 
+    /// Build a processor without touching the runner's home directory: the
+    /// session/routing commands don't read config, and `new()`'s disk load
+    /// would fail in CI (no `providers.json`).
+    fn test_processor() -> CommandProcessor {
+        let config = ConfigurationSystem {
+            providers: Default::default(),
+            models: Default::default(),
+        };
+        CommandProcessor { config }
+    }
+
     #[test]
     fn sessions_command_is_registered_with_resume_alias() {
         let cmd = all_commands()
@@ -313,7 +324,7 @@ mod tests {
 
     #[test]
     fn sessions_and_resume_open_the_session_picker() {
-        let processor = CommandProcessor::new().expect("config should load");
+        let processor = test_processor();
         assert!(matches!(
             processor.process_command("/sessions"),
             CommandResult::OpenSessionPicker
