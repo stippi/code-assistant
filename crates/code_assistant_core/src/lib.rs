@@ -14,6 +14,7 @@ pub use fs_explorer;
 pub mod agent;
 pub mod config;
 pub mod config_dir;
+pub mod goals;
 pub mod persistence;
 pub mod plugins;
 pub mod session;

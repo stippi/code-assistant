@@ -12,6 +12,7 @@ test-utils = []
 
 [dependencies]
 agent_core = { path = "../agent_core" }
+agent_orchestration = { path = "../agent_orchestration" }
 command_executor = { path = "../command_executor" }
 fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
@@ -55,6 +56,7 @@ tracing = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 
 async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 md5 = "0.7.0"
 async-channel = "2.5.0"
