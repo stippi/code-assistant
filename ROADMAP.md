@@ -176,8 +176,10 @@ clean.
 > handle (`start_turn_if_idle` → `TurnHandle` → typed `TurnOutcome`) landed in
 > `SessionService`, and the goal/wait domain below lives in
 > `agent_orchestration` (PAL consumes it through re-export shims).
-> code-assistant is now the second consumer: a `goal` tool in the default
-> scopes (owner = session), a `# Durable Goals` prompt block, and a
+> code-assistant is now the second consumer: user-set goals via the `/goal`
+> command (`goal_commands`, owner = session; there is deliberately no
+> model-facing goal tool, and no system-prompt goal block — a goal reaches
+> the model only as the framed goal-turn message), and a
 > host-driven `GoalController` (`code_assistant_core::goals`) that drives
 > `Running` goals through `start_turn_if_idle` while the app is open —
 > deliberately no unattended auto-resume after process end. Remaining from
@@ -280,9 +282,10 @@ All met as of 2026-07-16:
   (`agent_orchestration`'s suite plus `code_assistant_core::goals` controller
   tests against scripted providers/evaluators).
 - ✅ code-assistant can create and continue a goal in an ordinary session
-  (`goal` tool + `GoalController`; `/goal` in the terminal UI).
+  (user-set via `/goal` → `goal_commands` + `GoalController`; the earlier
+  model-facing `goal` tool was removed — only the user sets goals).
 - ✅ A goal may survive session reload without promising unattended
-  auto-resume (store-persisted; surfaced via the durable-goals prompt block;
+  auto-resume (store-persisted; surfaced on demand via `/goal` list/show;
   the controller loop lives and dies with the process).
 - ✅ PAL uses the shared model/controller while retaining its stronger restart
   and channel semantics (re-export shims since 2026-07-16).
