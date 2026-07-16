@@ -314,13 +314,13 @@ impl TurnRecorder {
                     }
                 }
             }
-            UiEvent::ResourceWritten { project, path } => {
-                if inner.resources.len() < MAX_RESOURCE_RECORDS {
-                    inner.resources.push(ResourceRef {
-                        project: project.clone(),
-                        path: path.clone(),
-                    });
-                }
+            UiEvent::ResourceWritten { project, path }
+                if inner.resources.len() < MAX_RESOURCE_RECORDS =>
+            {
+                inner.resources.push(ResourceRef {
+                    project: project.clone(),
+                    path: path.clone(),
+                });
             }
             _ => {}
         }
