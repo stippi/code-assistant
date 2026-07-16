@@ -37,6 +37,6 @@ pub fn default_hooks() -> HookRegistry {
         dispatch: Box::new(SpawnAgentParallelPolicy),
         compaction: Box::new(TokenRatioCompaction::new(0.8)),
         recovery: Box::new(DefaultRecovery),
-        system_prompt: Box::new(CodeAssistantSystemPrompt),
+        system_prompt: Box::new(CodeAssistantSystemPrompt::new()),
     }
 }

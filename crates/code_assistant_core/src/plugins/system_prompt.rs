@@ -1,14 +1,36 @@
 //! System prompt construction: model-specific base prompt, project file
-//! trees, and repository guidance (AGENTS.md / CLAUDE.md).
+//! trees, durable goals, and repository guidance (AGENTS.md / CLAUDE.md).
 
 use crate::plugins::AgentAppState;
 use crate::tool_dialects::system_message::generate_system_message;
 use agent_core::hooks::{PromptCtx, SystemPromptProvider};
+use agent_orchestration::goals::GoalStore;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::warn;
 
-pub struct CodeAssistantSystemPrompt;
+pub struct CodeAssistantSystemPrompt {
+    goals_path: PathBuf,
+}
+
+impl Default for CodeAssistantSystemPrompt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CodeAssistantSystemPrompt {
+    pub fn new() -> Self {
+        Self::with_goals_path(crate::goals::default_goals_path())
+    }
+
+    /// Provider reading goals from a custom store path (tests, embedders).
+    pub fn with_goals_path(goals_path: impl Into<PathBuf>) -> Self {
+        Self {
+            goals_path: goals_path.into(),
+        }
+    }
+}
 
 impl SystemPromptProvider for CodeAssistantSystemPrompt {
     fn build(&self, ctx: &PromptCtx) -> String {
@@ -58,6 +80,14 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
             }
         }
 
+        // Surface the session's durable goals, so a reloaded session knows
+        // what it is still committed to (the goal controller keeps driving
+        // them while the app is open).
+        if let Some(section) = ctx.session_id.and_then(|id| self.render_goals_section(id)) {
+            system_message.push_str("\n\n");
+            system_message.push_str(&section);
+        }
+
         // Append guidance files if present. Global AGENTS.md is loaded first so
         // project-specific guidance can refine or override it in the prompt.
         let guidance_files = read_guidance_files(
@@ -81,6 +111,43 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
         }
 
         system_message
+    }
+}
+
+impl CodeAssistantSystemPrompt {
+    /// The `# Durable Goals` block for this session's active goals; `None`
+    /// when there are none (or the store is unreadable — the prompt must not
+    /// fail over an optional block).
+    fn render_goals_section(&self, session_id: &str) -> Option<String> {
+        let goals = GoalStore::new(&self.goals_path)
+            .active_for_owner(&crate::goals::session_owner(session_id))
+            .map_err(|error| warn!("failed to read goals for the system prompt: {error:#}"))
+            .ok()?;
+        if goals.is_empty() {
+            return None;
+        }
+        let mut section = String::from(
+            "# Durable Goals\n\nThis session is committed to the following goal(s). They are \
+             pursued autonomously while the app is open and survive session reloads; manage \
+             them with the `goal` tool.\n",
+        );
+        for goal in goals {
+            let note = goal
+                .note
+                .as_deref()
+                .map(|n| format!(" — {n}"))
+                .unwrap_or_default();
+            section.push_str(&format!(
+                "- {} [{}] {}/{} turns: {}{}\n",
+                goal.id,
+                goal.state.label(),
+                goal.turns_used(),
+                goal.budget.max_turns,
+                goal.objective,
+                note,
+            ));
+        }
+        Some(section.trim_end().to_string())
     }
 }
 
@@ -166,6 +233,56 @@ mod tests {
 
         assert!(guidance.0.ends_with("agents.md"));
         assert_eq!(guidance.1, "global guidance");
+        Ok(())
+    }
+
+    #[test]
+    fn goals_section_lists_only_the_sessions_active_goals() -> Result<()> {
+        use agent_orchestration::goals::{Budget, CompletionContract};
+
+        let dir = tempdir()?;
+        let goals_path = dir.path().join("goals.json");
+        let store = GoalStore::new(&goals_path);
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 7, 16)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let contract = CompletionContract::new("done", "check", "stop");
+        store.add_new(
+            crate::goals::session_owner("sess-1"),
+            "ship the widget",
+            contract.clone(),
+            Budget::turns(5),
+            now,
+        )?;
+        store.add_new(
+            crate::goals::session_owner("sess-2"),
+            "other session's goal",
+            contract.clone(),
+            Budget::turns(5),
+            now,
+        )?;
+        let mut done = store.add_new(
+            crate::goals::session_owner("sess-1"),
+            "already cancelled",
+            contract,
+            Budget::turns(5),
+            now,
+        )?;
+        done.fail("cancelled", now)?;
+        store.update(&done)?;
+
+        let provider = CodeAssistantSystemPrompt::with_goals_path(&goals_path);
+        let section = provider
+            .render_goals_section("sess-1")
+            .expect("active goal should render a section");
+        assert!(section.starts_with("# Durable Goals"));
+        assert!(section.contains("ship the widget"));
+        assert!(section.contains("0/5 turns"));
+        assert!(!section.contains("other session's goal"));
+        assert!(!section.contains("already cancelled"));
+
+        assert!(provider.render_goals_section("sess-3").is_none());
         Ok(())
     }
 
