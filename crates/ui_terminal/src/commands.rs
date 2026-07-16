@@ -74,7 +74,8 @@ pub fn all_commands() -> &'static [SlashCommand] {
         SlashCommand {
             name: "goal",
             aliases: &[],
-            description: "Commit to a durable goal: /goal <objective> (bare /goal lists them)",
+            description:
+                "Set a durable goal: /goal <condition> (bare /goal lists; show|pause|resume|cancel [id])",
         },
         SlashCommand {
             name: "skill",
@@ -123,10 +124,10 @@ pub enum CommandResult {
     /// `:config:` / `:system:`); `None` means resolve it from the cached
     /// catalog by name.
     InvokeSkill { scope: Option<String>, name: String },
-    /// Ask the agent to manage a durable goal: `Some(objective)` commits to a
-    /// new goal, `None` lists the session's goals. Expands to a prompt so the
-    /// agent derives the completion contract through the `goal` tool.
-    Goal { objective: Option<String> },
+    /// Manage the session's durable goals directly (never through the agent):
+    /// the raw text after `/goal`, parsed by
+    /// `code_assistant_core::goal_commands::GoalCommand`.
+    Goal { args: String },
     /// Show the current permission tier.
     ShowPermissionTier,
     /// Switch the permission tier.
@@ -185,12 +186,9 @@ impl CommandProcessor {
                 request_id: None,
                 decision: tools_core::PermissionDecision::Denied,
             },
-            "goal" => {
-                let objective = parts[1..].join(" ");
-                CommandResult::Goal {
-                    objective: (!objective.is_empty()).then_some(objective),
-                }
-            }
+            "goal" => CommandResult::Goal {
+                args: parts[1..].join(" "),
+            },
             "skill" => {
                 if parts.len() > 1 {
                     CommandResult::InvokeSkill {
@@ -338,18 +336,16 @@ mod tests {
     }
 
     #[test]
-    fn goal_parses_the_objective_or_falls_back_to_listing() {
+    fn goal_passes_its_raw_arguments_through() {
         let processor = test_processor();
         match processor.process_command("/goal ship the widget by friday") {
-            CommandResult::Goal {
-                objective: Some(objective),
-            } => assert_eq!(objective, "ship the widget by friday"),
-            other => panic!("expected a goal objective, got {other:?}"),
+            CommandResult::Goal { args } => assert_eq!(args, "ship the widget by friday"),
+            other => panic!("expected a goal command, got {other:?}"),
         }
-        assert!(matches!(
-            processor.process_command("/goal"),
-            CommandResult::Goal { objective: None }
-        ));
+        match processor.process_command("/goal") {
+            CommandResult::Goal { args } => assert!(args.is_empty()),
+            other => panic!("expected a goal command, got {other:?}"),
+        }
     }
 
     #[test]

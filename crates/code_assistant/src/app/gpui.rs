@@ -98,7 +98,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .set_wakeup_handle(wakeup_handle);
 
             // Goal controller: while the app is open, drives the sessions'
-            // durable goals (goal tool) one bounded turn at a time. The
+            // user-set durable goals (/goal) one bounded turn at a time. The
             // verdicts come from an LLM evaluator on the configured model;
             // without a usable provider the goals simply stay parked.
             match llm::factory::create_llm_client_from_model(&config.model, None, false, None).await

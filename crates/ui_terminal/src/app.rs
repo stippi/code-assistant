@@ -558,7 +558,7 @@ async fn handle_command_result(
                 }
             }
         }
-        CommandResult::Goal { objective } => {
+        CommandResult::Goal { args } => {
             let session_id = app_state.lock().await.current_session_id.clone();
             let Some(session_id) = session_id else {
                 app_state
@@ -567,21 +567,16 @@ async fn handle_command_result(
                     .set_info_message(Some("No active session to manage goals".to_string()));
                 return;
             };
-            // Claude-Code-style expansion: the command becomes a prompt and
-            // the agent does the actual work through the `goal` tool.
-            let message = match objective {
-                Some(objective) => format!(
-                    "Use the `goal` tool to commit this session to a durable goal for:\n\
-                     {objective}\n\n\
-                     Derive a sensible completion contract (outcome, verification, stop \
-                     condition) and turn budget from that objective; ask first only if \
-                     something essential is missing."
-                ),
-                None => "Use the `goal` tool to list this session's goals and summarize \
-                         their state and progress."
-                    .to_string(),
-            };
-            actions.send_user_message(session_id, message, Vec::new());
+            // Goals are user-set: the command works the store directly, the
+            // agent is never asked to create or steer one.
+            let command = code_assistant_core::goal_commands::GoalCommand::parse(&args);
+            let message = code_assistant_core::goal_commands::run_goal_command_now(
+                &code_assistant_core::goals::default_goals_path(),
+                &session_id,
+                &command,
+            )
+            .unwrap_or_else(|error| format!("/goal: {error:#}"));
+            app_state.lock().await.set_info_message(Some(message));
         }
         CommandResult::ShowPermissionTier => {
             let mut state = app_state.lock().await;
@@ -993,9 +988,9 @@ async fn event_loop(
                                     )
                                     .await;
                                 }
-                                KeyEventResult::Goal { objective } => {
+                                KeyEventResult::Goal { args } => {
                                     handle_command_result(
-                                        crate::commands::CommandResult::Goal { objective },
+                                        crate::commands::CommandResult::Goal { args },
                                         &app_state,
                                         &renderer,
                                         &actions,
@@ -1247,7 +1242,7 @@ impl TerminalTuiApp {
         }
 
         // Goal controller: while the app is open, drives the sessions'
-        // durable goals (goal tool) one bounded turn at a time. The verdicts
+        // user-set durable goals (/goal) one bounded turn at a time. The verdicts
         // come from an LLM evaluator on the configured model; without a
         // usable provider the goals simply stay parked.
         match llm::factory::create_llm_client_from_model(&config.model, None, false, None).await {
