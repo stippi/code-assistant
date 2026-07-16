@@ -340,10 +340,12 @@ impl GoalController {
             return Ok(());
         }
 
-        // The user took the wheel during the goal turn (queued a message that
-        // was absorbed, or cancelled the run): after accounting the attempt,
-        // stop driving this session's goals until they deliberately resume.
-        let user_took_over = outcome.user_preempted || outcome.status == TurnStatus::Cancelled;
+        // A user message absorbed mid-turn does NOT pause the goal — the
+        // user's turn simply takes natural priority and the goal continues
+        // afterwards (`/goal pause|cancel` is the deliberate stop). Only an
+        // explicit run cancel is a stop signal strong enough to park the
+        // session's goals until the user resumes them.
+        let user_took_over = outcome.status == TurnStatus::Cancelled;
 
         let evidence = goal_turn_evidence(&outcome);
         let completion = match self.evaluator.evaluate(&claim, &evidence).await {
