@@ -5,7 +5,7 @@ use crate::plugins::AgentAppState;
 use agent_core::hooks::{CompactionPolicy, ContextSnapshot};
 use anyhow::Result;
 use std::any::Any;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct TokenRatioCompaction {
     threshold: f32,
@@ -33,11 +33,21 @@ impl CompactionPolicy for TokenRatioCompaction {
         let limit = if let Some(limit) = state.context_limit_override {
             limit
         } else {
-            let config_system = llm::provider_config::ConfigurationSystem::load()?;
-            config_system
-                .get_model(&model_name)
-                .map(|model| model.context_token_limit)
-                .ok_or_else(|| anyhow::anyhow!("Model not found in models.json: {model_name}"))?
+            // An agent can legitimately run with a model the configuration
+            // does not know: playback mode and injected LLM factories (tests,
+            // fault-injection harnesses) bypass client construction from
+            // models.json. An unknown limit disables automatic compaction for
+            // the run; it must not fail the turn.
+            let known_limit = llm::provider_config::ConfigurationSystem::load()
+                .ok()
+                .and_then(|config| config.get_model(&model_name).map(|m| m.context_token_limit));
+            match known_limit {
+                Some(limit) => limit,
+                None => {
+                    warn!("No context limit known for model '{model_name}'; compaction disabled for this run");
+                    return Ok(None);
+                }
+            }
         };
 
         Ok(if limit == 0 { None } else { Some(limit) })

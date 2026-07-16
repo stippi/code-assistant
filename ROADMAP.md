@@ -183,6 +183,10 @@ reasoning. The following pieces belong upstream:
 - `GoalEvaluator`, `GoalStore`, `Clock`, and `GoalRunner` traits;
 - deterministic controller decisions (`Continue`, `Wait`, `AwaitInput`,
   `Blocked`, `Done`, and `Failed`);
+- typed wait barriers (`WaitKind`, wait requests, the armed → satisfied /
+  timed-out / cancelled state machine, and clock-only predicates): the
+  controller's `Wait` decision folds out of the same state machine, so leaving
+  the wait types behind would split that machine across repositories;
 - a default bounded LLM evaluator that requires concrete verification evidence;
 - generic create/show/pause/resume/cancel/update operations and tool contracts.
 
@@ -192,7 +196,21 @@ The following remain PAL responsibilities:
 - choosing or rotating the concrete session incarnation that pursues it;
 - startup sweeps, orphan adoption, and proactive continuation after restart;
 - durable timer/job/child/event/human-input resolvers;
+- wait stores, runtime probes, and the turn-free sweep passes;
 - cross-channel notifications and final delivery.
+
+### Migration order
+
+1. **Turn handle and structured evidence first.** Both are purely additive
+   upstream seams: PAL benefits immediately (goal turns and supervised child
+   runs stop inferring outcomes from the event stream) and no PAL code moves
+   yet.
+2. **Goal and wait types, the controller, and the store/evaluator traits**
+   into the orchestration crate. Defining the store traits in this same slice
+   matters: PAL plans to replace its per-file JSON stores with one
+   transactional repository, and that repository should be written against
+   the shared traits rather than migrating persistence twice.
+3. **Run/delegation convergence** (see Next) once goals are shared.
 
 ### Replace event inference with an exact turn handle
 
@@ -220,6 +238,12 @@ cancellation, and resolve once with bounded output:
 
 This removes a race from PAL and is independently useful for background agents,
 ACP, tests, CLI automation, and future work-graph workers.
+
+Channel-style dispatch (PAL's send-or-queue path) is deliberately not this
+operation: an autonomous controller needs exactly `Busy | Started`, while
+queueing a user message for later is host delivery policy. If the two paths
+ever merge, the operation needs an explicit `Queued` outcome rather than
+overloading `Busy`.
 
 ### Evidence must be structured at the source
 
@@ -276,6 +300,14 @@ Provide multiple policies over the same primitives:
 
 Do not make every code-assistant sub-agent durable. Durability has storage,
 recovery, UX, and cost consequences and should be selected by the owner.
+
+Budgets in `RunSpec` are owner policy, not a platform mandate: PAL's
+supervised children deliberately run to completion, limited only at launch
+time (depth, concurrency, workdir ownership, an optional wall-clock deadline),
+and the shared types must keep that legal. The run/attempt split, conversely,
+is exactly what PAL's `ChildRun` still lacks — converging on it supplies the
+planned per-child retry policy and attempt history instead of a parallel
+implementation.
 
 ## Next: first-class projects
 
@@ -368,6 +400,11 @@ A durable approval binds the exact proposed consequence, policy snapshot,
 expiry, preconditions, and idempotency key. Approval revalidates current policy
 and preconditions before executing. The host supplies presentation and delivery:
 GUI/ACP in code-assistant, channels and outbox in PAL.
+
+Sequencing note: PAL ranks durable action intents P0 — they gate unattended
+outward actions — and will build them in `pal_core` first. This section then
+becomes a deliberate second migration under the extract-when-a-consumer-exists
+rule; it is not a reason for PAL to wait for the upstream generalization.
 
 Define execution targets independently of goals and workers:
 

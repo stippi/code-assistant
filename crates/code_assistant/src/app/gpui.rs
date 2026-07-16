@@ -62,6 +62,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             command_executor_factory: super::session_command_executor_factory(),
             project_manager_factory:
                 code_assistant_core::session::service::default_project_manager_factory(),
+            llm_client_factory: None,
         }),
         events,
     );
