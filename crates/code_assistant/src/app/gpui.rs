@@ -97,6 +97,28 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .await
                 .set_wakeup_handle(wakeup_handle);
 
+            // Goal controller: while the app is open, drives the sessions'
+            // durable goals (goal tool) one bounded turn at a time. The
+            // verdicts come from an LLM evaluator on the configured model;
+            // without a usable provider the goals simply stay parked.
+            match llm::factory::create_llm_client_from_model(&config.model, None, false, None).await
+            {
+                Ok(provider) => {
+                    code_assistant_core::goals::spawn_goal_controller(
+                        code_assistant_core::goals::GoalController::with_stores(
+                            service.clone(),
+                            code_assistant_core::goals::default_goals_path(),
+                            code_assistant_core::goals::default_waits_path(),
+                            Arc::new(code_assistant_core::goals::LlmGoalEvaluator::new(provider)),
+                        ),
+                        std::time::Duration::from_secs(30),
+                    );
+                }
+                Err(e) => {
+                    warn!("goal controller disabled (no evaluator provider): {e:#}");
+                }
+            }
+
             let worker = tokio::spawn(service_worker);
 
             startup(&service, &gui_for_thread, task).await;
