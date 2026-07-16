@@ -48,6 +48,9 @@ pub enum KeyEventResult {
     /// Activate a skill. `scope` is the scope token, or `None` to resolve it
     /// from the cached catalog by name.
     InvokeSkill { scope: Option<String>, name: String },
+    /// Manage a durable goal (`/goal`): commit to `Some(objective)` or list
+    /// the session's goals.
+    Goal { objective: Option<String> },
     /// Show the current permission tier.
     ShowPermissionTier,
     /// Switch the permission tier.
@@ -214,6 +217,7 @@ impl InputManager {
                             CommandResult::InvokeSkill { scope, name } => {
                                 KeyEventResult::InvokeSkill { scope, name }
                             }
+                            CommandResult::Goal { objective } => KeyEventResult::Goal { objective },
                             CommandResult::ShowPermissionTier => KeyEventResult::ShowPermissionTier,
                             CommandResult::SetPermissionTier(tier) => {
                                 KeyEventResult::SetPermissionTier(tier)

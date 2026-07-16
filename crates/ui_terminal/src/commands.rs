@@ -72,6 +72,11 @@ pub fn all_commands() -> &'static [SlashCommand] {
             description: "Deny the pending tool permission request",
         },
         SlashCommand {
+            name: "goal",
+            aliases: &[],
+            description: "Commit to a durable goal: /goal <objective> (bare /goal lists them)",
+        },
+        SlashCommand {
             name: "skill",
             aliases: &[],
             description: "Activate a skill: /skill <name> (or pick from the list)",
@@ -118,6 +123,10 @@ pub enum CommandResult {
     /// `:config:` / `:system:`); `None` means resolve it from the cached
     /// catalog by name.
     InvokeSkill { scope: Option<String>, name: String },
+    /// Ask the agent to manage a durable goal: `Some(objective)` commits to a
+    /// new goal, `None` lists the session's goals. Expands to a prompt so the
+    /// agent derives the completion contract through the `goal` tool.
+    Goal { objective: Option<String> },
     /// Show the current permission tier.
     ShowPermissionTier,
     /// Switch the permission tier.
@@ -176,6 +185,12 @@ impl CommandProcessor {
                 request_id: None,
                 decision: tools_core::PermissionDecision::Denied,
             },
+            "goal" => {
+                let objective = parts[1..].join(" ");
+                CommandResult::Goal {
+                    objective: (!objective.is_empty()).then_some(objective),
+                }
+            }
             "skill" => {
                 if parts.len() > 1 {
                     CommandResult::InvokeSkill {
@@ -320,6 +335,21 @@ mod tests {
             .find(|c| c.name == "sessions")
             .expect("`sessions` command should be registered");
         assert!(cmd.aliases.contains(&"resume"));
+    }
+
+    #[test]
+    fn goal_parses_the_objective_or_falls_back_to_listing() {
+        let processor = test_processor();
+        match processor.process_command("/goal ship the widget by friday") {
+            CommandResult::Goal {
+                objective: Some(objective),
+            } => assert_eq!(objective, "ship the widget by friday"),
+            other => panic!("expected a goal objective, got {other:?}"),
+        }
+        assert!(matches!(
+            processor.process_command("/goal"),
+            CommandResult::Goal { objective: None }
+        ));
     }
 
     #[test]

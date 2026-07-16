@@ -558,6 +558,31 @@ async fn handle_command_result(
                 }
             }
         }
+        CommandResult::Goal { objective } => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            let Some(session_id) = session_id else {
+                app_state
+                    .lock()
+                    .await
+                    .set_info_message(Some("No active session to manage goals".to_string()));
+                return;
+            };
+            // Claude-Code-style expansion: the command becomes a prompt and
+            // the agent does the actual work through the `goal` tool.
+            let message = match objective {
+                Some(objective) => format!(
+                    "Use the `goal` tool to commit this session to a durable goal for:\n\
+                     {objective}\n\n\
+                     Derive a sensible completion contract (outcome, verification, stop \
+                     condition) and turn budget from that objective; ask first only if \
+                     something essential is missing."
+                ),
+                None => "Use the `goal` tool to list this session's goals and summarize \
+                         their state and progress."
+                    .to_string(),
+            };
+            actions.send_user_message(session_id, message, Vec::new());
+        }
         CommandResult::ShowPermissionTier => {
             let mut state = app_state.lock().await;
             let message = match state.current_permission_tier {
@@ -968,6 +993,15 @@ async fn event_loop(
                                     )
                                     .await;
                                 }
+                                KeyEventResult::Goal { objective } => {
+                                    handle_command_result(
+                                        crate::commands::CommandResult::Goal { objective },
+                                        &app_state,
+                                        &renderer,
+                                        &actions,
+                                    )
+                                    .await;
+                                }
                                 KeyEventResult::OpenSessionPicker => {
                                     // Inline `/sessions` (popup not active): reuse
                                     // the command-result handler to open the picker.
@@ -1210,6 +1244,27 @@ impl TerminalTuiApp {
                 service.clone(),
                 Some(sleep_inhibitor),
             ));
+        }
+
+        // Goal controller: while the app is open, drives the sessions'
+        // durable goals (goal tool) one bounded turn at a time. The verdicts
+        // come from an LLM evaluator on the configured model; without a
+        // usable provider the goals simply stay parked.
+        match llm::factory::create_llm_client_from_model(&config.model, None, false, None).await {
+            Ok(provider) => {
+                code_assistant_core::goals::spawn_goal_controller(
+                    code_assistant_core::goals::GoalController::with_stores(
+                        service.clone(),
+                        code_assistant_core::goals::default_goals_path(),
+                        code_assistant_core::goals::default_waits_path(),
+                        Arc::new(code_assistant_core::goals::LlmGoalEvaluator::new(provider)),
+                    ),
+                    std::time::Duration::from_secs(30),
+                );
+            }
+            Err(e) => {
+                tracing::warn!("goal controller disabled (no evaluator provider): {e:#}");
+            }
         }
 
         // Bridge: subscribe to the core→UI broadcast stream and feed the
