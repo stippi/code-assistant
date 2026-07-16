@@ -172,6 +172,17 @@ clean.
 
 ## Now: converge goals and exact turn ownership
 
+> **Status 2026-07-16.** Migration steps 1 and 2 are done: the exact turn
+> handle (`start_turn_if_idle` → `TurnHandle` → typed `TurnOutcome`) landed in
+> `SessionService`, and the goal/wait domain below lives in
+> `agent_orchestration` (PAL consumes it through re-export shims).
+> code-assistant is now the second consumer: a `goal` tool in the default
+> scopes (owner = session), a `# Durable Goals` prompt block, and a
+> host-driven `GoalController` (`code_assistant_core::goals`) that drives
+> `Running` goals through `start_turn_if_idle` while the app is open —
+> deliberately no unattended auto-resume after process end. Remaining from
+> this section: step 3 (run/delegation convergence, see Next).
+
 The highest-value shared migration is the generic part of PAL's durable goal
 feature. Its state machine already separates deterministic controller policy
 from the model-backed evaluator and records bounded attempts instead of model
@@ -263,14 +274,24 @@ reasoning.
 
 ### Goal migration acceptance criteria
 
-- The deterministic goal/controller tests run without an LLM or frontend.
-- code-assistant can create and continue a goal in an ordinary session.
-- A goal may survive session reload without promising unattended auto-resume.
-- PAL uses the shared model/controller while retaining its stronger restart and
-  channel semantics.
-- Concurrent pause/cancel and turn completion cannot overwrite each other.
-- Every claimed attempt consumes budget or closes with an explicit abandonment
-  reason; crashes cannot silently refund work.
+All met as of 2026-07-16:
+
+- ✅ The deterministic goal/controller tests run without an LLM or frontend
+  (`agent_orchestration`'s suite plus `code_assistant_core::goals` controller
+  tests against scripted providers/evaluators).
+- ✅ code-assistant can create and continue a goal in an ordinary session
+  (`goal` tool + `GoalController`; `/goal` in the terminal UI).
+- ✅ A goal may survive session reload without promising unattended
+  auto-resume (store-persisted; surfaced via the durable-goals prompt block;
+  the controller loop lives and dies with the process).
+- ✅ PAL uses the shared model/controller while retaining its stronger restart
+  and channel semantics (re-export shims since 2026-07-16).
+- ✅ Concurrent pause/cancel and turn completion cannot overwrite each other
+  (revision/claim-token merge in the shared store, pinned by tests in both
+  consumers).
+- ✅ Every claimed attempt consumes budget or closes with an explicit
+  abandonment reason; crashes cannot silently refund work (Busy-abandonment is
+  the sole refund path; stale in-flight claims fold as interrupted attempts).
 
 ## Next: unify runs and delegation
 

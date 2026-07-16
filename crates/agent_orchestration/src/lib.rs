@@ -18,6 +18,7 @@
 
 pub mod goal_eval;
 pub mod goals;
+pub mod runs;
 pub mod waits;
 
 use serde::{Deserialize, Serialize};
