@@ -217,6 +217,10 @@ impl InputManager {
                                 KeyEventResult::InvokeSkill { scope, name }
                             }
                             CommandResult::Goal { args } => KeyEventResult::Goal { args },
+                            CommandResult::InsertInputTemplate(template) => {
+                                self.textarea.insert_str(&template);
+                                KeyEventResult::Continue
+                            }
                             CommandResult::ShowPermissionTier => KeyEventResult::ShowPermissionTier,
                             CommandResult::SetPermissionTier(tier) => {
                                 KeyEventResult::SetPermissionTier(tier)

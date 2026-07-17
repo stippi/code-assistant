@@ -45,6 +45,12 @@ impl Gpui {
         self.push_event(UiEvent::DisplayError { message });
     }
 
+    pub(crate) fn display_status(&self, message: impl Into<String>) {
+        self.push_event(UiEvent::ShowTransientStatus {
+            message: message.into(),
+        });
+    }
+
     fn is_current_session(&self, session_id: &str) -> bool {
         self.current_session_id.lock().unwrap().as_deref() == Some(session_id)
     }
@@ -214,6 +220,23 @@ impl Gpui {
             {
                 gpui.display_error(format!("Failed to send message: {e:#}"));
             }
+        });
+    }
+
+    /// Execute the user-owned `/goal` command without sending it to the LLM.
+    pub(crate) fn cmd_goal_command(&self, session_id: String, args: String) {
+        let gpui = self.clone();
+        self.dispatch(async move {
+            let message = code_assistant_core::goal_commands::GoalCommand::parse(&args)
+                .and_then(|command| {
+                    code_assistant_core::goal_commands::run_goal_command_now(
+                        &code_assistant_core::goals::default_goals_path(),
+                        &session_id,
+                        &command,
+                    )
+                })
+                .unwrap_or_else(|error| format!("/goal: {error:#}"));
+            gpui.display_status(message);
         });
     }
 

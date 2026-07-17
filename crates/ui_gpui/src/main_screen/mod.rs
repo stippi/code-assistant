@@ -35,6 +35,21 @@ use tracing::{debug, error, warn};
 const SIDEBAR_ANIMATION_DURATION_MS: f32 = 250.0;
 const SIDEBAR_ANIMATION_FRAME_MS: u64 = 8; // ~120 FPS
 
+/// Return the argument text for a syntactically separate `/goal` command.
+/// Prefixes such as `/goals` remain ordinary input.
+fn goal_command_args(input: &str) -> Option<&str> {
+    let input = input.trim();
+    let split = input
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(index, _)| index)
+        .unwrap_or(input.len());
+    let (command, rest) = input.split_at(split);
+    command
+        .eq_ignore_ascii_case("/goal")
+        .then(|| rest.trim_start())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum SidebarAnimationState {
     Idle,
@@ -444,6 +459,22 @@ impl MainScreen {
                 attachments,
                 branch_parent_id,
             } => {
+                if let Some(args) = goal_command_args(content) {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if !attachments.is_empty() || branch_parent_id.is_some() {
+                        gpui.display_status(
+                            "A goal cannot contain attachments or be submitted while editing. \
+                             Use /goal <completion criteria> or /goal cancel.",
+                        );
+                    } else if let Some(session_id) = self.current_session_id.clone() {
+                        gpui.cmd_goal_command(session_id, args.to_string());
+                    } else {
+                        gpui.display_status("No active session to manage goals");
+                    }
+                    return;
+                }
                 if let Some(session_id) = self.current_session_id.clone() {
                     self.send_message(
                         &session_id,
@@ -1557,5 +1588,22 @@ impl Render for MainScreen {
             )
             // Modal dialog overlay for new project creation
             .when_some(new_project_dialog, |el, dialog| el.child(dialog))
+    }
+}
+
+#[cfg(test)]
+mod goal_command_tests {
+    use super::goal_command_args;
+
+    #[test]
+    fn extracts_goal_arguments_without_matching_lookalikes() {
+        assert_eq!(
+            goal_command_args("/goal all tests pass"),
+            Some("all tests pass")
+        );
+        assert_eq!(goal_command_args("  /GOAL cancel  "), Some("cancel"));
+        assert_eq!(goal_command_args("/goal"), Some(""));
+        assert_eq!(goal_command_args("/goals nope"), None);
+        assert_eq!(goal_command_args("ordinary message"), None);
     }
 }

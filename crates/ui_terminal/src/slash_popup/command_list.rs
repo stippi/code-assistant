@@ -93,6 +93,7 @@ pub(crate) fn dispatch_command(name: &str) -> PopupAction {
         "plan" => PopupAction::Commit(CommandResult::TogglePlan),
         "clear" => PopupAction::Commit(CommandResult::ClearContext),
         "compact" => PopupAction::Commit(CommandResult::CompactContext),
+        "goal" => PopupAction::Commit(CommandResult::InsertInputTemplate("/goal ".into())),
         other => PopupAction::Commit(CommandResult::InvalidCommand(format!(
             "Unknown command: /{other}"
         ))),
@@ -259,6 +260,19 @@ mod tests {
         stack.set_query("cl"); // narrow to /clear
         let result = stack.handle_key(key(KeyCode::Enter));
         assert!(matches!(result, Some(CommandResult::ClearContext)));
+        assert!(!stack.is_active());
+    }
+
+    #[test]
+    fn enter_on_goal_inserts_the_required_template() {
+        let mut stack = PopupStack::new();
+        stack.push(Box::new(CommandListPopup::new()));
+        stack.set_query("go");
+        let result = stack.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            result,
+            Some(CommandResult::InsertInputTemplate(ref template)) if template == "/goal "
+        ));
         assert!(!stack.is_active());
     }
 

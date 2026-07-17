@@ -18,10 +18,13 @@
 
 use crate::OwnerKey;
 use chrono::NaiveDateTime;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use uuid::Uuid;
 
 /// Where a goal is in its lifecycle. `Done` and `Failed` are terminal.
 ///
@@ -638,8 +641,9 @@ pub trait GoalEvaluator: Send + Sync {
 
 /// JSON-file persistence for goals (`goals.json`). Every operation reloads the
 /// current file and writes through atomic tmp+rename. Instances for the same
-/// path share a process-local lock, while revisions reject stale snapshots and
-/// attempt tokens let completion merge with concurrent lifecycle changes.
+/// path share a process-local mutex and an OS advisory lock serializes
+/// read-modify-write transactions across processes. Revisions reject stale
+/// snapshots and attempt tokens merge concurrent lifecycle changes.
 pub struct GoalStore {
     path: PathBuf,
     lock: Arc<Mutex<()>>,
@@ -652,9 +656,15 @@ impl GoalStore {
         Self { path, lock }
     }
 
+    fn transaction(&self) -> anyhow::Result<(MutexGuard<'_, ()>, File)> {
+        let process_guard = self.lock.lock().expect("goal store lock poisoned");
+        let file_guard = lock_store_file(&self.path)?;
+        Ok((process_guard, file_guard))
+    }
+
     /// All goals, terminal ones included; a missing file yields an empty list.
     pub fn list(&self) -> anyhow::Result<Vec<Goal>> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         self.load_unlocked()
     }
 
@@ -678,7 +688,7 @@ impl GoalStore {
 
     /// Add a goal with a caller-supplied id; the id must be unique.
     pub fn add(&self, goal: Goal) -> anyhow::Result<()> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         if goals.iter().any(|g| g.id == goal.id) {
             anyhow::bail!("goal id {} already exists", goal.id);
@@ -697,7 +707,7 @@ impl GoalStore {
         budget: Budget,
         now: NaiveDateTime,
     ) -> anyhow::Result<Goal> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let base = format!("goal-{}", now.format("%Y%m%d-%H%M%S"));
         let mut id = base.clone();
@@ -712,6 +722,53 @@ impl GoalStore {
         Ok(goal)
     }
 
+    /// Replace every non-terminal goal owned by `owner` with one fresh goal,
+    /// in a single read-modify-write transaction. Terminal evidence ledgers
+    /// remain history. This is the persistence primitive for hosts that expose
+    /// exactly one current goal per owner. Returns the new goal and the number
+    /// of current goals it replaced.
+    pub fn replace_current_for_owner(
+        &self,
+        owner: OwnerKey,
+        objective: impl Into<String>,
+        contract: CompletionContract,
+        budget: Budget,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<(Goal, usize)> {
+        let (_process_guard, _file_guard) = self.transaction()?;
+        let mut goals = self.load_unlocked()?;
+        let before = goals.len();
+        goals.retain(|goal| goal.owner != owner || goal.state.is_terminal());
+        let replaced = before - goals.len();
+        // Replacement deletes the old ledger entry, but durable waits and
+        // child links can outlive it briefly. A UUID prevents the new goal
+        // from ever addressing those links, including after cancel + set in
+        // the same second.
+        let id = format!(
+            "goal-{}-{}",
+            now.format("%Y%m%d-%H%M%S"),
+            Uuid::new_v4().simple()
+        );
+        let goal = Goal::new(id, owner, objective, contract, budget, now);
+        goals.push(goal.clone());
+        self.save_unlocked(&goals)?;
+        Ok((goal, replaced))
+    }
+
+    /// Remove every non-terminal goal owned by `owner` in one transaction,
+    /// preserving terminal evidence ledgers. Returns the number removed.
+    pub fn remove_current_for_owner(&self, owner: &OwnerKey) -> anyhow::Result<usize> {
+        let (_process_guard, _file_guard) = self.transaction()?;
+        let mut goals = self.load_unlocked()?;
+        let before = goals.len();
+        goals.retain(|goal| &goal.owner != owner || goal.state.is_terminal());
+        let removed = before - goals.len();
+        if removed > 0 {
+            self.save_unlocked(&goals)?;
+        }
+        Ok(removed)
+    }
+
     /// A single goal by id.
     pub fn get(&self, id: &str) -> anyhow::Result<Option<Goal>> {
         Ok(self.list()?.into_iter().find(|g| g.id == id))
@@ -720,7 +777,7 @@ impl GoalStore {
     /// Persist a mutated goal (after `apply_evaluation`, a lifecycle edge, …).
     /// Errors if the id is unknown — an update never silently creates.
     pub fn update(&self, goal: &Goal) -> anyhow::Result<Goal> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(slot) = goals.iter_mut().find(|g| g.id == goal.id) else {
             anyhow::bail!("unknown goal id {}", goal.id);
@@ -747,7 +804,7 @@ impl GoalStore {
         snapshot: &Goal,
         now: NaiveDateTime,
     ) -> anyhow::Result<Option<Goal>> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|goal| goal.id == snapshot.id) else {
             return Ok(None);
@@ -790,7 +847,7 @@ impl GoalStore {
         let Some(token) = claim.in_flight.as_ref() else {
             anyhow::bail!("cannot finish a goal snapshot without an in-flight attempt");
         };
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|goal| goal.id == claim.id) else {
             return Ok(None);
@@ -855,7 +912,7 @@ impl GoalStore {
         let Some(token) = claim.in_flight.as_ref() else {
             anyhow::bail!("cannot abandon a goal snapshot without an in-flight attempt");
         };
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|goal| goal.id == claim.id) else {
             return Ok(None);
@@ -872,7 +929,7 @@ impl GoalStore {
 
     /// Remove a goal; `false` when the id is unknown.
     pub fn remove(&self, id: &str) -> anyhow::Result<bool> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let before = goals.len();
         goals.retain(|g| g.id != id);
@@ -913,7 +970,7 @@ impl GoalStore {
         owner: &OwnerKey,
         now: NaiveDateTime,
     ) -> anyhow::Result<Vec<String>> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let mut paused = Vec::new();
         for goal in goals
@@ -943,7 +1000,7 @@ impl GoalStore {
         note: Option<String>,
         now: NaiveDateTime,
     ) -> anyhow::Result<bool> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|g| g.id == goal_id) else {
             return Ok(false);
@@ -967,6 +1024,20 @@ fn goal_store_lock(path: &std::path::Path) -> Arc<Mutex<()>> {
         .entry(path.to_path_buf())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+fn lock_store_file(path: &Path) -> anyhow::Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_path = path.with_extension("json.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    FileExt::lock_exclusive(&file)?;
+    Ok(file)
 }
 
 /// Storage seam for goals. The bundled JSON [`GoalStore`] implements it; a
@@ -1794,6 +1865,49 @@ mod tests {
             .add_new(owner(), "b", contract(), Budget::turns(1), now)
             .unwrap();
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn replacing_an_owner_never_reuses_the_old_goal_id() {
+        let (store, _dir) = store();
+        let now = at(2026, 7, 14, 9, 0);
+        let old = store
+            .add_new(owner(), "old", contract(), Budget::turns(1), now)
+            .unwrap();
+
+        let (new, replaced) = store
+            .replace_current_for_owner(owner(), "new", contract(), Budget::turns(1), now)
+            .unwrap();
+
+        assert_eq!(replaced, 1);
+        assert_ne!(old.id, new.id);
+        assert_eq!(store.list().unwrap(), vec![new]);
+    }
+
+    #[test]
+    fn replacing_and_removing_current_goals_preserves_terminal_history() {
+        let (store, _dir) = store();
+        let now = at(2026, 7, 14, 9, 0);
+        let mut history = store
+            .add_new(owner(), "finished", contract(), Budget::turns(1), now)
+            .unwrap();
+        history.fail("recorded", now).unwrap();
+        history = store.update(&history).unwrap();
+        let current = store
+            .add_new(owner(), "current", contract(), Budget::turns(1), now)
+            .unwrap();
+
+        let (replacement, replaced) = store
+            .replace_current_for_owner(owner(), "new", contract(), Budget::turns(1), now)
+            .unwrap();
+        assert_eq!(replaced, 1);
+        assert!(store.get(&current.id).unwrap().is_none());
+        assert_eq!(store.get(&history.id).unwrap(), Some(history.clone()));
+
+        assert_eq!(store.remove_current_for_owner(&owner()).unwrap(), 1);
+        assert!(store.get(&replacement.id).unwrap().is_none());
+        assert_eq!(store.list().unwrap(), vec![history]);
+        assert_eq!(store.remove_current_for_owner(&owner()).unwrap(), 0);
     }
 
     #[test]
