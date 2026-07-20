@@ -544,11 +544,7 @@ impl Goal {
 
     /// Claim fold: begin an attempt against `snapshot`, or report why not.
     /// Mutates `self` (revision bumped) except in the `Stale` case.
-    pub fn fold_claim(
-        &mut self,
-        snapshot: &Goal,
-        now: NaiveDateTime,
-    ) -> anyhow::Result<ClaimFold> {
+    pub fn fold_claim(&mut self, snapshot: &Goal, now: NaiveDateTime) -> anyhow::Result<ClaimFold> {
         if self.revision != snapshot.revision
             || self.state != GoalState::Running
             || self.in_flight.is_some()
