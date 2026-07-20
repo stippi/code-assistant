@@ -1539,11 +1539,13 @@ name = "code_assistant_core"
 version = "0.2.14"
 dependencies = [
  "agent_core",
+ "agent_orchestration",
  "anyhow",
  "async-channel 2.5.0",
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "chrono",
  "clap",
  "command_executor",
  "dirs 5.0.1",

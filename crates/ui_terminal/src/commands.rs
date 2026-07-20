@@ -72,6 +72,12 @@ pub fn all_commands() -> &'static [SlashCommand] {
             description: "Deny the pending tool permission request",
         },
         SlashCommand {
+            name: "goal",
+            aliases: &[],
+            description:
+                "Set a durable goal: /goal <condition> (bare /goal lists; show|pause|resume|cancel [id])",
+        },
+        SlashCommand {
             name: "skill",
             aliases: &[],
             description: "Activate a skill: /skill <name> (or pick from the list)",
@@ -118,6 +124,10 @@ pub enum CommandResult {
     /// `:config:` / `:system:`); `None` means resolve it from the cached
     /// catalog by name.
     InvokeSkill { scope: Option<String>, name: String },
+    /// Manage the session's durable goals directly (never through the agent):
+    /// the raw text after `/goal`, parsed by
+    /// `code_assistant_core::goal_commands::GoalCommand`.
+    Goal { args: String },
     /// Show the current permission tier.
     ShowPermissionTier,
     /// Switch the permission tier.
@@ -175,6 +185,9 @@ impl CommandProcessor {
             "deny" => CommandResult::RespondPermission {
                 request_id: None,
                 decision: tools_core::PermissionDecision::Denied,
+            },
+            "goal" => CommandResult::Goal {
+                args: parts[1..].join(" "),
             },
             "skill" => {
                 if parts.len() > 1 {
@@ -320,6 +333,19 @@ mod tests {
             .find(|c| c.name == "sessions")
             .expect("`sessions` command should be registered");
         assert!(cmd.aliases.contains(&"resume"));
+    }
+
+    #[test]
+    fn goal_passes_its_raw_arguments_through() {
+        let processor = test_processor();
+        match processor.process_command("/goal ship the widget by friday") {
+            CommandResult::Goal { args } => assert_eq!(args, "ship the widget by friday"),
+            other => panic!("expected a goal command, got {other:?}"),
+        }
+        match processor.process_command("/goal") {
+            CommandResult::Goal { args } => assert!(args.is_empty()),
+            other => panic!("expected a goal command, got {other:?}"),
+        }
     }
 
     #[test]

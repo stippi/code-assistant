@@ -1,5 +1,10 @@
 //! System prompt construction: model-specific base prompt, project file
 //! trees, and repository guidance (AGENTS.md / CLAUDE.md).
+//!
+//! Durable goals deliberately do NOT appear here: a goal reaches the model
+//! only as the framed goal-turn message (`goal_turn_text`), which arrives
+//! like any user message and carries the full contract — the same shape as
+//! hermes' continuation prompt and Claude Code's stop-hook feedback.
 
 use crate::plugins::AgentAppState;
 use crate::tool_dialects::system_message::generate_system_message;
@@ -8,7 +13,14 @@ use std::fs;
 use std::path::Path;
 use tracing::warn;
 
+#[derive(Default)]
 pub struct CodeAssistantSystemPrompt;
+
+impl CodeAssistantSystemPrompt {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 impl SystemPromptProvider for CodeAssistantSystemPrompt {
     fn build(&self, ctx: &PromptCtx) -> String {

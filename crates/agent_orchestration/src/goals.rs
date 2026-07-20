@@ -907,7 +907,7 @@ impl GoalStore {
     /// `Running` goals are affected: a `Waiting`/`Blocked` goal is already
     /// stopped, and a `Paused` one stays paused. Returns the ids paused (empty
     /// when there was nothing to preempt). A paused goal is resumed
-    /// deliberately, through the `goal` tool.
+    /// deliberately, through the host's goal commands.
     pub fn preempt_owner(
         &self,
         owner: &OwnerKey,
