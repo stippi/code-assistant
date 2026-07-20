@@ -182,7 +182,10 @@ clean.
 > the model only as the framed goal-turn message), and a
 > host-driven `GoalController` (`code_assistant_core::goals`) that drives
 > `Running` goals through `start_turn_if_idle` while the app is open —
-> deliberately no unattended auto-resume after process end. Remaining from
+> deliberately no crash recovery or claim adoption. A persisted in-flight
+> claim may belong to another live instance and is left untouched; after a
+> real crash only the user can clear it by replacing or cancelling the goal.
+> Remaining from
 > this section: step 3 (run/delegation convergence, see Next).
 
 The highest-value shared migration is the generic part of PAL's durable goal
@@ -201,7 +204,8 @@ reasoning. The following pieces belong upstream:
   controller's `Wait` decision folds out of the same state machine, so leaving
   the wait types behind would split that machine across repositories;
 - a default bounded LLM evaluator that requires concrete verification evidence;
-- generic create/show/pause/resume/cancel/update operations and tool contracts.
+- generic storage and lifecycle primitives; each host chooses its smaller
+  user-facing command language.
 
 The following remain PAL responsibilities:
 
@@ -284,17 +288,17 @@ All met as of 2026-07-16:
 - ✅ code-assistant can create and continue a goal in an ordinary session
   (user-set via `/goal` → `goal_commands` + `GoalController`; the earlier
   model-facing `goal` tool was removed — only the user sets goals).
-- ✅ A goal may survive session reload without promising unattended
-  auto-resume (store-persisted; surfaced on demand via `/goal` list/show;
-  the controller loop lives and dies with the process).
+- ✅ A goal may survive session reload without promising crash recovery (the
+  controller loop lives and dies with the process; persisted in-flight claims
+  are never adopted or restarted by code-assistant).
 - ✅ PAL uses the shared model/controller while retaining its stronger restart
   and channel semantics (re-export shims since 2026-07-16).
-- ✅ Concurrent pause/cancel and turn completion cannot overwrite each other
-  (revision/claim-token merge in the shared store, pinned by tests in both
-  consumers).
-- ✅ Every claimed attempt consumes budget or closes with an explicit
-  abandonment reason; crashes cannot silently refund work (Busy-abandonment is
-  the sole refund path; stale in-flight claims fold as interrupted attempts).
+- ✅ `/goal <completion criteria>` atomically replaces the session's one
+  current goal; `/goal cancel` removes it. Neither path reaches the model, and
+  the command works in TUI, GPUI and ACP clients.
+- ✅ Every attempt completed by this process consumes budget or closes with an
+  explicit Busy abandonment. A claim whose owner disappears stays parked;
+  code-assistant does not infer a crash from shared persisted state.
 
 ## Next: unify runs and delegation
 

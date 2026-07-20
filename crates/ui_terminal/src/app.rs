@@ -569,15 +569,20 @@ async fn handle_command_result(
             };
             // Goals are user-set: the command works the store directly, the
             // agent is never asked to create or steer one.
-            let command = code_assistant_core::goal_commands::GoalCommand::parse(&args);
-            let message = code_assistant_core::goal_commands::run_goal_command_now(
-                &code_assistant_core::goals::default_goals_path(),
-                &session_id,
-                &command,
-            )
-            .unwrap_or_else(|error| format!("/goal: {error:#}"));
+            let message = code_assistant_core::goal_commands::GoalCommand::parse(&args)
+                .and_then(|command| {
+                    code_assistant_core::goal_commands::run_goal_command_now(
+                        &code_assistant_core::goals::default_goals_path(),
+                        &session_id,
+                        &command,
+                    )
+                })
+                .unwrap_or_else(|error| format!("/goal: {error:#}"));
             app_state.lock().await.set_info_message(Some(message));
         }
+        // Produced only by the popup and handled where the composer is
+        // available in the event loop.
+        CommandResult::InsertInputTemplate(_) => {}
         CommandResult::ShowPermissionTier => {
             let mut state = app_state.lock().await;
             let message = match state.current_permission_tier {
@@ -1107,8 +1112,20 @@ async fn event_loop(
                                         if !top_was_permission_prompt {
                                             clear_slash_command_word(&mut input_manager.textarea);
                                         }
-                                        handle_command_result(cmd, &app_state, &renderer, &actions)
+                                        if let crate::commands::CommandResult::InsertInputTemplate(
+                                            template,
+                                        ) = cmd
+                                        {
+                                            input_manager.textarea.insert_str(&template);
+                                        } else {
+                                            handle_command_result(
+                                                cmd,
+                                                &app_state,
+                                                &renderer,
+                                                &actions,
+                                            )
                                             .await;
+                                        }
                                     }
                                 }
                             }

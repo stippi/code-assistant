@@ -13,8 +13,8 @@
 //! live here so every frontend gets the same behavior.
 
 use crate::goals::session_owner;
-use agent_orchestration::goals::{Budget, CompletionContract, Goal, GoalState, GoalStore};
-use anyhow::{anyhow, Result};
+use agent_orchestration::goals::{Budget, CompletionContract, GoalStore};
+use anyhow::{bail, Result};
 use chrono::NaiveDateTime;
 use std::path::Path;
 
@@ -23,57 +23,35 @@ use std::path::Path;
 /// until the user notices.
 pub const USER_GOAL_MAX_TURNS: u32 = 10;
 
+/// The complete user-facing syntax. Frontends show this when `/goal` is
+/// submitted without the required objective.
+pub const GOAL_USAGE: &str = "Usage: /goal <completion criteria> or /goal cancel";
+
 /// A parsed `/goal` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalCommand {
-    /// Bare `/goal` (or `/goal list`): the session's goals and their state.
-    List,
-    /// `/goal show [id]`: one goal in full detail.
-    Show { id: Option<String> },
-    /// `/goal pause [id]`: the controller stops driving the goal.
-    Pause { id: Option<String> },
-    /// `/goal resume [id]`: the controller drives the goal again.
-    Resume { id: Option<String> },
-    /// `/goal cancel [id]`: give up; the goal stays on the ledger as failed.
-    Cancel { id: Option<String> },
-    /// `/goal <condition>`: commit the session to a new goal whose contract
-    /// is the user's condition, verbatim.
-    Commit { condition: String },
+    /// `/goal cancel`: delete the session's current goal.
+    Cancel,
+    /// `/goal <completion criteria>`: set or replace the session's one goal.
+    Set { objective: String },
 }
 
 impl GoalCommand {
-    /// Parse the raw text after `/goal`. A leading lifecycle keyword with at
-    /// most one trailing token is a lifecycle command; everything else is the
-    /// condition of a new goal (so prose that merely starts with "cancel …"
-    /// still commits a goal).
-    pub fn parse(input: &str) -> GoalCommand {
+    /// Parse the raw text after `/goal`. Only the exact single word `cancel`
+    /// is control syntax; every other non-empty string is the user's objective
+    /// verbatim. A bare `/goal` is deliberately invalid, so UIs can keep the
+    /// user in the `/goal <completion criteria>` template.
+    pub fn parse(input: &str) -> Result<GoalCommand> {
         let input = input.trim();
-        let tokens: Vec<&str> = input.split_whitespace().collect();
-        let id = (tokens.len() == 2).then(|| tokens[1].to_string());
-        match (tokens.first().map(|t| t.to_lowercase()), tokens.len()) {
-            (None, _) => GoalCommand::List,
-            (Some(word), 1) => match word.as_str() {
-                "list" | "status" => GoalCommand::List,
-                "show" => GoalCommand::Show { id: None },
-                "pause" => GoalCommand::Pause { id: None },
-                "resume" => GoalCommand::Resume { id: None },
-                "cancel" => GoalCommand::Cancel { id: None },
-                _ => GoalCommand::Commit {
-                    condition: input.to_string(),
-                },
-            },
-            (Some(word), 2) => match word.as_str() {
-                "show" => GoalCommand::Show { id },
-                "pause" => GoalCommand::Pause { id },
-                "resume" => GoalCommand::Resume { id },
-                "cancel" => GoalCommand::Cancel { id },
-                _ => GoalCommand::Commit {
-                    condition: input.to_string(),
-                },
-            },
-            _ => GoalCommand::Commit {
-                condition: input.to_string(),
-            },
+        if input.is_empty() {
+            bail!(GOAL_USAGE);
+        }
+        if input.eq_ignore_ascii_case("cancel") {
+            Ok(GoalCommand::Cancel)
+        } else {
+            Ok(GoalCommand::Set {
+                objective: input.to_string(),
+            })
         }
     }
 }
@@ -93,8 +71,7 @@ pub fn run_goal_command_now(
 }
 
 /// Execute a `/goal` command for the given session against the store at
-/// `goals_path`. Returns the text the frontend should show; errors are
-/// user-facing too (unknown id, ambiguous target, …).
+/// `goals_path`. Returns the text the frontend should show.
 pub fn run_goal_command(
     goals_path: &Path,
     session_id: &str,
@@ -103,210 +80,48 @@ pub fn run_goal_command(
 ) -> Result<String> {
     let store = GoalStore::new(goals_path);
     match command {
-        GoalCommand::List => list(&store, session_id),
-        GoalCommand::Show { id } => show(&store, session_id, id.as_deref()),
-        GoalCommand::Pause { id } => pause(&store, session_id, id.as_deref(), now),
-        GoalCommand::Resume { id } => resume(&store, session_id, id.as_deref(), now),
-        GoalCommand::Cancel { id } => cancel(&store, session_id, id.as_deref(), now),
-        GoalCommand::Commit { condition } => commit(&store, session_id, condition, now),
+        GoalCommand::Cancel => cancel(&store, session_id),
+        GoalCommand::Set { objective } => set(&store, session_id, objective, now),
     }
 }
 
-fn commit(
-    store: &GoalStore,
-    session_id: &str,
-    condition: &str,
-    now: NaiveDateTime,
-) -> Result<String> {
-    let condition = condition.trim();
-    if condition.is_empty() {
-        return Err(anyhow!("the goal needs a condition: /goal <condition>"));
-    }
+fn set(store: &GoalStore, session_id: &str, objective: &str, now: NaiveDateTime) -> Result<String> {
     // The user's condition is the whole contract: it is both the objective
     // and the outcome, verified against the session's own turn evidence.
     let contract = CompletionContract::new(
-        condition,
+        objective,
         "evidence from the session's turns (commands run and their results, artifacts \
          produced) shows the condition holds",
-        "the user pauses or cancels the goal",
+        "the user replaces or cancels the goal",
     );
-    let goal = store.add_new(
+    let (goal, replaced) = store.replace_current_for_owner(
         session_owner(session_id),
-        condition,
+        objective,
         contract,
         Budget::turns(USER_GOAL_MAX_TURNS),
         now,
     )?;
+    let verb = if replaced == 0 { "set" } else { "replaced" };
     Ok(format!(
-        "Goal {} set: {}\nThe controller pursues it while the app is open (up to {} turns); \
-         /goal shows progress, /goal cancel gives it up.",
-        goal.id, condition, goal.budget.max_turns,
+        "Goal {verb}: {}\nThe controller pursues it while the app is open (up to {} turns). \
+         Use /goal cancel to remove it.",
+        goal.objective, goal.budget.max_turns,
     ))
 }
 
-fn list(store: &GoalStore, session_id: &str) -> Result<String> {
-    let mut goals = session_goals(store, session_id)?;
-    if goals.is_empty() {
-        return Ok("No goals on record for this session. Set one with /goal <condition>.".into());
+fn cancel(store: &GoalStore, session_id: &str) -> Result<String> {
+    let removed = store.remove_current_for_owner(&session_owner(session_id))?;
+    if removed == 0 {
+        Ok("No goal is set for this session.".into())
+    } else {
+        Ok("Goal cancelled and removed.".into())
     }
-    // Active goals first, then terminal ones; stable within each group.
-    goals.sort_by_key(|g| g.state.is_terminal());
-    let mut lines = vec![format!("{} goal(s):", goals.len())];
-    for g in goals {
-        let note = g
-            .note
-            .as_deref()
-            .map(|n| format!(" — {n}"))
-            .unwrap_or_default();
-        lines.push(format!(
-            "- {} [{}] {}/{} turns: {}{}",
-            g.id,
-            g.state.label(),
-            g.turns_used(),
-            g.budget.max_turns,
-            g.objective,
-            note,
-        ));
-    }
-    Ok(lines.join("\n"))
-}
-
-fn show(store: &GoalStore, session_id: &str, id: Option<&str>) -> Result<String> {
-    let goal = target_goal(store, session_id, id)?;
-    let mut lines = vec![
-        format!(
-            "Goal {} [{}]: {}",
-            goal.id,
-            goal.state.label(),
-            goal.objective
-        ),
-        format!("- Done when: {}", goal.contract.outcome),
-        format!("- Verify by: {}", goal.contract.verification),
-        format!("- Stop if: {}", goal.contract.stop_condition),
-        format!(
-            "- Budget: {}/{} turns used",
-            goal.turns_used(),
-            goal.budget.max_turns,
-        ),
-    ];
-    if let Some(note) = &goal.note {
-        lines.push(format!("Note: {note}"));
-    }
-    if !goal.attempts.is_empty() {
-        lines.push("Recent attempts:".to_string());
-        for attempt in goal.attempts.iter().rev().take(5).rev() {
-            lines.push(format!(
-                "- {} [{:?}] {}",
-                attempt.at.format("%Y-%m-%d %H:%M"),
-                attempt.verdict,
-                attempt.summary,
-            ));
-        }
-    }
-    Ok(lines.join("\n"))
-}
-
-fn pause(
-    store: &GoalStore,
-    session_id: &str,
-    id: Option<&str>,
-    now: NaiveDateTime,
-) -> Result<String> {
-    let mut goal = target_goal(store, session_id, id)?;
-    if goal.state == GoalState::Paused {
-        return Ok(format!("Goal {} is already paused.", goal.id));
-    }
-    goal.pause(now)
-        .map_err(|_| finished_error(&goal.id, goal.state))?;
-    store.update(&goal)?;
-    Ok(format!(
-        "Paused goal {}. /goal resume drives it again.",
-        goal.id
-    ))
-}
-
-fn resume(
-    store: &GoalStore,
-    session_id: &str,
-    id: Option<&str>,
-    now: NaiveDateTime,
-) -> Result<String> {
-    let mut goal = target_goal(store, session_id, id)?;
-    if goal.state == GoalState::Running {
-        return Ok(format!("Goal {} is already running.", goal.id));
-    }
-    goal.resume(now)
-        .map_err(|_| finished_error(&goal.id, goal.state))?;
-    store.update(&goal)?;
-    Ok(format!(
-        "Resumed goal {}; the controller drives it on the next pass.",
-        goal.id
-    ))
-}
-
-fn cancel(
-    store: &GoalStore,
-    session_id: &str,
-    id: Option<&str>,
-    now: NaiveDateTime,
-) -> Result<String> {
-    let mut goal = target_goal(store, session_id, id)?;
-    goal.fail("cancelled by the user", now)
-        .map_err(|_| finished_error(&goal.id, goal.state))?;
-    store.update(&goal)?;
-    Ok(format!(
-        "Cancelled goal {}; it stays on the ledger as failed.",
-        goal.id
-    ))
-}
-
-fn session_goals(store: &GoalStore, session_id: &str) -> Result<Vec<Goal>> {
-    let owner = session_owner(session_id);
-    Ok(store
-        .list()?
-        .into_iter()
-        .filter(|g| g.owner == owner)
-        .collect())
-}
-
-/// Resolve the goal a lifecycle command targets: an explicit id (which must
-/// belong to this session), or — when omitted — the session's single
-/// non-terminal goal.
-fn target_goal(store: &GoalStore, session_id: &str, id: Option<&str>) -> Result<Goal> {
-    if let Some(id) = id {
-        let goal = store
-            .get(id)?
-            .ok_or_else(|| anyhow!("no goal with id {id}"))?;
-        if goal.owner != session_owner(session_id) {
-            return Err(anyhow!("goal {id} belongs to another session"));
-        }
-        return Ok(goal);
-    }
-    let mut open: Vec<Goal> = session_goals(store, session_id)?
-        .into_iter()
-        .filter(|g| !g.state.is_terminal())
-        .collect();
-    match open.len() {
-        0 => Err(anyhow!("this session has no open goal")),
-        1 => Ok(open.remove(0)),
-        _ => Err(anyhow!(
-            "this session has {} open goals — name one: {}",
-            open.len(),
-            open.iter()
-                .map(|g| g.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-        )),
-    }
-}
-
-fn finished_error(id: &str, state: GoalState) -> anyhow::Error {
-    anyhow!("goal {id} is already {} and cannot change", state.label())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_orchestration::goals::GoalState;
     use chrono::NaiveDate;
 
     fn now() -> NaiveDateTime {
@@ -317,12 +132,8 @@ mod tests {
     }
 
     fn run(dir: &std::path::Path, session_id: &str, input: &str) -> Result<String> {
-        run_goal_command(
-            &dir.join("goals.json"),
-            session_id,
-            &GoalCommand::parse(input),
-            now(),
-        )
+        let command = GoalCommand::parse(input)?;
+        run_goal_command(&dir.join("goals.json"), session_id, &command, now())
     }
 
     fn store(dir: &std::path::Path) -> GoalStore {
@@ -330,35 +141,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_separates_lifecycle_keywords_from_conditions() {
-        assert_eq!(GoalCommand::parse(""), GoalCommand::List);
-        assert_eq!(GoalCommand::parse("  list "), GoalCommand::List);
-        assert_eq!(GoalCommand::parse("status"), GoalCommand::List);
-        assert_eq!(GoalCommand::parse("show"), GoalCommand::Show { id: None });
+    fn parse_enforces_the_small_user_owned_command_language() {
+        assert_eq!(GoalCommand::parse("").unwrap_err().to_string(), GOAL_USAGE);
+        assert_eq!(GoalCommand::parse(" CANCEL ").unwrap(), GoalCommand::Cancel);
         assert_eq!(
-            GoalCommand::parse("pause g-1"),
-            GoalCommand::Pause {
-                id: Some("g-1".into())
+            GoalCommand::parse("all tests pass").unwrap(),
+            GoalCommand::Set {
+                objective: "all tests pass".into()
             }
         );
+        // Only exact `cancel` is control syntax; this remains an objective.
         assert_eq!(
-            GoalCommand::parse("all tests pass"),
-            GoalCommand::Commit {
-                condition: "all tests pass".into()
-            }
-        );
-        // A three-word phrase starting with a keyword is a condition, not a
-        // lifecycle command with a two-token id.
-        assert_eq!(
-            GoalCommand::parse("cancel the subscription in the billing portal"),
-            GoalCommand::Commit {
-                condition: "cancel the subscription in the billing portal".into()
+            GoalCommand::parse("cancel the subscription").unwrap(),
+            GoalCommand::Set {
+                objective: "cancel the subscription".into()
             }
         );
     }
 
     #[test]
-    fn commit_persists_a_session_owned_running_goal_with_the_condition_as_contract() {
+    fn set_persists_one_session_owned_goal_with_the_objective_as_contract() {
         let dir = tempfile::tempdir().unwrap();
         let message = run(dir.path(), "sess-1", "the CI badge is green").unwrap();
 
@@ -369,109 +171,47 @@ mod tests {
         assert_eq!(goals[0].objective, "the CI badge is green");
         assert_eq!(goals[0].contract.outcome, "the CI badge is green");
         assert_eq!(goals[0].budget.max_turns, USER_GOAL_MAX_TURNS);
-        assert!(message.contains(&goals[0].id));
+        assert!(message.contains("Goal set"));
     }
 
     #[test]
-    fn list_and_lifecycle_are_scoped_to_the_session() {
+    fn setting_again_replaces_only_the_current_sessions_goal() {
         let dir = tempfile::tempdir().unwrap();
-        run(dir.path(), "sess-1", "mine holds").unwrap();
+        run(dir.path(), "sess-1", "old objective").unwrap();
         run(dir.path(), "sess-2", "theirs holds").unwrap();
+        let message = run(dir.path(), "sess-1", "new objective").unwrap();
 
-        let listed = run(dir.path(), "sess-1", "").unwrap();
-        assert!(listed.contains("mine holds"));
-        assert!(!listed.contains("theirs holds"));
-
-        let foreign_id = store(dir.path())
-            .list()
-            .unwrap()
-            .into_iter()
-            .find(|g| g.owner == session_owner("sess-2"))
-            .unwrap()
-            .id;
-        let error = run(dir.path(), "sess-1", &format!("cancel {foreign_id}")).unwrap_err();
-        assert!(error.to_string().contains("another session"));
-    }
-
-    #[test]
-    fn lifecycle_without_an_id_targets_the_single_open_goal() {
-        let dir = tempfile::tempdir().unwrap();
-        run(dir.path(), "sess-1", "the widget ships").unwrap();
-
-        run(dir.path(), "sess-1", "pause").unwrap();
-        assert_eq!(
-            store(dir.path()).list().unwrap()[0].state,
-            GoalState::Paused
+        let goals = store(dir.path()).list().unwrap();
+        assert_eq!(goals.len(), 2);
+        assert!(
+            goals
+                .iter()
+                .any(|goal| goal.owner == session_owner("sess-1")
+                    && goal.objective == "new objective")
         );
+        assert!(goals
+            .iter()
+            .any(|goal| goal.owner == session_owner("sess-2") && goal.objective == "theirs holds"));
+        assert!(!goals.iter().any(|goal| goal.objective == "old objective"));
+        assert!(message.contains("Goal replaced"));
+    }
 
-        run(dir.path(), "sess-1", "resume").unwrap();
+    #[test]
+    fn cancel_deletes_the_current_sessions_goal() {
+        let dir = tempfile::tempdir().unwrap();
+        run(dir.path(), "sess-1", "mine").unwrap();
+        run(dir.path(), "sess-2", "theirs").unwrap();
+
+        let message = run(dir.path(), "sess-1", "cancel").unwrap();
+        let goals = store(dir.path()).list().unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].owner, session_owner("sess-2"));
+        assert_eq!(goals[0].state, GoalState::Running);
+        assert_eq!(message, "Goal cancelled and removed.");
+
         assert_eq!(
-            store(dir.path()).list().unwrap()[0].state,
-            GoalState::Running
+            run(dir.path(), "sess-1", "cancel").unwrap(),
+            "No goal is set for this session."
         );
-
-        run(dir.path(), "sess-1", "cancel").unwrap();
-        let goal = &store(dir.path()).list().unwrap()[0];
-        assert_eq!(goal.state, GoalState::Failed);
-        assert_eq!(goal.note.as_deref(), Some("cancelled by the user"));
-
-        // No open goal left: lifecycle commands now need nothing to act on.
-        let error = run(dir.path(), "sess-1", "pause").unwrap_err();
-        assert!(error.to_string().contains("no open goal"));
-    }
-
-    #[test]
-    fn lifecycle_without_an_id_refuses_an_ambiguous_target() {
-        let dir = tempfile::tempdir().unwrap();
-        run(dir.path(), "sess-1", "goal one holds").unwrap();
-        run(dir.path(), "sess-1", "goal two holds").unwrap();
-
-        let error = run(dir.path(), "sess-1", "cancel").unwrap_err();
-        assert!(error.to_string().contains("2 open goals"));
-    }
-
-    #[test]
-    fn show_renders_the_contract_and_ledger() {
-        let dir = tempfile::tempdir().unwrap();
-        run(dir.path(), "sess-1", "the check passes").unwrap();
-
-        let shown = run(dir.path(), "sess-1", "show").unwrap();
-        assert!(shown.contains("Done when: the check passes"));
-        assert!(shown.contains(&format!("0/{USER_GOAL_MAX_TURNS} turns used")));
-    }
-
-    #[test]
-    fn pause_during_an_in_flight_turn_does_not_clobber_the_claim() {
-        let dir = tempfile::tempdir().unwrap();
-        run(dir.path(), "sess-1", "ship it").unwrap();
-        let store = store(dir.path());
-        let snapshot = store.list().unwrap().remove(0);
-        let claim = store.claim_attempt(&snapshot, now()).unwrap().unwrap();
-
-        // The user pauses while the controller's turn is in flight.
-        run(dir.path(), "sess-1", &format!("pause {}", claim.id)).unwrap();
-
-        // The pause advanced the revision but preserved the claim token, so
-        // the completed turn still merges into the ledger (as Preempted).
-        let paused = store.get(&claim.id).unwrap().unwrap();
-        assert_eq!(paused.state, GoalState::Paused);
-        assert!(paused.in_flight.is_some(), "pause must not erase the claim");
-        use agent_orchestration::goals::{
-            AttemptCompletion, AttemptVerdict, ControllerDecision, Evaluation,
-        };
-        let (merged, decision) = store
-            .finish_attempt(
-                &claim,
-                AttemptCompletion::Evaluated(Evaluation::new(
-                    AttemptVerdict::Progressed,
-                    "made progress",
-                )),
-                now(),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(decision, ControllerDecision::Preempted);
-        assert_eq!(merged.state, GoalState::Paused, "user stop wins");
-        assert_eq!(merged.attempts.len(), 1, "the turn still spent its budget");
     }
 }

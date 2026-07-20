@@ -91,6 +91,29 @@ fn slash_command_token(prompt: &[acp::ContentBlock]) -> Option<String> {
     Some(rest.to_string())
 }
 
+/// Extract arguments from a `/goal` prompt while rejecting lookalike commands
+/// such as `/goals`. ACP clients send command arguments as ordinary prompt
+/// text, so this is the same boundary used by the native UIs.
+fn goal_command_args(prompt: &[acp::ContentBlock]) -> Option<String> {
+    let text = prompt.iter().find_map(|block| match block {
+        acp::ContentBlock::Text(text) => Some(text.text.trim()),
+        _ => None,
+    })?;
+    let split = text
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    let (command, rest) = text.split_at(split);
+    command
+        .eq_ignore_ascii_case("/goal")
+        .then(|| rest.trim_start().to_string())
+}
+
+fn goal_command_has_only_text(prompt: &[acp::ContentBlock]) -> bool {
+    matches!(prompt, [acp::ContentBlock::Text(_)])
+}
+
 /// Pending session that hasn't been persisted yet (deferred until first prompt).
 #[derive(Clone)]
 struct PendingSession {
@@ -316,15 +339,29 @@ impl AgentState {
         project_name: &str,
     ) -> Vec<acp::AvailableCommand> {
         let config = SkillsConfig::load();
-        discover_session_catalog(project_manager, project_name, &config)
-            .into_iter()
-            .map(|(skill, _scope_token)| {
-                acp::AvailableCommand::new(
-                    skill.name.clone(),
-                    format!("[{}] {}", skill.scope.label(), skill.description),
-                )
-            })
-            .collect()
+        let mut commands = vec![acp::AvailableCommand::new(
+            "goal",
+            "Set or replace the session goal: /goal <completion criteria>; remove it with /goal cancel",
+        )];
+        commands.extend(
+            discover_session_catalog(project_manager, project_name, &config)
+                .into_iter()
+                .map(|(skill, _scope_token)| {
+                    acp::AvailableCommand::new(
+                        skill.name.clone(),
+                        format!("[{}] {}", skill.scope.label(), skill.description),
+                    )
+                }),
+        );
+        commands
+    }
+
+    fn send_agent_message(&self, session_id: &acp::SessionId, message: String) {
+        let content = acp::ContentBlock::Text(acp::TextContent::new(message));
+        let update = acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(content));
+        let notification = acp::SessionNotification::new(session_id.clone(), update);
+        let (ack_tx, _ack_rx) = oneshot::channel();
+        let _ = self.session_update_tx.send((notification, ack_tx));
     }
 
     /// Push an `available_commands_update` for `session_id` to the client.
@@ -822,6 +859,29 @@ impl AgentState {
                 })?;
         }
 
+        // `/goal` is UI control, never model input. It directly replaces or
+        // removes the session-owned goal and completes this ACP prompt without
+        // starting an agent turn.
+        if let Some(args) = goal_command_args(&arguments.prompt) {
+            let message = if !goal_command_has_only_text(&arguments.prompt) {
+                "A goal cannot contain attachments or additional content. Use /goal \
+                 <completion criteria> or /goal cancel."
+                    .to_string()
+            } else {
+                code_assistant_core::goal_commands::GoalCommand::parse(&args)
+                    .and_then(|command| {
+                        code_assistant_core::goal_commands::run_goal_command_now(
+                            &code_assistant_core::goals::default_goals_path(),
+                            &arguments.session_id.0,
+                            &command,
+                        )
+                    })
+                    .unwrap_or_else(|error| format!("/goal: {error:#}"))
+            };
+            self.send_agent_message(&arguments.session_id, message);
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
+
         let terminal_supported = {
             let caps = self.client_capabilities.lock().await;
             caps.as_ref().map(|caps| caps.terminal).unwrap_or(false)
@@ -1162,5 +1222,33 @@ mod tests {
         assert_eq!(slash_command_token(&prompt), None);
         // Empty prompt.
         assert_eq!(slash_command_token(&[]), None);
+    }
+
+    #[test]
+    fn goal_arguments_preserve_the_objective_and_reject_lookalikes() {
+        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
+            "/goal all tests pass",
+        ))];
+        assert_eq!(
+            goal_command_args(&prompt).as_deref(),
+            Some("all tests pass")
+        );
+
+        let bare = vec![acp::ContentBlock::Text(acp::TextContent::new("/goal"))];
+        assert_eq!(goal_command_args(&bare).as_deref(), Some(""));
+
+        let lookalike = vec![acp::ContentBlock::Text(acp::TextContent::new("/goals"))];
+        assert_eq!(goal_command_args(&lookalike), None);
+
+        let with_attachment = vec![
+            acp::ContentBlock::Text(acp::TextContent::new("/goal inspect the image")),
+            acp::ContentBlock::Image(acp::ImageContent::new("image-data", "image/png")),
+        ];
+        assert_eq!(
+            goal_command_args(&with_attachment).as_deref(),
+            Some("inspect the image")
+        );
+        assert!(!goal_command_has_only_text(&with_attachment));
+        assert!(goal_command_has_only_text(&prompt));
     }
 }

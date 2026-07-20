@@ -74,8 +74,7 @@ pub fn all_commands() -> &'static [SlashCommand] {
         SlashCommand {
             name: "goal",
             aliases: &[],
-            description:
-                "Set a durable goal: /goal <condition> (bare /goal lists; show|pause|resume|cancel [id])",
+            description: "Set or replace the goal: /goal <completion criteria>; /goal cancel removes it",
         },
         SlashCommand {
             name: "skill",
@@ -128,6 +127,8 @@ pub enum CommandResult {
     /// the raw text after `/goal`, parsed by
     /// `code_assistant_core::goal_commands::GoalCommand`.
     Goal { args: String },
+    /// Replace the composer contents with a slash-command input template.
+    InsertInputTemplate(String),
     /// Show the current permission tier.
     ShowPermissionTier,
     /// Switch the permission tier.

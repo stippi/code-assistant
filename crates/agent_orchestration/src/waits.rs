@@ -22,10 +22,12 @@
 
 use crate::OwnerKey;
 use chrono::NaiveDateTime;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 /// What a wait is blocked on. The domain layer treats each barrier's
 /// satisfaction opaquely: `Until` resolves against the clock alone,
@@ -347,8 +349,8 @@ pub trait WaitProbe: Send + Sync {
 /// JSON-file persistence for durable waits (`waits.json`). Mirrors
 /// [`crate::goals::GoalStore`]: every operation reloads the current file and
 /// writes through atomic tmp+rename, instances for the same path share a
-/// process-local lock, and [`WaitStore::update`] rejects a stale revision so a
-/// sweep snapshot cannot clobber a concurrent cancellation.
+/// process-local mutex, an OS advisory lock serializes transactions across
+/// processes, and [`WaitStore::update`] rejects stale revisions.
 ///
 /// The store holds only *live* (`Armed`) waits. Resolving a wait is the job of
 /// the gateway sweep, which wakes the owning goal and then [`WaitStore::remove`]s
@@ -370,9 +372,15 @@ impl WaitStore {
         Self { path, lock }
     }
 
+    fn transaction(&self) -> anyhow::Result<(MutexGuard<'_, ()>, File)> {
+        let process_guard = self.lock.lock().expect("wait store lock poisoned");
+        let file_guard = lock_store_file(&self.path)?;
+        Ok((process_guard, file_guard))
+    }
+
     /// All persisted waits (normally all `Armed`); a missing file is empty.
     pub fn list(&self) -> anyhow::Result<Vec<Wait>> {
-        let _guard = self.lock.lock().expect("wait store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         self.load_unlocked()
     }
 
@@ -397,7 +405,7 @@ impl WaitStore {
     /// Add a wait with a caller-supplied id; the id must be unique. Prefer
     /// [`WaitStore::arm`], which also supersedes a goal's earlier barrier.
     pub fn add(&self, wait: Wait) -> anyhow::Result<()> {
-        let _guard = self.lock.lock().expect("wait store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut waits = self.load_unlocked()?;
         if waits.iter().any(|w| w.id == wait.id) {
             anyhow::bail!("wait id {} already exists", wait.id);
@@ -418,7 +426,7 @@ impl WaitStore {
         now: NaiveDateTime,
     ) -> anyhow::Result<Wait> {
         let goal_id = goal_id.into();
-        let _guard = self.lock.lock().expect("wait store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut waits = self.load_unlocked()?;
         // Supersede: a goal never holds two armed barriers.
         waits.retain(|w| w.goal_id != goal_id);
@@ -443,7 +451,7 @@ impl WaitStore {
     /// Persist a mutated wait against the revision it was loaded at. Errors on
     /// an unknown id (an update never silently creates) or a revision conflict.
     pub fn update(&self, wait: &Wait) -> anyhow::Result<Wait> {
-        let _guard = self.lock.lock().expect("wait store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut waits = self.load_unlocked()?;
         let Some(slot) = waits.iter_mut().find(|w| w.id == wait.id) else {
             anyhow::bail!("unknown wait id {}", wait.id);
@@ -465,7 +473,7 @@ impl WaitStore {
     /// Remove a wait; `false` when the id is unknown. A resolved wait is removed
     /// (not persisted terminal) — the goal's wake note carries the outcome.
     pub fn remove(&self, id: &str) -> anyhow::Result<bool> {
-        let _guard = self.lock.lock().expect("wait store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut waits = self.load_unlocked()?;
         let before = waits.len();
         waits.retain(|w| w.id != id);
@@ -505,7 +513,7 @@ impl WaitStore {
     /// ids. Since a resolved wait is removed anyway, cancellation is a removal —
     /// the reason is not persisted, only logged by the caller.
     pub fn cancel_for_goal(&self, goal_id: &str) -> anyhow::Result<Vec<String>> {
-        let _guard = self.lock.lock().expect("wait store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut waits = self.load_unlocked()?;
         let mut cancelled = Vec::new();
         waits.retain(|w| {
@@ -531,7 +539,7 @@ impl WaitStore {
         owner: &OwnerKey,
         now: NaiveDateTime,
     ) -> anyhow::Result<Vec<Wait>> {
-        let _guard = self.lock.lock().expect("wait store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut waits = self.load_unlocked()?;
         let mut taken = Vec::new();
         waits.retain(|w| {
@@ -634,6 +642,20 @@ fn wait_store_lock(path: &std::path::Path) -> Arc<Mutex<()>> {
         .entry(path.to_path_buf())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+fn lock_store_file(path: &Path) -> anyhow::Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_path = path.with_extension("json.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    FileExt::lock_exclusive(&file)?;
+    Ok(file)
 }
 
 #[cfg(test)]

@@ -1,9 +1,10 @@
-//! A `CompletionProvider` for the input composer that autocompletes skills.
+//! A `CompletionProvider` for the input composer's slash commands and skills.
 //!
 //! When the current line starts with `/`, this provider offers the
 //! session's skills (read from the [`crate::Gpui`] global, populated via
 //! `BackendEvent::ListSkills`). Selecting one replaces the typed `/...` with
-//! `/<skill-name>`. On submit, [`super::InputArea::on_enter`] recognizes a
+//! `/<skill-name>`. The built-in `/goal` entry expands to the required
+//! `/goal ` template. On submit, [`super::InputArea::on_enter`] recognizes a
 //! lone `/<skill-name>` that matches a known skill and translates it into a
 //! skill invocation (see [`skill_invocation_from_input`]).
 
@@ -21,7 +22,9 @@ use lsp_types::{
 
 use crate::Gpui;
 
-/// Completion provider that suggests skills after a leading `/`.
+const GOAL_DESCRIPTION: &str = "Set completion criteria, or type /goal cancel";
+
+/// Completion provider that suggests built-in commands and skills after `/`.
 #[derive(Default)]
 pub struct SkillCompletionProvider;
 
@@ -68,25 +71,43 @@ impl gpui_component::input::CompletionProvider for SkillCompletionProvider {
         let start = text.offset_to_position(line_start);
         let end = text.offset_to_position(offset);
 
-        let items: Vec<CompletionItem> = skills
-            .iter()
-            .filter(|s| {
-                query.is_empty()
-                    || s.name.to_lowercase().contains(&query)
-                    || s.description.to_lowercase().contains(&query)
-            })
-            .map(|s| CompletionItem {
-                label: s.name.clone(),
+        let mut items = Vec::new();
+        if query.is_empty()
+            || "goal".contains(&query)
+            || GOAL_DESCRIPTION.to_lowercase().contains(&query)
+        {
+            items.push(CompletionItem {
+                label: "goal".into(),
                 kind: Some(CompletionItemKind::SNIPPET),
-                detail: Some(format!("({}) {}", s.scope_label, s.description)),
-                filter_text: Some(s.name.clone()),
+                detail: Some(GOAL_DESCRIPTION.into()),
+                filter_text: Some("goal".into()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range: lsp_types::Range { start, end },
-                    new_text: format!("/{}", s.name),
+                    new_text: "/goal ".into(),
                 })),
                 ..Default::default()
-            })
-            .collect();
+            });
+        }
+        items.extend(
+            skills
+                .iter()
+                .filter(|s| {
+                    query.is_empty()
+                        || s.name.to_lowercase().contains(&query)
+                        || s.description.to_lowercase().contains(&query)
+                })
+                .map(|s| CompletionItem {
+                    label: s.name.clone(),
+                    kind: Some(CompletionItemKind::SNIPPET),
+                    detail: Some(format!("({}) {}", s.scope_label, s.description)),
+                    filter_text: Some(s.name.clone()),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: lsp_types::Range { start, end },
+                        new_text: format!("/{}", s.name),
+                    })),
+                    ..Default::default()
+                }),
+        );
 
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
@@ -126,11 +147,14 @@ pub enum SlashState {
 /// when the completion menu is open.
 fn query_matches(query: &str, skills: &[SkillCatalogEntry]) -> bool {
     let q = query.to_lowercase();
-    skills.iter().any(|s| {
-        q.is_empty()
-            || s.name.to_lowercase().contains(&q)
-            || s.description.to_lowercase().contains(&q)
-    })
+    q.is_empty()
+        || "goal".contains(&q)
+        || GOAL_DESCRIPTION.to_lowercase().contains(&q)
+        || skills.iter().any(|s| {
+            q.is_empty()
+                || s.name.to_lowercase().contains(&q)
+                || s.description.to_lowercase().contains(&q)
+        })
 }
 
 /// Classify the composer input for Enter handling (see [`SlashState`]).
@@ -201,6 +225,8 @@ mod tests {
             slash_completion_state("/rev", &skills),
             SlashState::MenuOpen
         );
+        assert_eq!(slash_completion_state("/go", &[]), SlashState::MenuOpen);
+        assert_eq!(slash_completion_state("/goal", &[]), SlashState::MenuOpen);
     }
 
     #[test]

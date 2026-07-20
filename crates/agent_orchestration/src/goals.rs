@@ -18,10 +18,13 @@
 
 use crate::OwnerKey;
 use chrono::NaiveDateTime;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use uuid::Uuid;
 
 /// Where a goal is in its lifecycle. `Done` and `Failed` are terminal.
 ///
@@ -529,6 +532,133 @@ impl Goal {
         self.note = Some(reason.into());
         Ok(())
     }
+
+    // --- Store-level folds -------------------------------------------------
+    //
+    // The claim/finish/abandon protocol is policy, not persistence: every
+    // repository implementation (the JSON store here, a host's transactional
+    // store) must apply exactly the same per-goal transition or the token
+    // guarantees silently diverge. These folds mutate `self` (the currently
+    // persisted goal) against a caller-held snapshot/claim and tell the store
+    // whether — and what — to persist.
+
+    /// Claim fold: begin an attempt against `snapshot`, or report why not.
+    /// Mutates `self` (revision bumped) except in the `Stale` case.
+    pub fn fold_claim(&mut self, snapshot: &Goal, now: NaiveDateTime) -> anyhow::Result<ClaimFold> {
+        if self.revision != snapshot.revision
+            || self.state != GoalState::Running
+            || self.in_flight.is_some()
+        {
+            return Ok(ClaimFold::Stale);
+        }
+        if self.enforce_deadline(now) {
+            self.revision = self.revision.saturating_add(1);
+            return Ok(ClaimFold::Enforced);
+        }
+        if self.turns_remaining() == 0 {
+            self.fail("turn budget exhausted", now)?;
+            self.revision = self.revision.saturating_add(1);
+            return Ok(ClaimFold::Enforced);
+        }
+
+        self.begin_attempt(now)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(ClaimFold::Claimed)
+    }
+
+    /// Finish fold: close the claimed attempt on `self`, merging a concurrent
+    /// user transition instead of overwriting it (see
+    /// [`GoalStore::finish_attempt`] for the semantics). `None` when the claim
+    /// token no longer matches — `self` is untouched and must not be
+    /// persisted. Errors if `claim` carries no in-flight token.
+    pub fn fold_finish(
+        &mut self,
+        claim: &Goal,
+        completion: AttemptCompletion,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<Option<ControllerDecision>> {
+        let Some(token) = claim.in_flight.as_ref() else {
+            anyhow::bail!("cannot finish a goal snapshot without an in-flight attempt");
+        };
+        if self.in_flight.as_ref() != Some(token) {
+            return Ok(None);
+        }
+
+        let stopped_state =
+            (self.state != GoalState::Running).then_some((self.state, self.note.clone()));
+        let was_terminal = self.state.is_terminal();
+        let decision = match completion {
+            AttemptCompletion::Evaluated(evaluation) => {
+                // The attempt itself was claimed while Running. Temporarily
+                // restore that state to fold its verdict, then reinstate a
+                // concurrent user stop unless the attempt reached a terminal
+                // outcome. Thus progress never resumes a preempted goal, while
+                // verified completion and hard envelope failures remain final.
+                if stopped_state.is_some() {
+                    self.state = GoalState::Running;
+                }
+                let decision = self.apply_evaluation(evaluation, now)?;
+                if let Some((state, note)) = stopped_state {
+                    if was_terminal || !self.state.is_terminal() {
+                        self.state = state;
+                        self.note = note;
+                        self.updated_at = now;
+                        ControllerDecision::Preempted
+                    } else {
+                        decision
+                    }
+                } else {
+                    decision
+                }
+            }
+            AttemptCompletion::ControllerError(reason) => {
+                let decision = self.record_attempt_error(reason, now)?;
+                if let Some((state, note)) = stopped_state {
+                    if was_terminal {
+                        self.state = state;
+                        self.note = note;
+                        self.updated_at = now;
+                        ControllerDecision::Preempted
+                    } else {
+                        decision
+                    }
+                } else {
+                    decision
+                }
+            }
+        };
+        self.revision = self.revision.saturating_add(1);
+        Ok(Some(decision))
+    }
+
+    /// Abandon fold: release the claim without spending budget. `false` when
+    /// the token no longer matches (`self` untouched). Errors if `claim`
+    /// carries no in-flight token.
+    pub fn fold_abandon(&mut self, claim: &Goal) -> anyhow::Result<bool> {
+        let Some(token) = claim.in_flight.as_ref() else {
+            anyhow::bail!("cannot abandon a goal snapshot without an in-flight attempt");
+        };
+        if self.in_flight.as_ref() != Some(token) {
+            return Ok(false);
+        }
+        self.in_flight = None;
+        self.revision = self.revision.saturating_add(1);
+        Ok(true)
+    }
+}
+
+/// Outcome of [`Goal::fold_claim`]: what the repository must do with the
+/// mutated goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimFold {
+    /// The snapshot is stale or the goal is not claimable — nothing changed,
+    /// nothing to persist, no work may be dispatched.
+    Stale,
+    /// The envelope fired (deadline passed / budget exhausted): the goal
+    /// mutated and must be persisted, but no attempt was claimed.
+    Enforced,
+    /// An attempt was begun: persist the goal, then dispatch the turn.
+    Claimed,
 }
 
 /// One turn's judgement against the contract, produced by a [`GoalEvaluator`]
@@ -638,8 +768,9 @@ pub trait GoalEvaluator: Send + Sync {
 
 /// JSON-file persistence for goals (`goals.json`). Every operation reloads the
 /// current file and writes through atomic tmp+rename. Instances for the same
-/// path share a process-local lock, while revisions reject stale snapshots and
-/// attempt tokens let completion merge with concurrent lifecycle changes.
+/// path share a process-local mutex and an OS advisory lock serializes
+/// read-modify-write transactions across processes. Revisions reject stale
+/// snapshots and attempt tokens merge concurrent lifecycle changes.
 pub struct GoalStore {
     path: PathBuf,
     lock: Arc<Mutex<()>>,
@@ -652,9 +783,15 @@ impl GoalStore {
         Self { path, lock }
     }
 
+    fn transaction(&self) -> anyhow::Result<(MutexGuard<'_, ()>, File)> {
+        let process_guard = self.lock.lock().expect("goal store lock poisoned");
+        let file_guard = lock_store_file(&self.path)?;
+        Ok((process_guard, file_guard))
+    }
+
     /// All goals, terminal ones included; a missing file yields an empty list.
     pub fn list(&self) -> anyhow::Result<Vec<Goal>> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         self.load_unlocked()
     }
 
@@ -678,7 +815,7 @@ impl GoalStore {
 
     /// Add a goal with a caller-supplied id; the id must be unique.
     pub fn add(&self, goal: Goal) -> anyhow::Result<()> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         if goals.iter().any(|g| g.id == goal.id) {
             anyhow::bail!("goal id {} already exists", goal.id);
@@ -697,7 +834,7 @@ impl GoalStore {
         budget: Budget,
         now: NaiveDateTime,
     ) -> anyhow::Result<Goal> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let base = format!("goal-{}", now.format("%Y%m%d-%H%M%S"));
         let mut id = base.clone();
@@ -712,6 +849,53 @@ impl GoalStore {
         Ok(goal)
     }
 
+    /// Replace every non-terminal goal owned by `owner` with one fresh goal,
+    /// in a single read-modify-write transaction. Terminal evidence ledgers
+    /// remain history. This is the persistence primitive for hosts that expose
+    /// exactly one current goal per owner. Returns the new goal and the number
+    /// of current goals it replaced.
+    pub fn replace_current_for_owner(
+        &self,
+        owner: OwnerKey,
+        objective: impl Into<String>,
+        contract: CompletionContract,
+        budget: Budget,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<(Goal, usize)> {
+        let (_process_guard, _file_guard) = self.transaction()?;
+        let mut goals = self.load_unlocked()?;
+        let before = goals.len();
+        goals.retain(|goal| goal.owner != owner || goal.state.is_terminal());
+        let replaced = before - goals.len();
+        // Replacement deletes the old ledger entry, but durable waits and
+        // child links can outlive it briefly. A UUID prevents the new goal
+        // from ever addressing those links, including after cancel + set in
+        // the same second.
+        let id = format!(
+            "goal-{}-{}",
+            now.format("%Y%m%d-%H%M%S"),
+            Uuid::new_v4().simple()
+        );
+        let goal = Goal::new(id, owner, objective, contract, budget, now);
+        goals.push(goal.clone());
+        self.save_unlocked(&goals)?;
+        Ok((goal, replaced))
+    }
+
+    /// Remove every non-terminal goal owned by `owner` in one transaction,
+    /// preserving terminal evidence ledgers. Returns the number removed.
+    pub fn remove_current_for_owner(&self, owner: &OwnerKey) -> anyhow::Result<usize> {
+        let (_process_guard, _file_guard) = self.transaction()?;
+        let mut goals = self.load_unlocked()?;
+        let before = goals.len();
+        goals.retain(|goal| &goal.owner != owner || goal.state.is_terminal());
+        let removed = before - goals.len();
+        if removed > 0 {
+            self.save_unlocked(&goals)?;
+        }
+        Ok(removed)
+    }
+
     /// A single goal by id.
     pub fn get(&self, id: &str) -> anyhow::Result<Option<Goal>> {
         Ok(self.list()?.into_iter().find(|g| g.id == id))
@@ -720,7 +904,7 @@ impl GoalStore {
     /// Persist a mutated goal (after `apply_evaluation`, a lifecycle edge, …).
     /// Errors if the id is unknown — an update never silently creates.
     pub fn update(&self, goal: &Goal) -> anyhow::Result<Goal> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(slot) = goals.iter_mut().find(|g| g.id == goal.id) else {
             anyhow::bail!("unknown goal id {}", goal.id);
@@ -747,34 +931,23 @@ impl GoalStore {
         snapshot: &Goal,
         now: NaiveDateTime,
     ) -> anyhow::Result<Option<Goal>> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|goal| goal.id == snapshot.id) else {
             return Ok(None);
         };
-        if goal.revision != snapshot.revision
-            || goal.state != GoalState::Running
-            || goal.in_flight.is_some()
-        {
-            return Ok(None);
+        match goal.fold_claim(snapshot, now)? {
+            ClaimFold::Stale => Ok(None),
+            ClaimFold::Enforced => {
+                self.save_unlocked(&goals)?;
+                Ok(None)
+            }
+            ClaimFold::Claimed => {
+                let claimed = goal.clone();
+                self.save_unlocked(&goals)?;
+                Ok(Some(claimed))
+            }
         }
-        if goal.enforce_deadline(now) {
-            goal.revision = goal.revision.saturating_add(1);
-            self.save_unlocked(&goals)?;
-            return Ok(None);
-        }
-        if goal.turns_remaining() == 0 {
-            goal.fail("turn budget exhausted", now)?;
-            goal.revision = goal.revision.saturating_add(1);
-            self.save_unlocked(&goals)?;
-            return Ok(None);
-        }
-
-        goal.begin_attempt(now)?;
-        goal.revision = goal.revision.saturating_add(1);
-        let claimed = goal.clone();
-        self.save_unlocked(&goals)?;
-        Ok(Some(claimed))
     }
 
     /// Atomically close a previously claimed attempt. The in-flight marker is
@@ -787,62 +960,18 @@ impl GoalStore {
         completion: AttemptCompletion,
         now: NaiveDateTime,
     ) -> anyhow::Result<Option<(Goal, ControllerDecision)>> {
-        let Some(token) = claim.in_flight.as_ref() else {
-            anyhow::bail!("cannot finish a goal snapshot without an in-flight attempt");
-        };
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        anyhow::ensure!(
+            claim.in_flight.is_some(),
+            "cannot finish a goal snapshot without an in-flight attempt"
+        );
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|goal| goal.id == claim.id) else {
             return Ok(None);
         };
-        if goal.in_flight.as_ref() != Some(token) {
+        let Some(decision) = goal.fold_finish(claim, completion, now)? else {
             return Ok(None);
-        }
-
-        let stopped_state =
-            (goal.state != GoalState::Running).then_some((goal.state, goal.note.clone()));
-        let was_terminal = goal.state.is_terminal();
-        let decision = match completion {
-            AttemptCompletion::Evaluated(evaluation) => {
-                // The attempt itself was claimed while Running. Temporarily
-                // restore that state to fold its verdict, then reinstate a
-                // concurrent user stop unless the attempt reached a terminal
-                // outcome. Thus progress never resumes a preempted goal, while
-                // verified completion and hard envelope failures remain final.
-                if stopped_state.is_some() {
-                    goal.state = GoalState::Running;
-                }
-                let decision = goal.apply_evaluation(evaluation, now)?;
-                if let Some((state, note)) = stopped_state {
-                    if was_terminal || !goal.state.is_terminal() {
-                        goal.state = state;
-                        goal.note = note;
-                        goal.updated_at = now;
-                        ControllerDecision::Preempted
-                    } else {
-                        decision
-                    }
-                } else {
-                    decision
-                }
-            }
-            AttemptCompletion::ControllerError(reason) => {
-                let decision = goal.record_attempt_error(reason, now)?;
-                if let Some((state, note)) = stopped_state {
-                    if was_terminal {
-                        goal.state = state;
-                        goal.note = note;
-                        goal.updated_at = now;
-                        ControllerDecision::Preempted
-                    } else {
-                        decision
-                    }
-                } else {
-                    decision
-                }
-            }
         };
-        goal.revision = goal.revision.saturating_add(1);
         let finished = goal.clone();
         self.save_unlocked(&goals)?;
         Ok(Some((finished, decision)))
@@ -852,19 +981,18 @@ impl GoalStore {
     /// already owns the session. No goal work was dispatched, so this is the
     /// sole path that clears an in-flight marker without spending budget.
     pub fn abandon_attempt(&self, claim: &Goal) -> anyhow::Result<Option<Goal>> {
-        let Some(token) = claim.in_flight.as_ref() else {
-            anyhow::bail!("cannot abandon a goal snapshot without an in-flight attempt");
-        };
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        anyhow::ensure!(
+            claim.in_flight.is_some(),
+            "cannot abandon a goal snapshot without an in-flight attempt"
+        );
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|goal| goal.id == claim.id) else {
             return Ok(None);
         };
-        if goal.in_flight.as_ref() != Some(token) {
+        if !goal.fold_abandon(claim)? {
             return Ok(None);
         }
-        goal.in_flight = None;
-        goal.revision = goal.revision.saturating_add(1);
         let abandoned = goal.clone();
         self.save_unlocked(&goals)?;
         Ok(Some(abandoned))
@@ -872,7 +1000,7 @@ impl GoalStore {
 
     /// Remove a goal; `false` when the id is unknown.
     pub fn remove(&self, id: &str) -> anyhow::Result<bool> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let before = goals.len();
         goals.retain(|g| g.id != id);
@@ -913,7 +1041,7 @@ impl GoalStore {
         owner: &OwnerKey,
         now: NaiveDateTime,
     ) -> anyhow::Result<Vec<String>> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let mut paused = Vec::new();
         for goal in goals
@@ -943,7 +1071,7 @@ impl GoalStore {
         note: Option<String>,
         now: NaiveDateTime,
     ) -> anyhow::Result<bool> {
-        let _guard = self.lock.lock().expect("goal store lock poisoned");
+        let (_process_guard, _file_guard) = self.transaction()?;
         let mut goals = self.load_unlocked()?;
         let Some(goal) = goals.iter_mut().find(|g| g.id == goal_id) else {
             return Ok(false);
@@ -969,6 +1097,20 @@ fn goal_store_lock(path: &std::path::Path) -> Arc<Mutex<()>> {
         .clone()
 }
 
+fn lock_store_file(path: &Path) -> anyhow::Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_path = path.with_extension("json.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    FileExt::lock_exclusive(&file)?;
+    Ok(file)
+}
+
 /// Storage seam for goals. The bundled JSON [`GoalStore`] implements it; a
 /// host's transactional repository (see PAL's "one orchestration store" plan)
 /// implements the same trait so controllers and tools never bind to a
@@ -977,6 +1119,27 @@ fn goal_store_lock(path: &std::path::Path) -> Arc<Mutex<()>> {
 pub trait GoalRepository: Send + Sync {
     fn list(&self) -> anyhow::Result<Vec<Goal>>;
     fn add(&self, goal: Goal) -> anyhow::Result<()>;
+    /// Create and persist a goal with a store-assigned id.
+    fn add_new(
+        &self,
+        owner: OwnerKey,
+        objective: String,
+        contract: CompletionContract,
+        budget: Budget,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<Goal>;
+    /// Replace every non-terminal goal of `owner` with one fresh goal, in one
+    /// transaction; returns the new goal and how many it replaced.
+    fn replace_current_for_owner(
+        &self,
+        owner: OwnerKey,
+        objective: String,
+        contract: CompletionContract,
+        budget: Budget,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<(Goal, usize)>;
+    /// Remove every non-terminal goal of `owner`; returns how many.
+    fn remove_current_for_owner(&self, owner: &OwnerKey) -> anyhow::Result<usize>;
     fn get(&self, id: &str) -> anyhow::Result<Option<Goal>>;
     fn update(&self, goal: &Goal) -> anyhow::Result<Goal>;
     fn claim_attempt(&self, snapshot: &Goal, now: NaiveDateTime) -> anyhow::Result<Option<Goal>>;
@@ -1005,6 +1168,29 @@ impl GoalRepository for GoalStore {
     }
     fn add(&self, goal: Goal) -> anyhow::Result<()> {
         GoalStore::add(self, goal)
+    }
+    fn add_new(
+        &self,
+        owner: OwnerKey,
+        objective: String,
+        contract: CompletionContract,
+        budget: Budget,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<Goal> {
+        GoalStore::add_new(self, owner, objective, contract, budget, now)
+    }
+    fn replace_current_for_owner(
+        &self,
+        owner: OwnerKey,
+        objective: String,
+        contract: CompletionContract,
+        budget: Budget,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<(Goal, usize)> {
+        GoalStore::replace_current_for_owner(self, owner, objective, contract, budget, now)
+    }
+    fn remove_current_for_owner(&self, owner: &OwnerKey) -> anyhow::Result<usize> {
+        GoalStore::remove_current_for_owner(self, owner)
     }
     fn get(&self, id: &str) -> anyhow::Result<Option<Goal>> {
         GoalStore::get(self, id)
@@ -1794,6 +1980,49 @@ mod tests {
             .add_new(owner(), "b", contract(), Budget::turns(1), now)
             .unwrap();
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn replacing_an_owner_never_reuses_the_old_goal_id() {
+        let (store, _dir) = store();
+        let now = at(2026, 7, 14, 9, 0);
+        let old = store
+            .add_new(owner(), "old", contract(), Budget::turns(1), now)
+            .unwrap();
+
+        let (new, replaced) = store
+            .replace_current_for_owner(owner(), "new", contract(), Budget::turns(1), now)
+            .unwrap();
+
+        assert_eq!(replaced, 1);
+        assert_ne!(old.id, new.id);
+        assert_eq!(store.list().unwrap(), vec![new]);
+    }
+
+    #[test]
+    fn replacing_and_removing_current_goals_preserves_terminal_history() {
+        let (store, _dir) = store();
+        let now = at(2026, 7, 14, 9, 0);
+        let mut history = store
+            .add_new(owner(), "finished", contract(), Budget::turns(1), now)
+            .unwrap();
+        history.fail("recorded", now).unwrap();
+        history = store.update(&history).unwrap();
+        let current = store
+            .add_new(owner(), "current", contract(), Budget::turns(1), now)
+            .unwrap();
+
+        let (replacement, replaced) = store
+            .replace_current_for_owner(owner(), "new", contract(), Budget::turns(1), now)
+            .unwrap();
+        assert_eq!(replaced, 1);
+        assert!(store.get(&current.id).unwrap().is_none());
+        assert_eq!(store.get(&history.id).unwrap(), Some(history.clone()));
+
+        assert_eq!(store.remove_current_for_owner(&owner()).unwrap(), 1);
+        assert!(store.get(&replacement.id).unwrap().is_none());
+        assert_eq!(store.list().unwrap(), vec![history]);
+        assert_eq!(store.remove_current_for_owner(&owner()).unwrap(), 0);
     }
 
     #[test]

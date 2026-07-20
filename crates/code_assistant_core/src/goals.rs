@@ -18,8 +18,9 @@
 //! - every claimed attempt consumes budget or closes with an explicit
 //!   abandonment (the sole abandonment path is an atomic `Busy` answer from
 //!   `start_turn_if_idle`, where no work was dispatched);
-//! - a stale in-flight marker from an earlier process is folded as an
-//!   interrupted attempt — a crash cannot silently refund work;
+//! - an in-flight marker is never adopted or recovered here: it may belong to
+//!   another live code-assistant instance, and crash recovery is a host policy
+//!   reserved for always-on consumers such as pal;
 //! - concurrent pause/cancel and turn completion merge through the store's
 //!   revision/claim-token semantics instead of overwriting each other.
 
@@ -257,19 +258,15 @@ impl GoalController {
     }
 
     async fn drive_goal(&self, snapshot: Goal, session_id: &str, now: NaiveDateTime) -> Result<()> {
-        // A leftover in-flight marker means an earlier process died mid-turn:
-        // close it as an interrupted attempt so the crash cannot refund the
-        // claimed budget. (Within one process, passes run sequentially and
-        // every dispatched turn is awaited, so a live claim never appears
-        // here.)
+        let drive_started = tokio::time::Instant::now();
+
+        // Never infer a crash from persisted state. Another code-assistant
+        // process may still own this session and turn; its file-backed session
+        // updates are the cross-instance source of truth. If the owner really
+        // disappeared, code-assistant deliberately leaves the claim parked
+        // until the user replaces or cancels the goal. Automatic adoption and
+        // restart belongs to an always-on host such as pal.
         if snapshot.in_flight.is_some() {
-            self.goals.finish_attempt(
-                &snapshot,
-                AttemptCompletion::ControllerError(
-                    "attempt interrupted (process ended mid-turn)".into(),
-                ),
-                now,
-            )?;
             return Ok(());
         }
 
@@ -310,10 +307,11 @@ impl GoalController {
                 return Ok(());
             }
             Err(error) => {
+                let finished_at = advance_wall_clock(now, drive_started.elapsed());
                 self.goals.finish_attempt(
                     &claim,
                     AttemptCompletion::ControllerError(format!("turn dispatch failed: {error:#}")),
-                    now,
+                    finished_at,
                 )?;
                 return Ok(());
             }
@@ -322,29 +320,31 @@ impl GoalController {
         let outcome = match handle.wait().await {
             Ok(outcome) => outcome,
             Err(error) => {
+                let finished_at = advance_wall_clock(now, drive_started.elapsed());
                 self.goals.finish_attempt(
                     &claim,
                     AttemptCompletion::ControllerError(format!("turn outcome lost: {error:#}")),
-                    now,
+                    finished_at,
                 )?;
                 return Ok(());
             }
         };
 
         if let TurnStatus::Failed { error } = &outcome.status {
+            let finished_at = advance_wall_clock(now, drive_started.elapsed());
             self.goals.finish_attempt(
                 &claim,
                 AttemptCompletion::ControllerError(format!("turn failed: {error}")),
-                now,
+                finished_at,
             )?;
             return Ok(());
         }
 
         // A user message absorbed mid-turn does NOT pause the goal — the
         // user's turn simply takes natural priority and the goal continues
-        // afterwards (`/goal pause|cancel` is the deliberate stop). Only an
+        // afterwards (`/goal cancel` is the deliberate stop). Only an
         // explicit run cancel is a stop signal strong enough to park the
-        // session's goals until the user resumes them.
+        // session's goals until the user replaces or removes the goal.
         let user_took_over = outcome.status == TurnStatus::Cancelled;
 
         let evidence = goal_turn_evidence(&outcome);
@@ -355,7 +355,10 @@ impl GoalController {
             }
         };
 
-        if let Some((goal, decision)) = self.goals.finish_attempt(&claim, completion, now)? {
+        let finished_at = advance_wall_clock(now, drive_started.elapsed());
+        if let Some((goal, decision)) =
+            self.goals.finish_attempt(&claim, completion, finished_at)?
+        {
             debug!("goal {}: {:?}", goal.id, decision);
             if let ControllerDecision::Wait(request) = decision {
                 self.waits.arm(
@@ -363,16 +366,23 @@ impl GoalController {
                     goal.owner.clone(),
                     request.kind,
                     request.timeout,
-                    now,
+                    finished_at,
                 )?;
             }
         }
 
         if user_took_over {
-            self.goals.preempt_owner(&claim.owner, now)?;
+            self.goals.preempt_owner(&claim.owner, finished_at)?;
         }
         Ok(())
     }
+}
+
+fn advance_wall_clock(base: NaiveDateTime, elapsed: std::time::Duration) -> NaiveDateTime {
+    chrono::Duration::from_std(elapsed)
+        .ok()
+        .and_then(|elapsed| base.checked_add_signed(elapsed))
+        .unwrap_or(base)
 }
 
 /// Spawn the periodic controller loop (host-driven continuation: it lives and
@@ -662,25 +672,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_stale_in_flight_claim_is_folded_as_an_interrupted_attempt() {
+    async fn an_in_flight_claim_is_never_recovered_by_code_assistant() {
         let fx = Fixture::new(completing_llm("unused")).await;
         let (_, goal) = fx.session_with_goal(3).await;
-        // Simulate a process that died mid-turn: the claim is persisted but
-        // no turn is running.
-        fx.goals.claim_attempt(&goal, now()).unwrap().unwrap();
+        let claim = fx.goals.claim_attempt(&goal, now()).unwrap().unwrap();
         let evaluator = Arc::new(ScriptedEvaluator::new(vec![]));
 
         fx.controller(evaluator).pass_at(now()).await.unwrap();
 
         let goal = fx.goals.get(&goal.id).unwrap().unwrap();
-        assert!(goal.in_flight.is_none());
-        assert_eq!(
-            goal.attempts.len(),
-            1,
-            "the crash cannot refund the claimed turn"
-        );
-        assert_eq!(goal.attempts[0].verdict, AttemptVerdict::Error);
+        assert_eq!(goal.in_flight, claim.in_flight);
+        assert!(goal.attempts.is_empty());
         assert_eq!(goal.state, GoalState::Running);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_goal_that_finishes_after_its_deadline_cannot_complete() {
+        struct SlowSatisfiedEvaluator;
+
+        #[async_trait::async_trait]
+        impl GoalEvaluator for SlowSatisfiedEvaluator {
+            async fn evaluate(
+                &self,
+                _goal: &Goal,
+                _turn: &GoalTurnOutcome,
+            ) -> anyhow::Result<Evaluation> {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                Ok(Evaluation::new(
+                    AttemptVerdict::Satisfied,
+                    "finished too late",
+                ))
+            }
+        }
+
+        let fx = Fixture::new(completing_llm("done")).await;
+        let (_, mut goal) = fx.session_with_goal(3).await;
+        goal.budget.deadline = Some(now() + chrono::Duration::milliseconds(10));
+        goal = fx.goals.update(&goal).unwrap();
+
+        fx.controller(Arc::new(SlowSatisfiedEvaluator))
+            .pass_at(now())
+            .await
+            .unwrap();
+
+        let goal = fx.goals.get(&goal.id).unwrap().unwrap();
+        assert_eq!(goal.state, GoalState::Failed);
+        assert_eq!(goal.note.as_deref(), Some("deadline passed"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

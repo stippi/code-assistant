@@ -126,12 +126,14 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "fs2",
  "llm",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
