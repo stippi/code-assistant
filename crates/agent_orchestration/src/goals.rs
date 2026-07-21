@@ -1247,7 +1247,13 @@ pub const GOAL_PREFIX: &str = "[goal]";
 /// scheduled job).
 pub fn goal_turn_text(goal: &Goal) -> String {
     let contract = &goal.contract;
-    let mut sections = vec![format!("{GOAL_PREFIX} {}", goal.objective)];
+    // The id is part of the frame: goals appear nowhere else in the model's
+    // context (no system-prompt block), and host tools that link work to a
+    // goal (e.g. delegation) take the id as a parameter.
+    let mut sections = vec![format!(
+        "{GOAL_PREFIX} {} (goal id: {})",
+        goal.objective, goal.id
+    )];
 
     let mut contract_lines = vec![
         format!("- Done when: {}", contract.outcome),

@@ -16,6 +16,7 @@
 //! and [`waits::WaitRepository`] traits are the seam a transactional
 //! repository implements instead.
 
+pub mod goal_commands;
 pub mod goal_eval;
 pub mod goals;
 pub mod runs;
