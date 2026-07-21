@@ -149,9 +149,12 @@ fn status(repo: &dyn GoalRepository, owner: &OwnerKey) -> Result<String> {
 }
 
 fn pause(repo: &dyn GoalRepository, owner: &OwnerKey, now: NaiveDateTime) -> Result<String> {
-    steer(repo, owner, "Goal paused. Use /goal resume to continue.", |g| {
-        g.pause(now)
-    })
+    steer(
+        repo,
+        owner,
+        "Goal paused. Use /goal resume to continue.",
+        |g| g.pause(now),
+    )
 }
 
 fn resume(repo: &dyn GoalRepository, owner: &OwnerKey, now: NaiveDateTime) -> Result<String> {
