@@ -958,7 +958,8 @@ impl TerminalRenderer {
 
                 let entry = &mut status_entries[idx];
                 let max_height = status_budget.min(MAX_STATUS_ENTRY_HEIGHT);
-                let actual_height = Self::measure_markdown_height(&entry.content, width, max_height);
+                let actual_height =
+                    Self::measure_markdown_height(&entry.content, width, max_height);
                 entry.height = actual_height;
 
                 if actual_height > 0 {
@@ -2330,7 +2331,8 @@ mod tests {
             let buffer = renderer.buffer();
 
             let spinner_row = find_spinner_row(buffer).expect("spinner must be rendered");
-            let plan_row = find_row(buffer, "Plan: Update documentation").expect("plan must render");
+            let plan_row =
+                find_row(buffer, "Plan: Update documentation").expect("plan must render");
             assert!(
                 spinner_row < plan_row,
                 "spinner (row {spinner_row}) must be above the plan (row {plan_row})"
