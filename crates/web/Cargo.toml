@@ -22,3 +22,4 @@ url = "2.5"
 
 [dev-dependencies]
 axum = "0.7"
+base64 = "0.22"

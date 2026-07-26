@@ -13,9 +13,11 @@
 
 use crate::browser::LaunchedBrowser;
 use anyhow::Result;
+use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
 use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::element::Element;
+use chromiumoxide::keys::get_key_definition;
 use chromiumoxide::layout::Point;
 use chromiumoxide::page::{Page, ScreenshotParams};
 use std::collections::HashMap;
@@ -27,10 +29,14 @@ use tokio::sync::Mutex as AsyncMutex;
 /// array of `{selector, role, label}`. Best-effort: it prefers `#id` selectors,
 /// falls back to an `:nth-of-type` path, skips hidden/disabled elements, and is
 /// bounded so a huge page can't blow up the observation.
+///
+/// It also descends into open shadow roots and puts elements that live inside a
+/// modal/dialog (or a fixed high-z-index overlay) first, so a dialog's buttons
+/// are never dropped by the cap when the page behind it is long.
 const DISCOVER_ELEMENTS_JS: &str = r#"
 (() => {
-  const MAX = 40;
-  const SEL = 'a,button,input,textarea,select,summary,[role=button],[role=link],[role=checkbox],[role=tab],[role=menuitem],[onclick],[tabindex]';
+  const MAX = 200;
+  const SEL = 'a,button,input,textarea,select,summary,[role=button],[role=link],[role=checkbox],[role=tab],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=switch],[role=option],[contenteditable=true],[onclick],[tabindex]';
   const seen = new Set();
   const out = [];
 
@@ -53,14 +59,14 @@ const DISCOVER_ELEMENTS_JS: &str = r#"
       let sel = node.tagName.toLowerCase();
       if (node.id) { parts.unshift('#' + CSS.escape(node.id)); break; }
       const parent = node.parentNode;
-      if (parent) {
+      if (parent && parent.children) {
         const sameTag = Array.from(parent.children).filter(c => c.tagName === node.tagName);
         if (sameTag.length > 1) {
           sel += ':nth-of-type(' + (sameTag.indexOf(node) + 1) + ')';
         }
       }
       parts.unshift(sel);
-      node = node.parentNode;
+      node = node.parentNode && node.parentNode.host ? node.parentNode.host : node.parentNode;
     }
     return parts.join(' > ');
   };
@@ -85,7 +91,42 @@ const DISCOVER_ELEMENTS_JS: &str = r#"
     return l.slice(0, 80);
   };
 
-  for (const el of document.querySelectorAll(SEL)) {
+  // Rank: elements inside a dialog / high-z fixed overlay first, so the
+  // topmost interactive surface is never truncated away.
+  const inDialog = (el) => {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const role = node.getAttribute && node.getAttribute('role');
+      if (node.tagName === 'DIALOG' || role === 'dialog' || role === 'alertdialog' || node.getAttribute && node.getAttribute('aria-modal') === 'true') {
+        return true;
+      }
+      if (node.parentNode && node.parentNode.host) { node = node.parentNode.host; continue; }
+      node = node.parentNode;
+    }
+    return false;
+  };
+
+  // Gather across the main document and any open shadow roots.
+  const collect = (root, acc) => {
+    let nodes = [];
+    try { nodes = Array.from(root.querySelectorAll(SEL)); } catch (e) {}
+    for (const el of nodes) acc.push(el);
+    let all = [];
+    try { all = Array.from(root.querySelectorAll('*')); } catch (e) {}
+    for (const el of all) {
+      if (el.shadowRoot) collect(el.shadowRoot, acc);
+    }
+  };
+
+  const candidates = [];
+  collect(document, candidates);
+
+  // Stable sort: dialog elements first, keeping document order otherwise.
+  const ranked = candidates
+    .map((el, i) => ({ el, i, dlg: inDialog(el) ? 0 : 1 }))
+    .sort((a, b) => (a.dlg - b.dlg) || (a.i - b.i));
+
+  for (const { el } of ranked) {
     if (out.length >= MAX) break;
     if (!visible(el)) continue;
     const selector = cssPath(el);
@@ -227,14 +268,25 @@ impl BrowserSession {
     /// Read the current location, title, visible text, and the actionable
     /// elements on the page.
     pub async fn observe(&self) -> Result<PageObservation> {
+        self.observe_with(true).await
+    }
+
+    /// Like [`observe`](Self::observe), but `include_text` can suppress the
+    /// (often large and redundant) `innerText` dump — the model keeps the
+    /// screenshot plus the interactive-element list, and avoids re-reading a
+    /// long form's text on every step.
+    pub async fn observe_with(&self, include_text: bool) -> Result<PageObservation> {
         let url = self.page.url().await?.unwrap_or_default();
         let title = self.page.get_title().await?.unwrap_or_default();
-        let text = self
-            .page
-            .evaluate("document.body ? document.body.innerText : ''")
-            .await?
-            .into_value::<String>()
-            .unwrap_or_default();
+        let text = if include_text {
+            self.page
+                .evaluate("document.body ? document.body.innerText : ''")
+                .await?
+                .into_value::<String>()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         // Element discovery is best-effort: a failure (e.g. mid-navigation)
         // just yields an empty list rather than failing the observation.
         let elements = match self.page.evaluate(DISCOVER_ELEMENTS_JS).await {
@@ -267,18 +319,119 @@ impl BrowserSession {
         Ok(dims)
     }
 
-    /// Find an element, turning chromiumoxide's opaque CDP miss ("Could not
-    /// find node with given id") into a message that names the selector.
+    /// Find an element by a selector, turning chromiumoxide's opaque CDP miss
+    /// ("Could not find node with given id") into a message that names the
+    /// selector.
+    ///
+    /// Besides plain CSS, this understands robust prefixes that survive a site
+    /// re-rendering with fresh hashed ids (a real problem on portals like
+    /// ELSTER):
+    /// - `text=Foo` — the first visible element whose trimmed text /
+    ///   aria-label / value contains `Foo` (case-insensitive).
+    /// - `role=button` — the first element with that ARIA role (or, for a bare
+    ///   tag, that tag). `role=button[name=Save]` also matches on text.
+    /// - `aria=Save` — the first element whose aria-label matches.
+    ///
+    /// These are resolved to a concrete node in the page, so a fragile hashed
+    /// `#id` is never needed.
     async fn find(&self, selector: &str) -> Result<Element> {
+        if let Some(css) = self.resolve_semantic_selector(selector).await? {
+            return self
+                .page
+                .find_element(&css)
+                .await
+                .map_err(|_| anyhow::anyhow!("no element matches selector '{selector}'"));
+        }
         self.page
             .find_element(selector)
             .await
             .map_err(|_| anyhow::anyhow!("no element matches selector '{selector}'"))
     }
 
-    /// Click the first element matching a CSS selector.
+    /// If `selector` uses a semantic prefix (`text=`, `role=`, `aria=`), locate
+    /// the matching element in the page and stamp it with a unique data
+    /// attribute, returning a concrete CSS selector for it. Returns `Ok(None)`
+    /// for a plain CSS selector (handled directly by the caller).
+    async fn resolve_semantic_selector(&self, selector: &str) -> Result<Option<String>> {
+        let sel = selector.trim();
+        let (kind, query) = if let Some(q) = sel.strip_prefix("text=") {
+            ("text", q)
+        } else if let Some(q) = sel.strip_prefix("role=") {
+            ("role", q)
+        } else if let Some(q) = sel.strip_prefix("aria=") {
+            ("aria", q)
+        } else {
+            return Ok(None);
+        };
+        let kind_json = serde_json::to_string(kind)?;
+        let query_json = serde_json::to_string(query.trim())?;
+        // Tag the match with a unique attribute so we can hand back a stable CSS
+        // selector even on a page that mints fresh ids every render.
+        let js = format!(
+            r#"(() => {{
+  const kind = {kind_json};
+  const q = {query_json};
+  const SEL = 'a,button,input,textarea,select,summary,[role],[onclick],[tabindex],label';
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const visible = (el) => {{
+    const r = el.getClientRects();
+    if (!r.length) return false;
+    const st = getComputedStyle(el);
+    return st.visibility !== 'hidden' && st.display !== 'none';
+  }};
+  const labelText = (el) => norm(el.getAttribute('aria-label')) || norm(el.textContent) || norm(el.value) || norm(el.getAttribute('placeholder')) || norm(el.title);
+  const roleOf = (el) => (el.getAttribute('role') || el.tagName.toLowerCase());
+  // role=button[name=Save] → role + optional name filter.
+  let wantRole = q, wantName = null;
+  const m = q.match(/^([^\[]+)\[name=(.+)\]$/);
+  if (kind === 'role' && m) {{ wantRole = m[1].trim(); wantName = norm(m[2]); }}
+  const needle = norm(q);
+  const collect = (root, acc) => {{
+    let nodes = [];
+    try {{ nodes = Array.from(root.querySelectorAll(SEL)); }} catch (e) {{}}
+    for (const el of nodes) acc.push(el);
+    let all = [];
+    try {{ all = Array.from(root.querySelectorAll('*')); }} catch (e) {{}}
+    for (const el of all) if (el.shadowRoot) collect(el.shadowRoot, acc);
+  }};
+  const cands = [];
+  collect(document, cands);
+  const match = cands.find((el) => {{
+    if (!visible(el)) return false;
+    if (kind === 'text') return labelText(el).includes(needle);
+    if (kind === 'aria') return norm(el.getAttribute('aria-label')).includes(needle);
+    if (kind === 'role') {{
+      if (norm(roleOf(el)) !== norm(wantRole)) return false;
+      return wantName ? labelText(el).includes(wantName) : true;
+    }}
+    return false;
+  }});
+  if (!match) return null;
+  const token = 'ca-sel-' + Math.random().toString(36).slice(2);
+  match.setAttribute('data-ca-sel', token);
+  return '[data-ca-sel="' + token + '"]';
+}})()"#
+        );
+        let resolved = self
+            .page
+            .evaluate(js)
+            .await?
+            .into_value::<Option<String>>()
+            .unwrap_or(None);
+        match resolved {
+            Some(css) => Ok(Some(css)),
+            None => Err(anyhow::anyhow!("no element matches selector '{selector}'")),
+        }
+    }
+
+    /// Click the first element matching a selector. The element is scrolled
+    /// into view first (via `scrollIntoView`, which handles nested scroll
+    /// containers), so an off-screen or collapsed target no longer fails with
+    /// "Node is either not visible or not an HTMLElement".
     pub async fn click(&self, selector: &str) -> Result<()> {
-        self.find(selector).await?.click().await?;
+        let element = self.find(selector).await?;
+        let _ = element.scroll_into_view().await;
+        element.click().await?;
         Ok(())
     }
 
@@ -296,31 +449,141 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Focus a field and type text into it. Never used for credentials — those
-    /// go through the human-in-the-loop login handoff.
+    /// Focus a field and type text into it, appending to any existing value.
+    /// The element is scrolled into view first. Never used for credentials —
+    /// those go through the human-in-the-loop login handoff. Prefer
+    /// [`fill`](Self::fill) to replace a prefilled field.
     pub async fn type_text(&self, selector: &str, text: &str) -> Result<()> {
         let element = self.find(selector).await?;
+        let _ = element.scroll_into_view().await;
         element.focus().await?;
         element.type_str(text).await?;
         Ok(())
     }
 
-    /// Press a key (e.g. `"Enter"`) on the element matching a selector. The
-    /// element is focused first so the key event lands on it — CDP dispatches
-    /// key events to whatever currently has focus, not to a named node.
-    pub async fn press_key(&self, selector: &str, key: &str) -> Result<()> {
+    /// Clear a field, then type `text` — the replace semantics editing a
+    /// prefilled input needs (the old workflow required End + repeated
+    /// Backspace). Works for `<input>`/`<textarea>` (value) and
+    /// contenteditable elements.
+    pub async fn fill(&self, selector: &str, text: &str) -> Result<()> {
         let element = self.find(selector).await?;
+        let _ = element.scroll_into_view().await;
         element.focus().await?;
-        element.press_key(key).await?;
+        self.clear_focused(&element).await?;
+        element.type_str(text).await?;
         Ok(())
     }
 
-    /// Press a key without targeting a selector — it goes to whatever element
-    /// currently has focus (e.g. arrow keys for a focused game canvas). Routed
-    /// through `<body>` only because CDP needs a node to dispatch from; the key
-    /// still lands on the focused element.
+    /// Empty a field's current content.
+    pub async fn clear(&self, selector: &str) -> Result<()> {
+        let element = self.find(selector).await?;
+        let _ = element.scroll_into_view().await;
+        element.focus().await?;
+        self.clear_focused(&element).await?;
+        Ok(())
+    }
+
+    /// Clear an already-focused element's value/text via JS and fire the
+    /// `input`/`change` events frameworks listen for.
+    async fn clear_focused(&self, element: &Element) -> Result<()> {
+        element
+            .call_js_fn(
+                "function() { \
+                 if ('value' in this) { this.value = ''; } \
+                 else if (this.isContentEditable) { this.textContent = ''; } \
+                 this.dispatchEvent(new Event('input', {bubbles: true})); \
+                 this.dispatchEvent(new Event('change', {bubbles: true})); }",
+                true,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Focus a field and press a key or key chord (e.g. `"Enter"`,
+    /// `"Meta+A"`, `"Control+a"`, `"Shift+Tab"`) on it. The element is scrolled
+    /// into view and focused first.
+    pub async fn press_key(&self, selector: &str, key: &str) -> Result<()> {
+        let element = self.find(selector).await?;
+        let _ = element.scroll_into_view().await;
+        element.focus().await?;
+        self.dispatch_key(key).await
+    }
+
+    /// Press a key or chord without targeting a selector — it goes to whatever
+    /// element currently has focus (e.g. arrow keys for a focused game canvas).
     pub async fn press_key_global(&self, key: &str) -> Result<()> {
-        self.find("body").await?.press_key(key).await?;
+        self.dispatch_key(key).await
+    }
+
+    /// Dispatch a key or a modifier chord (`Ctrl+`, `Control+`, `Meta+`,
+    /// `Cmd+`, `Command+`, `Alt+`, `Option+`, `Shift+`, joined by `+`) to the
+    /// focused element via raw CDP `DispatchKeyEvent`, setting the modifier
+    /// bitmask (Alt=1, Ctrl=2, Meta=4, Shift=8) so combinations like select-all
+    /// work instead of erroring "Key not found". `Page` has no `press_key`, so
+    /// we drive it directly — this also lets plain and chord keys share one
+    /// code path.
+    async fn dispatch_key(&self, key: &str) -> Result<()> {
+        let (modifiers, main_key) = parse_chord(key);
+        let def = get_key_definition(main_key)
+            .ok_or_else(|| anyhow::anyhow!("unknown key '{main_key}'"))?;
+        // Shift makes a letter uppercase in the emitted key/text.
+        let shift = modifiers & 8 != 0;
+        let key_str = if def.key.len() == 1 && shift {
+            def.key.to_uppercase()
+        } else {
+            def.key.to_string()
+        };
+
+        // Only insert text for a printable key with no command modifier held:
+        // Ctrl/Meta/Alt combinations are commands, not text.
+        let command_modifier = modifiers & (1 | 2 | 4) != 0;
+        let text: Option<String> = if command_modifier {
+            None
+        } else if let Some(t) = def.text {
+            Some(t.to_string())
+        } else if key_str.len() == 1 {
+            Some(key_str.clone())
+        } else {
+            None
+        };
+
+        let down_type = if text.is_some() {
+            DispatchKeyEventType::KeyDown
+        } else {
+            DispatchKeyEventType::RawKeyDown
+        };
+
+        let mut down = DispatchKeyEventParams::builder()
+            .r#type(down_type)
+            .key(key_str.clone())
+            .code(def.code)
+            .windows_virtual_key_code(def.key_code)
+            .native_virtual_key_code(def.key_code);
+        if modifiers != 0 {
+            down = down.modifiers(modifiers);
+        }
+        if let Some(t) = &text {
+            down = down.text(t.clone());
+        }
+        let down = down
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build key event: {e}"))?;
+
+        let mut up = DispatchKeyEventParams::builder()
+            .r#type(DispatchKeyEventType::KeyUp)
+            .key(key_str)
+            .code(def.code)
+            .windows_virtual_key_code(def.key_code)
+            .native_virtual_key_code(def.key_code);
+        if modifiers != 0 {
+            up = up.modifiers(modifiers);
+        }
+        let up = up
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build key event: {e}"))?;
+
+        self.page.execute(down).await?;
+        self.page.execute(up).await?;
         Ok(())
     }
 
@@ -490,6 +753,48 @@ fn parse_same_site(s: &str) -> Option<CookieSameSite> {
     }
 }
 
+/// Split a key spec like `"Meta+A"` / `"Control+shift+Tab"` into the CDP
+/// modifier bitmask (Alt=1, Ctrl=2, Meta=4, Shift=8) and the final key name.
+/// Segments are case-insensitive for the modifier names; the final key keeps
+/// its case (chromiumoxide's key table is case-sensitive, e.g. `Enter`, `a`).
+/// A lone `"+"` (the plus key) is handled by treating only non-final segments
+/// as potential modifiers.
+fn parse_chord(spec: &str) -> (i64, &str) {
+    let spec = spec.trim();
+    // Split on '+', but keep a trailing empty piece so "Ctrl++" (the plus key)
+    // still yields "+" as the final key.
+    let parts: Vec<&str> = spec.split('+').collect();
+    if parts.len() < 2 {
+        return (0, spec);
+    }
+    let mut modifiers = 0i64;
+    // Everything before the last non-empty segment is a modifier candidate.
+    // The final key is the last segment (or "+" if the spec ended in "+").
+    let (main, mods) = if parts.last() == Some(&"") {
+        // Spec ended with '+', so the key is literally '+'.
+        ("+", &parts[..parts.len() - 1])
+    } else {
+        (parts[parts.len() - 1], &parts[..parts.len() - 1])
+    };
+    for m in mods {
+        match m.trim().to_ascii_lowercase().as_str() {
+            "alt" | "option" | "opt" => modifiers |= 1,
+            "ctrl" | "control" => modifiers |= 2,
+            "meta" | "cmd" | "command" | "super" | "win" => modifiers |= 4,
+            "shift" => modifiers |= 8,
+            "" => {}
+            // An unknown "modifier" means this wasn't a chord after all; treat
+            // the whole thing as a literal key.
+            _ => return (0, spec),
+        }
+    }
+    if modifiers == 0 {
+        (0, spec)
+    } else {
+        (modifiers, main)
+    }
+}
+
 /// Default cap on concurrently tracked browser sessions. Lower than the PTY cap
 /// — each session is a whole browser process.
 pub const DEFAULT_MAX_SESSIONS: usize = 8;
@@ -645,5 +950,37 @@ impl BrowserSessionManager {
         for session in sessions {
             session.close().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod chord_tests {
+    use super::parse_chord;
+
+    #[test]
+    fn parses_modifier_chords() {
+        // Meta=4, Ctrl=2, Shift=8, Alt=1.
+        assert_eq!(parse_chord("Meta+A"), (4, "A"));
+        assert_eq!(parse_chord("Control+a"), (2, "a"));
+        assert_eq!(parse_chord("Cmd+a"), (4, "a"));
+        assert_eq!(parse_chord("Shift+Tab"), (8, "Tab"));
+        assert_eq!(parse_chord("Alt+F4"), (1, "F4"));
+        // Case-insensitive modifier names, combined bitmask.
+        assert_eq!(parse_chord("ctrl+shift+k"), (2 | 8, "k"));
+        assert_eq!(parse_chord("Meta+Shift+z"), (4 | 8, "z"));
+    }
+
+    #[test]
+    fn plain_keys_and_literal_plus_are_not_chords() {
+        assert_eq!(parse_chord("Enter"), (0, "Enter"));
+        assert_eq!(parse_chord("a"), (0, "a"));
+        assert_eq!(parse_chord("+"), (0, "+"));
+        // Not a chord: an unknown leading segment ⇒ treated literally.
+        assert_eq!(parse_chord("a+b"), (0, "a+b"));
+    }
+
+    #[test]
+    fn control_plus_the_plus_key() {
+        assert_eq!(parse_chord("Ctrl++"), (2, "+"));
     }
 }

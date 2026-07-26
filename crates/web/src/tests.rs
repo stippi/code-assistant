@@ -266,6 +266,171 @@ async fn session_cookies_survive_a_headless_swap_via_transfer() {
     s2.close().await;
 }
 
+/// A self-contained page (base64 data URL, no server) with an input whose
+/// value can be read back, plus recorders for the last key event's modifiers.
+#[cfg(test)]
+fn data_url(html: &str) -> String {
+    use base64::Engine;
+    format!(
+        "data:text/html;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(html)
+    )
+}
+
+/// A chord like `Control+a` must reach the page with the modifier flag set, not
+/// error out with "Key not found: Control+a". The page records the last keydown
+/// as "<key>|ctrl:<bool>|meta:<bool>|shift:<bool>".
+#[tokio::test]
+async fn press_key_supports_modifier_chords() {
+    let html = concat!(
+        "<html><body>",
+        "<input id=\"f\" onkeydown=\"document.title=event.key+'|ctrl:'+event.ctrlKey+'|meta:'+event.metaKey+'|shift:'+event.shiftKey\">",
+        "</body></html>"
+    );
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&data_url(html)).await.unwrap();
+
+    // Control+a: must not error, and ctrlKey must be true on the event.
+    session.press_key("#f", "Control+a").await.unwrap();
+    let title = session.observe().await.unwrap().title;
+    assert!(
+        title.contains("ctrl:true"),
+        "Control+a should set the ctrl modifier, got title: {title}"
+    );
+
+    // Shift+Tab is a common chord too.
+    session.press_key("#f", "Shift+Tab").await.unwrap();
+    let title = session.observe().await.unwrap().title;
+    assert!(
+        title.contains("shift:true"),
+        "Shift+Tab should set the shift modifier, got title: {title}"
+    );
+
+    session.close().await;
+}
+
+/// `fill` should REPLACE the field's content, not append to it (the old
+/// `type_text` appended, forcing manual End+Backspace clearing).
+#[tokio::test]
+async fn fill_replaces_existing_field_content() {
+    let html = "<html><body><input id=\"f\" value=\"prefilled\"></body></html>";
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&data_url(html)).await.unwrap();
+
+    session.fill("#f", "replacement").await.unwrap();
+    let value = session
+        .eval("document.getElementById('f').value")
+        .await
+        .unwrap();
+    assert_eq!(
+        value.as_str().unwrap_or_default(),
+        "replacement",
+        "fill should replace, not append"
+    );
+
+    session.close().await;
+}
+
+/// `clear` should empty a prefilled field.
+#[tokio::test]
+async fn clear_empties_a_field() {
+    let html = "<html><body><input id=\"f\" value=\"prefilled\"></body></html>";
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&data_url(html)).await.unwrap();
+
+    session.clear("#f").await.unwrap();
+    let value = session
+        .eval("document.getElementById('f').value")
+        .await
+        .unwrap();
+    assert_eq!(
+        value.as_str().unwrap_or_default(),
+        "",
+        "clear should empty the field"
+    );
+
+    session.close().await;
+}
+
+/// A `text=` / `role=` selector should resolve to the element by its visible
+/// text or ARIA role, not by a fragile hashed CSS id.
+#[tokio::test]
+async fn click_resolves_text_and_role_selectors() {
+    let html = concat!(
+        "<html><body>",
+        "<button id=\"h4a3f\" onclick=\"document.title='clicked-'+this.id\">Speichern und Verlassen</button>",
+        "</body></html>"
+    );
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&data_url(html)).await.unwrap();
+
+    // By visible text (substring, case-insensitive).
+    session.click("text=Speichern und Verlassen").await.unwrap();
+    let title = session.observe().await.unwrap().title;
+    assert!(
+        title.contains("clicked-h4a3f"),
+        "text= selector should click the button, got title: {title}"
+    );
+
+    session.close().await;
+}
+
+/// Discovery must reach into a modal/dialog that has its own scroll container
+/// and enumerate its buttons — those were previously missing (finding 4).
+#[tokio::test]
+async fn observe_discovers_elements_inside_a_dialog() {
+    let html = concat!(
+        "<html><body>",
+        "<div id=\"bg\">background</div>",
+        "<div role=\"dialog\" style=\"position:fixed;inset:20px;overflow:auto\">",
+        "<button id=\"dl\">Herunterladen</button>",
+        "<button id=\"cl\">Schließen</button>",
+        "</div>",
+        "</body></html>"
+    );
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&data_url(html)).await.unwrap();
+
+    let obs = session.observe().await.unwrap();
+    assert!(
+        obs.elements.iter().any(|e| e.selector == "#dl"),
+        "dialog button should be discovered, got: {:?}",
+        obs.elements
+    );
+
+    session.close().await;
+}
+
+/// `observe_text_light` should skip the (expensive, redundant) full innerText
+/// dump while still returning the interactive elements (finding 7).
+#[tokio::test]
+async fn observe_can_skip_the_text_dump() {
+    let html = "<html><body><h1>Big page</h1><button id=\"go\">Go</button></body></html>";
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&data_url(html)).await.unwrap();
+
+    let obs = session.observe_with(false).await.unwrap();
+    assert!(obs.text.is_empty(), "text should be suppressed");
+    assert!(
+        obs.elements.iter().any(|e| e.selector == "#go"),
+        "elements should still be present"
+    );
+
+    session.close().await;
+}
+
 #[tokio::test]
 async fn test_web_search() {
     let client = WebClient::new().await.unwrap();

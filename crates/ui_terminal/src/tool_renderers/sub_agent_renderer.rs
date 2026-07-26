@@ -65,8 +65,7 @@ fn sub_agent_lines(tool_block: &ToolUseBlock) -> Vec<Line<'static>> {
         ),
     ];
     if let Some(instructions) = tool_block.parameters.get("instructions") {
-        let summary =
-            truncate_with_ellipsis(instructions.value.trim(), INSTRUCTIONS_SUMMARY_LEN);
+        let summary = truncate_with_ellipsis(instructions.value.trim(), INSTRUCTIONS_SUMMARY_LEN);
         if !summary.is_empty() {
             header.push(Span::styled(
                 format!(": {summary}"),
