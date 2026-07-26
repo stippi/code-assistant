@@ -15,6 +15,7 @@ use ratatui::widgets::Paragraph;
 
 use super::{status_color, ToolRenderer};
 use crate::message::ToolUseBlock;
+use crate::text_util::truncate_with_ellipsis;
 use code_assistant_core::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
 use code_assistant_core::ui::ToolStatus;
 
@@ -47,16 +48,6 @@ impl ToolRenderer for SubAgentToolRenderer {
     }
 }
 
-/// Truncate `text` to at most `max` chars, appending `…` when cut.
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() > max {
-        let cut: String = text.chars().take(max).collect();
-        format!("{cut}…")
-    } else {
-        text.to_string()
-    }
-}
-
 /// Build the styled lines for a sub-agent tool block. Shared by the live
 /// viewport, the height calculation, and the scrollback history.
 fn sub_agent_lines(tool_block: &ToolUseBlock) -> Vec<Line<'static>> {
@@ -74,7 +65,8 @@ fn sub_agent_lines(tool_block: &ToolUseBlock) -> Vec<Line<'static>> {
         ),
     ];
     if let Some(instructions) = tool_block.parameters.get("instructions") {
-        let summary = truncate(instructions.value.trim(), INSTRUCTIONS_SUMMARY_LEN);
+        let summary =
+            truncate_with_ellipsis(instructions.value.trim(), INSTRUCTIONS_SUMMARY_LEN);
         if !summary.is_empty() {
             header.push(Span::styled(
                 format!(": {summary}"),

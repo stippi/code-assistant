@@ -10,6 +10,7 @@ pub mod slash_popup;
 pub mod state;
 pub mod streaming;
 pub mod terminal_color;
+pub mod text_util;
 pub mod textarea;
 pub mod tool_renderers;
 pub mod tool_widget;

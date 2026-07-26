@@ -3,6 +3,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Wrap};
 use tui_markdown as md;
 
+use super::text_util::truncate_with_ellipsis;
 use super::tool_renderers::ToolRendererRegistry;
 use super::tool_widget::{is_full_width_parameter, should_hide_parameter, ToolWidget};
 use code_assistant_core::ui::ToolStatus;
@@ -355,10 +356,6 @@ impl ParameterValue {
 
     pub fn get_display_value(&self) -> String {
         // Truncate long values for regular parameters
-        if self.value.len() > 100 {
-            format!("{}...", &self.value[..97])
-        } else {
-            self.value.clone()
-        }
+        truncate_with_ellipsis(&self.value, 100).into_owned()
     }
 }
