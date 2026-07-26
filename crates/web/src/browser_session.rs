@@ -232,20 +232,44 @@ impl BrowserSession {
         Ok(self.page.screenshot(params).await?)
     }
 
-    /// Scroll the page. With a `selector`, scroll that element into view;
-    /// otherwise scroll by `(dx, dy)` pixels relative to the current position
-    /// (positive `dy` scrolls down). The selector is JSON-encoded into the
-    /// script, so it cannot break out of the string.
+    /// Scroll the page or an element. With a `selector` and no delta, scroll
+    /// that element into view. With a `selector` **and** a non-zero `(dx, dy)`,
+    /// scroll *inside* that element — the fix for modal/dialog content that
+    /// lives in its own scroll container (a plain `window.scrollBy` moves the
+    /// page behind it, not the dialog). With no selector, scroll the page by
+    /// `(dx, dy)` (positive `dy` scrolls down). The selector is JSON-encoded
+    /// into the script, so it cannot break out of the string.
     pub async fn scroll(&self, selector: Option<&str>, dx: f64, dy: f64) -> Result<()> {
         match selector {
             Some(sel) => {
                 let sel_json = serde_json::to_string(sel)?;
-                let js = format!(
-                    "(() => {{ const e = document.querySelector({sel_json}); \
-                     if (!e) return false; \
-                     e.scrollIntoView({{block: 'center', inline: 'center'}}); \
-                     return true; }})()"
-                );
+                let js = if dx == 0.0 && dy == 0.0 {
+                    format!(
+                        "(() => {{ const e = document.querySelector({sel_json}); \
+                         if (!e) return false; \
+                         e.scrollIntoView({{block: 'center', inline: 'center'}}); \
+                         return true; }})()"
+                    )
+                } else {
+                    // Scroll within the element's own scroll container (or the
+                    // nearest scrollable ancestor if the element itself does not
+                    // scroll), so a dialog's inner content moves.
+                    format!(
+                        "(() => {{ let e = document.querySelector({sel_json}); \
+                         if (!e) return false; \
+                         const scrollable = (n) => {{ \
+                           while (n && n !== document.body) {{ \
+                             const s = getComputedStyle(n); \
+                             if (/(auto|scroll)/.test(s.overflowY + s.overflow) && n.scrollHeight > n.clientHeight) return n; \
+                             n = n.parentElement; \
+                           }} \
+                           return e; \
+                         }}; \
+                         const target = (e.scrollHeight > e.clientHeight) ? e : scrollable(e); \
+                         target.scrollBy({dx}, {dy}); \
+                         return true; }})()"
+                    )
+                };
                 let found = self
                     .page
                     .evaluate(js)

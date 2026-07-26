@@ -431,6 +431,42 @@ async fn observe_can_skip_the_text_dump() {
     session.close().await;
 }
 
+/// Scrolling with a selector AND a delta must move the dialog's own scroll
+/// container, not the page behind it (finding 3).
+#[tokio::test]
+async fn scroll_moves_a_dialog_inner_container() {
+    let html = concat!(
+        "<html><body style=\"height:4000px\">",
+        "<div id=\"panel\" style=\"position:fixed;top:0;left:0;width:200px;height:150px;overflow:auto\">",
+        "<div style=\"height:2000px\">tall inner content</div>",
+        "</div>",
+        "</body></html>"
+    );
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&data_url(html)).await.unwrap();
+
+    session.scroll(Some("#panel"), 0.0, 500.0).await.unwrap();
+
+    let panel_top = session
+        .eval("document.getElementById('panel').scrollTop")
+        .await
+        .unwrap();
+    assert!(
+        panel_top.as_f64().unwrap_or(0.0) > 100.0,
+        "the dialog's inner container should have scrolled, scrollTop={panel_top}"
+    );
+    // The page itself should NOT have moved.
+    let page_y = session.eval("window.scrollY").await.unwrap();
+    assert!(
+        page_y.as_f64().unwrap_or(1.0) < 1.0,
+        "the page behind the dialog should not scroll, scrollY={page_y}"
+    );
+
+    session.close().await;
+}
+
 #[tokio::test]
 async fn test_web_search() {
     let client = WebClient::new().await.unwrap();
