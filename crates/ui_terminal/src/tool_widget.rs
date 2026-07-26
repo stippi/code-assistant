@@ -2,6 +2,7 @@ use code_assistant_core::ui::ToolStatus;
 use ratatui::prelude::*;
 
 use super::message::ToolUseBlock;
+use super::text_util::{truncate_to_width, truncate_with_ellipsis};
 use super::tool_renderers::ToolRendererRegistry;
 
 /// Custom ratatui widget for rendering tool use blocks.
@@ -149,11 +150,7 @@ impl<'a> ToolWidget<'a> {
         // Error status message
         if let Some(ref message) = self.tool_block.status_message {
             if self.tool_block.status == ToolStatus::Error && current_y < area.y + area.height {
-                let display_text = if message.len() > area.width as usize {
-                    &message[..area.width as usize]
-                } else {
-                    message
-                };
+                let display_text = truncate_to_width(message, area.width as usize);
                 buf.set_string(
                     area.x + 2,
                     current_y,
@@ -173,15 +170,12 @@ impl<'a> ToolWidget<'a> {
                     if current_y >= area.y + area.height {
                         break;
                     }
-                    let truncated = if line.len() > (area.width.saturating_sub(4)) as usize {
-                        format!("{}...", &line[..(area.width.saturating_sub(7)) as usize])
-                    } else {
-                        line.to_string()
-                    };
+                    let truncated =
+                        truncate_with_ellipsis(line, area.width.saturating_sub(4) as usize);
                     buf.set_string(
                         area.x + 2,
                         current_y,
-                        &truncated,
+                        truncated.as_ref(),
                         Style::default().fg(Color::Gray),
                     );
                     current_y += 1;
@@ -210,5 +204,40 @@ pub(super) fn should_hide_parameter(tool_name: &str, param_name: &str, param_val
     match (tool_name, param_name) {
         (_, "project") => param_value.is_empty() || param_value == "." || param_value == "unknown",
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{ParameterValue, ToolUseBlock};
+    use indexmap::IndexMap;
+
+    /// Output lines containing multi-byte characters used to panic here:
+    /// the truncation sliced by byte index and landed inside a `ü`.
+    #[test]
+    fn fallback_renders_multibyte_output_without_panicking() {
+        let mut parameters = IndexMap::new();
+        parameters.insert(
+            "path".to_string(),
+            ParameterValue::new("Übertragungsprotokoll für die steuerliche Erfassung".to_string()),
+        );
+        let tool = ToolUseBlock {
+            // A tool without a registered renderer → generic fallback.
+            name: "delete_files".to_string(),
+            id: "test-id".to_string(),
+            parameters,
+            status: ToolStatus::Error,
+            status_message: Some("Datei konnte nicht gelöscht werden — Zugriff verweigert".into()),
+            output: Some(
+                "/Users/x/Downloads/050_202_00962_Uebertragungsprotokoll_Fragebogen_zur_steuerlichen_Erfassung_für_Einzelunternehmen.pdf\n日本語のファイル名.pdf".to_string(),
+            ),
+        };
+
+        for width in [1u16, 7, 20, 40, 104, 120] {
+            let area = Rect::new(0, 0, width, 10);
+            let mut buf = Buffer::empty(area);
+            ToolWidget::new(&tool).render(area, &mut buf);
+        }
     }
 }

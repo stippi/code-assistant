@@ -15,6 +15,7 @@ use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::message::ToolUseBlock;
+use super::text_util::truncate_to_width;
 use code_assistant_core::ui::ToolStatus;
 
 /// Trait for custom tool block renderers.
@@ -154,11 +155,7 @@ pub fn render_error_line(tool_block: &ToolUseBlock, area: Rect, buf: &mut Buffer
         if let Some(ref message) = tool_block.status_message {
             if y < area.y + area.height {
                 let max_len = area.width.saturating_sub(2) as usize;
-                let display = if message.len() > max_len {
-                    &message[..max_len]
-                } else {
-                    message.as_str()
-                };
+                let display = truncate_to_width(message, max_len);
                 buf.set_string(area.x + 2, y, display, Style::default().fg(Color::LightRed));
                 return y + 1;
             }

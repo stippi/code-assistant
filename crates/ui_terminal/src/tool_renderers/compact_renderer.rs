@@ -5,11 +5,13 @@
 
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthStr;
 
 use super::{
     push_error_history_line, render_error_line, render_tool_header, tool_header_line, ToolRenderer,
 };
 use crate::message::ToolUseBlock;
+use crate::text_util::truncate_to_width;
 use code_assistant_core::ui::ToolStatus;
 
 /// Renderer for read/explore tools: read_files, list_files, list_projects,
@@ -46,15 +48,11 @@ impl ToolRenderer for CompactToolRenderer {
                 CompactLine::Item(text) => {
                     buf.set_string(area.x + 2, y, "- ", Style::default().fg(Color::DarkGray));
                     let max_len = area.width.saturating_sub(4) as usize;
-                    let display = if text.len() > max_len {
-                        &text[..max_len]
-                    } else {
-                        text.as_str()
-                    };
+                    let display = truncate_to_width(&text, max_len);
                     buf.set_string(area.x + 4, y, display, Style::default().fg(Color::Gray));
                 }
                 CompactLine::KeyValue(key, value) => {
-                    let key_len = key.len() as u16;
+                    let key_len = key.width() as u16;
                     buf.set_string(area.x + 2, y, &key, Style::default().fg(Color::Cyan));
                     buf.set_string(
                         area.x + 2 + key_len,
@@ -63,11 +61,7 @@ impl ToolRenderer for CompactToolRenderer {
                         Style::default().fg(Color::White),
                     );
                     let max_len = area.width.saturating_sub(4 + key_len) as usize;
-                    let display = if value.len() > max_len {
-                        &value[..max_len]
-                    } else {
-                        value.as_str()
-                    };
+                    let display = truncate_to_width(&value, max_len);
                     buf.set_string(
                         area.x + 4 + key_len,
                         y,

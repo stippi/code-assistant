@@ -11,6 +11,7 @@ use super::{
 };
 use crate::message::ToolUseBlock;
 use crate::terminal_color;
+use crate::text_util::truncate_to_width;
 use code_assistant_core::ui::ToolStatus;
 
 /// Expand tab characters to spaces (4-space tab stops).
@@ -71,11 +72,7 @@ impl ToolRenderer for CommandToolRenderer {
                         .bg(bg),
                 );
                 let max_cmd_len = row_width.saturating_sub(2);
-                let display = if cmd.value.len() > max_cmd_len {
-                    &cmd.value[..max_cmd_len]
-                } else {
-                    cmd.value.as_str()
-                };
+                let display = truncate_to_width(&cmd.value, max_cmd_len);
                 buf.set_string(
                     area.x + 4,
                     y,
@@ -103,11 +100,7 @@ impl ToolRenderer for CommandToolRenderer {
                         Style::default().bg(bg),
                     );
                     let expanded = expand_tabs(line);
-                    let display = if expanded.len() > row_width {
-                        &expanded[..row_width]
-                    } else {
-                        expanded.as_str()
-                    };
+                    let display = truncate_to_width(&expanded, row_width);
                     buf.set_string(
                         area.x + 2,
                         y,
