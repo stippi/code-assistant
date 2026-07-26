@@ -3,7 +3,7 @@ use code_assistant_core::persistence::{ChatMetadata, NodeId};
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::permissions::ToolPermissionRequestData;
 use code_assistant_core::session::service::SkillCatalogEntry;
-use code_assistant_core::types::PlanState;
+use code_assistant_core::types::{PlanItemStatus, PlanState};
 use sandbox::SandboxPolicy;
 use std::collections::{HashMap, HashSet};
 use tools_core::permissions::PermissionTier;
@@ -227,6 +227,37 @@ impl AppState {
         self.plan_dirty = true;
     }
 
+    /// Drop the plan if every item is done. Called when the user submits a new
+    /// message: the plan stays on screen for the whole turn *and* after the
+    /// agent's closing answer (so it can be reviewed), but a finished plan
+    /// belongs to the request that is now over and must not linger above the
+    /// composer into the next one. A plan with open items survives — the new
+    /// message is likely a continuation of it.
+    ///
+    /// Returns whether the plan was cleared.
+    pub fn clear_completed_plan(&mut self) -> bool {
+        let all_completed = match &self.plan {
+            Some(plan) => {
+                !plan.entries.is_empty()
+                    && plan
+                        .entries
+                        .iter()
+                        .all(|entry| matches!(entry.status, PlanItemStatus::Completed))
+            }
+            None => false,
+        };
+        if !all_completed {
+            return false;
+        }
+
+        self.set_plan(None);
+        self.plan_expanded = false;
+        if matches!(self.overlay_state, OverlayState::Plan) {
+            self.overlay_state = OverlayState::None;
+        }
+        true
+    }
+
     pub fn toggle_plan_expanded(&mut self) -> bool {
         self.plan_expanded = !self.plan_expanded;
         self.overlay_state = if self.plan_expanded {
@@ -259,6 +290,52 @@ mod tests {
         state.reset_seen_nodes([1, 2]);
         assert!(!state.mark_node_seen(1));
         assert!(state.mark_node_seen(42));
+    }
+
+    fn plan_of(statuses: &[PlanItemStatus]) -> PlanState {
+        use code_assistant_core::types::PlanItem;
+        PlanState {
+            entries: statuses
+                .iter()
+                .enumerate()
+                .map(|(i, status)| PlanItem {
+                    content: format!("item {i}"),
+                    status: status.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn submitting_retires_a_finished_plan_but_keeps_an_open_one() {
+        let mut state = AppState::new();
+
+        // Nothing to retire without a plan.
+        assert!(!state.clear_completed_plan());
+
+        // A plan with open items survives the next user message.
+        state.set_plan(Some(plan_of(&[
+            PlanItemStatus::Completed,
+            PlanItemStatus::InProgress,
+        ])));
+        assert!(!state.clear_completed_plan());
+        assert!(state.plan.is_some());
+
+        // All done → the plan is dropped, and the expanded overlay with it.
+        state.set_plan(Some(plan_of(&[
+            PlanItemStatus::Completed,
+            PlanItemStatus::Completed,
+        ])));
+        state.toggle_plan_expanded();
+        assert!(state.is_overlay_active());
+
+        assert!(state.clear_completed_plan());
+        assert!(state.plan.is_none());
+        assert!(state.plan_dirty, "the renderer must pick the change up");
+        assert!(!state.plan_expanded);
+        assert!(!state.is_overlay_active());
     }
 
     #[test]

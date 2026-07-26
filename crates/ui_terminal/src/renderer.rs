@@ -918,51 +918,63 @@ impl TerminalRenderer {
             });
         }
 
+        let popup_height = self.measure_autocomplete_height();
+
+        // The status area is a region of its own below the content area (see the
+        // `Layout::vertical` further down), so its rows must NOT be reserved in
+        // the scratch buffer as well: doing so shifted the live content up by
+        // `status_height` rows while the content area only shrank by that much,
+        // which pushed the spinner (and the top of the live message) out of the
+        // viewport whenever a plan/info/pending message was displayed.
+        // Everything below therefore budgets against `status_budget` — the rows
+        // the layout can actually give the status area — and leaves `cursor_y`
+        // to the spinner and the live message alone.
+        let mut status_budget = available.saturating_sub(popup_height);
         let mut status_height: u16 = 0;
         let mut error_display: Option<String> = None;
 
+        // Cap a single status entry the same way `measure_status_height` does,
+        // so the height this paint reserves matches the viewport height the Tui
+        // layer asked for.
+        const MAX_STATUS_ENTRY_HEIGHT: u16 = 20;
+
         if let Some(ref error_msg) = self.current_error {
             let formatted = Self::format_error_message(error_msg);
-            let max_height = cursor_y.min(scratch_height).max(1);
-            let rendered_height = Self::measure_markdown_height(&formatted, width, max_height);
-            let actual_height = rendered_height.min(cursor_y);
+            let max_height = status_budget.min(MAX_STATUS_ENTRY_HEIGHT);
+            let actual_height = Self::measure_markdown_height(&formatted, width, max_height);
             if actual_height > 0 {
-                cursor_y = cursor_y.saturating_sub(actual_height);
-                status_height = status_height.saturating_add(actual_height);
-                if cursor_y > 0 {
-                    cursor_y = cursor_y.saturating_sub(1);
-                    status_height = status_height.saturating_add(1);
+                status_height = actual_height;
+                if status_budget > actual_height {
+                    status_height = status_height.saturating_add(1); // gap
                 }
             }
             error_display = Some(formatted);
         } else if !status_entries.is_empty() {
             let mut any_rendered = false;
             for idx in 0..status_entries.len() {
-                if cursor_y == 0 {
+                if status_budget == 0 {
                     break;
                 }
 
                 let entry = &mut status_entries[idx];
-                let max_height = cursor_y.min(scratch_height).max(1);
-                let rendered_height =
+                let max_height = status_budget.min(MAX_STATUS_ENTRY_HEIGHT);
+                let actual_height =
                     Self::measure_markdown_height(&entry.content, width, max_height);
-                let actual_height = rendered_height.min(cursor_y);
                 entry.height = actual_height;
 
                 if actual_height > 0 {
                     any_rendered = true;
-                    cursor_y = cursor_y.saturating_sub(actual_height);
+                    status_budget = status_budget.saturating_sub(actual_height);
                     status_height = status_height.saturating_add(actual_height);
 
-                    if idx + 1 < status_entries.len() && cursor_y > 0 {
-                        cursor_y = cursor_y.saturating_sub(1);
+                    if idx + 1 < status_entries.len() && status_budget > 0 {
+                        status_budget = status_budget.saturating_sub(1);
                         status_height = status_height.saturating_add(1);
                     }
                 }
             }
 
-            if any_rendered && cursor_y > 0 {
-                cursor_y = cursor_y.saturating_sub(1);
+            if any_rendered && status_budget > 0 {
                 status_height = status_height.saturating_add(1);
             }
         }
@@ -1004,8 +1016,6 @@ impl TerminalRenderer {
 
         // Composed content occupies rows [cursor_y .. scratch_height)
         let total_height = scratch_height.saturating_sub(cursor_y);
-
-        let popup_height = self.measure_autocomplete_height();
 
         let [content_area, status_area, popup_area, input_area] = Layout::vertical([
             Constraint::Min(0),
@@ -1755,6 +1765,13 @@ mod tests {
             &self.buffer
         }
 
+        /// Render into a viewport sized the way the `Tui` layer sizes it in
+        /// production: exactly the height the renderer asks for.
+        fn render_at_desired_height(&mut self, textarea: &TextArea) -> &Buffer {
+            self.height = self.renderer.desired_viewport_height(textarea, self.width);
+            self.render(textarea)
+        }
+
         /// Access the buffer after rendering
         fn buffer(&self) -> &Buffer {
             &self.buffer
@@ -2255,6 +2272,114 @@ mod tests {
             assert!(
                 !found_pending_after_clear,
                 "Pending message should be cleared from rendering"
+            );
+        }
+
+        /// Row index of the first line containing `needle`, or `None`.
+        fn find_row(buffer: &Buffer, needle: &str) -> Option<u16> {
+            let area = *buffer.area();
+            for y in area.y..area.y + area.height {
+                let mut line = String::new();
+                for x in area.x..area.x + area.width {
+                    line.push_str(buffer.cell((x, y)).unwrap().symbol());
+                }
+                if line.contains(needle) {
+                    return Some(y);
+                }
+            }
+            None
+        }
+
+        /// Row index of the first line carrying a spinner braille glyph.
+        fn find_spinner_row(buffer: &Buffer) -> Option<u16> {
+            const BRAILLE: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            BRAILLE.iter().find_map(|c| find_row(buffer, c))
+        }
+
+        fn plan_with_open_item() -> PlanState {
+            PlanState {
+                entries: vec![
+                    PlanItem {
+                        content: "Gather requirements".to_string(),
+                        status: PlanItemStatus::Completed,
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Update documentation".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }
+        }
+
+        /// Regression: the status area (plan / info / pending) is laid out as its
+        /// own region *below* the live content, so its rows must not be reserved
+        /// in the scratch buffer as well. They used to be, which pushed the
+        /// spinner out of the top of the content area — the spinner simply
+        /// disappeared as soon as a plan was displayed.
+        #[test]
+        fn spinner_stays_visible_above_the_plan() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            renderer.set_plan_state(Some(plan_with_open_item()));
+            renderer.set_plan_expanded(false);
+            renderer.start_new_message(1); // request sent → loading spinner
+
+            renderer.render_at_desired_height(&textarea);
+            let buffer = renderer.buffer();
+
+            let spinner_row = find_spinner_row(buffer).expect("spinner must be rendered");
+            let plan_row =
+                find_row(buffer, "Plan: Update documentation").expect("plan must render");
+            assert!(
+                spinner_row < plan_row,
+                "spinner (row {spinner_row}) must be above the plan (row {plan_row})"
+            );
+        }
+
+        /// Same reservation bug, reached through a pending user message instead
+        /// of a plan.
+        #[test]
+        fn spinner_stays_visible_above_a_pending_message() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            // Multi-line so it lands in the status area, not the composer footer.
+            renderer.set_pending_user_message(Some("queued line one\nqueued line two".to_string()));
+            renderer.start_new_message(1);
+
+            renderer.render_at_desired_height(&textarea);
+            let buffer = renderer.buffer();
+
+            let spinner_row = find_spinner_row(buffer).expect("spinner must be rendered");
+            let pending_row = find_row(buffer, "queued line one").expect("pending must render");
+            assert!(
+                spinner_row < pending_row,
+                "spinner (row {spinner_row}) must be above the pending message (row {pending_row})"
+            );
+        }
+
+        /// The expanded plan is taller than the collapsed summary; the spinner
+        /// must survive that too.
+        #[test]
+        fn spinner_stays_visible_above_an_expanded_plan() {
+            let mut renderer = create_default_test_harness();
+            let textarea = TextArea::new();
+
+            renderer.set_plan_state(Some(plan_with_open_item()));
+            renderer.set_plan_expanded(true);
+            renderer.start_new_message(1);
+
+            renderer.render_at_desired_height(&textarea);
+            let buffer = renderer.buffer();
+
+            let spinner_row = find_spinner_row(buffer).expect("spinner must be rendered");
+            let plan_row = find_row(buffer, "Update documentation").expect("plan must render");
+            assert!(
+                spinner_row < plan_row,
+                "spinner (row {spinner_row}) must be above the plan (row {plan_row})"
             );
         }
 
