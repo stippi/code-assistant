@@ -9,6 +9,7 @@
 //! [`ToolSpec`]; the crate prescribes no scoping vocabulary beyond the
 //! generic tags in [`spec::capabilities`].
 
+pub mod coerce;
 pub mod dyn_tool;
 pub mod permissions;
 pub mod registry;

@@ -71,6 +71,10 @@ impl DynTool for McpTool {
         _context: &mut ToolContext<'a>,
         params: &mut Value,
     ) -> Result<Box<dyn AnyOutput>> {
+        // Coerce scalars into arrays where the server's schema requires them,
+        // matching the behaviour of native tools.
+        tools_core::coerce::coerce_to_schema(params, &self.parameters_schema);
+
         let arguments = match params {
             Value::Null => None,
             Value::Object(map) => Some(map.clone()),

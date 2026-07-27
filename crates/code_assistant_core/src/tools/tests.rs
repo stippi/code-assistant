@@ -86,6 +86,44 @@ async fn test_read_files_tool() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_read_files_tool_coerces_scalar_path_to_array() -> Result<()> {
+    // A model that passes `paths` as a bare string (instead of a one-element
+    // array) must still succeed: the schema-directed coercion in DynTool::invoke
+    // wraps it, and the re-serialized params reflect the corrected array form so
+    // the conversation history records the canonical shape.
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ReadFilesTool));
+
+    let mut fixture = ToolTestFixture::with_files(vec![(
+        "test.txt".to_string(),
+        "line 1\nline 2\n".to_string(),
+    )]);
+    let mut context = fixture.context();
+
+    let read_files_tool = registry
+        .get("read_files")
+        .expect("read_files tool should be registered");
+
+    // `paths` is a bare string, not an array.
+    let mut params = json!({
+        "project": "test-project",
+        "paths": "test.txt"
+    });
+
+    let result = read_files_tool.invoke(&mut context, &mut params).await?;
+
+    let mut tracker = ResourcesTracker::new();
+    let output = result.as_render().render(&mut tracker);
+    assert!(output.contains("Successfully loaded"));
+    assert!(output.contains(">>>>> FILE: test.txt"));
+
+    // The params were rewritten to the canonical array form.
+    assert_eq!(params["paths"], json!(["test.txt"]));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_write_file_tool() -> Result<()> {
     // Create a tool registry
     let mut registry = ToolRegistry::new();

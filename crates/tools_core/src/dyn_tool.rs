@@ -92,6 +92,12 @@ where
         context: &mut ToolContext<'a>,
         params: &mut Value,
     ) -> Result<Box<dyn AnyOutput>> {
+        // Coerce common shape mismatches (e.g. a bare string handed to an
+        // array parameter) against this tool's schema before deserializing, so
+        // the frequent single-element-array mistake parses on the first try
+        // instead of costing a retry round-trip.
+        crate::coerce::coerce_to_schema(params, &Tool::spec(self).parameters_schema);
+
         // Deserialize input
         let mut input: T::Input = serde_json::from_value(params.clone()).map_err(|e| {
             // Convert Serde error to ToolError::ParseError
