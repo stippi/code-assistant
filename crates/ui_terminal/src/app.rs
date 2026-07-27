@@ -844,24 +844,31 @@ async fn event_loop(
                                                  disabled until it finishes."
                                                     .to_string(),
                                             ));
-                                        } else if activity_state
-                                            .as_ref()
-                                            .is_none_or(|s| s.is_terminal())
-                                        {
-                                            // No agent running: start a new turn.
-                                            cancel_flag.store(false, Ordering::SeqCst);
-                                            actions.send_user_message(
-                                                session_id,
-                                                message,
-                                                attachments,
-                                            );
                                         } else {
-                                            // Local agent running: queue the message.
-                                            actions.queue_user_message(
-                                                session_id,
-                                                message,
-                                                attachments,
-                                            );
+                                            // The message is accepted: a plan whose
+                                            // items are all done belongs to the
+                                            // previous request and is retired here.
+                                            app_state.lock().await.clear_completed_plan();
+
+                                            if activity_state
+                                                .as_ref()
+                                                .is_none_or(|s| s.is_terminal())
+                                            {
+                                                // No agent running: start a new turn.
+                                                cancel_flag.store(false, Ordering::SeqCst);
+                                                actions.send_user_message(
+                                                    session_id,
+                                                    message,
+                                                    attachments,
+                                                );
+                                            } else {
+                                                // Local agent running: queue the message.
+                                                actions.queue_user_message(
+                                                    session_id,
+                                                    message,
+                                                    attachments,
+                                                );
+                                            }
                                         }
                                     }
                                 }
