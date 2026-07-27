@@ -112,12 +112,19 @@ impl BrowserOutput {
 
     /// Observe + screenshot the session into a success output. Any capture
     /// error is folded into `error` rather than failing the whole tool call.
-    async fn capture(profile: &str, session: &BrowserSession, full_page: bool) -> Self {
+    /// `include_text` false suppresses the (often large, step-to-step
+    /// redundant) page-text dump, keeping the screenshot and element list.
+    async fn capture(
+        profile: &str,
+        session: &BrowserSession,
+        full_page: bool,
+        include_text: bool,
+    ) -> Self {
         // Let a navigation triggered by the preceding action settle first, so
         // the text (`observe`) and the screenshot show the same page rather
         // than racing a mid-transition document.
         session.settle().await;
-        let observation = session.observe().await.ok();
+        let observation = session.observe_with(include_text).await.ok();
         let screenshot_base64 = match session.screenshot(full_page).await {
             Ok(png) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
             Err(_) => None,
@@ -303,7 +310,7 @@ impl Tool for BrowserNavigateTool {
                 format!("Navigation failed: {e}"),
             ));
         }
-        Ok(BrowserOutput::capture(&profile, &session, false).await)
+        Ok(BrowserOutput::capture(&profile, &session, false, true).await)
     }
 }
 
@@ -318,6 +325,11 @@ pub struct BrowserReadInput {
     /// Capture the entire scrollable page instead of just the viewport.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub full_page: bool,
+    /// Omit the page's full text dump, returning only the screenshot and the
+    /// interactive-element list. Cuts token cost on long forms where the text
+    /// barely changes between steps.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_text: bool,
 }
 
 pub struct BrowserReadTool;
@@ -342,7 +354,8 @@ impl Tool for BrowserReadTool {
                 "type": "object",
                 "properties": {
                     "profile": {"type": "string", "description": "Profile to read; omit for the throwaway browser"},
-                    "full_page": {"type": "boolean", "description": "Capture the whole scrollable page instead of just the viewport"}
+                    "full_page": {"type": "boolean", "description": "Capture the whole scrollable page instead of just the viewport"},
+                    "no_text": {"type": "boolean", "description": "Omit the page-text dump; return only the screenshot and the interactive-element list (saves tokens on long forms)"}
                 }
             }),
             annotations: Some(json!({"readOnlyHint": true})),
@@ -367,7 +380,12 @@ impl Tool for BrowserReadTool {
             return Ok(BrowserOutput::unavailable(&profile));
         };
         match manager.get_by_label(&profile) {
-            Some(session) => Ok(BrowserOutput::capture(&profile, &session, input.full_page).await),
+            Some(session) => {
+                Ok(
+                    BrowserOutput::capture(&profile, &session, input.full_page, !input.no_text)
+                        .await,
+                )
+            }
             None => Ok(BrowserOutput::failure(
                 &profile,
                 "No open browser for this profile. Use browser_navigate first.",
@@ -386,12 +404,19 @@ impl Tool for BrowserReadTool {
 pub enum BrowserAction {
     /// Click the first element matching the CSS selector.
     Click { selector: String },
-    /// Focus a field and type text into it. Not for credentials — use
-    /// `browser_login` for those.
+    /// Focus a field and type text into it, appending to any existing content.
+    /// Not for credentials — use `browser_login` for those. Prefer `fill` to
+    /// replace a prefilled field.
     Type { selector: String, text: String },
-    /// Press a key (e.g. "Enter") on the element matching the selector. The
-    /// element is focused first. Omit `selector` to send the key to whatever is
-    /// currently focused (e.g. arrow keys for a focused game canvas).
+    /// Replace a field's content: clear it, then type `text`. The editing verb
+    /// for prefilled inputs (no manual clearing needed).
+    Fill { selector: String, text: String },
+    /// Empty a field's current content.
+    Clear { selector: String },
+    /// Press a key or chord (e.g. "Enter", "Meta+A", "Control+a", "Shift+Tab")
+    /// on the element matching the selector. The element is focused first. Omit
+    /// `selector` to send the key to whatever is currently focused (e.g. arrow
+    /// keys for a focused game canvas, or a chord for select-all).
     Press {
         #[serde(default)]
         selector: Option<String>,
@@ -403,8 +428,10 @@ pub enum BrowserAction {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// Scroll the page: with `selector`, scroll that element into view;
-    /// otherwise scroll by `(dx, dy)` pixels (positive `dy` scrolls down).
+    /// Scroll: with `selector` and no delta, scroll that element into view;
+    /// with `selector` **and** a `(dx, dy)` delta, scroll *inside* that element
+    /// (for a modal/dialog with its own scroll container); with no selector,
+    /// scroll the page by `(dx, dy)` pixels (positive `dy` scrolls down).
     Scroll {
         #[serde(default)]
         selector: Option<String>,
@@ -475,6 +502,11 @@ pub struct BrowserActInput {
     pub actions: Vec<BrowserAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Omit the page's full text dump from the result, returning only the
+    /// screenshot and interactive-element list. Cuts token cost when stepping
+    /// through a long form whose text barely changes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_text: bool,
 }
 
 pub struct BrowserActTool;
@@ -484,6 +516,8 @@ impl BrowserActTool {
         match action {
             BrowserAction::Click { selector } => session.click(selector).await,
             BrowserAction::Type { selector, text } => session.type_text(selector, text).await,
+            BrowserAction::Fill { selector, text } => session.fill(selector, text).await,
+            BrowserAction::Clear { selector } => session.clear(selector).await,
             BrowserAction::Press { selector, key } => match selector {
                 Some(sel) => session.press_key(sel, key).await,
                 None => session.press_key_global(key).await,
@@ -531,24 +565,37 @@ impl Tool for BrowserActTool {
             name: "browser_act".into(),
             description: concat!(
                 "Interact with the current page of a browser profile: a sequence of ",
-                "click / type / press / wait_for / scroll / click_at / move_at steps, executed ",
-                "in order. Returns a screenshot and text of the resulting page.\n",
+                "click / type / fill / clear / press / wait_for / scroll / click_at / move_at ",
+                "steps, executed in order. Returns a screenshot and text of the resulting page.\n",
                 "Each action is an object with one key: {\"click\": {\"selector\": \"#go\"}}, ",
-                "{\"type\": {\"selector\": \"#user\", \"text\": \"hello\"}}, ",
-                "{\"press\": {\"selector\": \"#user\", \"key\": \"Enter\"}} (omit selector to send ",
-                "the key to whatever is focused, e.g. arrow keys for a game canvas), ",
+                "{\"type\": {\"selector\": \"#user\", \"text\": \"hello\"}} (appends), ",
+                "{\"fill\": {\"selector\": \"#user\", \"text\": \"hello\"}} (REPLACES the field's ",
+                "content — use this to edit a prefilled field), ",
+                "{\"clear\": {\"selector\": \"#user\"}} (empty a field), ",
+                "{\"press\": {\"selector\": \"#user\", \"key\": \"Enter\"}} — `key` may be a chord ",
+                "like \"Meta+A\", \"Control+a\" or \"Shift+Tab\"; omit selector to send the key to ",
+                "whatever is focused (e.g. arrow keys for a game canvas), ",
                 "{\"wait_for\": {\"selector\": \"#result\", \"timeout_ms\": 5000}}, ",
-                "{\"scroll\": {\"dy\": 600}} (scroll down 600px) / {\"scroll\": {\"selector\": \"#footer\"}} ",
-                "(scroll an element into view), ",
+                "{\"scroll\": {\"dy\": 600}} (scroll the page down 600px), ",
+                "{\"scroll\": {\"selector\": \"#footer\"}} (scroll an element into view), ",
+                "{\"scroll\": {\"selector\": \"#dialog\", \"dy\": 400}} (scroll INSIDE a modal/dialog ",
+                "with its own scroll container), ",
                 "{\"click_at\": {\"x\": \"40vw\", \"y\": \"30vh\"}} (click at a coordinate, for ",
                 "canvas/WebGL surfaces without selectors), or {\"move_at\": {\"x\": \"40vw\", ",
                 "\"y\": \"30vh\"}} (move the mouse for hover/pointer-move).\n",
+                "Selectors are CSS by default, but you can also target by visible text/role, ",
+                "which survives a re-render that changes hashed ids: \"text=Speichern\" (visible ",
+                "text/label, substring, case-insensitive), \"role=button\" or ",
+                "\"role=button[name=Save]\", \"aria=Save\" (aria-label). Elements are scrolled into ",
+                "view automatically before acting.\n",
                 "Coordinate values carry a CSS unit — think about which unit you mean: \"40vw\"/",
                 "\"30vh\" or \"50%\" express a fraction of the viewport axis (robust — use these ",
                 "when eyeballing from the screenshot); \"640px\" is exact CSS pixels (only when you ",
                 "know the size — the read output shows the Viewport dimensions). rem/em are not ",
                 "accepted. Prefer selectors when available (see the interactive-element list from a ",
                 "read); use coordinates only for canvas/game surfaces. ",
+                "Pass \"no_text\": true to omit the page-text dump from the result (screenshot and ",
+                "element list only) to save tokens on long forms. ",
                 "Do not type passwords or 2FA codes here — use browser_login."
             )
             .into(),
@@ -563,7 +610,9 @@ impl Tool for BrowserActTool {
                             "properties": {
                                 "click": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
                                 "type": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]},
-                                "press": {"type": "object", "properties": {"selector": {"type": "string"}, "key": {"type": "string"}}, "required": ["key"]},
+                                "fill": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]},
+                                "clear": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
+                                "press": {"type": "object", "properties": {"selector": {"type": "string"}, "key": {"type": "string", "description": "A key or chord, e.g. \"Enter\", \"Meta+A\", \"Control+a\", \"Shift+Tab\""}}, "required": ["key"]},
                                 "wait_for": {"type": "object", "properties": {"selector": {"type": "string"}, "timeout_ms": {"type": "integer"}}, "required": ["selector"]},
                                 "scroll": {"type": "object", "properties": {"selector": {"type": "string"}, "dx": {"type": "number"}, "dy": {"type": "number"}}},
                                 "click_at": {"type": "object", "properties": {"x": {"type": "string", "description": "x coordinate with CSS unit: vw/% (of width) or px"}, "y": {"type": "string", "description": "y coordinate with CSS unit: vh/% (of height) or px"}}, "required": ["x", "y"]},
@@ -571,7 +620,8 @@ impl Tool for BrowserActTool {
                             }
                         }
                     },
-                    "profile": {"type": "string", "description": "Profile to act on; omit for the throwaway browser"}
+                    "profile": {"type": "string", "description": "Profile to act on; omit for the throwaway browser"},
+                    "no_text": {"type": "boolean", "description": "Omit the page-text dump from the result (screenshot and element list only)"}
                 },
                 "required": ["actions"]
             }),
@@ -607,12 +657,13 @@ impl Tool for BrowserActTool {
             if let Err(e) = Self::run_action(&session, action).await {
                 // Capture the page as it stands so the model can see where the
                 // sequence stopped, but report the failing step.
-                let mut out = BrowserOutput::capture(&profile, &session, false).await;
+                let mut out =
+                    BrowserOutput::capture(&profile, &session, false, !input.no_text).await;
                 out.error = Some(format!("Action {} failed: {e}", i + 1));
                 return Ok(out);
             }
         }
-        Ok(BrowserOutput::capture(&profile, &session, false).await)
+        Ok(BrowserOutput::capture(&profile, &session, false, !input.no_text).await)
     }
 }
 
@@ -767,7 +818,7 @@ async fn login_handoff(
                     // Note the login so a later session can discover it via
                     // browser_profiles instead of asking the user to log in again.
                     record_login_in(&profiles_root(), profile, url);
-                    Ok(BrowserOutput::capture(profile, &headless, false).await)
+                    Ok(BrowserOutput::capture(profile, &headless, false, true).await)
                 }
                 Err(e) => Ok(BrowserOutput::failure(
                     profile,
@@ -1294,6 +1345,7 @@ mod tests {
                 },
             ],
             profile: None,
+            no_text: false,
         };
         let out = BrowserActTool.execute(&mut context, &mut act).await?;
         assert!(out.error.is_none(), "act error: {:?}", out.error);
@@ -1302,6 +1354,7 @@ mod tests {
         let mut read = BrowserReadInput {
             profile: None,
             full_page: false,
+            no_text: false,
         };
         let out = BrowserReadTool.execute(&mut context, &mut read).await?;
         let obs = out.observation.as_ref().expect("observation");
@@ -1322,6 +1375,140 @@ mod tests {
                 .get_by_label("default")
                 .is_none(),
             "closed session should be gone"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_clear_and_no_text_work_through_the_act_tool() -> Result<()> {
+        // A page with a prefilled input; fill should replace, clear should empty.
+        let html = concat!(
+            "<html><head><title>Form</title></head><body>",
+            "<h1>Editing</h1>",
+            "<input id=\"name\" value=\"prefilled\">",
+            "</body></html>"
+        );
+        let url = format!(
+            "data:text/html;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(html)
+        );
+
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        {
+            let mut context = fixture.context();
+            let mut nav = BrowserNavigateInput { url, profile: None };
+            BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+
+            // Fill replaces the prefilled value, and no_text suppresses the dump
+            // while still returning the element list.
+            let mut act = BrowserActInput {
+                actions: vec![BrowserAction::Fill {
+                    selector: "#name".into(),
+                    text: "replaced".into(),
+                }],
+                profile: None,
+                no_text: true,
+            };
+            let out = BrowserActTool.execute(&mut context, &mut act).await?;
+            assert!(out.error.is_none(), "fill error: {:?}", out.error);
+            let obs = out.observation.as_ref().expect("observation");
+            assert!(obs.text.is_empty(), "no_text should suppress the text dump");
+            assert!(
+                obs.elements.iter().any(|e| e.selector == "#name"),
+                "elements should still be present with no_text"
+            );
+        }
+
+        let session = fixture
+            .browser_sessions()
+            .unwrap()
+            .get_by_label("default")
+            .unwrap();
+        let value = session
+            .eval("document.getElementById('name').value")
+            .await?;
+        assert_eq!(
+            value.as_str().unwrap_or_default(),
+            "replaced",
+            "fill should replace the prefilled value"
+        );
+
+        // Clear empties the field.
+        {
+            let mut context = fixture.context();
+            let mut act = BrowserActInput {
+                actions: vec![BrowserAction::Clear {
+                    selector: "#name".into(),
+                }],
+                profile: None,
+                no_text: false,
+            };
+            let out = BrowserActTool.execute(&mut context, &mut act).await?;
+            assert!(out.error.is_none(), "clear error: {:?}", out.error);
+        }
+        let value = session
+            .eval("document.getElementById('name').value")
+            .await?;
+        assert_eq!(value.as_str().unwrap_or_default(), "", "clear should empty");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn act_resolves_a_text_selector_and_a_chord() -> Result<()> {
+        // A button targeted by visible text, and a chord recorded on keydown.
+        let html = concat!(
+            "<html><head><title>t</title></head><body>",
+            "<button id=\"hxyz\" onclick=\"document.title='hit'\">Speichern</button>",
+            "<input id=\"f\" onkeydown=\"document.getElementById('log').textContent=event.key+'/'+event.ctrlKey\">",
+            "<span id=\"log\"></span>",
+            "</body></html>"
+        );
+        let url = format!(
+            "data:text/html;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(html)
+        );
+
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        {
+            let mut context = fixture.context();
+            let mut nav = BrowserNavigateInput { url, profile: None };
+            BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+
+            let mut act = BrowserActInput {
+                actions: vec![
+                    BrowserAction::Press {
+                        selector: Some("#f".into()),
+                        key: "Control+a".into(),
+                    },
+                    BrowserAction::Click {
+                        selector: "text=Speichern".into(),
+                    },
+                ],
+                profile: None,
+                no_text: false,
+            };
+            let out = BrowserActTool.execute(&mut context, &mut act).await?;
+            assert!(out.error.is_none(), "act error: {:?}", out.error);
+        }
+
+        let session = fixture
+            .browser_sessions()
+            .unwrap()
+            .get_by_label("default")
+            .unwrap();
+        let title = session.eval("document.title").await?;
+        assert_eq!(
+            title.as_str().unwrap_or_default(),
+            "hit",
+            "text= selector should have clicked the button"
+        );
+        let log = session
+            .eval("document.getElementById('log').textContent")
+            .await?;
+        assert!(
+            log.as_str().unwrap_or_default().contains("/true"),
+            "Control+a chord should set ctrlKey, got: {log}"
         );
         Ok(())
     }
@@ -1352,6 +1539,7 @@ mod tests {
                     dy: Some(1200.0),
                 }],
                 profile: None,
+                no_text: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "scroll error: {:?}", out.error);
@@ -1418,6 +1606,7 @@ mod tests {
                     y: "80px".into(),
                 }],
                 profile: None,
+                no_text: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "click_at error: {:?}", out.error);
@@ -1450,6 +1639,7 @@ mod tests {
                     key: "a".into(),
                 }],
                 profile: None,
+                no_text: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "global press error: {:?}", out.error);
@@ -1551,6 +1741,7 @@ mod tests {
         let mut read = BrowserReadInput {
             profile: None,
             full_page: false,
+            no_text: false,
         };
         let out = BrowserReadTool.execute(&mut context, &mut read).await?;
         assert!(out.error.unwrap().contains("browser_navigate"));
