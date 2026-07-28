@@ -1,5 +1,7 @@
 # Code Assistant
 
+[![MCP Toplist](https://mcptoplist.com/badge/mcp.so%2Fcode-assistant%2Fstippi.svg)](https://mcptoplist.com/server/mcp.so%2Fcode-assistant%2Fstippi)
+
 [![CI](https://github.com/stippi/code-assistant/actions/workflows/build.yml/badge.svg)](https://github.com/stippi/code-assistant/actions/workflows/build.yml)
 [![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/stippi/code-assistant)](https://archestra.ai/mcp-catalog/stippi__code-assistant)
 
