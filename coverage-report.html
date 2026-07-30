@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>code-assistant &middot; Test Coverage</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --bg-soft: #161c2b;
+    --card: #1b2333;
+    --card-2: #212b3f;
+    --line: #2b3550;
+    --text: #e6ecf7;
+    --muted: #93a1c0;
+    --accent: #6ea8fe;
+    --good: #38d39f;
+    --mid: #f4c542;
+    --bad: #f2637a;
+    --track: #2a3450;
+    --shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 80% -10%, #1d2740 0%, var(--bg) 55%);
+    color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 40px 24px 80px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 14px; }
+  .sub code { background: var(--bg-soft); padding: 2px 6px; border-radius: 6px; color: var(--accent); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(190px,1fr)); gap: 16px; margin: 24px 0 32px; }
+  .stat { background: linear-gradient(180deg,var(--card) 0%, var(--bg-soft) 100%); border: 1px solid var(--line);
+    border-radius: 16px; padding: 18px 20px; box-shadow: var(--shadow); }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; }
+  .stat .value { font-size: 30px; font-weight: 700; margin-top: 6px; }
+  .stat .value small { font-size: 14px; color: var(--muted); font-weight: 500; }
+
+  .toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom: 14px; }
+  .toolbar .hint { color: var(--muted); font-size: 13px; }
+  .toolbar button { background: var(--card-2); color: var(--text); border:1px solid var(--line); border-radius:8px;
+    padding:7px 12px; cursor:pointer; font-size:13px; }
+  .toolbar button:hover { border-color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 14px; overflow: hidden;
+    box-shadow: var(--shadow); border: 1px solid var(--line); }
+  thead th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+    padding: 14px 16px; background: var(--bg-soft); cursor: pointer; user-select:none; white-space:nowrap; }
+  thead th.num { text-align: right; }
+  thead th .arrow { opacity:.5; font-size:11px; }
+  tbody td { padding: 11px 16px; border-top: 1px solid var(--line); vertical-align: middle; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  tr.crate { cursor: pointer; }
+  tr.crate:hover { background: var(--card-2); }
+  tr.crate td:first-child { font-weight: 600; }
+  .caret { display:inline-block; width: 14px; color: var(--muted); transition: transform .15s; }
+  tr.crate.open .caret { transform: rotate(90deg); }
+
+  tr.mod { background: #131a29; font-size: 14px; }
+  tr.mod td:first-child { padding-left: 40px; color: var(--muted); }
+  tr.mod td:first-child .mname { color: var(--text); }
+
+  .bar { position: relative; height: 8px; width: 130px; background: var(--track); border-radius: 6px; overflow: hidden; display:inline-block; vertical-align: middle; }
+  .bar > span { position:absolute; left:0; top:0; bottom:0; border-radius: 6px; }
+  .pct { display:inline-block; min-width: 52px; text-align:right; font-variant-numeric: tabular-nums; margin-left: 10px; font-weight:600; }
+  .cellbar { display:flex; align-items:center; justify-content:flex-end; gap: 4px; }
+
+  .pill { display:inline-block; padding: 2px 9px; border-radius: 999px; font-size:12px; font-weight:600; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 28px; text-align:center; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:10px; }
+  .legend span b { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+  .note { color: var(--muted); font-size: 13px; margin: 4px 0 20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Test Coverage &middot; code-assistant</h1>
+    <div class="sub">Line coverage via <code>cargo llvm-cov</code> &middot; commit <code>e4954f64</code> &middot; generated 2026-07-27 17:43</div>
+  </header>
+
+  <div class="cards" id="cards"></div>
+
+  <p class="note">Measured with <code>cargo llvm-cov --workspace --no-default-features</code>. Percentages are line coverage; function coverage is shown in the &ldquo;Fn&rdquo; column. One test file failed in this environment (<code>write_to_piped_session</code>); the report was generated from the collected profile data.</p>
+
+  <div class="toolbar">
+    <button id="expandAll">Expand all modules</button>
+    <button id="collapseAll">Collapse all</button>
+    <span class="hint">Click a column header to sort &middot; click a crate row to show its modules</span>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th data-key="crate">Crate / module</th>
+        <th data-key="line_pct" class="num">Line coverage <span class="arrow">&#9660;</span></th>
+        <th data-key="lines_total" class="num">Lines</th>
+        <th data-key="fn_pct" class="num">Fn</th>
+        <th data-key="files" class="num">Files</th>
+        <th data-key="tests" class="num">Tests</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <div class="legend">
+    <span><b style="background:var(--good)"></b>&ge; 80&nbsp;%</span>
+    <span><b style="background:var(--mid)"></b>50&ndash;79&nbsp;%</span>
+    <span><b style="background:var(--bad)"></b>&lt; 50&nbsp;%</span>
+    <span><b style="background:var(--track)"></b>no tests / no code</span>
+  </div>
+
+  <footer>1128 test functions &middot; 21 crates &middot; 46,389/78,597 lines covered (59.0&nbsp;%)</footer>
+</div>
+
+<script>
+const DATA = {"crates": [{"crate": "agent_core", "lines_covered": 1650, "lines_total": 2306, "line_pct": 71.6, "fns_covered": 102, "fns_total": 141, "fn_pct": 72.3, "tests": 0, "modules": [{"module": "(crate root)", "lines_covered": 1072, "lines_total": 1564, "line_pct": 68.5, "fns_covered": 84, "fns_total": 118, "fn_pct": 71.2, "files": 4}, {"module": "native", "lines_covered": 578, "lines_total": 742, "line_pct": 77.9, "fns_covered": 18, "fns_total": 23, "fn_pct": 78.3, "files": 2}]}, {"crate": "agent_orchestration", "lines_covered": 2614, "lines_total": 2766, "line_pct": 94.5, "fns_covered": 282, "fns_total": 303, "fn_pct": 93.1, "tests": 91, "modules": [{"module": "(crate root)", "lines_covered": 2614, "lines_total": 2766, "line_pct": 94.5, "fns_covered": 282, "fns_total": 303, "fn_pct": 93.1, "files": 6}]}, {"crate": "code_assistant", "lines_covered": 31, "lines_total": 484, "line_pct": 6.4, "fns_covered": 4, "fns_total": 26, "fn_pct": 15.4, "tests": 4, "modules": [{"module": "(crate root)", "lines_covered": 31, "lines_total": 484, "line_pct": 6.4, "fns_covered": 4, "fns_total": 26, "fn_pct": 15.4, "files": 4}]}, {"crate": "code_assistant_core", "lines_covered": 21218, "lines_total": 25277, "line_pct": 83.9, "fns_covered": 1848, "fns_total": 2367, "fn_pct": 78.1, "tests": 517, "modules": [{"module": "(crate root)", "lines_covered": 1954, "lines_total": 2473, "line_pct": 79.0, "fns_covered": 231, "fns_total": 297, "fn_pct": 77.8, "files": 7}, {"module": "agent", "lines_covered": 2144, "lines_total": 2545, "line_pct": 84.2, "fns_covered": 114, "fns_total": 156, "fn_pct": 73.1, "files": 4}, {"module": "plugins", "lines_covered": 506, "lines_total": 581, "line_pct": 87.1, "fns_covered": 50, "fns_total": 52, "fn_pct": 96.2, "files": 10}, {"module": "session", "lines_covered": 3469, "lines_total": 4963, "line_pct": 69.9, "fns_covered": 398, "fns_total": 607, "fn_pct": 65.6, "files": 10}, {"module": "skills", "lines_covered": 932, "lines_total": 987, "line_pct": 94.4, "fns_covered": 121, "fns_total": 136, "fn_pct": 89.0, "files": 6}, {"module": "tool_dialects", "lines_covered": 4583, "lines_total": 5126, "line_pct": 89.4, "fns_covered": 319, "fns_total": 348, "fn_pct": 91.7, "files": 15}, {"module": "tools", "lines_covered": 6292, "lines_total": 7122, "line_pct": 88.3, "fns_covered": 512, "fns_total": 651, "fn_pct": 78.6, "files": 33}, {"module": "ui", "lines_covered": 1160, "lines_total": 1244, "line_pct": 93.2, "fns_covered": 78, "fns_total": 89, "fn_pct": 87.6, "files": 5}, {"module": "utils", "lines_covered": 178, "lines_total": 236, "line_pct": 75.4, "fns_covered": 25, "fns_total": 31, "fn_pct": 80.6, "files": 3}]}, {"crate": "command_executor", "lines_covered": 271, "lines_total": 366, "line_pct": 74.0, "fns_covered": 32, "fns_total": 52, "fn_pct": 61.5, "tests": 3, "modules": [{"module": "(crate root)", "lines_covered": 271, "lines_total": 366, "line_pct": 74.0, "fns_covered": 32, "fns_total": 52, "fn_pct": 61.5, "files": 4}]}, {"crate": "fs_explorer", "lines_covered": 1054, "lines_total": 1191, "line_pct": 88.5, "fns_covered": 102, "fns_total": 110, "fn_pct": 92.7, "tests": 21, "modules": [{"module": "(crate root)", "lines_covered": 1054, "lines_total": 1191, "line_pct": 88.5, "fns_covered": 102, "fns_total": 110, "fn_pct": 92.7, "files": 4}]}, {"crate": "git", "lines_covered": 555, "lines_total": 604, "line_pct": 91.9, "fns_covered": 64, "fns_total": 83, "fn_pct": 77.1, "tests": 16, "modules": [{"module": "(crate root)", "lines_covered": 555, "lines_total": 604, "line_pct": 91.9, "fns_covered": 64, "fns_total": 83, "fn_pct": 77.1, "files": 6}]}, {"crate": "llm", "lines_covered": 5352, "lines_total": 9517, "line_pct": 56.2, "fns_covered": 440, "fns_total": 884, "fn_pct": 49.8, "tests": 95, "modules": [{"module": "(crate root)", "lines_covered": 5352, "lines_total": 9218, "line_pct": 58.1, "fns_covered": 440, "fns_total": 840, "fn_pct": 52.4, "files": 24}, {"module": "aicore", "lines_covered": 0, "lines_total": 299, "line_pct": 0.0, "fns_covered": 0, "fns_total": 44, "fn_pct": 0.0, "files": 6}]}, {"crate": "mcp_client", "lines_covered": 491, "lines_total": 642, "line_pct": 76.5, "fns_covered": 77, "fns_total": 108, "fn_pct": 71.3, "tests": 21, "modules": [{"module": "(crate root)", "lines_covered": 491, "lines_total": 642, "line_pct": 76.5, "fns_covered": 77, "fns_total": 108, "fn_pct": 71.3, "files": 7}]}, {"crate": "mcp_server", "lines_covered": 448, "lines_total": 657, "line_pct": 68.2, "fns_covered": 37, "fns_total": 64, "fn_pct": 57.8, "tests": 10, "modules": [{"module": "(crate root)", "lines_covered": 448, "lines_total": 657, "line_pct": 68.2, "fns_covered": 37, "fns_total": 64, "fn_pct": 57.8, "files": 5}]}, {"crate": "pty_session", "lines_covered": 743, "lines_total": 778, "line_pct": 95.5, "fns_covered": 94, "fns_total": 104, "fn_pct": 90.4, "tests": 21, "modules": [{"module": "(crate root)", "lines_covered": 743, "lines_total": 778, "line_pct": 95.5, "fns_covered": 94, "fns_total": 104, "fn_pct": 90.4, "files": 3}]}, {"crate": "sandbox", "lines_covered": 100, "lines_total": 155, "line_pct": 64.5, "fns_covered": 14, "fns_total": 22, "fn_pct": 63.6, "tests": 0, "modules": [{"module": "(crate root)", "lines_covered": 100, "lines_total": 155, "line_pct": 64.5, "fns_covered": 14, "fns_total": 22, "fn_pct": 63.6, "files": 3}]}, {"crate": "terminal", "lines_covered": 0, "lines_total": 446, "line_pct": 0.0, "fns_covered": 0, "fns_total": 42, "fn_pct": 0.0, "tests": 0, "modules": [{"module": "(crate root)", "lines_covered": 0, "lines_total": 446, "line_pct": 0.0, "fns_covered": 0, "fns_total": 42, "fn_pct": 0.0, "files": 1}]}, {"crate": "terminal_output", "lines_covered": 0, "lines_total": 34, "line_pct": 0.0, "fns_covered": 0, "fns_total": 6, "fn_pct": 0.0, "tests": 0, "modules": [{"module": "(crate root)", "lines_covered": 0, "lines_total": 34, "line_pct": 0.0, "fns_covered": 0, "fns_total": 6, "fn_pct": 0.0, "files": 1}]}, {"crate": "terminal_test_app", "lines_covered": 0, "lines_total": 370, "line_pct": 0.0, "fns_covered": 0, "fns_total": 31, "fn_pct": 0.0, "tests": 0, "modules": [{"module": "(crate root)", "lines_covered": 0, "lines_total": 370, "line_pct": 0.0, "fns_covered": 0, "fns_total": 31, "fn_pct": 0.0, "files": 1}]}, {"crate": "terminal_view", "lines_covered": 0, "lines_total": 586, "line_pct": 0.0, "fns_covered": 0, "fns_total": 29, "fn_pct": 0.0, "tests": 0, "modules": [{"module": "(crate root)", "lines_covered": 0, "lines_total": 586, "line_pct": 0.0, "fns_covered": 0, "fns_total": 29, "fn_pct": 0.0, "files": 1}]}, {"crate": "tools_core", "lines_covered": 609, "lines_total": 643, "line_pct": 94.7, "fns_covered": 94, "fns_total": 104, "fn_pct": 90.4, "tests": 30, "modules": [{"module": "(crate root)", "lines_covered": 609, "lines_total": 643, "line_pct": 94.7, "fns_covered": 94, "fns_total": 104, "fn_pct": 90.4, "files": 8}]}, {"crate": "ui_acp", "lines_covered": 1002, "lines_total": 2794, "line_pct": 35.9, "fns_covered": 111, "fns_total": 303, "fn_pct": 36.6, "tests": 32, "modules": [{"module": "(crate root)", "lines_covered": 1002, "lines_total": 2794, "line_pct": 35.9, "fns_covered": 111, "fns_total": 303, "fn_pct": 36.6, "files": 8}]}, {"crate": "ui_gpui", "lines_covered": 2690, "lines_total": 17378, "line_pct": 15.5, "fns_covered": 351, "fns_total": 1728, "fn_pct": 20.3, "tests": 52, "modules": [{"module": "(crate root)", "lines_covered": 0, "lines_total": 502, "line_pct": 0.0, "fns_covered": 0, "fns_total": 63, "fn_pct": 0.0, "files": 2}, {"module": "app", "lines_covered": 0, "lines_total": 1617, "line_pct": 0.0, "fns_covered": 0, "fns_total": 168, "fn_pct": 0.0, "files": 4}, {"module": "blocks", "lines_covered": 762, "lines_total": 1822, "line_pct": 41.8, "fns_covered": 91, "fns_total": 168, "fn_pct": 54.2, "files": 4}, {"module": "input", "lines_covered": 83, "lines_total": 1368, "line_pct": 6.1, "fns_covered": 11, "fns_total": 156, "fn_pct": 7.1, "files": 7}, {"module": "main_screen", "lines_covered": 22, "lines_total": 1533, "line_pct": 1.4, "fns_covered": 4, "fns_total": 119, "fn_pct": 3.4, "files": 3}, {"module": "messages", "lines_covered": 424, "lines_total": 1126, "line_pct": 37.7, "fns_covered": 80, "fns_total": 125, "fn_pct": 64.0, "files": 5}, {"module": "settings_screen", "lines_covered": 214, "lines_total": 4159, "line_pct": 5.1, "fns_covered": 16, "fns_total": 405, "fn_pct": 4.0, "files": 11}, {"module": "shared", "lines_covered": 691, "lines_total": 1425, "line_pct": 48.5, "fns_covered": 85, "fns_total": 153, "fn_pct": 55.6, "files": 9}, {"module": "sidebar", "lines_covered": 0, "lines_total": 611, "line_pct": 0.0, "fns_covered": 0, "fns_total": 56, "fn_pct": 0.0, "files": 2}, {"module": "terminal", "lines_covered": 0, "lines_total": 193, "line_pct": 0.0, "fns_covered": 0, "fns_total": 40, "fn_pct": 0.0, "files": 1}, {"module": "tool_cards", "lines_covered": 494, "lines_total": 3022, "line_pct": 16.3, "fns_covered": 64, "fns_total": 275, "fn_pct": 23.3, "files": 8}]}, {"crate": "ui_terminal", "lines_covered": 6524, "lines_total": 10481, "line_pct": 62.2, "fns_covered": 722, "fns_total": 988, "fn_pct": 73.1, "tests": 195, "modules": [{"module": "(crate root)", "lines_covered": 4518, "lines_total": 7839, "line_pct": 57.6, "fns_covered": 438, "fns_total": 645, "fn_pct": 67.9, "files": 17}, {"module": "slash_popup", "lines_covered": 821, "lines_total": 895, "line_pct": 91.7, "fns_covered": 134, "fns_total": 150, "fn_pct": 89.3, "files": 6}, {"module": "streaming", "lines_covered": 486, "lines_total": 524, "line_pct": 92.7, "fns_covered": 67, "fns_total": 72, "fn_pct": 93.1, "files": 5}, {"module": "tool_renderers", "lines_covered": 699, "lines_total": 1223, "line_pct": 57.2, "fns_covered": 83, "fns_total": 121, "fn_pct": 68.6, "files": 5}]}, {"crate": "web", "lines_covered": 1037, "lines_total": 1122, "line_pct": 92.4, "fns_covered": 158, "fns_total": 178, "fn_pct": 88.8, "tests": 20, "modules": [{"module": "(crate root)", "lines_covered": 1037, "lines_total": 1122, "line_pct": 92.4, "fns_covered": 158, "fns_total": 178, "fn_pct": 88.8, "files": 5}]}], "grand": {"lines_covered": 46389, "lines_total": 78597, "line_pct": 59.0, "fns_covered": 4532, "fns_total": 7673, "fn_pct": 59.1, "tests_total": 1128, "crate_count": 21}, "skipped_files": 0};
+
+function color(pct){
+  if(pct===null||pct===undefined) return 'var(--track)';
+  if(pct>=80) return 'var(--good)';
+  if(pct>=50) return 'var(--mid)';
+  return 'var(--bad)';
+}
+function pctText(p){ return (p===null||p===undefined)?'&mdash;':(p.toFixed(1)+'%'); }
+function barCell(p){
+  const c = color(p);
+  const w = (p===null||p===undefined)?0:Math.max(2,p);
+  return `<div class="cellbar"><span class="bar"><span style="width:${w}%;background:${c}"></span></span><span class="pct" style="color:${c}">${pctText(p)}</span></div>`;
+}
+
+// summary cards
+const g = DATA.grand;
+const cards = [
+  {label:'Overall coverage', value:g.line_pct.toFixed(1)+'<small>%</small>', c:color(g.line_pct)},
+  {label:'Lines covered', value:g.lines_covered.toLocaleString('en-US')+'<small> / '+g.lines_total.toLocaleString('en-US')+'</small>'},
+  {label:'Function coverage', value:g.fn_pct.toFixed(1)+'<small>%</small>', c:color(g.fn_pct)},
+  {label:'Test functions', value:g.tests_total.toLocaleString('en-US')},
+  {label:'Crates', value:g.crate_count},
+];
+document.getElementById('cards').innerHTML = cards.map(c=>
+  `<div class="stat"><div class="label">${c.label}</div><div class="value" ${c.c?`style="color:${c.c}"`:''}>${c.value}</div></div>`).join('');
+
+let sortKey='line_pct', sortDir=-1;
+const tbody = document.getElementById('tbody');
+
+function render(){
+  const crates = [...DATA.crates].sort((a,b)=>{
+    let x=a[sortKey], y=b[sortKey];
+    if(sortKey==='crate'){ return sortDir*String(x).localeCompare(String(y)); }
+    x = (x===null||x===undefined)?-1:x; y=(y===null||y===undefined)?-1:y;
+    return sortDir*(x-y);
+  });
+  let html='';
+  crates.forEach((c,ci)=>{
+    const fileCount = c.modules.reduce((s,m)=>s+m.files,0);
+    html += `<tr class="crate" data-i="${ci}">
+      <td><span class="caret">&#9656;</span> ${c.crate}</td>
+      <td class="num">${barCell(c.line_pct)}</td>
+      <td class="num">${c.lines_total.toLocaleString('en-US')}</td>
+      <td class="num" style="color:${color(c.fn_pct)}">${pctText(c.fn_pct)}</td>
+      <td class="num">${fileCount}</td>
+      <td class="num">${c.tests}</td>
+    </tr>`;
+    const mods = [...c.modules].sort((a,b)=>{
+      let x=(a.line_pct===null)?-1:a.line_pct, y=(b.line_pct===null)?-1:b.line_pct; return y-x;
+    });
+    mods.forEach(m=>{
+      html += `<tr class="mod" data-parent="${ci}" style="display:none">
+        <td><span class="mname">${m.module}</span></td>
+        <td class="num">${barCell(m.line_pct)}</td>
+        <td class="num">${m.lines_total.toLocaleString('en-US')}</td>
+        <td class="num" style="color:${color(m.fn_pct)}">${pctText(m.fn_pct)}</td>
+        <td class="num">${m.files}</td>
+        <td class="num">&mdash;</td>
+      </tr>`;
+    });
+  });
+  tbody.innerHTML = html;
+  bind();
+}
+
+function bind(){
+  document.querySelectorAll('tr.crate').forEach(row=>{
+    row.addEventListener('click',()=>{
+      const i=row.dataset.i; const open=row.classList.toggle('open');
+      document.querySelectorAll(`tr.mod[data-parent="${i}"]`).forEach(m=> m.style.display = open?'table-row':'none');
+    });
+  });
+}
+
+document.querySelectorAll('thead th').forEach(th=>{
+  th.addEventListener('click',()=>{
+    const k=th.dataset.key;
+    if(k===sortKey){ sortDir*=-1; } else { sortKey=k; sortDir = (k==='crate')?1:-1; }
+    document.querySelectorAll('thead th .arrow').forEach(a=>a.remove());
+    const arrow=document.createElement('span'); arrow.className='arrow';
+    arrow.innerHTML = sortDir<0?' &#9660;':' &#9650;'; th.appendChild(arrow);
+    render();
+  });
+});
+
+document.getElementById('expandAll').addEventListener('click',()=>{
+  document.querySelectorAll('tr.crate:not(.open)').forEach(r=>r.click());
+});
+document.getElementById('collapseAll').addEventListener('click',()=>{
+  document.querySelectorAll('tr.crate.open').forEach(r=>r.click());
+});
+
+render();
+</script>
+</body>
+</html>
