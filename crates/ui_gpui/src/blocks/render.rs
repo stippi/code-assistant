@@ -21,8 +21,75 @@ use std::time::Duration;
 
 impl BlockView {
     // ------------------------------------------------------------------
-    // Card skeleton (shown while parameters are still streaming)
+    // Copy-on-hover overlay
     // ------------------------------------------------------------------
+
+    /// Wrap a text-bearing block body with a hover group that reveals a small
+    /// copy button in the top-right corner. Clicking it copies the block's
+    /// raw markdown source to the clipboard.
+    ///
+    /// `group_name` must be unique per block so hover state doesn't leak
+    /// between sibling blocks.
+    pub(super) fn with_copy_button(
+        &self,
+        group_name: SharedString,
+        source: String,
+        body: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = cx.theme().clone();
+        let copied = self.copy_feedback_active();
+
+        let (icon_path, icon_color) = if copied {
+            ("icons/check.svg", theme.success)
+        } else {
+            ("icons/copy.svg", theme.muted_foreground)
+        };
+
+        let button = div()
+            .absolute()
+            .top_1()
+            .right_1()
+            // Hidden until the block is hovered (or right after copying, so the
+            // checkmark is visible even if the pointer drifts).
+            .when(!copied, |d| {
+                d.invisible()
+                    .group_hover(group_name.clone(), |s| s.visible())
+            })
+            .child(
+                div()
+                    .id("copy-block-btn")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(22.))
+                    .rounded(px(6.))
+                    .bg(theme.background.opacity(0.85))
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor(gpui::CursorStyle::PointingHand)
+                    .hover(|s| s.bg(theme.muted))
+                    .on_click(cx.listener({
+                        let source = source.clone();
+                        move |view, _event: &ClickEvent, _window, cx| {
+                            view.copy_source_to_clipboard(source.clone(), cx);
+                        }
+                    }))
+                    .child(
+                        gpui::svg()
+                            .size(px(13.))
+                            .path(SharedString::from(icon_path))
+                            .text_color(icon_color),
+                    ),
+            );
+
+        div()
+            .group(group_name)
+            .relative()
+            .child(body)
+            .child(button)
+            .into_any_element()
+    }
 
     /// Render a minimal card header for a tool whose renderer returned `None`
     /// (typically because parameters haven't arrived yet). This prevents the
@@ -312,11 +379,18 @@ impl BlockView {
 impl gpui::Render for BlockView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.block.clone() {
-            BlockData::TextBlock(block) => div()
-                .mt_3()
-                .text_color(cx.theme().foreground)
-                .child(self.markdown_view(&block.content, true, cx))
-                .into_any_element(),
+            BlockData::TextBlock(block) => {
+                let source = block.content.clone();
+                let group_name = SharedString::from(format!("text-block-{}", cx.entity_id()));
+                let body = div()
+                    .text_color(cx.theme().foreground)
+                    .child(self.markdown_view(&block.content, true, cx))
+                    .into_any_element();
+                div()
+                    .mt_3()
+                    .child(self.with_copy_button(group_name, source, body, cx))
+                    .into_any_element()
+            }
             BlockData::ThinkingBlock(block) => {
                 // Get the appropriate icon based on completed state
                 let (icon, icon_text) = if block.is_completed {
@@ -445,7 +519,11 @@ impl gpui::Render for BlockView {
 
                             let body_content = if !block.is_collapsed || scale > 0.0 {
                                 let content = block.get_expanded_content(self.is_generating);
-                                div()
+                                let group_name = SharedString::from(format!(
+                                    "thinking-block-{}",
+                                    cx.entity_id()
+                                ));
+                                let inner = div()
                                     .px_3()
                                     .pt_1()
                                     .pb_2()
@@ -453,7 +531,8 @@ impl gpui::Render for BlockView {
                                     .italic()
                                     .text_color(text_color)
                                     .child(self.markdown_view(&content, false, cx))
-                                    .into_any()
+                                    .into_any_element();
+                                self.with_copy_button(group_name, content, inner, cx)
                             } else {
                                 div().into_any()
                             };
@@ -645,11 +724,16 @@ impl gpui::Render for BlockView {
                 };
 
                 if is_expanded || animation_scale > 0.0 {
+                    let group_name =
+                        SharedString::from(format!("compaction-block-{}", cx.entity_id()));
+                    let summary_source = block.summary.clone();
                     let body = div()
                         .px_3()
                         .pb_2()
                         .text_color(cx.theme().foreground)
-                        .child(self.markdown_view(&block.summary, true, cx));
+                        .child(self.markdown_view(&block.summary, true, cx))
+                        .into_any_element();
+                    let body = self.with_copy_button(group_name, summary_source, body, cx);
 
                     container = container.child(crate::tool_cards::animated_card_body(
                         body,

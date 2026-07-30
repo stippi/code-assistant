@@ -159,6 +159,12 @@ pub struct BlockView {
     /// For write_file tool blocks: whether to show the diff view (true) or the
     /// plain new-file view (false). Only relevant when original_content is available.
     pub write_file_diff_mode: bool,
+    /// When set, the hover copy button recently copied and shows a checkmark
+    /// until this instant passes. Reset by a short-lived timer task.
+    copied_feedback_until: Option<std::time::Instant>,
+    /// Timer that clears [`Self::copied_feedback_until`] after the checkmark
+    /// feedback window elapses. Dropped/replaced on each copy.
+    copied_feedback_task: Option<Task<()>>,
 }
 
 impl BlockView {
@@ -204,6 +210,8 @@ impl BlockView {
             current_project,
             session_id,
             write_file_diff_mode,
+            copied_feedback_until: None,
+            copied_feedback_task: None,
         }
     }
 
@@ -226,6 +234,40 @@ impl BlockView {
     fn markdown_view(&mut self, text: &str, selectable: bool, cx: &mut Context<Self>) -> TextView {
         let state = self.markdown_state(text, cx);
         TextView::new(&state).selectable(selectable)
+    }
+
+    /// Whether the copy button should currently render its "copied" checkmark.
+    pub(super) fn copy_feedback_active(&self) -> bool {
+        self.copied_feedback_until
+            .is_some_and(|until| std::time::Instant::now() < until)
+    }
+
+    /// Copy the given markdown source to the clipboard and show a short-lived
+    /// checkmark on the copy button.
+    pub(super) fn copy_source_to_clipboard(&mut self, source: String, cx: &mut Context<Self>) {
+        use gpui::ClipboardItem;
+
+        let source = source.trim_end().to_string();
+        if source.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(source));
+
+        // Show the checkmark for ~1.5s, then revert.
+        const FEEDBACK_MS: u64 = 1500;
+        self.copied_feedback_until =
+            Some(std::time::Instant::now() + Duration::from_millis(FEEDBACK_MS));
+        self.copied_feedback_task = Some(cx.spawn(async move |weak_entity, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(FEEDBACK_MS + 50))
+                .await;
+            let _ = weak_entity.update(cx, |view, cx| {
+                view.copied_feedback_until = None;
+                view.copied_feedback_task = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     /// Check if this block is an image block
