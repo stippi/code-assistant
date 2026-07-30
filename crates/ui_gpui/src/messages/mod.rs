@@ -649,7 +649,7 @@ impl Render for MessagesView {
                     .into_any_element()
             }),
         )
-        .flex_grow()
+        .flex_grow(1.0)
         .w_full();
 
         // Sync item count with ListState if it diverged (e.g. pending message

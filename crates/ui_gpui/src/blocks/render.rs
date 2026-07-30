@@ -237,7 +237,7 @@ impl BlockView {
                     .flex_row()
                     .items_center()
                     .gap_1p5()
-                    .flex_grow()
+                    .flex_grow(1.0)
                     .min_w_0()
                     // Icon (or spinner) — both wrapped in a 14×14 container
                     // to prevent layout shift when transitioning.

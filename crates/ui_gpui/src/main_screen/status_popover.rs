@@ -79,8 +79,8 @@ pub(super) fn render_status_popover(
                             .text_color(text_color)
                             .text_size(rems(0.6875))
                             .font_weight(gpui::FontWeight(500.0))
-                            .flex_grow()
-                            .flex_shrink()
+                            .flex_grow(1.0)
+                            .flex_shrink(1.0)
                             .min_w_0() // Allow shrinking below content size for text wrapping
                             .overflow_hidden() // Prevent text from overflowing
                             .whitespace_normal() // Enable text wrapping
@@ -174,8 +174,8 @@ pub(super) fn render_status_popover(
                             .text_color(text_color)
                             .text_size(rems(0.6875))
                             .font_weight(gpui::FontWeight(500.0))
-                            .flex_grow()
-                            .flex_shrink()
+                            .flex_grow(1.0)
+                            .flex_shrink(1.0)
                             .min_w_0()
                             .overflow_hidden()
                             .whitespace_normal()

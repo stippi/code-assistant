@@ -6,16 +6,18 @@ resolver = "2"
 [patch.crates-io]
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
-# These patches are intentionally left unpinned (no `rev`). gpui-component
-# itself depends on gpui via an unpinned `git = ".../zed"` dependency, so it
-# always resolves to the zed default-branch HEAD. The workspace must resolve to
-# that same commit, otherwise two copies of gpui end up in the graph and cause
-# E0053/E0277/E0599 type mismatches. The exact commit is locked in Cargo.lock,
-# and CI builds with `--locked`, so the resolved versions stay stable. Only an
-# explicit `cargo update` re-resolves them; the release workflow therefore uses
-# `cargo update --workspace` (not a bare `cargo update`) when bumping versions,
-# to avoid drifting these git dependencies. See .github/workflows/release.yml.
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed" }
-gpui_macros = { git = "https://github.com/zed-industries/zed" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+# gpui-component depends on gpui via an unpinned `git = ".../zed"` dependency.
+# The workspace must resolve to the *same* zed commit that gpui-component
+# resolves to, otherwise two copies of gpui end up in the graph and cause
+# E0053/E0277/E0599 type mismatches. We pin the zed crates to the exact commit
+# that the pinned gpui-component revision locks to (see gpui-component's own
+# Cargo.lock). At this commit the zed workspace exposes two crates literally
+# named `gpui` (a `0.0.0` internal placeholder and the real `0.2.2`), so the
+# `gpui` patch must carry `version = "=0.2.2"` to disambiguate.
+# When bumping gpui-component, update the `rev` to match gpui-component's
+# Cargo.lock, then run `cargo update -p gpui-component -p gpui`.
+# CI builds with `--locked`. See .github/workflows/release.yml.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", version = "=0.2.2" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba" }
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba" }
+gpui-component = { git = "https://github.com/stippi/gpui-component", rev = "bc2fabed2f26feb0bdde51978328ae304bcb5726" }
