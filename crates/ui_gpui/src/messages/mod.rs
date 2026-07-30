@@ -8,8 +8,9 @@ use crate::Gpui;
 use code_assistant_core::session::instance::SessionActivityState;
 
 use gpui::{
-    div, list, prelude::*, px, rems, App, Context, Entity, FocusHandle, Focusable, ListAlignment,
-    ListState, SharedString, Task, Window,
+    div, list, prelude::*, px, rems, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    ListAlignment, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, SharedString,
+    Task, Window,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon};
@@ -19,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use scroll::{
-    ANIMATION_FRAME_MS, ANIMATION_IDLE_MS, DAMPING_C, MIN_DISTANCE_TO_STOP, MIN_SPEED_TO_STOP,
-    SPRING_K,
+    edge_scroll_velocity, ANIMATION_FRAME_MS, ANIMATION_IDLE_MS, DAMPING_C, EDGE_SCROLL_FRAME_MS,
+    MIN_DISTANCE_TO_STOP, MIN_SPEED_TO_STOP, SPRING_K,
 };
 
 use super::blocks::MessageContainer;
@@ -71,6 +72,20 @@ pub struct MessagesView {
     last_animation_offset: Rc<Cell<f32>>,
     /// Task that ticks the braille spinner animation.
     _spinner_task: Option<Task<()>>,
+
+    // -- Edge auto-scroll state (drag-to-select near a viewport edge) --
+    /// Bounds of the message list viewport in window coordinates, captured
+    /// during prepaint. Used to detect when a held drag reaches an edge.
+    list_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Desired edge auto-scroll velocity in px/frame (sign matches
+    /// `set_offset_from_scrollbar`: negative scrolls down, positive up, 0 =
+    /// inactive). Written by the mouse-move handler, read by the edge task.
+    edge_scroll_velocity: Rc<Cell<f32>>,
+    /// Whether the left button is currently held (a drag may be in progress).
+    /// Cleared on mouse-up so a parked pointer stops scrolling on release.
+    edge_drag_active: Rc<Cell<bool>>,
+    /// Running edge auto-scroll task. Dropping it cancels the loop.
+    edge_scroll_task: Option<Task<()>>,
 }
 
 impl MessagesView {
@@ -133,6 +148,10 @@ impl MessagesView {
             animation_active,
             last_animation_offset,
             _spinner_task: Some(spinner_task),
+            list_bounds: Rc::new(Cell::new(Bounds::default())),
+            edge_scroll_velocity: Rc::new(Cell::new(0.0)),
+            edge_drag_active: Rc::new(Cell::new(false)),
+            edge_scroll_task: None,
         }
     }
 
@@ -406,6 +425,113 @@ impl MessagesView {
         self.scroll_to_bottom();
     }
 
+    // -----------------------------------------------------------------
+    // Edge auto-scroll (drag-to-select near a viewport edge)
+    // -----------------------------------------------------------------
+
+    /// Update the desired edge auto-scroll velocity from a pointer position.
+    ///
+    /// Called from the mouse-move handler. It only sets the *target* velocity
+    /// (and starts the self-firing task); the actual scrolling happens
+    /// independently in [`Self::spawn_edge_scroll_task`], so a pointer that is
+    /// parked beyond the edge (no further move events) keeps scrolling until
+    /// the button is released or the pointer moves back into the neutral zone.
+    fn update_edge_scroll(&mut self, pointer_y: f32, cx: &mut Context<Self>) {
+        let bounds = self.list_bounds.get();
+        let top: f32 = bounds.origin.y.into();
+        let height: f32 = bounds.size.height.into();
+        let bottom = top + height;
+
+        // Ignore until we have a measured viewport.
+        if height <= 0.0 {
+            self.edge_scroll_velocity.set(0.0);
+            return;
+        }
+
+        let velocity = edge_scroll_velocity(pointer_y, top, bottom);
+        self.edge_scroll_velocity.set(velocity);
+
+        if velocity != 0.0 && self.edge_scroll_task.is_none() {
+            self.spawn_edge_scroll_task(cx);
+        }
+    }
+
+    /// Stop edge auto-scrolling (drag ended or pointer returned inside).
+    fn stop_edge_scroll(&mut self) {
+        self.edge_drag_active.set(false);
+        self.edge_scroll_velocity.set(0.0);
+        self.edge_scroll_task = None;
+    }
+
+    /// Spawn the self-firing edge auto-scroll task. It ticks every frame and
+    /// applies the current `edge_scroll_velocity` to the list offset, clamped
+    /// to the scrollable range. The task shuts itself down once the drag ends
+    /// (`edge_drag_active` is false) and the velocity has settled to zero.
+    fn spawn_edge_scroll_task(&mut self, cx: &mut Context<Self>) {
+        self.edge_scroll_task = None;
+
+        let list_state = self.list_state.clone();
+        let velocity = self.edge_scroll_velocity.clone();
+        let drag_active = self.edge_drag_active.clone();
+
+        let task = cx.spawn(async move |weak_entity, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(EDGE_SCROLL_FRAME_MS))
+                    .await;
+
+                let v = velocity.get();
+
+                // Stop condition: no velocity AND the drag is no longer active.
+                // (If the drag is still active but velocity is 0, the pointer
+                // is in the neutral zone — keep the task alive so we resume
+                // instantly when it re-enters an edge band.)
+                if v == 0.0 && !drag_active.get() {
+                    break;
+                }
+
+                if v == 0.0 {
+                    continue;
+                }
+
+                let max: f32 = list_state.max_offset_for_scrollbar().y.into();
+                if max <= 0.0 {
+                    // Content fits; nothing to scroll.
+                    continue;
+                }
+
+                let current: f32 = list_state.scroll_px_offset_for_scrollbar().y.into();
+                // Offset is negative (0 = top, -max = bottom). Positive
+                // velocity scrolls up (toward 0); negative scrolls down.
+                let new_y = (current + v).clamp(-max, 0.0);
+
+                if (new_y - current).abs() < f32::EPSILON {
+                    // Already pinned at the edge in the requested direction.
+                    continue;
+                }
+
+                list_state.set_offset_from_scrollbar(gpui::Point {
+                    x: px(0.),
+                    y: px(new_y),
+                });
+
+                let ok = weak_entity.update(cx, |this, cx| {
+                    // Auto-scrolling away from the bottom means the user is no
+                    // longer following the tail.
+                    if this.follow_tail && new_y > -max + 1.0 {
+                        this.follow_tail = false;
+                    }
+                    cx.notify();
+                });
+                if ok.is_err() {
+                    break;
+                }
+            }
+        });
+
+        self.edge_scroll_task = Some(task);
+    }
+
     /// Get the list state (for scrollbar integration)
     #[allow(dead_code)]
     pub fn list_state(&self) -> &ListState {
@@ -567,6 +693,16 @@ impl Render for MessagesView {
             self.is_resumable.get() && agent_is_terminal && !externally_locked && total_items > 0;
 
         div()
+            .on_children_prepainted({
+                let list_bounds = self.list_bounds.clone();
+                move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
+                    if let Some(first) = bounds_vec.first() {
+                        if list_bounds.get() != *first {
+                            list_bounds.set(*first);
+                        }
+                    }
+                }
+            })
             .id("messages")
             .relative()
             .flex()
@@ -576,6 +712,33 @@ impl Render for MessagesView {
             .overflow_hidden() // Prevent width fluctuation that invalidates list item heights
             .bg(cx.theme().popover)
             .text_size(rems(1.0))
+            // Edge auto-scroll: while the left button is held and the pointer
+            // reaches the top/bottom edge band, ramp up an auto-scroll speed.
+            // The actual scrolling runs in a self-firing task, so parking the
+            // pointer beyond the edge keeps scrolling until release. The list
+            // viewport bounds are captured above via on_children_prepainted.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if event.pressed_button == Some(MouseButton::Left) {
+                    this.edge_drag_active.set(true);
+                    this.update_edge_scroll(event.position.y.into(), cx);
+                } else if this.edge_drag_active.get() {
+                    // Button released elsewhere but we missed the up event —
+                    // moving without a held button ends the drag.
+                    this.stop_edge_scroll();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
+                    this.stop_edge_scroll();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
+                    this.stop_edge_scroll();
+                }),
+            )
             .child(message_list)
             .when(show_scroll_button, |el| {
                 let is_dark = cx.theme().is_dark();
