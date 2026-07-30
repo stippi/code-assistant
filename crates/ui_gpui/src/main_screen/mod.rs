@@ -1553,8 +1553,8 @@ impl Render for MainScreen {
                             .bg(cx.theme().popover)
                             .flex()
                             .flex_col()
-                            .flex_grow() // Grow to take available space
-                            .flex_shrink() // Allow shrinking if needed
+                            .flex_grow(1.0) // Grow to take available space
+                            .flex_shrink(1.0) // Allow shrinking if needed
                             .overflow_hidden() // Prevent overflow
                             .child(
                                 // Scroll area wrapper: relative container for popover overlay

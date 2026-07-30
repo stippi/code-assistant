@@ -117,7 +117,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
             .items_center()
             .gap_1p5()
             .min_w_0()
-            .flex_grow()
+            .flex_grow(1.0)
             .child(file_icons::render_icon_container(
                 &icon,
                 13.0,

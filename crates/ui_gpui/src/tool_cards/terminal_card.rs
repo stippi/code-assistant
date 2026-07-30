@@ -288,7 +288,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             .items_center()
             .gap_1p5()
             .min_w_0()
-            .flex_grow();
+            .flex_grow(1.0);
 
         // Terminal icon
         let terminal_icon = file_icons::get().get_tool_icon("execute_command");

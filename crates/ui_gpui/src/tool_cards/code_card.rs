@@ -524,7 +524,7 @@ fn render_lines_with_gutter(
                 )
                 .child(
                     div()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .overflow_x_hidden()
                         .pl_1()
                         .pr_3()
@@ -596,7 +596,7 @@ fn render_search_lines_with_gutter(
                 )
                 .child(
                     div()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .overflow_x_hidden()
                         .pl_1()
                         .pr_3()

@@ -111,7 +111,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
             .items_center()
             .gap_1p5()
             .min_w_0()
-            .flex_grow()
+            .flex_grow(1.0)
             .child(file_icons::render_icon_container(
                 &icon,
                 13.0,
@@ -468,7 +468,7 @@ fn render_write_body(
                 // Content
                 row = row.child(
                     div()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .overflow_x_hidden()
                         .pl_1()
                         .pr_3()
@@ -642,7 +642,7 @@ fn render_unified_diff(
             // wraps instead of pushing the row wider than the card.
             row = row.child(
                 div()
-                    .flex_grow()
+                    .flex_grow(1.0)
                     .overflow_x_hidden()
                     .when(start_line.is_none(), |d| d.px_3())
                     .when(start_line.is_some(), |d| d.pl_1().pr_3())
