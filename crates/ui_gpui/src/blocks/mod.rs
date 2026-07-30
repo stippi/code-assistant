@@ -233,7 +233,13 @@ impl BlockView {
 
     fn markdown_view(&mut self, text: &str, selectable: bool, cx: &mut Context<Self>) -> TextView {
         let state = self.markdown_state(text, cx);
-        TextView::new(&state).selectable(selectable)
+        // When selectable, cmd-C / ctrl-C copies the Markdown *source* of the
+        // selection (e.g. `**bold**`, list markers, code fences) rather than the
+        // rendered plain text. The hover copy button already copies full-block
+        // source; this keeps partial-selection copy consistent.
+        TextView::new(&state)
+            .selectable(selectable)
+            .selectable_source(selectable)
     }
 
     /// Whether the copy button should currently render its "copied" checkmark.
