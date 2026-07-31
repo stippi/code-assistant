@@ -306,9 +306,17 @@ enum ResponseInputItem {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponseContentItem {
-    InputText { text: String },
-    InputImage { image_url: String },
-    OutputText { text: String },
+    InputText {
+        text: String,
+    },
+    InputImage {
+        image_url: String,
+    },
+    OutputText {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
+    },
 }
 
 /// Response structure from the Responses API
@@ -608,7 +616,10 @@ impl OpenAIResponsesClient {
                 MessageContent::Text(text) => {
                     let content_item = match message.role {
                         MessageRole::User => ResponseContentItem::InputText { text },
-                        MessageRole::Assistant => ResponseContentItem::OutputText { text },
+                        MessageRole::Assistant => ResponseContentItem::OutputText {
+                            text,
+                            phase: Some("final_answer".to_string()),
+                        },
                     };
                     result.push(ResponseInputItem::Message {
                         role: match message.role {
@@ -654,6 +665,22 @@ impl OpenAIResponsesClient {
             MessageRole::Assistant => "assistant".to_string(),
         };
 
+        // Pre-scan: determine whether this assistant message contains any tool use.
+        // This drives the `phase` value for every OutputText item in this message.
+        let has_tool_use = role == MessageRole::Assistant
+            && blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let phase = if role == MessageRole::Assistant {
+            Some(if has_tool_use {
+                "commentary".to_string()
+            } else {
+                "final_answer".to_string()
+            })
+        } else {
+            None
+        };
+
         for block in blocks {
             match block {
                 ContentBlock::Text { text, .. } => match role {
@@ -661,7 +688,10 @@ impl OpenAIResponsesClient {
                         current_message_content.push(ResponseContentItem::InputText { text });
                     }
                     MessageRole::Assistant => {
-                        current_message_content.push(ResponseContentItem::OutputText { text });
+                        current_message_content.push(ResponseContentItem::OutputText {
+                            text,
+                            phase: phase.clone(),
+                        });
                     }
                 },
                 ContentBlock::Image {
@@ -676,8 +706,10 @@ impl OpenAIResponsesClient {
                             .push(ResponseContentItem::InputText { text: thinking });
                     }
                     MessageRole::Assistant => {
-                        current_message_content
-                            .push(ResponseContentItem::OutputText { text: thinking });
+                        current_message_content.push(ResponseContentItem::OutputText {
+                            text: thinking,
+                            phase: phase.clone(),
+                        });
                     }
                 },
                 // Non-message content blocks: flush current message and add as separate items
@@ -1599,7 +1631,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Hello from assistant");
                     }
                     _ => panic!("Expected OutputText for assistant message"),
@@ -1785,7 +1817,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "2+2 equals 4.");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1839,7 +1871,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "First text");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1863,7 +1895,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Second text");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1886,7 +1918,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Third text");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1940,7 +1972,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Based on my reasoning, here's the answer.");
                     }
                     _ => panic!("Expected OutputText"),
@@ -2292,6 +2324,170 @@ mod tests {
         // this behaviour.
         let info = ResponsesRateLimitInfo::default();
         assert_eq!(info.get_retry_delay(), Duration::from_secs(60));
+    }
+
+    // -------------------------------------------------------------------------
+    // phase field tests
+    // -------------------------------------------------------------------------
+
+    /// A pure-text assistant message (no tool use) should produce an OutputText
+    /// content item with `phase = "final_answer"`.
+    #[test]
+    fn test_output_text_phase_final_answer_for_text_only_message() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_assistant("Hello from assistant")];
+        let converted = client.convert_messages(messages);
+        assert_eq!(converted.len(), 1);
+
+        match &converted[0] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text, phase } => {
+                        assert_eq!(text, "Hello from assistant");
+                        assert_eq!(phase.as_deref(), Some("final_answer"));
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    /// An assistant message that also contains a ToolUse block should produce
+    /// OutputText items with `phase = "commentary"`.
+    #[test]
+    fn test_output_text_phase_commentary_when_tool_use_present() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_assistant_content(vec![
+            ContentBlock::new_text("Let me look that up."),
+            ContentBlock::new_tool_use("call_1", "search", serde_json::json!({"query": "weather"})),
+        ])];
+
+        let converted = client.convert_messages(messages);
+        // Should produce: Message(OutputText), FunctionCall
+        assert_eq!(converted.len(), 2);
+
+        match &converted[0] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text, phase } => {
+                        assert_eq!(text, "Let me look that up.");
+                        assert_eq!(phase.as_deref(), Some("commentary"));
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+
+        match &converted[1] {
+            ResponseInputItem::FunctionCall { call_id, name, .. } => {
+                assert_eq!(call_id, "call_1");
+                assert_eq!(name, "search");
+            }
+            _ => panic!("Expected FunctionCall"),
+        }
+    }
+
+    /// Multiple text segments in a message that also has tool use should all
+    /// get `phase = "commentary"`.
+    #[test]
+    fn test_output_text_phase_commentary_for_all_text_segments_with_tool_use() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_assistant_content(vec![
+            ContentBlock::new_text("First thought."),
+            ContentBlock::new_tool_use("call_1", "search", serde_json::json!({"query": "test"})),
+            ContentBlock::new_text("Second thought."),
+        ])];
+
+        let converted = client.convert_messages(messages);
+        // Message("First thought."), FunctionCall, Message("Second thought.")
+        assert_eq!(converted.len(), 3);
+
+        for item in [&converted[0], &converted[2]] {
+            match item {
+                ResponseInputItem::Message { content, .. } => match &content[0] {
+                    ResponseContentItem::OutputText { phase, .. } => {
+                        assert_eq!(phase.as_deref(), Some("commentary"));
+                    }
+                    _ => panic!("Expected OutputText"),
+                },
+                _ => panic!("Expected Message"),
+            }
+        }
+    }
+
+    /// User messages must never get a `phase` field (it only applies to
+    /// assistant OutputText items).
+    #[test]
+    fn test_output_text_phase_not_set_on_user_messages() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_user("Hello")];
+        let converted = client.convert_messages(messages);
+        assert_eq!(converted.len(), 1);
+
+        match &converted[0] {
+            ResponseInputItem::Message { content, .. } => match &content[0] {
+                ResponseContentItem::InputText { .. } => { /* correct, no phase field */ }
+                ResponseContentItem::OutputText { .. } => {
+                    panic!("User message should use InputText, not OutputText")
+                }
+                _ => panic!("Expected InputText for user message"),
+            },
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    /// The `phase` field must be serialized correctly for final_answer and
+    /// commentary values, and must be absent for InputText.
+    #[test]
+    fn test_output_text_phase_serialization() {
+        let final_item = ResponseContentItem::OutputText {
+            text: "done".to_string(),
+            phase: Some("final_answer".to_string()),
+        };
+        let json = serde_json::to_value(&final_item).unwrap();
+        assert_eq!(json["type"], "output_text");
+        assert_eq!(json["text"], "done");
+        assert_eq!(json["phase"], "final_answer");
+
+        let commentary_item = ResponseContentItem::OutputText {
+            text: "thinking".to_string(),
+            phase: Some("commentary".to_string()),
+        };
+        let json = serde_json::to_value(&commentary_item).unwrap();
+        assert_eq!(json["phase"], "commentary");
+
+        // InputText must not carry a phase key
+        let input_item = ResponseContentItem::InputText {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_value(&input_item).unwrap();
+        assert!(json.get("phase").is_none());
     }
 
     #[test]

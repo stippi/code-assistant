@@ -143,9 +143,17 @@ enum WsInputItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WsContentItem {
-    InputText { text: String },
-    InputImage { image_url: String },
-    OutputText { text: String },
+    InputText {
+        text: String,
+    },
+    InputImage {
+        image_url: String,
+    },
+    OutputText {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -589,9 +597,13 @@ impl OpenAIResponsesWsClient {
                         MessageRole::Assistant => "assistant",
                     };
                     // Assistant text must use OutputText; InputText is only
-                    // valid for user-role messages.
+                    // valid for user-role messages. Simple text messages have
+                    // no tool use, so they always get phase = "final_answer".
                     let content_item = if message.role == MessageRole::Assistant {
-                        WsContentItem::OutputText { text: text.clone() }
+                        WsContentItem::OutputText {
+                            text: text.clone(),
+                            phase: Some("final_answer".to_string()),
+                        }
                     } else {
                         WsContentItem::InputText { text: text.clone() }
                     };
@@ -619,6 +631,21 @@ impl OpenAIResponsesWsClient {
             MessageRole::Assistant => "assistant",
         };
 
+        // Pre-scan: determine the phase for OutputText items in this message.
+        let has_tool_use = *role == MessageRole::Assistant
+            && blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let phase: Option<String> = if *role == MessageRole::Assistant {
+            Some(if has_tool_use {
+                "commentary".to_string()
+            } else {
+                "final_answer".to_string()
+            })
+        } else {
+            None
+        };
+
         let mut current_content: Vec<WsContentItem> = Vec::new();
 
         for block in blocks {
@@ -627,7 +654,10 @@ impl OpenAIResponsesWsClient {
                     let item = if *role == MessageRole::User {
                         WsContentItem::InputText { text: text.clone() }
                     } else {
-                        WsContentItem::OutputText { text: text.clone() }
+                        WsContentItem::OutputText {
+                            text: text.clone(),
+                            phase: phase.clone(),
+                        }
                     };
                     current_content.push(item);
                 }
@@ -738,10 +768,24 @@ impl OpenAIResponsesWsClient {
         let mut items = Vec::new();
         let mut current_text_parts: Vec<WsContentItem> = Vec::new();
 
+        // Pre-scan to determine the phase for OutputText items. The response
+        // blocks from a single assistant turn share the same phase.
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let phase: Option<String> = Some(if has_tool_use {
+            "commentary".to_string()
+        } else {
+            "final_answer".to_string()
+        });
+
         for block in blocks {
             match block {
                 ContentBlock::Text { text, .. } => {
-                    current_text_parts.push(WsContentItem::OutputText { text: text.clone() });
+                    current_text_parts.push(WsContentItem::OutputText {
+                        text: text.clone(),
+                        phase: phase.clone(),
+                    });
                 }
                 ContentBlock::Thinking { .. } => {
                     // Visible thinking — no standard input representation, skip
@@ -1681,6 +1725,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![WsContentItem::OutputText {
                 text: "Hi!".to_string(),
+                phase: Some("final_answer".to_string()),
             }],
         });
         extended.push(WsInputItem::Message {
@@ -1770,5 +1815,126 @@ mod tests {
             ContentBlock::ToolUse { name, .. } => assert_eq!(name, "get_weather"),
             _ => panic!("Expected ToolUse block"),
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // phase field tests (WebSocket)
+    // -------------------------------------------------------------------------
+
+    /// A pure-text assistant message (no tool use) should produce an OutputText
+    /// content item with `phase = "final_answer"`.
+    #[test]
+    fn test_ws_output_text_phase_final_answer_for_text_only_message() {
+        let client = OpenAIResponsesWsClient::new(
+            "sk-test".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_assistant("Hello from assistant")];
+        let converted = client.convert_messages(messages);
+        assert_eq!(converted.len(), 1);
+
+        match &converted[0] {
+            WsInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    WsContentItem::OutputText { text, phase } => {
+                        assert_eq!(text, "Hello from assistant");
+                        assert_eq!(phase.as_deref(), Some("final_answer"));
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    /// An assistant message that also contains a ToolUse block should produce
+    /// OutputText items with `phase = "commentary"`.
+    #[test]
+    fn test_ws_output_text_phase_commentary_when_tool_use_present() {
+        let client = OpenAIResponsesWsClient::new(
+            "sk-test".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_assistant_content(vec![
+            ContentBlock::new_text("Let me look that up."),
+            ContentBlock::new_tool_use("call_1", "search", serde_json::json!({"query": "weather"})),
+        ])];
+
+        let converted = client.convert_messages(messages);
+        // Should produce: Message(OutputText), FunctionCall
+        assert_eq!(converted.len(), 2);
+
+        match &converted[0] {
+            WsInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    WsContentItem::OutputText { text, phase } => {
+                        assert_eq!(text, "Let me look that up.");
+                        assert_eq!(phase.as_deref(), Some("commentary"));
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    /// User messages must never get a `phase` field (it only applies to
+    /// assistant OutputText items).
+    #[test]
+    fn test_ws_output_text_phase_not_set_on_user_messages() {
+        let client = OpenAIResponsesWsClient::new(
+            "sk-test".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_user("Hello")];
+        let converted = client.convert_messages(messages);
+        assert_eq!(converted.len(), 1);
+
+        match &converted[0] {
+            WsInputItem::Message { content, .. } => match &content[0] {
+                WsContentItem::InputText { .. } => { /* correct */ }
+                WsContentItem::OutputText { .. } => {
+                    panic!("User message should use InputText, not OutputText")
+                }
+                _ => panic!("Expected InputText"),
+            },
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    /// The `phase` field must be serialized correctly.
+    #[test]
+    fn test_ws_output_text_phase_serialization() {
+        let final_item = WsContentItem::OutputText {
+            text: "done".to_string(),
+            phase: Some("final_answer".to_string()),
+        };
+        let json = serde_json::to_value(&final_item).unwrap();
+        assert_eq!(json["type"], "output_text");
+        assert_eq!(json["text"], "done");
+        assert_eq!(json["phase"], "final_answer");
+
+        let commentary_item = WsContentItem::OutputText {
+            text: "thinking".to_string(),
+            phase: Some("commentary".to_string()),
+        };
+        let json = serde_json::to_value(&commentary_item).unwrap();
+        assert_eq!(json["phase"], "commentary");
+
+        let input_item = WsContentItem::InputText {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_value(&input_item).unwrap();
+        assert!(json.get("phase").is_none());
     }
 }
