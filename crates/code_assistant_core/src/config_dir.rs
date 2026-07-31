@@ -33,5 +33,13 @@ pub fn config_dir() -> PathBuf {
 /// Must be called early in main, before any config loading happens.
 /// The env var is picked up by all config resolution code (including the `llm` crate).
 pub fn apply_override(path: &PathBuf) {
-    std::env::set_var("CODE_ASSISTANT_CONFIG_DIR", path);
+    // SAFETY: `set_var` is unsafe on edition 2024 because concurrent env
+    // access from other threads is UB. This is the documented `--config-dir`
+    // entry point, called exactly once at the very start of `main` (see
+    // `code_assistant::main`) before any threads, the tokio runtime, or any
+    // config loading are spawned, so no other thread can be reading the
+    // environment concurrently.
+    unsafe {
+        std::env::set_var("CODE_ASSISTANT_CONFIG_DIR", path);
+    }
 }

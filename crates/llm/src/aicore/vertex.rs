@@ -3,10 +3,10 @@
 //! This client wraps the VertexClient with AI Core authentication.
 
 use crate::{
+    LLMProvider, StreamingCallback,
     auth::TokenManager,
     types::*,
     vertex::{AuthProvider, RequestCustomizer, VertexAuth, VertexClient},
-    LLMProvider, StreamingCallback,
 };
 use anyhow::Result;
 use async_trait::async_trait;

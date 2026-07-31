@@ -1,10 +1,10 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
 };
 use crate::tools::parse::parse_search_replace_blocks;
-use crate::tools::ToolServicesAccess;
-use anyhow::{anyhow, Result};
-use fs_explorer::{find_match_start_lines, FileReplacement, FileUpdaterError};
+use anyhow::{Result, anyhow};
+use fs_explorer::{FileReplacement, FileUpdaterError, find_match_start_lines};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;

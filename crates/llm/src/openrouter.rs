@@ -1,5 +1,5 @@
 use super::openai::OpenAIClient;
-use crate::{types::*, LLMProvider, StreamingCallback};
+use crate::{LLMProvider, StreamingCallback, types::*};
 use anyhow::Result;
 use async_trait::async_trait;
 

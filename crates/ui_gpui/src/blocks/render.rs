@@ -12,10 +12,10 @@ use code_assistant_core::ui::ToolStatus;
 const MAX_IMAGE_HEIGHT: f32 = 80.0;
 
 use gpui::{
-    div, img, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, ImageSource,
-    IntoElement, ObjectFit, SharedString, Styled, Transformation,
+    Animation, AnimationExt, ClickEvent, Context, ImageSource, IntoElement, ObjectFit,
+    SharedString, Styled, Transformation, div, img, percentage, px, rems, svg,
 };
-use gpui::{prelude::*, FontWeight};
+use gpui::{FontWeight, prelude::*};
 use gpui_component::ActiveTheme;
 use std::time::Duration;
 
@@ -306,16 +306,16 @@ impl BlockView {
         container = container.child(header);
 
         // Animated output area
-        if (is_expanded || animation_scale > 0.0) && has_output {
-            if let Some(output_el) =
+        if (is_expanded || animation_scale > 0.0)
+            && has_output
+            && let Some(output_el) =
                 renderer.render(block, self.is_generating, &theme, None, window, cx)
-            {
-                container = container.child(crate::tool_cards::animated_card_body(
-                    output_el,
-                    animation_scale,
-                    self.content_height.clone(),
-                ));
-            }
+        {
+            container = container.child(crate::tool_cards::animated_card_body(
+                output_el,
+                animation_scale,
+                self.content_height.clone(),
+            ));
         }
 
         container
@@ -328,7 +328,7 @@ impl BlockView {
     /// Render a zigzag/wiggle line using a canvas element.
     /// The line fills the available width and is vertically centered.
     pub(super) fn render_zigzag_line(color: gpui::Hsla) -> impl IntoElement {
-        use gpui::{canvas, point, PathBuilder};
+        use gpui::{PathBuilder, canvas, point};
 
         canvas(
             |_, _, _| {},

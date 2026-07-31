@@ -1,7 +1,7 @@
 //! Formatting a `ToolRequest` back into Caret syntax (format-on-save).
 
-use crate::tools::core::ToolRegistry;
 use crate::tools::ToolRequest;
+use crate::tools::core::ToolRegistry;
 use anyhow::Result;
 use serde_json::Value;
 
@@ -41,12 +41,12 @@ pub(crate) fn format_tool_request(
 
         for (key, value) in map {
             // Check if this parameter should be omitted (has default value and matches it)
-            if let Some(param_schema) = properties.get(key) {
-                if let Some(default_value) = param_schema.get("default") {
-                    // Skip if the value matches the default and parameter is not required
-                    if !required_params.contains(key.as_str()) && value == default_value {
-                        continue;
-                    }
+            if let Some(param_schema) = properties.get(key)
+                && let Some(default_value) = param_schema.get("default")
+            {
+                // Skip if the value matches the default and parameter is not required
+                if !required_params.contains(key.as_str()) && value == default_value {
+                    continue;
                 }
             }
 
@@ -72,23 +72,22 @@ fn format_parameter_value_for_caret(
     properties: &serde_json::Map<String, Value>,
 ) -> Result<String> {
     // Check if this is an array parameter
-    if let Some(param_schema) = properties.get(key) {
-        if let Some(param_type) = param_schema.get("type").and_then(|t| t.as_str()) {
-            if param_type == "array" {
-                // For arrays in Caret, we use array syntax: [item1, item2, ...]
-                if let Value::Array(items) = value {
-                    let mut result = String::from("[\n");
-                    for item in items {
-                        let item_str = match item {
-                            Value::String(s) => s.clone(),
-                            _ => serde_json::to_string(item)?,
-                        };
-                        result.push_str(&format!("{item_str}\n"));
-                    }
-                    result.push(']');
-                    return Ok(result);
-                }
+    if let Some(param_schema) = properties.get(key)
+        && let Some(param_type) = param_schema.get("type").and_then(|t| t.as_str())
+        && param_type == "array"
+    {
+        // For arrays in Caret, we use array syntax: [item1, item2, ...]
+        if let Value::Array(items) = value {
+            let mut result = String::from("[\n");
+            for item in items {
+                let item_str = match item {
+                    Value::String(s) => s.clone(),
+                    _ => serde_json::to_string(item)?,
+                };
+                result.push_str(&format!("{item_str}\n"));
             }
+            result.push(']');
+            return Ok(result);
         }
     }
 

@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    push_error_history_line, render_error_line, render_tool_header, tool_header_line, ToolRenderer,
+    ToolRenderer, push_error_history_line, render_error_line, render_tool_header, tool_header_line,
 };
 use crate::message::ToolUseBlock;
 use crate::text_util::truncate_to_width;
@@ -156,10 +156,10 @@ fn compact_lines(tool_block: &ToolUseBlock) -> Vec<CompactLine> {
                 ));
             }
             // Also accept "regex" (alias used in some configurations)
-            if let Some(regex) = tool_block.parameters.get("regex") {
-                if !tool_block.parameters.contains_key("pattern") {
-                    out.push(CompactLine::KeyValue("regex".into(), regex.value.clone()));
-                }
+            if let Some(regex) = tool_block.parameters.get("regex")
+                && !tool_block.parameters.contains_key("pattern")
+            {
+                out.push(CompactLine::KeyValue("regex".into(), regex.value.clone()));
             }
             if let Some(path) = tool_block.parameters.get("path") {
                 let val = path.value.trim();

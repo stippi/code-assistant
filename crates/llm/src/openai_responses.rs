@@ -44,10 +44,11 @@
 //! be automatically included in subsequent requests to maintain reasoning context in stateless mode.
 
 use crate::{
+    ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
     recording::{APIRecorder, PlaybackState},
     streaming::{ChunkStream, HttpChunkStream, PlaybackChunkStream},
     types::*,
-    utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+    utils,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -979,10 +980,10 @@ impl OpenAIResponsesClient {
         };
 
         // End recording on completion (success or failure)
-        if let Some(recorder) = &self.recorder {
-            if let Err(e) = recorder.end_recording() {
-                warn!("Failed to end recording: {e}");
-            }
+        if let Some(recorder) = &self.recorder
+            && let Err(e) = recorder.end_recording()
+        {
+            warn!("Failed to end recording: {e}");
         }
 
         result
@@ -999,10 +1000,10 @@ impl OpenAIResponsesClient {
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
         // Record the entire response for non-streaming if recorder is available
-        if let Some(recorder) = &self.recorder {
-            if let Err(e) = recorder.record_chunk(&response_text) {
-                warn!("Failed to record non-streaming response: {e}");
-            }
+        if let Some(recorder) = &self.recorder
+            && let Err(e) = recorder.record_chunk(&response_text)
+        {
+            warn!("Failed to record non-streaming response: {e}");
         }
 
         let responses_response: ResponsesResponse = serde_json::from_str(&response_text)
@@ -1053,10 +1054,10 @@ impl OpenAIResponsesClient {
             if c == '\n' {
                 if !line_buffer.is_empty() {
                     // Record the SSE line if recorder is available
-                    if let Some(recorder) = &self.recorder {
-                        if let Err(e) = recorder.record_chunk(line_buffer) {
-                            warn!("Failed to record chunk: {e}");
-                        }
+                    if let Some(recorder) = &self.recorder
+                        && let Err(e) = recorder.record_chunk(line_buffer)
+                    {
+                        warn!("Failed to record chunk: {e}");
                     }
                     processor.process_line(line_buffer)?;
                 }
@@ -1115,20 +1116,20 @@ impl OpenAIResponsesClient {
         // Process any remaining data
         if !line_buffer.is_empty() {
             // Record the final SSE line if recorder is available
-            if let Some(recorder) = &self.recorder {
-                if let Err(e) = recorder.record_chunk(&line_buffer) {
-                    warn!("Failed to record final chunk: {e}");
-                }
+            if let Some(recorder) = &self.recorder
+                && let Err(e) = recorder.record_chunk(&line_buffer)
+            {
+                warn!("Failed to record final chunk: {e}");
             }
             processor.process_line(&line_buffer)?;
         }
 
         // If there's leftover bytes in buffer (unterminated line without trailing \n), try to process
-        if !byte_buffer.is_empty() {
-            if let Ok(valid_str) = std::str::from_utf8(&byte_buffer) {
-                self.process_decoded_segment(valid_str, &mut line_buffer, &mut processor)?;
-                byte_buffer.clear();
-            }
+        if !byte_buffer.is_empty()
+            && let Ok(valid_str) = std::str::from_utf8(&byte_buffer)
+        {
+            self.process_decoded_segment(valid_str, &mut line_buffer, &mut processor)?;
+            byte_buffer.clear();
         }
 
         // Finalize internal state (reasoning, usage from response, etc.) if needed
@@ -1272,35 +1273,35 @@ impl<'a> StreamProcessor<'a> {
 
     fn on_output_item_added(&mut self, item_data: serde_json::Value) -> Result<()> {
         let now = SystemTime::now();
-        if let Ok(item_type) = serde_json::from_value::<serde_json::Value>(item_data.clone()) {
-            if let Some(item_type_str) = item_type.get("type").and_then(|v| v.as_str()) {
-                let item_id = item_type
-                    .get("id")
+        if let Ok(item_type) = serde_json::from_value::<serde_json::Value>(item_data.clone())
+            && let Some(item_type_str) = item_type.get("type").and_then(|v| v.as_str())
+        {
+            let item_id = item_type
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Record start time for this item
+            self.block_start_times.insert(item_id.clone(), now);
+
+            if item_type_str == "function_call" {
+                let call_id = item_type
+                    .get("call_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = item_type
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
 
-                // Record start time for this item
-                self.block_start_times.insert(item_id.clone(), now);
-
-                if item_type_str == "function_call" {
-                    let call_id = item_type
-                        .get("call_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = item_type
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    self.active_function_calls
-                        .insert(item_id, FunctionCallInfo { name, call_id });
-                } else if item_type_str == "reasoning" {
-                    // Track the reasoning item ID for proper round-trip preservation
-                    self.reasoning_state.reasoning_block_id = Some(item_id);
-                }
+                self.active_function_calls
+                    .insert(item_id, FunctionCallInfo { name, call_id });
+            } else if item_type_str == "reasoning" {
+                // Track the reasoning item ID for proper round-trip preservation
+                self.reasoning_state.reasoning_block_id = Some(item_id);
             }
         }
         Ok(())
@@ -1411,20 +1412,20 @@ impl<'a> StreamProcessor<'a> {
             (self.callback)(&StreamingChunk::ReasoningComplete)?;
         }
 
-        if let Some(response_data) = response {
-            if let Ok(usage_data) = serde_json::from_value::<ResponsesUsage>(
+        if let Some(response_data) = response
+            && let Ok(usage_data) = serde_json::from_value::<ResponsesUsage>(
                 response_data
                     .get("usage")
                     .unwrap_or(&serde_json::Value::Null)
                     .clone(),
-            ) {
-                self.usage.input_tokens = usage_data.input_tokens;
-                self.usage.output_tokens = usage_data.output_tokens;
-                self.usage.cache_read_input_tokens = usage_data
-                    .input_tokens_details
-                    .map(|d| d.cached_tokens)
-                    .unwrap_or(0);
-            }
+            )
+        {
+            self.usage.input_tokens = usage_data.input_tokens;
+            self.usage.output_tokens = usage_data.output_tokens;
+            self.usage.cache_read_input_tokens = usage_data
+                .input_tokens_details
+                .map(|d| d.cached_tokens)
+                .unwrap_or(0);
         }
 
         // Create a RedactedThinking block from collected reasoning items if any

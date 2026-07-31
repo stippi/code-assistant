@@ -56,10 +56,10 @@ pub const USER_SKILLS_DIR_ENV: &str = "CODE_ASSISTANT_USER_SKILLS_DIR";
 ///
 /// Note: we never create this directory; it is only scanned when it exists.
 pub fn user_skills_root() -> PathBuf {
-    if let Ok(dir) = std::env::var(USER_SKILLS_DIR_ENV) {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+    if let Ok(dir) = std::env::var(USER_SKILLS_DIR_ENV)
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
     }
     dirs::home_dir()
         .map(|home| home.join(".agents").join("skills"))
@@ -268,25 +268,16 @@ pub fn save_project(name: &str, project: &Project) -> Result<()> {
 }
 
 /// Test support shared across modules whose tests mutate the
-/// process-global user-skills env var — one lock, or the tests race.
+/// process-global user-skills env var. Delegates to `temp_env`, whose
+/// global lock serializes all env mutation in the test binary (so tests
+/// that touch different env vars still can't race each other's reads).
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
 
-    /// Serializes tests that mutate the process-global user-skills env var.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Set the user-skills override for the duration of `f`, restoring it after.
     pub(crate) fn with_user_skills_root<R>(path: &Path, f: impl FnOnce() -> R) -> R {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let previous = std::env::var(USER_SKILLS_DIR_ENV).ok();
-        std::env::set_var(USER_SKILLS_DIR_ENV, path);
-        let result = f();
-        match previous {
-            Some(value) => std::env::set_var(USER_SKILLS_DIR_ENV, value),
-            None => std::env::remove_var(USER_SKILLS_DIR_ENV),
-        }
-        result
+        temp_env::with_var(USER_SKILLS_DIR_ENV, Some(path), f)
     }
 }
 

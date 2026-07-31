@@ -6,7 +6,7 @@ pub use container::*;
 pub use data::*;
 
 use gpui::prelude::*;
-use gpui::{px, Context, Entity, Pixels, Task};
+use gpui::{Context, Entity, Pixels, Task, px};
 use gpui_component::text::{TextView, TextViewState};
 
 use std::cell::Cell;
@@ -61,21 +61,21 @@ impl ToolCollapseState {
     /// scheduled).
     pub fn set(session_id: &str, tool_id: &str, state: ToolBlockState) -> bool {
         let collapsed = matches!(state, ToolBlockState::Collapsed);
-        if let Some(store) = UiStateStore::try_global() {
-            if let Ok(mut store) = store.lock() {
-                store.set_tool_collapsed(session_id, tool_id, collapsed);
-                return true;
-            }
+        if let Some(store) = UiStateStore::try_global()
+            && let Ok(mut store) = store.lock()
+        {
+            store.set_tool_collapsed(session_id, tool_id, collapsed);
+            return true;
         }
         false
     }
 
     /// Remove all overrides for a session (e.g. when it is deleted).
     pub fn remove_session(session_id: &str) {
-        if let Some(store) = UiStateStore::try_global() {
-            if let Ok(mut store) = store.lock() {
-                store.remove_session(session_id);
-            }
+        if let Some(store) = UiStateStore::try_global()
+            && let Ok(mut store) = store.lock()
+        {
+            store.remove_session(session_id);
         }
     }
 }
@@ -101,11 +101,11 @@ impl ToolDiffModeState {
     /// Returns `true` if the store was marked dirty (i.e. a save should be
     /// scheduled).
     pub fn set(session_id: &str, tool_id: &str, diff_mode: bool) -> bool {
-        if let Some(store) = UiStateStore::try_global() {
-            if let Ok(mut store) = store.lock() {
-                store.set_tool_diff_mode(session_id, tool_id, diff_mode);
-                return true;
-            }
+        if let Some(store) = UiStateStore::try_global()
+            && let Ok(mut store) = store.lock()
+        {
+            store.set_tool_diff_mode(session_id, tool_id, diff_mode);
+            return true;
         }
         false
     }
@@ -330,14 +330,14 @@ impl BlockView {
         // Persist the new state in the global UI state store (in-memory +
         // debounced write to disk) so it survives session reconnects and app
         // restarts.
-        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool_mut()) {
-            if ToolCollapseState::set(session_id, &tool.id, tool.state.clone()) {
-                // Schedule a debounced save
-                if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                    let _ = sender
-                        .0
-                        .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
-                }
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool_mut())
+            && ToolCollapseState::set(session_id, &tool.id, tool.state.clone())
+        {
+            // Schedule a debounced save
+            if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
+                let _ = sender
+                    .0
+                    .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
             }
         }
 
@@ -349,14 +349,14 @@ impl BlockView {
         self.write_file_diff_mode = !self.write_file_diff_mode;
 
         // Persist the new state
-        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool()) {
-            if ToolDiffModeState::set(session_id, &tool.id, self.write_file_diff_mode) {
-                // Schedule a debounced save
-                if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                    let _ = sender
-                        .0
-                        .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
-                }
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool())
+            && ToolDiffModeState::set(session_id, &tool.id, self.write_file_diff_mode)
+        {
+            // Schedule a debounced save
+            if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
+                let _ = sender
+                    .0
+                    .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
             }
         }
 

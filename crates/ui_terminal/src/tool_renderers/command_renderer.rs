@@ -7,7 +7,7 @@ use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::{
-    push_error_history_line, render_error_line, render_tool_header, tool_header_line, ToolRenderer,
+    ToolRenderer, push_error_history_line, render_error_line, render_tool_header, tool_header_line,
 };
 use crate::message::ToolUseBlock;
 use crate::terminal_color;
@@ -52,63 +52,63 @@ impl ToolRenderer for CommandToolRenderer {
         let mut y = render_tool_header(tool_block, area, buf, area.y);
 
         // Command line
-        if let Some(cmd) = tool_block.parameters.get("command_line") {
-            if y < area.y + area.height {
-                let bg = terminal_color::tool_content_bg();
-                let row_width = area.width.saturating_sub(2) as usize;
+        if let Some(cmd) = tool_block.parameters.get("command_line")
+            && y < area.y + area.height
+        {
+            let bg = terminal_color::tool_content_bg();
+            let row_width = area.width.saturating_sub(2) as usize;
+            buf.set_string(
+                area.x + 2,
+                y,
+                " ".repeat(row_width),
+                Style::default().bg(bg),
+            );
+            buf.set_string(
+                area.x + 2,
+                y,
+                "$ ",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(bg),
+            );
+            let max_cmd_len = row_width.saturating_sub(2);
+            let display = truncate_to_width(&cmd.value, max_cmd_len);
+            buf.set_string(
+                area.x + 4,
+                y,
+                display,
+                Style::default().fg(Color::White).bg(bg),
+            );
+            y += 1;
+        }
+
+        // Terminal output
+        if let Some(ref output) = tool_block.output
+            && !output.is_empty()
+        {
+            let bg = terminal_color::tool_content_bg();
+            let row_width = area.width.saturating_sub(2) as usize;
+            for line in output.lines() {
+                if y >= area.y + area.height {
+                    break;
+                }
+                // Fill background across full row width
                 buf.set_string(
                     area.x + 2,
                     y,
                     " ".repeat(row_width),
                     Style::default().bg(bg),
                 );
+                let expanded = expand_tabs(line);
+                let display = truncate_to_width(&expanded, row_width);
                 buf.set_string(
                     area.x + 2,
                     y,
-                    "$ ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD)
-                        .bg(bg),
-                );
-                let max_cmd_len = row_width.saturating_sub(2);
-                let display = truncate_to_width(&cmd.value, max_cmd_len);
-                buf.set_string(
-                    area.x + 4,
-                    y,
                     display,
-                    Style::default().fg(Color::White).bg(bg),
+                    Style::default().fg(Color::Gray).bg(bg),
                 );
                 y += 1;
-            }
-        }
-
-        // Terminal output
-        if let Some(ref output) = tool_block.output {
-            if !output.is_empty() {
-                let bg = terminal_color::tool_content_bg();
-                let row_width = area.width.saturating_sub(2) as usize;
-                for line in output.lines() {
-                    if y >= area.y + area.height {
-                        break;
-                    }
-                    // Fill background across full row width
-                    buf.set_string(
-                        area.x + 2,
-                        y,
-                        " ".repeat(row_width),
-                        Style::default().bg(bg),
-                    );
-                    let expanded = expand_tabs(line);
-                    let display = truncate_to_width(&expanded, row_width);
-                    buf.set_string(
-                        area.x + 2,
-                        y,
-                        display,
-                        Style::default().fg(Color::Gray).bg(bg),
-                    );
-                    y += 1;
-                }
             }
         }
 
@@ -124,10 +124,10 @@ impl ToolRenderer for CommandToolRenderer {
         }
 
         // Terminal output
-        if let Some(ref output) = tool_block.output {
-            if !output.is_empty() {
-                height += output.lines().count() as u16;
-            }
+        if let Some(ref output) = tool_block.output
+            && !output.is_empty()
+        {
+            height += output.lines().count() as u16;
         }
 
         if tool_block.status == ToolStatus::Error && tool_block.status_message.is_some() {

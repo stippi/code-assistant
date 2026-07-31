@@ -1,9 +1,9 @@
 use crate::{
+    ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
     recording::{APIRecorder, PlaybackState},
     streaming::{ChunkStream, HttpChunkStream, PlaybackChunkStream},
     types::*,
-    utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
-    StreamingChunk,
+    utils,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -299,21 +299,21 @@ impl RateLimitHandler for AnthropicRateLimitInfo {
         let mut shortest_wait = Duration::from_secs(60); // Default to 60 seconds if no information
 
         // Check requests reset time
-        if let Some(reset_time) = self.requests_reset {
-            if reset_time > now {
-                shortest_wait = shortest_wait.min(Duration::from_secs(
-                    (reset_time - now).num_seconds().max(0) as u64,
-                ));
-            }
+        if let Some(reset_time) = self.requests_reset
+            && reset_time > now
+        {
+            shortest_wait = shortest_wait.min(Duration::from_secs(
+                (reset_time - now).num_seconds().max(0) as u64,
+            ));
         }
 
         // Check tokens reset time
-        if let Some(reset_time) = self.tokens_reset {
-            if reset_time > now {
-                shortest_wait = shortest_wait.min(Duration::from_secs(
-                    (reset_time - now).num_seconds().max(0) as u64,
-                ));
-            }
+        if let Some(reset_time) = self.tokens_reset
+            && reset_time > now
+        {
+            shortest_wait = shortest_wait.min(Duration::from_secs(
+                (reset_time - now).num_seconds().max(0) as u64,
+            ));
         }
 
         // Add a small buffer to avoid hitting the limit exactly at reset time
@@ -1344,13 +1344,13 @@ impl LLMProvider for AnthropicClient {
                 .collect::<Vec<serde_json::Value>>();
 
             // Add cache_control to the last tool if any exist
-            if let Some(last_tool) = tools_json.last_mut() {
-                if let Some(obj) = last_tool.as_object_mut() {
-                    obj.insert(
-                        "cache_control".to_string(),
-                        serde_json::json!({"type": "ephemeral"}),
-                    );
-                }
+            if let Some(last_tool) = tools_json.last_mut()
+                && let Some(obj) = last_tool.as_object_mut()
+            {
+                obj.insert(
+                    "cache_control".to_string(),
+                    serde_json::json!({"type": "ephemeral"}),
+                );
             }
 
             tools_json

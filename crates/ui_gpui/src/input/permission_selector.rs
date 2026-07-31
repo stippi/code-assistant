@@ -1,7 +1,7 @@
-use gpui::{div, prelude::*, px, Context, Entity, EventEmitter, Focusable, Render, Window};
+use gpui::{Context, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
 use gpui_component::{
-    select::{Select, SelectEvent, SelectItem, SelectState},
     ActiveTheme, Icon, Sizable, Size,
+    select::{Select, SelectEvent, SelectItem, SelectState},
 };
 use tools_core::permissions::PermissionTier;
 

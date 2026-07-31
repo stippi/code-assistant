@@ -9,8 +9,8 @@
 //! system).
 
 use crate::config::{
-    explorer_for_scope, system_skills_root, user_skills_root, ProjectManager, SCOPE_CONFIG,
-    SCOPE_SYSTEM,
+    ProjectManager, SCOPE_CONFIG, SCOPE_SYSTEM, explorer_for_scope, system_skills_root,
+    user_skills_root,
 };
 use crate::skills::config::SkillsConfig;
 use crate::skills::manifest::parse_skill_content;

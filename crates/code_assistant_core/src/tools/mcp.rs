@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub use mcp_client::{
-    discover_tools, DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig,
+    DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig, discover_tools,
 };
 
 /// Scope tags every MCP tool carries in code-assistant: offered to the main
@@ -102,8 +102,8 @@ mod tests {
     /// Full core path: mcp-servers.json in the config dir → registry with
     /// namespaced, scope-tagged MCP tools, served by a real child process
     /// (code-assistant's own MCP server mode). Ignored by default: needs the
-    /// workspace binary built, and mutates CODE_ASSISTANT_CONFIG_DIR (safe
-    /// only because ignored tests run alone).
+    /// workspace binary built. The CODE_ASSISTANT_CONFIG_DIR override is set
+    /// only for the duration of the awaited registry build via `temp_env`.
     #[tokio::test]
     #[ignore = "needs a built code-assistant binary in target/debug"]
     async fn default_registry_with_mcp_offers_server_tools() {
@@ -124,10 +124,12 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        std::env::set_var("CODE_ASSISTANT_CONFIG_DIR", dir.path());
 
-        let registry = crate::tools::default_registry_with_mcp().await;
-        std::env::remove_var("CODE_ASSISTANT_CONFIG_DIR");
+        let registry = temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(dir.path()))],
+            crate::tools::default_registry_with_mcp(),
+        )
+        .await;
 
         let definitions = registry
             .get_tool_definitions_with_capability(crate::tools::scope::ToolScope::Agent.tag());
@@ -171,20 +173,20 @@ mod tests {
 
     #[test]
     fn env_values_are_substituted_at_load() {
-        std::env::set_var("MCP_TEST_TOKEN", "secret-123");
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp-servers.json");
-        std::fs::write(
-            &path,
-            r#"{ "servers": { "jira": {
+        temp_env::with_var("MCP_TEST_TOKEN", Some("secret-123"), || {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("mcp-servers.json");
+            std::fs::write(
+                &path,
+                r#"{ "servers": { "jira": {
                 "command": "npx",
                 "env": { "API_TOKEN": "${MCP_TEST_TOKEN}" }
             } } }"#,
-        )
-        .unwrap();
-        let loaded = load_mcp_servers_config_from(&path).unwrap();
-        assert_eq!(loaded.servers["jira"].env["API_TOKEN"], "secret-123");
-        std::env::remove_var("MCP_TEST_TOKEN");
+            )
+            .unwrap();
+            let loaded = load_mcp_servers_config_from(&path).unwrap();
+            assert_eq!(loaded.servers["jira"].env["API_TOKEN"], "secret-123");
+        });
     }
 
     #[test]

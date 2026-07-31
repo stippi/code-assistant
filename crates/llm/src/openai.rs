@@ -1,5 +1,5 @@
 use crate::{
-    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+    ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk, types::*, utils,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -517,9 +517,9 @@ impl OpenAIClient {
             && all_content[0].get("type") == Some(&serde_json::json!("text"))
         {
             // Single text content - use simple string format
-            Some(serde_json::json!(all_content[0]["text"]
-                .as_str()
-                .unwrap_or("")))
+            Some(serde_json::json!(
+                all_content[0]["text"].as_str().unwrap_or("")
+            ))
         } else {
             // Multiple content parts or images - use structured format
             Some(serde_json::json!(all_content))
@@ -629,9 +629,9 @@ impl OpenAIClient {
             && content_parts[0].get("type") == Some(&serde_json::json!("text"))
         {
             // Single text content - use simple string format
-            Some(serde_json::json!(content_parts[0]["text"]
-                .as_str()
-                .unwrap_or("")))
+            Some(serde_json::json!(
+                content_parts[0]["text"].as_str().unwrap_or("")
+            ))
         } else {
             // Multiple content parts or images - use structured format
             Some(serde_json::json!(content_parts))
@@ -739,16 +739,15 @@ impl OpenAIClient {
                     let mut blocks = Vec::new();
 
                     // Add text content if present
-                    if let Some(content) = &openai_response.choices[0].message.content {
-                        if let Some(text) = content.as_str() {
-                            if !text.is_empty() {
-                                blocks.push(ContentBlock::Text {
-                                    text: text.to_string(),
-                                    start_time: None,
-                                    end_time: None,
-                                });
-                            }
-                        }
+                    if let Some(content) = &openai_response.choices[0].message.content
+                        && let Some(text) = content.as_str()
+                        && !text.is_empty()
+                    {
+                        blocks.push(ContentBlock::Text {
+                            text: text.to_string(),
+                            start_time: None,
+                            end_time: None,
+                        });
                     }
 
                     // Add tool calls if present
@@ -895,23 +894,23 @@ impl OpenAIClient {
 
                     if let Some(delta) = chunk_response.choices.first() {
                         // Handle reasoning_content streaming (Z.ai/DeepSeek-style)
-                        if let Some(reasoning) = &delta.delta.reasoning_content {
-                            if !reasoning.is_empty() {
-                                // Add or extend thinking block
-                                if let Some(ContentBlock::Thinking { thinking, .. }) =
-                                    content_blocks.last_mut()
-                                {
-                                    thinking.push_str(reasoning);
-                                } else {
-                                    content_blocks.push(ContentBlock::Thinking {
-                                        thinking: reasoning.clone(),
-                                        signature: String::new(),
-                                        start_time: Some(std::time::SystemTime::now()),
-                                        end_time: None,
-                                    });
-                                }
-                                callback(&StreamingChunk::Thinking(reasoning.clone()))?;
+                        if let Some(reasoning) = &delta.delta.reasoning_content
+                            && !reasoning.is_empty()
+                        {
+                            // Add or extend thinking block
+                            if let Some(ContentBlock::Thinking { thinking, .. }) =
+                                content_blocks.last_mut()
+                            {
+                                thinking.push_str(reasoning);
+                            } else {
+                                content_blocks.push(ContentBlock::Thinking {
+                                    thinking: reasoning.clone(),
+                                    signature: String::new(),
+                                    start_time: Some(std::time::SystemTime::now()),
+                                    end_time: None,
+                                });
                             }
+                            callback(&StreamingChunk::Thinking(reasoning.clone()))?;
                         }
 
                         // Handle reasoning/thinking streaming (Groq-specific with channel)
@@ -1002,68 +1001,64 @@ impl OpenAIClient {
                                         *current_tool = Some(tool_call.clone());
 
                                         // If this tool call has complete arguments (Groq style), stream them immediately
-                                        if let Some(args) = &function.arguments {
-                                            if !args.is_empty() {
-                                                // Update the tool block with complete arguments
-                                                if let Some(ContentBlock::ToolUse {
-                                                    input, ..
-                                                }) = content_blocks.last_mut()
-                                                {
-                                                    *input = serde_json::from_str(args)
-                                                        .unwrap_or_else(|_| {
-                                                            serde_json::Value::String(args.clone())
-                                                        });
-                                                }
-
-                                                callback(&StreamingChunk::InputJson {
-                                                    content: args.clone(),
-                                                    tool_name: Some(tool_name),
-                                                    tool_id: Some(tool_id),
-                                                })?;
+                                        if let Some(args) = &function.arguments
+                                            && !args.is_empty()
+                                        {
+                                            // Update the tool block with complete arguments
+                                            if let Some(ContentBlock::ToolUse { input, .. }) =
+                                                content_blocks.last_mut()
+                                            {
+                                                *input = serde_json::from_str(args).unwrap_or_else(
+                                                    |_| serde_json::Value::String(args.clone()),
+                                                );
                                             }
+
+                                            callback(&StreamingChunk::InputJson {
+                                                content: args.clone(),
+                                                tool_name: Some(tool_name),
+                                                tool_id: Some(tool_id),
+                                            })?;
                                         }
                                     } else if let Some(curr_tool) = current_tool {
                                         // Update existing tool (incremental OpenAI style)
-                                        if let Some(args) = &function.arguments {
-                                            if let Some(ref mut curr_func) = curr_tool.function {
-                                                // Store previous arguments for diffing
-                                                let prev_args = curr_func
-                                                    .arguments
-                                                    .as_ref()
-                                                    .unwrap_or(&String::new())
-                                                    .clone();
+                                        if let Some(args) = &function.arguments
+                                            && let Some(ref mut curr_func) = curr_tool.function
+                                        {
+                                            // Store previous arguments for diffing
+                                            let prev_args = curr_func
+                                                .arguments
+                                                .as_ref()
+                                                .unwrap_or(&String::new())
+                                                .clone();
 
-                                                // Update arguments
-                                                curr_func.arguments =
-                                                    Some(prev_args.clone() + args);
+                                            // Update arguments
+                                            curr_func.arguments = Some(prev_args.clone() + args);
 
-                                                // Try to parse the accumulated arguments as JSON
-                                                // Only update the tool block if it's valid JSON
-                                                if let Some(ContentBlock::ToolUse {
-                                                    input, ..
-                                                }) = content_blocks.last_mut()
+                                            // Try to parse the accumulated arguments as JSON
+                                            // Only update the tool block if it's valid JSON
+                                            if let Some(ContentBlock::ToolUse { input, .. }) =
+                                                content_blocks.last_mut()
+                                            {
+                                                let full_args =
+                                                    &curr_func.arguments.as_ref().unwrap();
+                                                if let Ok(parsed_json) =
+                                                    serde_json::from_str(full_args)
                                                 {
-                                                    let full_args =
-                                                        &curr_func.arguments.as_ref().unwrap();
-                                                    if let Ok(parsed_json) =
-                                                        serde_json::from_str(full_args)
-                                                    {
-                                                        *input = parsed_json;
-                                                    }
-                                                    // If JSON is invalid, keep the previous valid state
-                                                    // Don't update input with partial/invalid JSON
+                                                    *input = parsed_json;
                                                 }
-
-                                                // Stream the JSON input to the callback
-                                                callback(&StreamingChunk::InputJson {
-                                                    content: args.clone(),
-                                                    tool_name: curr_tool
-                                                        .function
-                                                        .as_ref()
-                                                        .and_then(|f| f.name.clone()),
-                                                    tool_id: curr_tool.id.clone(),
-                                                })?;
+                                                // If JSON is invalid, keep the previous valid state
+                                                // Don't update input with partial/invalid JSON
                                             }
+
+                                            // Stream the JSON input to the callback
+                                            callback(&StreamingChunk::InputJson {
+                                                content: args.clone(),
+                                                tool_name: curr_tool
+                                                    .function
+                                                    .as_ref()
+                                                    .and_then(|f| f.name.clone()),
+                                                tool_id: curr_tool.id.clone(),
+                                            })?;
                                         }
                                     }
                                 }
@@ -1075,12 +1070,11 @@ impl OpenAIClient {
                             let now = std::time::SystemTime::now();
 
                             // Complete any active tool
-                            if current_tool.take().is_some() {
-                                if let Some(ContentBlock::ToolUse { end_time, .. }) =
+                            if current_tool.take().is_some()
+                                && let Some(ContentBlock::ToolUse { end_time, .. }) =
                                     content_blocks.last_mut()
-                                {
-                                    *end_time = Some(now);
-                                }
+                            {
+                                *end_time = Some(now);
                             }
 
                             // Complete any active text/thinking block
@@ -1399,19 +1393,17 @@ mod tests {
         };
 
         // This simulates the logic for a new tool call with complete arguments
-        if tool_call.id.is_some() {
-            if let Some(function) = &tool_call.function {
-                if let Some(args) = &function.arguments {
-                    if !args.is_empty() {
-                        callback(&StreamingChunk::InputJson {
-                            content: args.clone(),
-                            tool_name: function.name.clone(),
-                            tool_id: tool_call.id.clone(),
-                        })
-                        .unwrap();
-                    }
-                }
-            }
+        if tool_call.id.is_some()
+            && let Some(function) = &tool_call.function
+            && let Some(args) = &function.arguments
+            && !args.is_empty()
+        {
+            callback(&StreamingChunk::InputJson {
+                content: args.clone(),
+                tool_name: function.name.clone(),
+                tool_id: tool_call.id.clone(),
+            })
+            .unwrap();
         }
 
         let chunks = captured_chunks.lock().unwrap();
@@ -1493,9 +1485,11 @@ mod tests {
         assert_eq!(openai_response_no_details.usage.prompt_tokens, 100);
         assert_eq!(openai_response_no_details.usage.completion_tokens, 50);
         assert_eq!(openai_response_no_details.usage.total_tokens, 150);
-        assert!(openai_response_no_details
-            .usage
-            .prompt_tokens_details
-            .is_none());
+        assert!(
+            openai_response_no_details
+                .usage
+                .prompt_tokens_details
+                .is_none()
+        );
     }
 }

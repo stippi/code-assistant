@@ -95,11 +95,11 @@ impl UserInterface for TestUI {
         let mut guard = self.fragments.lock().unwrap();
 
         // Check if we can merge this fragment with the previous one
-        if let Some(last_fragment) = guard.back_mut() {
-            if Self::merge_fragments(last_fragment, fragment) {
-                // Successfully merged, don't add a new fragment
-                return Ok(());
-            }
+        if let Some(last_fragment) = guard.back_mut()
+            && Self::merge_fragments(last_fragment, fragment)
+        {
+            // Successfully merged, don't add a new fragment
+            return Ok(());
         }
 
         // If we couldn't merge, add the new fragment
@@ -166,7 +166,7 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                 data: _,
             } => println!("  [{i}] Image: ..."),
 
-            DisplayFragment::ThinkingText { ref text, .. } => {
+            DisplayFragment::ThinkingText { text, .. } => {
                 println!("  [{i}] ThinkingText: {text}")
             }
             DisplayFragment::ToolName { name, id, .. } => {

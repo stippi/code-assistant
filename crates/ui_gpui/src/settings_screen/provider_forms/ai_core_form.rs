@@ -9,9 +9,9 @@
 //! then managing individual deployment mappings.
 
 use super::ProviderForm;
-use gpui::{div, prelude::*, px, App, Context, Entity, SharedString, Window};
-use gpui_component::input::{Input, InputState};
+use gpui::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::ActiveTheme;
+use gpui_component::input::{Input, InputState};
 use serde_json::Value;
 use tracing::warn;
 

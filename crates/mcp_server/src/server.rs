@@ -1,6 +1,6 @@
 use crate::handler::MessageHandler;
 use anyhow::Result;
-use tokio::io::{stdin, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tracing::{debug, error, trace};
 
 pub struct MCPServer {

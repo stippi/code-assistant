@@ -1,5 +1,5 @@
 use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, ToolsConfig,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, ToolsConfig, capabilities,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

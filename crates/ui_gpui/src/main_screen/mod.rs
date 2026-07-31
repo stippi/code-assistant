@@ -17,8 +17,8 @@ use code_assistant_core::ui::ui_events::UiEvent;
 use project_dialog::{NewProjectDialog, NewProjectDialogEvent};
 
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    PathPromptOptions, Pixels, SharedString, Subscription, Task,
+    App, ClickEvent, Context, Entity, FocusHandle, Focusable, PathPromptOptions, Pixels,
+    SharedString, Subscription, Task, div, prelude::*, px,
 };
 
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -244,32 +244,34 @@ impl MainScreen {
     }
 
     fn start_sidebar_animation_task(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |weak_entity, async_cx| loop {
-            async_cx
-                .background_executor()
-                .timer(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS))
-                .await;
+        let task = cx.spawn(async move |weak_entity, async_cx| {
+            loop {
+                async_cx
+                    .background_executor()
+                    .timer(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS))
+                    .await;
 
-            let should_continue = weak_entity.update(async_cx, |view, cx| {
-                view.update_sidebar_animation();
-                match &view.sidebar_animation_state {
-                    SidebarAnimationState::Idle => false,
-                    _ => {
-                        cx.notify();
-                        true
+                let should_continue = weak_entity.update(async_cx, |view, cx| {
+                    view.update_sidebar_animation();
+                    match &view.sidebar_animation_state {
+                        SidebarAnimationState::Idle => false,
+                        _ => {
+                            cx.notify();
+                            true
+                        }
                     }
-                }
-            });
+                });
 
-            if let Ok(should_continue) = should_continue {
-                if !should_continue {
-                    let _ = weak_entity.update(async_cx, |view, _cx| {
-                        view.sidebar_animation_task = None;
-                    });
+                if let Ok(should_continue) = should_continue {
+                    if !should_continue {
+                        let _ = weak_entity.update(async_cx, |view, _cx| {
+                            view.sidebar_animation_task = None;
+                        });
+                        break;
+                    }
+                } else {
                     break;
                 }
-            } else {
-                break;
             }
         });
         self.sidebar_animation_task = Some(task);
@@ -517,27 +519,27 @@ impl MainScreen {
             }
             InputAreaEvent::CancelEditRequested => {
                 // Cancel edit mode - reload original messages for this session
-                if let Some(session_id) = &self.current_session_id {
-                    if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.cmd_cancel_message_edit(session_id.clone());
-                    }
+                if let Some(session_id) = &self.current_session_id
+                    && let Some(gpui) = cx.try_global::<Gpui>()
+                {
+                    gpui.cmd_cancel_message_edit(session_id.clone());
                 }
             }
             InputAreaEvent::CancelRequested => {
                 // Handle cancel/stop request
-                if let Some(session_id) = &self.current_session_id {
-                    if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.cmd_request_stop(session_id.clone());
-                    }
+                if let Some(session_id) = &self.current_session_id
+                    && let Some(gpui) = cx.try_global::<Gpui>()
+                {
+                    gpui.cmd_request_stop(session_id.clone());
                 }
                 cx.notify();
             }
             InputAreaEvent::ClearDraftRequested => {
                 // Clear draft immediately and synchronously
-                if let Some(session_id) = &self.current_session_id {
-                    if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.clear_draft_for_session(session_id);
-                    }
+                if let Some(session_id) = &self.current_session_id
+                    && let Some(gpui) = cx.try_global::<Gpui>()
+                {
+                    gpui.clear_draft_for_session(session_id);
                 }
             }
             InputAreaEvent::ModelChanged { model_name } => {
@@ -810,10 +812,10 @@ impl MainScreen {
         cx: &mut Context<Self>,
     ) {
         // Request the agent of the current session to stop
-        if let Some(session_id) = &self.current_session_id {
-            if let Some(gpui) = cx.try_global::<Gpui>() {
-                gpui.cmd_request_stop(session_id.clone());
-            }
+        if let Some(session_id) = &self.current_session_id
+            && let Some(gpui) = cx.try_global::<Gpui>()
+        {
+            gpui.cmd_request_stop(session_id.clone());
         }
         cx.notify();
     }
@@ -1061,12 +1063,12 @@ impl MainScreen {
                     gpui.load_draft_for_session(new_id)
                 {
                     debug!(
-                            "Loading draft for new session {}: {} characters, {} attachments, editing: {:?}",
-                            new_id,
-                            draft_text.len(),
-                            draft_attachments.len(),
-                            anchor
-                        );
+                        "Loading draft for new session {}: {} characters, {} attachments, editing: {:?}",
+                        new_id,
+                        draft_text.len(),
+                        draft_attachments.len(),
+                        anchor
+                    );
                     (draft_text, draft_attachments, anchor)
                 } else {
                     debug!("No draft found for new session: {}", new_id);
@@ -1189,16 +1191,16 @@ impl Render for MainScreen {
         }
 
         // Check for pending edit (message editing for branching)
-        if let Some(gpui) = cx.try_global::<Gpui>() {
-            if let Some(pending_edit) = gpui.take_pending_edit() {
-                self.handle_message_edit_ready(
-                    pending_edit.content,
-                    pending_edit.attachments,
-                    pending_edit.branch_parent_id,
-                    window,
-                    cx,
-                );
-            }
+        if let Some(gpui) = cx.try_global::<Gpui>()
+            && let Some(pending_edit) = gpui.take_pending_edit()
+        {
+            self.handle_message_edit_ready(
+                pending_edit.content,
+                pending_edit.attachments,
+                pending_edit.branch_parent_id,
+                window,
+                cx,
+            );
         }
 
         // Ensure InputArea stays in sync with the current model
@@ -1235,20 +1237,20 @@ impl Render for MainScreen {
             });
         }
 
-        if let Some(policy) = current_sandbox_policy {
-            if self.input_area.read(cx).current_sandbox_policy() != policy {
-                self.input_area.update(cx, |input_area, cx| {
-                    input_area.set_current_sandbox_policy(policy.clone(), window, cx);
-                });
-            }
+        if let Some(policy) = current_sandbox_policy
+            && self.input_area.read(cx).current_sandbox_policy() != policy
+        {
+            self.input_area.update(cx, |input_area, cx| {
+                input_area.set_current_sandbox_policy(policy.clone(), window, cx);
+            });
         }
 
-        if let Some(tier) = current_permission_tier {
-            if self.input_area.read(cx).current_permission_tier() != tier {
-                self.input_area.update(cx, |input_area, cx| {
-                    input_area.set_current_permission_tier(tier, window, cx);
-                });
-            }
+        if let Some(tier) = current_permission_tier
+            && self.input_area.read(cx).current_permission_tier() != tier
+        {
+            self.input_area.update(cx, |input_area, cx| {
+                input_area.set_current_permission_tier(tier, window, cx);
+            });
         }
 
         // Sync worktree data to the WorktreeSelector (only when changed)

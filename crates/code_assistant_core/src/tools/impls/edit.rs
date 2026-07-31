@@ -1,9 +1,9 @@
-use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
-};
 use crate::tools::ToolServicesAccess;
-use anyhow::{anyhow, Result};
-use fs_explorer::{find_match_start_lines, FileReplacement, FileUpdaterError};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+};
+use anyhow::{Result, anyhow};
+use fs_explorer::{FileReplacement, FileUpdaterError, find_match_start_lines};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -221,12 +221,12 @@ impl Tool for EditTool {
         match format_result {
             Ok((_new_content, updated_replacements)) => {
                 // If formatting updated the replacement parameters, update our input
-                if let Some(updated) = updated_replacements {
-                    if let Some(updated_replacement) = updated.first() {
-                        input.old_text = updated_replacement.search.clone();
-                        input.new_text = updated_replacement.replace.clone();
-                        input.replace_all = updated_replacement.replace_all;
-                    }
+                if let Some(updated) = updated_replacements
+                    && let Some(updated_replacement) = updated.first()
+                {
+                    input.old_text = updated_replacement.search.clone();
+                    input.new_text = updated_replacement.replace.clone();
+                    input.replace_all = updated_replacement.replace_all;
                 }
 
                 // Emit resource event

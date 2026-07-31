@@ -1,4 +1,4 @@
-use crate::ui::streaming::test_utils::{assert_fragments_match, chunk_str, hidden_tools, TestUI};
+use crate::ui::streaming::test_utils::{TestUI, assert_fragments_match, chunk_str, hidden_tools};
 use crate::ui::streaming::{CaretStreamProcessor, DisplayFragment, StreamProcessorTrait};
 use llm::{Message, StreamingChunk};
 use std::sync::Arc;
@@ -138,9 +138,11 @@ async fn test_extract_fragments_from_complete_message() {
     assert!(tool_name_fragment.is_some());
 
     // Check for tool end
-    assert!(fragments
-        .iter()
-        .any(|f| matches!(f, DisplayFragment::ToolEnd { .. })));
+    assert!(
+        fragments
+            .iter()
+            .any(|f| matches!(f, DisplayFragment::ToolEnd { .. }))
+    );
 }
 
 /// Test that demonstrates the core line-oriented requirement of caret syntax

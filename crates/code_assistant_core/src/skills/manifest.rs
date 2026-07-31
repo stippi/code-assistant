@@ -6,7 +6,7 @@
 //! frontmatter keys are tolerated so skills authored against the full
 //! Anthropic spec still load.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 /// Maximum length of a skill `name` (Anthropic Agent Skills spec).

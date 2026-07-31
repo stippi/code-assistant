@@ -1,7 +1,7 @@
 //! Branch navigation component for message branching/editing.
 
 use code_assistant_core::persistence::BranchInfo;
-use gpui::{div, prelude::*, px, App, CursorStyle, SharedString, Window};
+use gpui::{App, CursorStyle, SharedString, Window, div, prelude::*, px};
 use gpui_component::{ActiveTheme, Icon};
 
 /// A stateless branch navigation component styled as a bubble on the message border.
@@ -96,10 +96,10 @@ impl RenderOnce for BranchSwitcherElement {
                         if has_prev {
                             base.hover(|s| s.bg(cx.theme().accent.opacity(0.15)))
                                 .on_click(move |_event, _window, cx| {
-                                    if let Some(node_id) = prev_node_id {
-                                        if let Some(gpui) = cx.try_global::<super::super::Gpui>() {
-                                            gpui.cmd_switch_branch(session_id.clone(), node_id);
-                                        }
+                                    if let Some(node_id) = prev_node_id
+                                        && let Some(gpui) = cx.try_global::<super::super::Gpui>()
+                                    {
+                                        gpui.cmd_switch_branch(session_id.clone(), node_id);
                                     }
                                 })
                                 .into_any_element()
@@ -137,13 +137,13 @@ impl RenderOnce for BranchSwitcherElement {
                         if has_next {
                             base.hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
                                 .on_click(move |_event, _window, cx| {
-                                    if let Some(node_id) = next_node_id {
-                                        if let Some(gpui) = cx.try_global::<super::super::Gpui>() {
-                                            gpui.cmd_switch_branch(
-                                                session_id_for_next.clone(),
-                                                node_id,
-                                            );
-                                        }
+                                    if let Some(node_id) = next_node_id
+                                        && let Some(gpui) = cx.try_global::<super::super::Gpui>()
+                                    {
+                                        gpui.cmd_switch_branch(
+                                            session_id_for_next.clone(),
+                                            node_id,
+                                        );
                                     }
                                 })
                                 .into_any_element()

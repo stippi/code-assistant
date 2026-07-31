@@ -1,4 +1,4 @@
-use gpui::{div, px, svg, App, AssetSource, IntoElement, ParentElement, SharedString, Styled};
+use gpui::{App, AssetSource, IntoElement, ParentElement, SharedString, Styled, div, px, svg};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -76,8 +76,12 @@ impl FileIcons {
             match std::str::from_utf8(&content) {
                 Ok(content_str) => match serde_json::from_str::<FileTypesConfig>(content_str) {
                     Ok(config) => {
-                        debug!("[FileIcons]: Successfully parsed config: {} stems, {} suffixes, {} types",
-                                     config.stems.len(), config.suffixes.len(), config.types.len());
+                        debug!(
+                            "[FileIcons]: Successfully parsed config: {} stems, {} suffixes, {} types",
+                            config.stems.len(),
+                            config.suffixes.len(),
+                            config.types.len()
+                        );
                         return config;
                     }
                     Err(err) => {
@@ -147,8 +151,7 @@ impl FileIcons {
         if let Some(path) = icon_path {
             trace!(
                 "[FileIcons]: Using direct path for tool icon: '{}' -> '{}'",
-                typ,
-                path
+                typ, path
             );
             return Some(SharedString::from(path));
         }

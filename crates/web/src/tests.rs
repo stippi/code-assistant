@@ -12,7 +12,7 @@ use super::{BrowserSession, BrowserSessionManager};
 async fn spawn_form_site() -> std::net::SocketAddr {
     use axum::extract::Query;
     use axum::response::Html;
-    use axum::{routing::get, Router};
+    use axum::{Router, routing::get};
     use std::collections::HashMap;
 
     async fn index() -> Html<&'static str> {
@@ -139,10 +139,10 @@ async fn observe_discovers_interactive_elements_with_selectors() {
 /// one browser, then read it back in a fresh browser on the same profile dir.
 #[tokio::test]
 async fn persistent_profile_preserves_cookies_across_launches() {
-    use axum::http::header::{COOKIE, SET_COOKIE};
     use axum::http::HeaderMap;
+    use axum::http::header::{COOKIE, SET_COOKIE};
     use axum::response::IntoResponse;
-    use axum::{routing::get, Router};
+    use axum::{Router, routing::get};
 
     async fn set_cookie() -> impl IntoResponse {
         (
@@ -208,10 +208,10 @@ async fn persistent_profile_preserves_cookies_across_launches() {
 /// a session cookie a plain relaunch drops.
 #[tokio::test]
 async fn session_cookies_survive_a_headless_swap_via_transfer() {
-    use axum::http::header::{COOKIE, SET_COOKIE};
     use axum::http::HeaderMap;
+    use axum::http::header::{COOKIE, SET_COOKIE};
     use axum::response::IntoResponse;
-    use axum::{routing::get, Router};
+    use axum::{Router, routing::get};
 
     async fn login() -> impl IntoResponse {
         // A session cookie: no Max-Age, so a browser close drops it from disk.

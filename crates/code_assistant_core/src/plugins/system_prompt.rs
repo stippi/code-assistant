@@ -114,10 +114,10 @@ fn read_guidance_files(project_root: Option<&Path>) -> Vec<(String, String)> {
         .map(Path::to_path_buf)
         .or_else(|| std::env::current_dir().ok());
 
-    if let Some(root_path) = root_path {
-        if let Some(guidance) = read_guidance_from_dir(&root_path, &["AGENTS.md", "CLAUDE.md"]) {
-            guidance_files.push(guidance);
-        }
+    if let Some(root_path) = root_path
+        && let Some(guidance) = read_guidance_from_dir(&root_path, &["AGENTS.md", "CLAUDE.md"])
+    {
+        guidance_files.push(guidance);
     }
 
     guidance_files

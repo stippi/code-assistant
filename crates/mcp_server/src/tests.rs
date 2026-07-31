@@ -272,10 +272,12 @@ async fn test_unknown_tool() -> Result<()> {
     // Verify that it's an error response
     assert!(response.get("error").is_some());
     assert_eq!(response["error"]["code"], -32602); // Invalid params error code
-    assert!(response["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Tool not found"));
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Tool not found")
+    );
 
     Ok(())
 }

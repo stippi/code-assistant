@@ -1,4 +1,4 @@
-use crate::ui::streaming::test_utils::{assert_fragments_match, chunk_str, hidden_tools, TestUI};
+use crate::ui::streaming::test_utils::{TestUI, assert_fragments_match, chunk_str, hidden_tools};
 use crate::ui::streaming::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
 use llm::StreamingChunk;
 use std::sync::Arc;
@@ -233,8 +233,7 @@ mod tests {
 
     #[test]
     fn test_thinking_tag_handling() {
-        let input =
-            "Let me think about this.\n<thinking>This is a complex problem.</thinking>\nI've decided.";
+        let input = "Let me think about this.\n<thinking>This is a complex problem.</thinking>\nI've decided.";
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me think about this.".to_string()),
@@ -453,7 +452,7 @@ mod tests {
 
         // Create a user message with XML-like content
         let user_message = Message::new_user(
-            "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>"
+            "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>",
         );
 
         let fragments = processor

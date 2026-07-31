@@ -99,10 +99,9 @@ impl Composer {
                 if let Some(cell) = f
                     .buffer_mut()
                     .cell_mut((textarea_rect.x + col, textarea_rect.y + row))
+                    && cell.bg == Color::Reset
                 {
-                    if cell.bg == Color::Reset {
-                        cell.set_style(Style::default().bg(composer_bg()));
-                    }
+                    cell.set_style(Style::default().bg(composer_bg()));
                 }
             }
         }

@@ -1,4 +1,4 @@
-use gpui::{rgb, rgba, App};
+use gpui::{App, rgb, rgba};
 use gpui_component::theme::{Theme, ThemeMode};
 
 /// Define our custom dark theme colors - matching existing colors
@@ -133,7 +133,7 @@ pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) -> ThemeMod
 
 /// Color utility functions for specific components
 pub mod colors {
-    use gpui::{rgba, Hsla};
+    use gpui::{Hsla, rgba};
     use gpui_component::theme::Theme;
 
     // Thinking block colors

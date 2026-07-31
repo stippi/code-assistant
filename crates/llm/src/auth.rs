@@ -1,5 +1,5 @@
 use anyhow::Result;
-use base64::engine::{general_purpose, Engine};
+use base64::engine::{Engine, general_purpose};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
@@ -45,10 +45,10 @@ impl TokenManager {
 
     pub async fn get_valid_token(&self) -> Result<String> {
         // Check if we have a valid token
-        if let Some(token_info) = self.current_token.read().await.as_ref() {
-            if SystemTime::now() < token_info.expires_at {
-                return Ok(token_info.token.clone());
-            }
+        if let Some(token_info) = self.current_token.read().await.as_ref()
+            && SystemTime::now() < token_info.expires_at
+        {
+            return Ok(token_info.token.clone());
         }
 
         // If not, we need to fetch a new one

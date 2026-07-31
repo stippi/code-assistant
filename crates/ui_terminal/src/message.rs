@@ -5,7 +5,7 @@ use tui_markdown as md;
 
 use super::text_util::truncate_with_ellipsis;
 use super::tool_renderers::ToolRendererRegistry;
-use super::tool_widget::{is_full_width_parameter, should_hide_parameter, ToolWidget};
+use super::tool_widget::{ToolWidget, is_full_width_parameter, should_hide_parameter};
 use code_assistant_core::ui::ToolStatus;
 
 /// A complete message containing multiple blocks
@@ -33,10 +33,10 @@ impl LiveMessage {
     /// Get a mutable reference to a tool block by ID
     pub fn get_tool_block_mut(&mut self, tool_id: &str) -> Option<&mut ToolUseBlock> {
         for block in &mut self.blocks {
-            if let MessageBlock::ToolUse(tool_block) = block {
-                if tool_block.id == tool_id {
-                    return Some(tool_block);
-                }
+            if let MessageBlock::ToolUse(tool_block) = block
+                && tool_block.id == tool_id
+            {
+                return Some(tool_block);
             }
         }
         None
@@ -115,10 +115,10 @@ impl MessageBlock {
             }
             MessageBlock::ToolUse(block) => {
                 // Try a registered renderer first.
-                if let Some(registry) = ToolRendererRegistry::global() {
-                    if let Some(renderer) = registry.get(&block.name) {
-                        return renderer.calculate_height(block, width);
-                    }
+                if let Some(registry) = ToolRendererRegistry::global()
+                    && let Some(renderer) = registry.get(&block.name)
+                {
+                    return renderer.calculate_height(block, width);
                 }
 
                 // Fallback: generic height calculation
@@ -141,10 +141,10 @@ impl MessageBlock {
                 }
 
                 // Output (used by spawn_agent for streaming sub-agent activity)
-                if let Some(ref output) = block.output {
-                    if !output.is_empty() {
-                        height += output.lines().count() as u16;
-                    }
+                if let Some(ref output) = block.output
+                    && !output.is_empty()
+                {
+                    height += output.lines().count() as u16;
                 }
 
                 height

@@ -7,8 +7,8 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
 use code_assistant_core::ui::ToolStatus;
 use gpui::{
-    div, px, rems, AnyElement, Context, Element, FontWeight, HighlightStyle, ParentElement,
-    SharedString, Styled, StyledText, Window,
+    AnyElement, Context, Element, FontWeight, HighlightStyle, ParentElement, SharedString, Styled,
+    StyledText, Window, div, px, rems,
 };
 use serde_json::Value;
 

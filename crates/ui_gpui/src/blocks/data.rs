@@ -114,13 +114,13 @@ impl ThinkingBlock {
 
     /// Start a new reasoning summary item, finalizing the previous one if present
     pub fn start_reasoning_summary_item(&mut self) {
-        if let Some(content) = &self.current_generating_content {
-            if !content.is_empty() {
-                self.reasoning_summary_items
-                    .push(llm::ReasoningSummaryItem::SummaryText {
-                        text: content.clone(),
-                    });
-            }
+        if let Some(content) = &self.current_generating_content
+            && !content.is_empty()
+        {
+            self.reasoning_summary_items
+                .push(llm::ReasoningSummaryItem::SummaryText {
+                    text: content.clone(),
+                });
         }
 
         self.current_generating_content = Some(String::new());
@@ -142,13 +142,13 @@ impl ThinkingBlock {
     /// Complete reasoning and finalize any remaining items
     pub fn complete_reasoning(&mut self) {
         // Finalize current item if any
-        if let Some(content) = &self.current_generating_content {
-            if !content.is_empty() {
-                self.reasoning_summary_items
-                    .push(llm::ReasoningSummaryItem::SummaryText {
-                        text: content.clone(),
-                    });
-            }
+        if let Some(content) = &self.current_generating_content
+            && !content.is_empty()
+        {
+            self.reasoning_summary_items
+                .push(llm::ReasoningSummaryItem::SummaryText {
+                    text: content.clone(),
+                });
         }
 
         // Clear current state
@@ -185,14 +185,13 @@ impl ThinkingBlock {
 
     /// Get expanded content based on generating state
     pub fn get_expanded_content(&self, is_generating: bool) -> String {
-        let result = if is_generating {
+        if is_generating {
             // While generating, show current item content
-            let content = self
-                .current_generating_content
+
+            self.current_generating_content
                 .as_deref()
                 .unwrap_or(&self.content)
-                .to_string();
-            content
+                .to_string()
         } else if self.is_reasoning_block() {
             // When completed with reasoning, show all summary items as raw content
             let reasoning_content = self
@@ -214,9 +213,7 @@ impl ThinkingBlock {
         } else {
             // Traditional thinking block
             self.content.clone()
-        };
-
-        result
+        }
     }
 
     /// Check if this is a reasoning block (has reasoning summary items)
@@ -227,13 +224,13 @@ impl ThinkingBlock {
     /// Parse title from reasoning content in OpenAI format "**title**\n\ncontent"
     fn parse_title_from_content(content: &str) -> Option<String> {
         // Look for markdown bold pattern: **title** followed by newlines
-        if let Some(start) = content.find("**") {
-            if let Some(end) = content[start + 2..].find("**") {
-                let title_end = start + 2 + end;
-                let title = content[start + 2..title_end].trim();
-                if !title.is_empty() {
-                    return Some(title.to_string());
-                }
+        if let Some(start) = content.find("**")
+            && let Some(end) = content[start + 2..].find("**")
+        {
+            let title_end = start + 2 + end;
+            let title = content[start + 2..title_end].trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
             }
         }
 

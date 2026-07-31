@@ -7,11 +7,11 @@
 //! cross-session scheduling is an application concern (see
 //! `docs/session-wakeups.md`).
 
-use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::SessionService;
+use crate::session::sleep_inhibitor::SleepInhibitor;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;

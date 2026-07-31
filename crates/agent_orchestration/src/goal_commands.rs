@@ -13,9 +13,9 @@
 //! access live here so every host gets the same behavior over its own
 //! [`GoalRepository`] and owner key (a code-assistant session, a PAL lane).
 
-use crate::goals::{Budget, CompletionContract, Goal, GoalRepository};
 use crate::OwnerKey;
-use anyhow::{bail, Result};
+use crate::goals::{Budget, CompletionContract, Goal, GoalRepository};
+use anyhow::{Result, bail};
 use chrono::NaiveDateTime;
 
 /// Turn budget for user-committed goals. An honest bound: the controller
@@ -277,12 +277,16 @@ mod tests {
 
         let goals = store(dir.path()).list().unwrap();
         assert_eq!(goals.len(), 2);
-        assert!(goals
-            .iter()
-            .any(|goal| goal.owner == owner("sess-1") && goal.objective == "new objective"));
-        assert!(goals
-            .iter()
-            .any(|goal| goal.owner == owner("sess-2") && goal.objective == "theirs holds"));
+        assert!(
+            goals
+                .iter()
+                .any(|goal| goal.owner == owner("sess-1") && goal.objective == "new objective")
+        );
+        assert!(
+            goals
+                .iter()
+                .any(|goal| goal.owner == owner("sess-2") && goal.objective == "theirs holds")
+        );
         assert!(!goals.iter().any(|goal| goal.objective == "old objective"));
         assert!(message.contains("Goal replaced"));
     }
@@ -327,9 +331,11 @@ mod tests {
             GoalState::Paused
         );
         // The controller skips paused goals; status still shows it.
-        assert!(run(dir.path(), "sess-1", "status")
-            .unwrap()
-            .contains("Goal (paused)"));
+        assert!(
+            run(dir.path(), "sess-1", "status")
+                .unwrap()
+                .contains("Goal (paused)")
+        );
 
         let message = run(dir.path(), "sess-1", "resume").unwrap();
         assert!(message.contains("Goal resumed"));

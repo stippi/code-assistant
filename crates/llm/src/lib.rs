@@ -38,8 +38,8 @@ pub mod vertex;
 pub mod zai;
 
 pub use aicore::{
-    create_aicore_client, create_aicore_client_with_recorder, AiCoreAnthropicClient, AiCoreApiType,
-    AiCoreOpenAIClient, AiCoreVertexClient,
+    AiCoreAnthropicClient, AiCoreApiType, AiCoreOpenAIClient, AiCoreVertexClient,
+    create_aicore_client, create_aicore_client_with_recorder,
 };
 pub use anthropic::AnthropicClient;
 pub use cerebras::CerebrasClient;

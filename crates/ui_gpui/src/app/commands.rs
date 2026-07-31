@@ -342,10 +342,10 @@ impl Gpui {
             // only the caller shows the interaction-scoped warning.
             match service.switch_model(session_id.clone(), model_name).await {
                 Ok(result) => {
-                    if let Some(message) = result.warning {
-                        if gpui.is_current_session(&session_id) {
-                            gpui.push_event(UiEvent::ShowTransientStatus { message });
-                        }
+                    if let Some(message) = result.warning
+                        && gpui.is_current_session(&session_id)
+                    {
+                        gpui.push_event(UiEvent::ShowTransientStatus { message });
                     }
                 }
                 Err(e) => gpui.display_error(format!("{e:#}")),

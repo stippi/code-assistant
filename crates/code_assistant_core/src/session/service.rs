@@ -14,18 +14,18 @@
 //! tokio. Core→UI notifications keep flowing through [`UiEvent`] and are
 //! not part of this API.
 
-use crate::config::{save_project, DefaultProjectManager, ProjectManager};
+use crate::config::{DefaultProjectManager, ProjectManager, save_project};
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
-use crate::session::event_stream::EventStream;
 use crate::session::SessionManager;
+use crate::session::event_stream::EventStream;
 use crate::skills::{
-    discover_session_catalog, load_skill_payload, render_skill_invocation_message, SkillsConfig,
+    SkillsConfig, discover_session_catalog, load_skill_payload, render_skill_invocation_message,
 };
 use crate::types::{PlanState, Project};
-use crate::ui::ui_events::{MessageData, ToolResultData};
 use crate::ui::UiEvent;
+use crate::ui::ui_events::{MessageData, ToolResultData};
 use crate::utils::content::content_blocks_from;
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use command_executor::CommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
@@ -722,10 +722,10 @@ impl SessionService {
             // model if the injected body is summarised away.
             {
                 let mut manager = ctx.manager.lock().await;
-                if let Some(session) = manager.get_session_mut(&session_id) {
-                    if !session.session.active_skills.iter().any(|s| s == &name) {
-                        session.session.active_skills.push(name.clone());
-                    }
+                if let Some(session) = manager.get_session_mut(&session_id)
+                    && !session.session.active_skills.iter().any(|s| s == &name)
+                {
+                    session.session.active_skills.push(name.clone());
                 }
                 if let Err(e) = manager.save_session(&session_id) {
                     warn!("Failed to persist active_skills for {session_id}: {e}");
@@ -1090,21 +1090,21 @@ impl SessionService {
     pub async fn add_project(&self, name: String, path: PathBuf) -> Result<AddProjectOutcome> {
         self.call(move |ctx| async move {
             // No-op if this project already exists with the same name & path.
-            if let Ok(existing_projects) = crate::config::load_projects() {
-                if let Some(existing) = existing_projects.get(&name) {
-                    let existing_canonical = existing.path.canonicalize().ok();
-                    let new_canonical = path.canonicalize().ok();
-                    let paths_match = match (&existing_canonical, &new_canonical) {
-                        (Some(a), Some(b)) => a == b,
-                        _ => existing.path == path,
-                    };
-                    if paths_match {
-                        info!(
-                            "Project '{}' already exists with the same path — no-op",
-                            name
-                        );
-                        return Ok(AddProjectOutcome::AlreadyExists);
-                    }
+            if let Ok(existing_projects) = crate::config::load_projects()
+                && let Some(existing) = existing_projects.get(&name)
+            {
+                let existing_canonical = existing.path.canonicalize().ok();
+                let new_canonical = path.canonicalize().ok();
+                let paths_match = match (&existing_canonical, &new_canonical) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => existing.path == path,
+                };
+                if paths_match {
+                    info!(
+                        "Project '{}' already exists with the same path — no-op",
+                        name
+                    );
+                    return Ok(AddProjectOutcome::AlreadyExists);
                 }
             }
 
@@ -1370,18 +1370,18 @@ async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
         if manager.is_agent_locked_externally(session_id) {
             bail!("Cannot resume: another instance is running this session.");
         }
-        if let Some(instance) = manager.get_session(session_id) {
-            if !instance.get_activity_state().is_terminal() {
-                bail!("Cannot resume: agent is already running for this session.");
-            }
+        if let Some(instance) = manager.get_session(session_id)
+            && !instance.get_activity_state().is_terminal()
+        {
+            bail!("Cannot resume: agent is already running for this session.");
         }
-        if let Some(session) = manager.get_session_mut(session_id) {
-            if matches!(
+        if let Some(session) = manager.get_session_mut(session_id)
+            && matches!(
                 session.get_activity_state(),
                 crate::session::instance::SessionActivityState::Errored { .. }
-            ) {
-                session.set_activity_state(crate::session::instance::SessionActivityState::Idle);
-            }
+            )
+        {
+            session.set_activity_state(crate::session::instance::SessionActivityState::Idle);
         }
     }
 
@@ -1965,10 +1965,12 @@ mod tests {
         let service = test_service(tmp.path());
         // Unlike a wakeup (fire-and-forget), a channel adapter must learn
         // that its dispatch target is gone.
-        assert!(service
-            .send_or_queue_user_message("gone".to_string(), "hi".to_string(), Vec::new())
-            .await
-            .is_err());
+        assert!(
+            service
+                .send_or_queue_user_message("gone".to_string(), "hi".to_string(), Vec::new())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -2117,10 +2119,12 @@ mod tests {
         )));
 
         // Unknown session errors.
-        assert!(service
-            .change_permission_tier("nope".to_string(), PermissionTier::BypassAll)
-            .await
-            .is_err());
+        assert!(
+            service
+                .change_permission_tier("nope".to_string(), PermissionTier::BypassAll)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

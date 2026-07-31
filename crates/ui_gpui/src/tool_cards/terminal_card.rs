@@ -6,19 +6,19 @@
 //!
 //! This replaces the old `ExecuteCommandOutputRenderer` (ToolOutputRenderer)
 //! with a unified `ToolBlockRenderer` that controls the entire card.
-use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
+use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
+use crate::Gpui;
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
 use crate::terminal::pool::TerminalPool;
-use crate::Gpui;
 use code_assistant_core::ui::ToolStatus;
-use gpui::prelude::FluentBuilder;
 use gpui::AppContext as _; // brings .new() into scope on Context
+use gpui::prelude::FluentBuilder;
+use gpui::{Animation, AnimationExt, Transformation, svg};
 use gpui::{
-    div, percentage, px, rems, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
+    ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, percentage, px, rems,
 };
-use gpui::{svg, Animation, AnimationExt, Transformation};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -62,10 +62,10 @@ fn get_or_create_view(
     theme_colors: TerminalThemeColors,
     cx: &mut Context<BlockView>,
 ) -> Entity<TerminalView> {
-    if let Ok(store) = view_cache().lock() {
-        if let Some(view) = store.get(cache_key) {
-            return view.clone();
-        }
+    if let Ok(store) = view_cache().lock()
+        && let Some(view) = store.get(cache_key)
+    {
+        return view.clone();
     }
 
     let terminal_clone = terminal.clone();
@@ -159,8 +159,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         if live_terminal.is_none() && output.is_empty() && !tool_finished {
             debug!(
                 "TerminalCardRenderer: no live terminal/output yet for running tool_id='{}', command='{}'",
-                tool.id,
-                command_line_param
+                tool.id, command_line_param
             );
             if !command_line_param.is_empty() {
                 // If the session is externally locked, show "Running…" instead of
@@ -429,10 +428,10 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                         // pool terminal is display-only (write_to_pty is a
                         // no-op), so the real PTY (foreground or background)
                         // is reached via the session service by tool_id.
-                        if let Some(gpui) = cx.try_global::<Gpui>().cloned() {
-                            if let Some(session_id) = gpui.get_current_session_id() {
-                                gpui.cmd_interrupt_terminal(session_id, tool_id_for_stop.clone());
-                            }
+                        if let Some(gpui) = cx.try_global::<Gpui>().cloned()
+                            && let Some(session_id) = gpui.get_current_session_id()
+                        {
+                            gpui.cmd_interrupt_terminal(session_id, tool_id_for_stop.clone());
                         }
                     }),
             );
@@ -649,15 +648,14 @@ impl TerminalCardRenderer {
                                         })
                                         .on_click(move |_event, _window, cx| {
                                             cx.stop_propagation();
-                                            if let Some(gpui) = cx.try_global::<Gpui>().cloned() {
-                                                if let Some(session_id) =
+                                            if let Some(gpui) = cx.try_global::<Gpui>().cloned()
+                                                && let Some(session_id) =
                                                     gpui.get_current_session_id()
-                                                {
-                                                    gpui.cmd_interrupt_terminal(
-                                                        session_id,
-                                                        tool_id_for_stop.clone(),
-                                                    );
-                                                }
+                                            {
+                                                gpui.cmd_interrupt_terminal(
+                                                    session_id,
+                                                    tool_id_for_stop.clone(),
+                                                );
                                             }
                                         }),
                                 )

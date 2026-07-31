@@ -47,10 +47,10 @@ fn install_system_skills_into(system_root: &Path, bundled_enabled: bool) -> Resu
     let fingerprint = compute_fingerprint();
     let fingerprint_path = system_root.join(FINGERPRINT_FILE);
 
-    if let Ok(existing) = fs::read_to_string(&fingerprint_path) {
-        if existing.trim() == fingerprint {
-            return Ok(());
-        }
+    if let Ok(existing) = fs::read_to_string(&fingerprint_path)
+        && existing.trim() == fingerprint
+    {
+        return Ok(());
     }
 
     // The directory is fully managed by us, so replace it wholesale.
@@ -98,8 +98,8 @@ fn compute_fingerprint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::loader::discover_skills_in;
     use crate::skills::SkillScope;
+    use crate::skills::loader::discover_skills_in;
     use tempfile::tempdir;
 
     #[test]

@@ -8,7 +8,7 @@
 //! - When logged in: email, plan type, token status, and logout/re-login buttons
 
 use super::ProviderForm;
-use gpui::{div, prelude::*, px, App, Context, SharedString, Task, Window};
+use gpui::{App, Context, SharedString, Task, Window, div, prelude::*, px};
 use gpui_component::ActiveTheme;
 use llm::codex_auth::{self, CodexAuthState, CodexTokenStorage, ProvidersJsonTokenStorage};
 use serde_json::Value;

@@ -53,8 +53,7 @@ pub fn all_commands() -> &'static [SlashCommand] {
         SlashCommand {
             name: "permissions",
             aliases: &[],
-            description:
-                "Show or set the permission tier: /permissions [bypass-all|outward-tools|write-tools|all-tools]",
+            description: "Show or set the permission tier: /permissions [bypass-all|outward-tools|write-tools|all-tools]",
         },
         SlashCommand {
             name: "allow",

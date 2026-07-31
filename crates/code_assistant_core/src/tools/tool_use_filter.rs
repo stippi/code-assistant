@@ -1,6 +1,6 @@
 //! Tool use filtering system to control which tool blocks are allowed and when to truncate responses
 
-use crate::tools::core::{capabilities, ToolRegistry};
+use crate::tools::core::{ToolRegistry, capabilities};
 
 /// Trait for filtering tool use blocks during parsing
 /// This allows controlling which tools can be used and when to stop parsing

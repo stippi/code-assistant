@@ -34,14 +34,14 @@ impl ToolInterceptor for SkillSnapshotHook {
 
         // Snapshot onto the last assistant node for branch reconstruction.
         for &node_id in ctx.active_path.iter().rev() {
-            if let Some(node) = ctx.message_nodes.get(&node_id) {
-                if node.message.role == llm::MessageRole::Assistant {
-                    if let Some(node_mut) = ctx.message_nodes.get_mut(&node_id) {
-                        node_mut.set_active_skills_snapshot(active_skills);
-                        trace!("Saved active-skills snapshot to assistant node {}", node_id);
-                    }
-                    return;
+            if let Some(node) = ctx.message_nodes.get(&node_id)
+                && node.message.role == llm::MessageRole::Assistant
+            {
+                if let Some(node_mut) = ctx.message_nodes.get_mut(&node_id) {
+                    node_mut.set_active_skills_snapshot(active_skills);
+                    trace!("Saved active-skills snapshot to assistant node {}", node_id);
                 }
+                return;
             }
         }
         trace!("No assistant message found to save active-skills snapshot");

@@ -135,11 +135,11 @@ impl SessionWatcher {
             match notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => {
                     for path in &event.paths {
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            if is_watched_config_change(name) {
-                                trace!("Config watcher: {name} changed ({:?})", event.kind);
-                                *config_dirty_for_callback.lock().unwrap() = true;
-                            }
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                            && is_watched_config_change(name)
+                        {
+                            trace!("Config watcher: {name} changed ({:?})", event.kind);
+                            *config_dirty_for_callback.lock().unwrap() = true;
                         }
                     }
                 }
@@ -326,13 +326,13 @@ async fn flush_loop(
         // 3) Session file changes → reload currently viewed session
         if !snapshot.changed_session_ids.is_empty() {
             let current = current_session_id.lock().unwrap().clone();
-            if let Some(current_id) = current {
-                if snapshot.changed_session_ids.contains(&current_id) {
-                    debug!("Watcher flush: reloading current session {current_id}");
-                    let _ = event_tx.try_send(UiEvent::RefreshCurrentSession {
-                        session_id: current_id,
-                    });
-                }
+            if let Some(current_id) = current
+                && snapshot.changed_session_ids.contains(&current_id)
+            {
+                debug!("Watcher flush: reloading current session {current_id}");
+                let _ = event_tx.try_send(UiEvent::RefreshCurrentSession {
+                    session_id: current_id,
+                });
             }
         }
     }

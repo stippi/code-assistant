@@ -1,5 +1,5 @@
 use gpui::{
-    canvas, point, prelude::*, px, FillOptions, FillRule, Hsla, PathBuilder, PathStyle, Pixels,
+    FillOptions, FillRule, Hsla, PathBuilder, PathStyle, Pixels, canvas, point, prelude::*, px,
 };
 use std::f32::consts::PI;
 

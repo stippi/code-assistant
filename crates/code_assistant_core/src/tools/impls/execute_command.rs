@@ -1,10 +1,10 @@
-use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
-};
 use crate::tools::ToolServicesAccess;
-use crate::ui::streaming::DisplayFragment;
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+};
 use crate::ui::UserInterface;
-use anyhow::{anyhow, Result};
+use crate::ui::streaming::DisplayFragment;
+use anyhow::{Result, anyhow};
 use command_executor::{SandboxCommandRequest, StreamingCallback};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -265,12 +265,12 @@ impl Tool for ExecuteCommandTool {
         let working_dir_path = input.working_dir.as_ref().map(PathBuf::from);
 
         // Check if working directory is absolute and handle it properly
-        if let Some(dir) = &working_dir_path {
-            if dir.is_absolute() {
-                return Err(anyhow!(
-                    "Working directory must be relative to project root"
-                ));
-            }
+        if let Some(dir) = &working_dir_path
+            && dir.is_absolute()
+        {
+            return Err(anyhow!(
+                "Working directory must be relative to project root"
+            ));
         }
 
         // Prepare effective working directory
@@ -302,7 +302,7 @@ impl Tool for ExecuteCommandTool {
                 PermissionDecision::Denied => {
                     return Err(anyhow!(
                         "Command execution cancelled: user denied permission"
-                    ))
+                    ));
                 }
                 PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession => {
                     bypass_sandbox = true;
@@ -481,13 +481,13 @@ impl ExecuteCommandTool {
         // ToolOutput chunk (model result + text frontends).
         let collected = session.collect_output(yield_time).await;
 
-        if !collected.output.is_empty() {
-            if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
-                let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
-                    tool_id: tool_id.clone(),
-                    chunk: collected.output.clone(),
-                });
-            }
+        if !collected.output.is_empty()
+            && let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id)
+        {
+            let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
+                tool_id: tool_id.clone(),
+                chunk: collected.output.clone(),
+            });
         }
 
         let output = match collected.status {
@@ -530,8 +530,8 @@ mod tests {
     use crate::mocks::ToolTestFixture;
     use command_executor::CommandOutput;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
     use tools_core::permissions::PermissionMediator;
 

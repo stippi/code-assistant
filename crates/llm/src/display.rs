@@ -42,11 +42,7 @@ impl fmt::Display for ContentBlock {
                 ..
             } => {
                 let error_suffix = if let Some(is_err) = is_error {
-                    if *is_err {
-                        " (ERROR)"
-                    } else {
-                        ""
-                    }
+                    if *is_err { " (ERROR)" } else { "" }
                 } else {
                     ""
                 };

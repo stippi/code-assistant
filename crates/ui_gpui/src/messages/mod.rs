@@ -8,9 +8,9 @@ use crate::Gpui;
 use code_assistant_core::session::instance::SessionActivityState;
 
 use gpui::{
-    div, list, prelude::*, px, rems, App, Bounds, Context, Entity, FocusHandle, Focusable,
-    ListAlignment, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, SharedString,
-    Task, Window,
+    App, Bounds, Context, Entity, FocusHandle, Focusable, ListAlignment, ListState, MouseButton,
+    MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Task, Window, div, list, prelude::*, px,
+    rems,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon};
@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use scroll::{
-    edge_scroll_velocity, ANIMATION_FRAME_MS, ANIMATION_IDLE_MS, DAMPING_C, EDGE_SCROLL_FRAME_MS,
-    MIN_DISTANCE_TO_STOP, MIN_SPEED_TO_STOP, SPRING_K,
+    ANIMATION_FRAME_MS, ANIMATION_IDLE_MS, DAMPING_C, EDGE_SCROLL_FRAME_MS, MIN_DISTANCE_TO_STOP,
+    MIN_SPEED_TO_STOP, SPRING_K, edge_scroll_velocity,
 };
 
 use super::blocks::MessageContainer;
@@ -696,10 +696,10 @@ impl Render for MessagesView {
             .on_children_prepainted({
                 let list_bounds = self.list_bounds.clone();
                 move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
-                    if let Some(first) = bounds_vec.first() {
-                        if list_bounds.get() != *first {
-                            list_bounds.set(*first);
-                        }
+                    if let Some(first) = bounds_vec.first()
+                        && list_bounds.get() != *first
+                    {
+                        list_bounds.set(*first);
                     }
                 }
             })

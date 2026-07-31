@@ -30,12 +30,12 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{Config as TermConfig, RenderableCursor, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler};
-use alacritty_terminal::{tty, Term};
+use alacritty_terminal::{Term, tty};
 
 use anyhow::{Context as _, Result};
-use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use futures::StreamExt;
-use gpui::{px, Bounds, Context, EventEmitter, Pixels, Point, Size, Task};
+use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use gpui::{Bounds, Context, EventEmitter, Pixels, Point, Size, Task, px};
 
 // Re-export types needed by terminal_view for rendering
 pub use alacritty_terminal::grid::Dimensions as AlacDimensions;
@@ -859,4 +859,4 @@ fn shell_command_flag() -> &'static str {
 // Styled terminal output for static rendering lives in the gpui-free
 // `terminal_output` crate; re-exported here for the rendering-side consumers.
 use terminal_output::trim_trailing_whitespace;
-pub use terminal_output::{get_indexed_color_rgb, StyledLine, StyledSpan};
+pub use terminal_output::{StyledLine, StyledSpan, get_indexed_color_rgb};

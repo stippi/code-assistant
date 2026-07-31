@@ -26,12 +26,12 @@
 
 use crate::session::{SessionService, TurnDispatch, TurnRequest, TurnStatus};
 use agent_core::ui::ToolStatus;
+use agent_orchestration::OwnerKey;
 use agent_orchestration::goals::{
-    goal_turn_text, AttemptCompletion, ControllerDecision, GoalRepository, GoalState, GoalStore,
-    TurnOutcome as GoalTurnOutcome,
+    AttemptCompletion, ControllerDecision, GoalRepository, GoalState, GoalStore,
+    TurnOutcome as GoalTurnOutcome, goal_turn_text,
 };
 use agent_orchestration::waits::{WaitRepository, WaitStore};
-use agent_orchestration::OwnerKey;
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use std::path::PathBuf;
@@ -409,7 +409,7 @@ mod tests {
     use super::*;
     use crate::persistence::FileSessionPersistence;
     use crate::session::service::{
-        default_project_manager_factory, AgentRuntimeOptions, LlmClientFactory,
+        AgentRuntimeOptions, LlmClientFactory, default_project_manager_factory,
     };
     use crate::session::{SessionConfig, SessionManager};
     use agent_orchestration::goals::{

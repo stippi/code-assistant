@@ -1,9 +1,9 @@
+use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
 };
 use crate::tools::parse::PathWithLineRange;
-use crate::tools::ToolServicesAccess;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -251,14 +251,14 @@ impl Tool for ReadFilesTool {
 
     fn spec(&self) -> ToolSpec {
         let description = concat!(
-          "Read files in a project. You can specify line ranges by appending them to the file path using a colon.\n",
-          "\n",
-          "Examples:\n",
-          "- file.txt - Read the entire file. Prefer this form unless you are absolutely sure you need only a section of the file.\n",
-          "- file.txt:10-20 - Read only lines 10 to 20\n",
-          "- file.txt:10- - Read from line 10 to the end\n",
-          "- file.txt:-20 - Read from the beginning to line 20\n",
-          "- file.txt:15 - Read only line 15"
+            "Read files in a project. You can specify line ranges by appending them to the file path using a colon.\n",
+            "\n",
+            "Examples:\n",
+            "- file.txt - Read the entire file. Prefer this form unless you are absolutely sure you need only a section of the file.\n",
+            "- file.txt:10-20 - Read only lines 10 to 20\n",
+            "- file.txt:10- - Read from line 10 to the end\n",
+            "- file.txt:-20 - Read from the beginning to line 20\n",
+            "- file.txt:15 - Read only line 15"
         );
         ToolSpec {
             name: "read_files".into(),

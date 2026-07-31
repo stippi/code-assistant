@@ -13,7 +13,7 @@ use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 
-use super::{status_color, ToolRenderer};
+use super::{ToolRenderer, status_color};
 use crate::message::ToolUseBlock;
 use crate::text_util::truncate_with_ellipsis;
 use code_assistant_core::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
@@ -127,13 +127,13 @@ fn sub_agent_lines(tool_block: &ToolUseBlock) -> Vec<Line<'static>> {
     }
 
     // ── Tool-level error message ───────────────────────────────────────────
-    if tool_block.status == ToolStatus::Error {
-        if let Some(message) = &tool_block.status_message {
-            lines.push(Line::styled(
-                format!("  {message}"),
-                Style::default().fg(Color::LightRed),
-            ));
-        }
+    if tool_block.status == ToolStatus::Error
+        && let Some(message) = &tool_block.status_message
+    {
+        lines.push(Line::styled(
+            format!("  {message}"),
+            Style::default().fg(Color::LightRed),
+        ));
     }
 
     lines
@@ -190,9 +190,11 @@ mod tests {
 
     #[test]
     fn test_supports_spawn_agent() {
-        assert!(SubAgentToolRenderer
-            .supported_tools()
-            .contains(&"spawn_agent"));
+        assert!(
+            SubAgentToolRenderer
+                .supported_tools()
+                .contains(&"spawn_agent")
+        );
     }
 
     #[test]

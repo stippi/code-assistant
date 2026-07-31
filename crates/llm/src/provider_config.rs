@@ -624,19 +624,14 @@ pub fn edit_format_for_model(model_name: &str) -> EditFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
 
     #[test]
     fn test_env_var_substitution() {
-        // Set a test environment variable
-        env::set_var("TEST_VAR", "test_value");
-
-        let input = "prefix_${TEST_VAR}_suffix";
-        let result = ConfigurationSystem::substitute_env_vars_in_string(input).unwrap();
-        assert_eq!(result, "prefix_test_value_suffix");
-
-        // Clean up
-        env::remove_var("TEST_VAR");
+        temp_env::with_var("TEST_VAR", Some("test_value"), || {
+            let input = "prefix_${TEST_VAR}_suffix";
+            let result = ConfigurationSystem::substitute_env_vars_in_string(input).unwrap();
+            assert_eq!(result, "prefix_test_value_suffix");
+        });
     }
 
     #[test]
@@ -657,30 +652,30 @@ mod tests {
 
     #[test]
     fn test_json_value_substitution() {
-        // Set test environment variables
-        env::set_var("TEST_API_KEY", "secret_key");
-        env::set_var("TEST_URL", "https://api.example.com");
+        temp_env::with_vars(
+            [
+                ("TEST_API_KEY", Some("secret_key")),
+                ("TEST_URL", Some("https://api.example.com")),
+            ],
+            || {
+                let input = serde_json::json!({
+                    "api_key": "${TEST_API_KEY}",
+                    "base_url": "${TEST_URL}",
+                    "nested": {
+                        "value": "${TEST_API_KEY}"
+                    },
+                    "array": ["${TEST_URL}", "static_value"]
+                });
 
-        let input = serde_json::json!({
-            "api_key": "${TEST_API_KEY}",
-            "base_url": "${TEST_URL}",
-            "nested": {
-                "value": "${TEST_API_KEY}"
+                let result = ConfigurationSystem::substitute_env_vars_in_value(input).unwrap();
+
+                assert_eq!(result["api_key"], "secret_key");
+                assert_eq!(result["base_url"], "https://api.example.com");
+                assert_eq!(result["nested"]["value"], "secret_key");
+                assert_eq!(result["array"][0], "https://api.example.com");
+                assert_eq!(result["array"][1], "static_value");
             },
-            "array": ["${TEST_URL}", "static_value"]
-        });
-
-        let result = ConfigurationSystem::substitute_env_vars_in_value(input).unwrap();
-
-        assert_eq!(result["api_key"], "secret_key");
-        assert_eq!(result["base_url"], "https://api.example.com");
-        assert_eq!(result["nested"]["value"], "secret_key");
-        assert_eq!(result["array"][0], "https://api.example.com");
-        assert_eq!(result["array"][1], "static_value");
-
-        // Clean up
-        env::remove_var("TEST_API_KEY");
-        env::remove_var("TEST_URL");
+        );
     }
 
     #[test]
@@ -693,11 +688,10 @@ mod tests {
             "first call wins"
         );
 
-        env::set_var("CODE_ASSISTANT_CONFIG_DIR", "/env/dir");
-        let dirs = ConfigurationSystem::config_directories();
-        env::remove_var("CODE_ASSISTANT_CONFIG_DIR");
-
-        assert_eq!(dirs, vec![PathBuf::from("/pal/home")]);
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some("/env/dir"), || {
+            let dirs = ConfigurationSystem::config_directories();
+            assert_eq!(dirs, vec![PathBuf::from("/pal/home")]);
+        });
     }
 
     #[test]

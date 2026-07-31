@@ -1,5 +1,5 @@
 use agent_client_protocol::schema as acp;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -17,8 +17,8 @@ use fs_explorer::file_updater::{
     reconstruct_formatted_replacements,
 };
 use fs_explorer::{
-    is_path_gitignored, CodeExplorer, Explorer, FileEncoding, FileFormat, FileReplacement,
-    FileTreeEntry, SearchOptions, SearchResult,
+    CodeExplorer, Explorer, FileEncoding, FileFormat, FileReplacement, FileTreeEntry,
+    SearchOptions, SearchResult, is_path_gitignored,
 };
 use tokio::task::spawn_blocking;
 
@@ -225,10 +225,8 @@ impl CodeExplorer for AcpCodeExplorer {
 
     async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
         let mut new_content = content.to_string();
-        if append {
-            if let Ok((existing, _)) = self.read_entire(path).await {
-                new_content = format!("{existing}{content}");
-            }
+        if append && let Ok((existing, _)) = self.read_entire(path).await {
+            new_content = format!("{existing}{content}");
         }
         self.write_entire(path, &new_content).await
     }

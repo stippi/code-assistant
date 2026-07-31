@@ -12,7 +12,7 @@ use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use code_assistant_core::persistence::SessionModelConfig;
 use code_assistant_core::session::{SessionConfig, SessionManager};
 use code_assistant_core::skills::{
-    discover_session_catalog, load_skill_payload, render_skill_invocation_message, SkillsConfig,
+    SkillsConfig, discover_session_catalog, load_skill_payload, render_skill_invocation_message,
 };
 use code_assistant_core::ui::UserInterface;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
@@ -1016,15 +1016,14 @@ impl AgentState {
                         content_blocks = vec![llm::ContentBlock::new_text(message)];
                         // Record the activation so compaction can remind the model.
                         let mut manager = self.session_manager.lock().await;
-                        if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
-                            if !session
+                        if let Some(session) = manager.get_session_mut(&arguments.session_id.0)
+                            && !session
                                 .session
                                 .active_skills
                                 .iter()
                                 .any(|s| s == &skill.name)
-                            {
-                                session.session.active_skills.push(skill.name.clone());
-                            }
+                        {
+                            session.session.active_skills.push(skill.name.clone());
                         }
                         let _ = manager.save_session(&arguments.session_id.0);
                     }

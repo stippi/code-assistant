@@ -40,11 +40,11 @@ impl<'a> Widget for ToolWidget<'a> {
         }
 
         // Try a registered renderer first.
-        if let Some(registry) = ToolRendererRegistry::global() {
-            if let Some(renderer) = registry.get(&self.tool_block.name) {
-                renderer.render(self.tool_block, area, buf);
-                return;
-            }
+        if let Some(registry) = ToolRendererRegistry::global()
+            && let Some(renderer) = registry.get(&self.tool_block.name)
+        {
+            renderer.render(self.tool_block, area, buf);
+            return;
         }
 
         // ── Fallback: generic rendering ──────────────────────────────────
@@ -148,38 +148,38 @@ impl<'a> ToolWidget<'a> {
         }
 
         // Error status message
-        if let Some(ref message) = self.tool_block.status_message {
-            if self.tool_block.status == ToolStatus::Error && current_y < area.y + area.height {
-                let display_text = truncate_to_width(message, area.width as usize);
-                buf.set_string(
-                    area.x + 2,
-                    current_y,
-                    display_text,
-                    Style::default().fg(Color::LightRed),
-                );
-                current_y += 1;
-            }
+        if let Some(ref message) = self.tool_block.status_message
+            && self.tool_block.status == ToolStatus::Error
+            && current_y < area.y + area.height
+        {
+            let display_text = truncate_to_width(message, area.width as usize);
+            buf.set_string(
+                area.x + 2,
+                current_y,
+                display_text,
+                Style::default().fg(Color::LightRed),
+            );
+            current_y += 1;
         }
 
         // Generic tool output rendered verbatim. Tools with richer output
         // (e.g. spawn_agent's sub-agent activity) register their own
         // `ToolRenderer` and never reach this fallback.
-        if let Some(ref output) = self.tool_block.output {
-            if !output.is_empty() {
-                for line in output.lines() {
-                    if current_y >= area.y + area.height {
-                        break;
-                    }
-                    let truncated =
-                        truncate_with_ellipsis(line, area.width.saturating_sub(4) as usize);
-                    buf.set_string(
-                        area.x + 2,
-                        current_y,
-                        truncated.as_ref(),
-                        Style::default().fg(Color::Gray),
-                    );
-                    current_y += 1;
+        if let Some(ref output) = self.tool_block.output
+            && !output.is_empty()
+        {
+            for line in output.lines() {
+                if current_y >= area.y + area.height {
+                    break;
                 }
+                let truncated = truncate_with_ellipsis(line, area.width.saturating_sub(4) as usize);
+                buf.set_string(
+                    area.x + 2,
+                    current_y,
+                    truncated.as_ref(),
+                    Style::default().fg(Color::Gray),
+                );
+                current_y += 1;
             }
         }
     }

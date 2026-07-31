@@ -194,9 +194,11 @@ mod tests {
             r#"{ "servers": { "jira": { "command": "npx", "env": { "T": "${OOPS" } } } }"#,
         )
         .unwrap();
-        assert!(config
-            .substitute_env_values(|_| Some("x".to_string()))
-            .is_err());
+        assert!(
+            config
+                .substitute_env_values(|_| Some("x".to_string()))
+                .is_err()
+        );
     }
 
     #[test]

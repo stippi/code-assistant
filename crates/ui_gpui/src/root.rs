@@ -8,7 +8,7 @@ use super::main_screen::{MainScreen, MainScreenEvent};
 use super::messages::MessagesView;
 use super::settings_screen::{SettingsScreen, SettingsScreenEvent};
 use super::sidebar::SessionSidebar;
-use gpui::{div, prelude::*, App, Context, Entity, FocusHandle, Focusable, Subscription};
+use gpui::{App, Context, Entity, FocusHandle, Focusable, Subscription, div, prelude::*};
 use tracing::debug;
 
 /// Which top-level view is currently displayed.

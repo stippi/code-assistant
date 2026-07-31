@@ -10,7 +10,7 @@ use command_executor::{CommandExecutor, DefaultCommandExecutor, SandboxedCommand
 use llm::Message;
 use sandbox::{SandboxContext, SandboxPolicy};
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
 use tools_core::permissions::{PermissionMediator, ToolPermissions};
 
 /// Cancellation registry keyed by the parent `spawn_agent` tool id.
@@ -397,10 +397,10 @@ fn compute_sub_agent_usage(messages: &[Message], model_name: &str) -> SubAgentUs
     }
 
     // Resolve the model's context token limit
-    if let Ok(config_system) = llm::provider_config::ConfigurationSystem::load() {
-        if let Some(model) = config_system.get_model(model_name) {
-            total.context_limit = Some(model.context_token_limit);
-        }
+    if let Ok(config_system) = llm::provider_config::ConfigurationSystem::load()
+        && let Some(model) = config_system.get_model(model_name)
+    {
+        total.context_limit = Some(model.context_token_limit);
     }
 
     total
@@ -639,20 +639,20 @@ impl SubAgentUiAdapter {
         let mut output = self.output.lock().unwrap();
         let id_map = self.tool_id_to_index.lock().unwrap();
 
-        if let Some(&index) = id_map.get(tool_id) {
-            if let Some(tool) = output.tools.get_mut(index) {
-                // Append to existing parameter value (streaming may send chunks)
-                let entry = tool.parameters.entry(name.to_string()).or_default();
-                entry.push_str(value);
+        if let Some(&index) = id_map.get(tool_id)
+            && let Some(tool) = output.tools.get_mut(index)
+        {
+            // Append to existing parameter value (streaming may send chunks)
+            let entry = tool.parameters.entry(name.to_string()).or_default();
+            entry.push_str(value);
 
-                // Update title from template using collected parameters
-                if let Some(new_title) = crate::tools::core::generate_tool_title(
-                    &tool.name,
-                    &tool.parameters,
-                    self.tool_registry.as_ref(),
-                ) {
-                    tool.title = Some(new_title);
-                }
+            // Update title from template using collected parameters
+            if let Some(new_title) = crate::tools::core::generate_tool_title(
+                &tool.name,
+                &tool.parameters,
+                self.tool_registry.as_ref(),
+            ) {
+                tool.title = Some(new_title);
             }
         }
     }

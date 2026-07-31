@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, warn};
 
 /// Prevents the system from going to idle sleep while any agent is running.
@@ -92,10 +92,10 @@ impl SleepInhibitor {
     }
 
     fn release_lock(&self) {
-        if let Ok(mut guard) = self.wake_lock.lock() {
-            if guard.take().is_some() {
-                debug!("System sleep inhibition released (no agents running)");
-            }
+        if let Ok(mut guard) = self.wake_lock.lock()
+            && guard.take().is_some()
+        {
+            debug!("System sleep inhibition released (no agents running)");
         }
     }
 }

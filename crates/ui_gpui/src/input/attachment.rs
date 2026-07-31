@@ -3,8 +3,8 @@ use crate::shared::image;
 use code_assistant_core::persistence::DraftAttachment;
 
 use gpui::{
-    div, img, prelude::*, px, ClickEvent, Context, FocusHandle, Focusable, ImageSource,
-    InteractiveElement, ObjectFit, SharedString, Window,
+    ClickEvent, Context, FocusHandle, Focusable, ImageSource, InteractiveElement, ObjectFit,
+    SharedString, Window, div, img, prelude::*, px,
 };
 use gpui_component::ActiveTheme;
 

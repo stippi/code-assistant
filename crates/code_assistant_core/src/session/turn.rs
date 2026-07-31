@@ -22,8 +22,8 @@ use crate::ui::UiEvent;
 use agent_core::ui::{DisplayFragment, ToolStatus};
 use anyhow::Result;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 

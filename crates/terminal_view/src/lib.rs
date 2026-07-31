@@ -10,13 +10,12 @@
 //! 1. `prepaint()`: Read the terminal content snapshot, compute font metrics,
 //!    convert cells to `BatchedTextRun`s (styled text) and `LayoutRect`s (backgrounds)
 //! 2. `paint()`: Draw backgrounds, then text, then cursor
-use gpui::{div, Font, FontStyle, FontWeight, TextRun};
 use gpui::{
-    fill, outline, point, px, relative, size, App, BorderStyle, Bounds, ContentMask, Context,
-    Element, Entity, EventEmitter, GlobalElementId, Hsla, InspectorElementId, IntoElement,
-    LayoutId, ParentElement, Pixels, Point, Rems, Render, SharedString, Size, Style, Styled,
-    Window,
+    App, BorderStyle, Bounds, ContentMask, Context, Element, Entity, EventEmitter, GlobalElementId,
+    Hsla, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point, Rems, Render,
+    SharedString, Size, Style, Styled, Window, fill, outline, point, px, relative, size,
 };
+use gpui::{Font, FontStyle, FontWeight, TextRun, div};
 use terminal::{AlacCell, AlacCellFlags, GridPoint, IndexedCell, Terminal, TerminalBounds};
 
 // Re-exports
@@ -745,14 +744,14 @@ fn flush_bg_region(
     bg_start: &mut Option<(GridPoint, Hsla)>,
     count: usize,
 ) {
-    if let Some((point, color)) = bg_start.take() {
-        if count > 0 {
-            rects.push(LayoutRect {
-                point,
-                num_of_cells: count,
-                color,
-            });
-        }
+    if let Some((point, color)) = bg_start.take()
+        && count > 0
+    {
+        rects.push(LayoutRect {
+            point,
+            num_of_cells: count,
+            color,
+        });
     }
 }
 

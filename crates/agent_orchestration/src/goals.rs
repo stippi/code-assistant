@@ -2141,10 +2141,12 @@ mod tests {
         assert!(claimed.in_flight.is_some());
         assert!(claimed.revision > snapshot.revision);
         assert_eq!(store.get(&snapshot.id).unwrap().unwrap(), claimed);
-        assert!(store
-            .claim_attempt(&snapshot, at(2026, 7, 14, 9, 2))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .claim_attempt(&snapshot, at(2026, 7, 14, 9, 2))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2178,17 +2180,19 @@ mod tests {
         let replacement = store.claim_attempt(&abandoned, now).unwrap().unwrap();
 
         assert_ne!(stale_claim.in_flight, replacement.in_flight);
-        assert!(store
-            .finish_attempt(
-                &stale_claim,
-                AttemptCompletion::Evaluated(Evaluation::new(
-                    AttemptVerdict::Satisfied,
-                    "stale result",
-                )),
-                now,
-            )
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .finish_attempt(
+                    &stale_claim,
+                    AttemptCompletion::Evaluated(Evaluation::new(
+                        AttemptVerdict::Satisfied,
+                        "stale result",
+                    )),
+                    now,
+                )
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             store.get(&snapshot.id).unwrap().unwrap().in_flight,
             replacement.in_flight
@@ -2312,10 +2316,12 @@ mod tests {
         );
 
         // Idempotent: a second message preempts nothing new.
-        assert!(store
-            .preempt_owner(&owner(), at(2026, 7, 14, 10, 1))
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .preempt_owner(&owner(), at(2026, 7, 14, 10, 1))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2350,14 +2356,18 @@ mod tests {
             .add_new(owner(), "obj", contract(), Budget::turns(5), now)
             .unwrap();
         // Still Running (never parked): waking is a no-op.
-        assert!(!store
-            .wake_waiting(&g.id, None, at(2026, 7, 14, 10, 0))
-            .unwrap());
+        assert!(
+            !store
+                .wake_waiting(&g.id, None, at(2026, 7, 14, 10, 0))
+                .unwrap()
+        );
         assert_eq!(store.get(&g.id).unwrap().unwrap().state, GoalState::Running);
         // An unknown goal is a no-op too.
-        assert!(!store
-            .wake_waiting("ghost", None, at(2026, 7, 14, 10, 0))
-            .unwrap());
+        assert!(
+            !store
+                .wake_waiting("ghost", None, at(2026, 7, 14, 10, 0))
+                .unwrap()
+        );
     }
 
     #[test]

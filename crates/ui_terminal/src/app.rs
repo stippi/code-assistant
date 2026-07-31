@@ -12,17 +12,17 @@ use anyhow::Result;
 use code_assistant_core::config;
 use code_assistant_core::config::AgentRunConfig;
 use code_assistant_core::persistence::FileSessionPersistence;
+use code_assistant_core::session::SessionConfig;
 use code_assistant_core::session::manager::SessionManager;
 use code_assistant_core::session::service::{AgentRuntimeOptions, SessionService};
-use code_assistant_core::session::SessionConfig;
 use code_assistant_core::ui::{UiEvent, UserInterface};
 
 use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::Mutex;
 use tokio::time::Duration;
@@ -1332,13 +1332,12 @@ impl TerminalTuiApp {
                         Err(StreamError::Lagged { missed }) => {
                             tracing::warn!("Event stream lagged ({missed} missed) — resyncing");
                             let current = app_state.lock().await.current_session_id.clone();
-                            if let Some(session_id) = current {
-                                if let Ok(snapshot) =
+                            if let Some(session_id) = current
+                                && let Ok(snapshot) =
                                     service_for_bridge.load_session(session_id, None).await
-                                {
-                                    for event in snapshot.connect_events() {
-                                        let _ = terminal_ui.send_event(event).await;
-                                    }
+                            {
+                                for event in snapshot.connect_events() {
+                                    let _ = terminal_ui.send_event(event).await;
                                 }
                             }
                         }

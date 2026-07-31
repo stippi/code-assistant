@@ -9,7 +9,7 @@
 //! `SpawnAgentInstructionsRenderer` (ParameterRenderer) with a unified
 //! `ToolBlockRenderer`.
 
-use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
+use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::context_indicator::ContextIndicator;
 use crate::shared::file_icons;
@@ -17,9 +17,9 @@ use code_assistant_core::agent::sub_agent::{SubAgentActivity, SubAgentOutput, Su
 use code_assistant_core::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, percentage, px, rems, svg, Animation, AnimationExt, ClickEvent, Context, Element, Entity,
-    InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
-    Styled, Transformation, Window,
+    Animation, AnimationExt, ClickEvent, Context, Element, Entity, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div,
+    percentage, px, rems, svg,
 };
 use gpui_component::text::{TextView, TextViewState};
 use std::time::Duration;
@@ -313,22 +313,22 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 .text_size(rems(0.8125));
 
             // Instructions (compact, muted)
-            if let Some(instructions) = instructions {
-                if !instructions.is_empty() {
-                    body = body.child(
-                        div()
-                            .pb_1()
-                            .mb_1()
-                            .border_b_1()
-                            .border_color(theme.border)
-                            .child(
-                                div()
-                                    .text_size(rems(0.75))
-                                    .text_color(theme.muted_foreground.opacity(0.7))
-                                    .child(instructions.to_string()),
-                            ),
-                    );
-                }
+            if let Some(instructions) = instructions
+                && !instructions.is_empty()
+            {
+                body = body.child(
+                    div()
+                        .pb_1()
+                        .mb_1()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .text_size(rems(0.75))
+                                .text_color(theme.muted_foreground.opacity(0.7))
+                                .child(instructions.to_string()),
+                        ),
+                );
             }
 
             // Tool call history + activity + status + response (from parsed output)
@@ -340,12 +340,11 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
 
                 // Activity line with spinner (inside body, only when not running —
                 // running state already shown in header)
-                if !is_running {
-                    if let Some(ref activity) = parsed.activity {
-                        if let Some(el) = render_activity_line(activity, theme) {
-                            body = body.child(el);
-                        }
-                    }
+                if !is_running
+                    && let Some(ref activity) = parsed.activity
+                    && let Some(el) = render_activity_line(activity, theme)
+                {
+                    body = body.child(el);
                 }
 
                 // Cancelled / error status
@@ -354,16 +353,16 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                 }
 
                 // Final response as markdown
-                if let Some(ref response) = parsed.response {
-                    if !response.is_empty() {
-                        body = body.child(render_response(
-                            response,
-                            theme,
-                            card_ctx.markdown_state.as_ref(),
-                            window,
-                            cx,
-                        ));
-                    }
+                if let Some(ref response) = parsed.response
+                    && !response.is_empty()
+                {
+                    body = body.child(render_response(
+                        response,
+                        theme,
+                        card_ctx.markdown_state.as_ref(),
+                        window,
+                        cx,
+                    ));
                 }
             } else if output_str.is_empty() && is_running {
                 // No output yet — show waiting indicator in body

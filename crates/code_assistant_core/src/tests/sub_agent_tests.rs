@@ -1,13 +1,13 @@
 //! Tests for the sub-agent feature (spawn_agent tool).
 
-use crate::agent::sub_agent::{SubAgentResult, SubAgentRunner};
 use crate::agent::SubAgentCancellationRegistry;
 use crate::agent::SubAgentMode;
+use crate::agent::sub_agent::{SubAgentResult, SubAgentRunner};
 use crate::tools::core::ToolScope;
 use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentOutput};
 use anyhow::Result;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A mock sub-agent runner for testing.
 struct MockSubAgentRunner {

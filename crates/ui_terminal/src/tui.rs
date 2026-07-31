@@ -6,12 +6,12 @@
 // synchronized update block to prevent flicker.
 
 use std::io;
-use std::io::stdout;
 use std::io::Stdout;
+use std::io::stdout;
 use std::panic;
 
-use crossterm::event::EnableBracketedPaste;
 use crossterm::SynchronizedUpdate;
+use crossterm::event::EnableBracketedPaste;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
@@ -143,16 +143,16 @@ impl Tui {
         let terminal = &mut self.terminal;
         let screen_size = terminal.size()?;
         let last_known_screen_size = terminal.last_known_screen_size;
-        if screen_size != last_known_screen_size {
-            if let Ok(cursor_pos) = terminal.get_cursor_position() {
-                let last_known_cursor_pos = terminal.last_known_cursor_pos;
-                if cursor_pos.y != last_known_cursor_pos.y {
-                    let offset = Offset {
-                        x: 0,
-                        y: cursor_pos.y as i32 - last_known_cursor_pos.y as i32,
-                    };
-                    return Ok(Some(terminal.viewport_area.offset(offset)));
-                }
+        if screen_size != last_known_screen_size
+            && let Ok(cursor_pos) = terminal.get_cursor_position()
+        {
+            let last_known_cursor_pos = terminal.last_known_cursor_pos;
+            if cursor_pos.y != last_known_cursor_pos.y {
+                let offset = Offset {
+                    x: 0,
+                    y: cursor_pos.y as i32 - last_known_cursor_pos.y as i32,
+                };
+                return Ok(Some(terminal.viewport_area.offset(offset)));
             }
         }
         Ok(None)

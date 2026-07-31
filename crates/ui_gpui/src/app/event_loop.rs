@@ -563,23 +563,23 @@ impl Gpui {
 
                 // If this is the current session, update the current project for parameter filtering
 
-                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
-                    if *current_session_id == metadata.id {
-                        // Store last_usage for the current session in a stable location
-                        // (not in chat_sessions, which can be overwritten by stale disk data)
-                        *self.current_session_last_usage.lock().unwrap() =
-                            Some(metadata.last_usage.clone());
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref()
+                    && *current_session_id == metadata.id
+                {
+                    // Store last_usage for the current session in a stable location
+                    // (not in chat_sessions, which can be overwritten by stale disk data)
+                    *self.current_session_last_usage.lock().unwrap() =
+                        Some(metadata.last_usage.clone());
 
-                        // Update MessagesView with current project
-                        self.update_messages_view(cx, |messages_view, _cx| {
-                            messages_view.set_current_project(metadata.initial_project.clone());
-                        });
+                    // Update MessagesView with current project
+                    self.update_messages_view(cx, |messages_view, _cx| {
+                        messages_view.set_current_project(metadata.initial_project.clone());
+                    });
 
-                        // Update all MessageContainers with current project
-                        self.update_all_messages(cx, |container, _cx| {
-                            container.set_current_project(metadata.initial_project.clone());
-                        });
-                    }
+                    // Update all MessageContainers with current project
+                    self.update_all_messages(cx, |container, _cx| {
+                        container.set_current_project(metadata.initial_project.clone());
+                    });
                 }
 
                 // Update the project sidebar entity specifically
@@ -612,30 +612,31 @@ impl Gpui {
                 });
 
                 // Update current session activity state for messages view
-                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
-                    if current_session_id == &session_id {
-                        *self.current_session_activity_state.lock().unwrap() =
-                            Some(activity_state.clone());
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref()
+                    && current_session_id == &session_id
+                {
+                    *self.current_session_activity_state.lock().unwrap() =
+                        Some(activity_state.clone());
 
-                        // Show/clear error banner based on session error state.
-                        // This ensures the banner appears immediately when the
-                        // currently viewed session enters the Errored state, and
-                        // clears when it transitions away (e.g. new agent starts).
-                        if let code_assistant_core::session::instance::SessionActivityState::Errored { message } =
-                            &activity_state
-                        {
-                            *self.current_error.lock().unwrap() = Some(message.clone());
-                        } else {
-                            // Clear any session error when state moves away from Errored
-                            // (but only if the current error came from this session —
-                            // we check by seeing if there's an error at all; backend
-                            // errors are also stored here but those are transient and
-                            // would have been cleared by now).
-                            *self.current_error.lock().unwrap() = None;
-                        }
-
-                        cx.refresh();
+                    // Show/clear error banner based on session error state.
+                    // This ensures the banner appears immediately when the
+                    // currently viewed session enters the Errored state, and
+                    // clears when it transitions away (e.g. new agent starts).
+                    if let code_assistant_core::session::instance::SessionActivityState::Errored {
+                        message,
+                    } = &activity_state
+                    {
+                        *self.current_error.lock().unwrap() = Some(message.clone());
+                    } else {
+                        // Clear any session error when state moves away from Errored
+                        // (but only if the current error came from this session —
+                        // we check by seeing if there's an error at all; backend
+                        // errors are also stored here but those are transient and
+                        // would have been cleared by now).
+                        *self.current_error.lock().unwrap() = None;
                     }
+
+                    cx.refresh();
                 }
             }
             UiEvent::UpdatePendingMessage { message } => {
@@ -726,10 +727,10 @@ impl Gpui {
                             code_assistant_core::session::instance::SessionActivityState::Errored { .. }
                         )
                     });
-                if is_session_errored {
-                    if let Some(session_id) = self.current_session_id.lock().unwrap().clone() {
-                        self.cmd_clear_session_error(session_id);
-                    }
+                if is_session_errored
+                    && let Some(session_id) = self.current_session_id.lock().unwrap().clone()
+                {
+                    self.cmd_clear_session_error(session_id);
                 }
 
                 // Refresh UI to hide the error popover
@@ -819,7 +820,9 @@ impl Gpui {
             } => {
                 debug!(
                     "UI: UpdateWorktreeData event — {} worktrees, current_path={:?}, is_git_repo={}",
-                    worktrees.len(), current_worktree_path, is_git_repo
+                    worktrees.len(),
+                    current_worktree_path,
+                    is_git_repo
                 );
                 *self.current_worktree_data.lock().unwrap() = Some(WorktreeData {
                     worktrees,
@@ -1042,17 +1045,17 @@ impl Gpui {
                     let settings = crate::shared::settings::UiSettings::load();
                     if let Some(ref default_model) = settings.default_model {
                         // Verify the model actually exists in config
-                        if let Ok(config) = llm::provider_config::ConfigurationSystem::load() {
-                            if config.get_model(default_model).is_some() {
-                                *self.current_model.lock().unwrap() = Some(default_model.clone());
-                                // Tell the backend to switch the active session's model
-                                // and update the default for future sessions
-                                self.cmd_update_default_model(default_model.clone());
-                                if let Some(session_id) =
-                                    self.current_session_id.lock().unwrap().clone()
-                                {
-                                    self.cmd_switch_model(session_id, default_model.clone());
-                                }
+                        if let Ok(config) = llm::provider_config::ConfigurationSystem::load()
+                            && config.get_model(default_model).is_some()
+                        {
+                            *self.current_model.lock().unwrap() = Some(default_model.clone());
+                            // Tell the backend to switch the active session's model
+                            // and update the default for future sessions
+                            self.cmd_update_default_model(default_model.clone());
+                            if let Some(session_id) =
+                                self.current_session_id.lock().unwrap().clone()
+                            {
+                                self.cmd_switch_model(session_id, default_model.clone());
                             }
                         }
                     }

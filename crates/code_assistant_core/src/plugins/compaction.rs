@@ -44,7 +44,9 @@ impl CompactionPolicy for TokenRatioCompaction {
             match known_limit {
                 Some(limit) => limit,
                 None => {
-                    warn!("No context limit known for model '{model_name}'; compaction disabled for this run");
+                    warn!(
+                        "No context limit known for model '{model_name}'; compaction disabled for this run"
+                    );
                     return Ok(None);
                 }
             }
@@ -54,15 +56,15 @@ impl CompactionPolicy for TokenRatioCompaction {
     }
 
     fn should_compact(&self, snapshot: &ContextSnapshot) -> bool {
-        if let Some(ratio) = snapshot.usage_ratio {
-            if ratio >= self.threshold {
-                debug!(
-                    "Context usage {:.1}% >= threshold {:.0}% — triggering compaction",
-                    ratio * 100.0,
-                    self.threshold * 100.0
-                );
-                return true;
-            }
+        if let Some(ratio) = snapshot.usage_ratio
+            && ratio >= self.threshold
+        {
+            debug!(
+                "Context usage {:.1}% >= threshold {:.0}% — triggering compaction",
+                ratio * 100.0,
+                self.threshold * 100.0
+            );
+            return true;
         }
         false
     }

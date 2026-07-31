@@ -1,6 +1,6 @@
 //! General settings section — theme, scale, and other global preferences.
 
-use gpui::{div, prelude::*, px, App, Context, FocusHandle, Focusable, SharedString};
+use gpui::{App, Context, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use gpui_component::ActiveTheme;
 
 pub struct GeneralSection {

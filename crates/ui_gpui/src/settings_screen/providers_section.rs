@@ -2,7 +2,7 @@
 
 use super::provider_forms::ProviderFormHolder;
 use super::provider_suggestions::{self, ProviderSuggestion, UserEnvironment};
-use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, SharedString};
+use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -634,26 +634,24 @@ impl ProvidersSection {
         let mut config = self.form_holder.to_config_json(cx);
 
         // When editing, preserve fields that weren't overwritten
-        if let FormMode::Editing(ref existing_key) = self.form_mode {
-            if let Some(existing) = map.get(existing_key) {
-                if let Some(existing_config) = existing.get("config").and_then(|c| c.as_object()) {
-                    if !config.contains_key("api_key") {
-                        if let Some(existing_key_val) = existing_config.get("api_key") {
-                            config.insert("api_key".to_string(), existing_key_val.clone());
-                        }
-                    }
-                    if !config.contains_key("client_secret")
-                        || config
-                            .get("client_secret")
-                            .and_then(|v: &serde_json::Value| v.as_str())
-                            .map(|s: &str| s.is_empty())
-                            .unwrap_or(false)
-                    {
-                        if let Some(existing_val) = existing_config.get("client_secret") {
-                            config.insert("client_secret".to_string(), existing_val.clone());
-                        }
-                    }
-                }
+        if let FormMode::Editing(ref existing_key) = self.form_mode
+            && let Some(existing) = map.get(existing_key)
+            && let Some(existing_config) = existing.get("config").and_then(|c| c.as_object())
+        {
+            if !config.contains_key("api_key")
+                && let Some(existing_key_val) = existing_config.get("api_key")
+            {
+                config.insert("api_key".to_string(), existing_key_val.clone());
+            }
+            if (!config.contains_key("client_secret")
+                || config
+                    .get("client_secret")
+                    .and_then(|v: &serde_json::Value| v.as_str())
+                    .map(|s: &str| s.is_empty())
+                    .unwrap_or(false))
+                && let Some(existing_val) = existing_config.get("client_secret")
+            {
+                config.insert("client_secret".to_string(), existing_val.clone());
             }
         }
 

@@ -7,7 +7,7 @@
 //! connected when the app starts, so config changes apply after a restart.
 
 use code_assistant_core::tools::mcp::{self, DiscoveredTool, McpServerConfig, McpServersConfig};
-use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, SharedString};
+use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use gpui_component::input::{Input, InputState};
 use gpui_component::switch::Switch;
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -100,10 +100,10 @@ impl McpSection {
             server.disabled_tools.retain(|name| name != tool);
             // Hand-edited allowlists must gain the tool, or removing it from
             // the denylist would not actually enable it.
-            if let Some(allowlist) = &mut server.enabled_tools {
-                if !allowlist.iter().any(|name| name == tool) {
-                    allowlist.push(tool.to_string());
-                }
+            if let Some(allowlist) = &mut server.enabled_tools
+                && !allowlist.iter().any(|name| name == tool)
+            {
+                allowlist.push(tool.to_string());
             }
         }
         self.persist(cx);
@@ -486,7 +486,7 @@ impl McpSection {
         server: &McpServerConfig,
         tool: &DiscoveredTool,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let view = cx.entity();
         let enabled = server.is_tool_enabled(&tool.name);
         let server_for_click = server_name.to_string();

@@ -1,8 +1,8 @@
+use crate::ui::DisplayFragment;
 use crate::ui::streaming::test_utils::{
-    assert_fragments_match, chunk_str, hidden_tools, print_fragments, TestUI,
+    TestUI, assert_fragments_match, chunk_str, hidden_tools, print_fragments,
 };
 use crate::ui::streaming::{JsonStreamProcessor, StreamProcessorTrait};
-use crate::ui::DisplayFragment;
 use llm::StreamingChunk;
 use std::sync::Arc;
 

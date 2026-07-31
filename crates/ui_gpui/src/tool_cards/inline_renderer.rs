@@ -7,8 +7,8 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
 use code_assistant_core::ui::ToolStatus;
 use gpui::{
-    div, img, px, rems, AnyElement, Context, Element, ImageSource, ObjectFit, ParentElement,
-    Styled, StyledImage, Window,
+    AnyElement, Context, Element, ImageSource, ObjectFit, ParentElement, Styled, StyledImage,
+    Window, div, img, px, rems,
 };
 
 /// A description template entry.

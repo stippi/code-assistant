@@ -122,7 +122,7 @@ impl PerplexityClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::Path, response::IntoResponse, routing::post, Json, Router};
+    use axum::{Json, Router, extract::Path, response::IntoResponse, routing::post};
     use serde_json::json;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;

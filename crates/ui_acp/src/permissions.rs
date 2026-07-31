@@ -6,12 +6,12 @@ pub use tools_core::permissions::{
 
 use crate::{ACPUserUI, ClientConn};
 use agent_client_protocol::schema as acp;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 const ALLOW_ALWAYS_OPTION_ID: &str = "allow-always";
@@ -36,10 +36,10 @@ impl AcpPermissionMediator {
     }
 
     fn tool_call_update(&self, request: &PermissionRequest<'_>) -> acp::ToolCallUpdate {
-        if let Some(id) = request.tool_id {
-            if let Some(snapshot) = self.ui.tool_call_update(id) {
-                return snapshot;
-            }
+        if let Some(id) = request.tool_id
+            && let Some(snapshot) = self.ui.tool_call_update(id)
+        {
+            return snapshot;
         }
 
         let id = request
@@ -188,7 +188,7 @@ impl PermissionMediator for AcpPermissionMediator {
                 return Err(anyhow!(
                     "Unknown permission option selected: {}",
                     selected.option_id.0
-                ))
+                ));
             }
             // Non-exhaustive enum - handle future variants
             _ => return Err(anyhow!("Unknown permission outcome variant")),

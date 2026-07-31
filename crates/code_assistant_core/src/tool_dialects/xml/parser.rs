@@ -1,9 +1,9 @@
 //! Parsing XML-style tool invocations out of LLM response text.
 
 use crate::tool_dialects::convert_params_to_json;
+use crate::tools::ToolRequest;
 use crate::tools::core::ToolRegistry;
 use crate::tools::tool_use_filter::ToolUseFilter;
-use crate::tools::ToolRequest;
 use crate::types::ToolError;
 use anyhow::Result;
 use serde_json::Value;
@@ -116,11 +116,11 @@ pub fn parse_xml_tool_invocations(
                         ParseState::SearchingForTool => {
                             // Check filter before starting this tool
                             let tool_index = tool_requests.len() + 1;
-                            if let Some(filter) = filter {
-                                if !filter.allow_tool_at_position(tool_name, tool_index) {
-                                    // Tool not allowed at this position, keep existing truncation_pos
-                                    break;
-                                }
+                            if let Some(filter) = filter
+                                && !filter.allow_tool_at_position(tool_name, tool_index)
+                            {
+                                // Tool not allowed at this position, keep existing truncation_pos
+                                break;
                             }
 
                             // Start of a new tool invocation
@@ -201,12 +201,12 @@ pub fn parse_xml_tool_invocations(
                             truncation_pos = abs_tag_end + 1;
 
                             // Check if we should allow content after this tool
-                            if let Some(filter) = filter {
-                                if !filter.allow_content_after_tool(&parsed_tool_name, tool_index) {
-                                    // No content allowed after this tool, truncate here
-                                    state = ParseState::SearchingForTool;
-                                    break;
-                                }
+                            if let Some(filter) = filter
+                                && !filter.allow_content_after_tool(&parsed_tool_name, tool_index)
+                            {
+                                // No content allowed after this tool, truncate here
+                                state = ParseState::SearchingForTool;
+                                break;
                             }
 
                             // Reset state

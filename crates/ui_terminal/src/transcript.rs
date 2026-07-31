@@ -282,11 +282,11 @@ impl TranscriptState {
         lines: &mut Vec<Line<'static>>,
     ) {
         // Try a registered renderer first.
-        if let Some(registry) = ToolRendererRegistry::global() {
-            if let Some(renderer) = registry.get(&tool.name) {
-                lines.extend(renderer.render_history_lines(tool));
-                return;
-            }
+        if let Some(registry) = ToolRendererRegistry::global()
+            && let Some(renderer) = registry.get(&tool.name)
+        {
+            lines.extend(renderer.render_history_lines(tool));
+            return;
         }
 
         // Fallback: generic rendering
@@ -310,13 +310,13 @@ impl TranscriptState {
                 lines.push(Line::from(format!("  {param_name}: {line}")));
             }
         }
-        if let Some(status_message) = &tool.status_message {
-            if tool.status == ToolStatus::Error {
-                lines.push(Line::styled(
-                    format!("  {status_message}"),
-                    Style::default().fg(Color::LightRed),
-                ));
-            }
+        if let Some(status_message) = &tool.status_message
+            && tool.status == ToolStatus::Error
+        {
+            lines.push(Line::styled(
+                format!("  {status_message}"),
+                Style::default().fg(Color::LightRed),
+            ));
         }
         if let Some(output) = &tool.output {
             for line in output.lines() {

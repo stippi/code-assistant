@@ -2,11 +2,11 @@
 //! of its own session. See `crate::session::wakeup` and
 //! `docs/session-wakeups.md`.
 
-use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
-};
 use crate::tools::ToolServicesAccess;
-use anyhow::{anyhow, Result};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 

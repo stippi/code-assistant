@@ -1,19 +1,19 @@
 use code_assistant_core::config::AgentRunConfig;
 
+use crate::ACPUserUI;
 use crate::agent::AgentState;
 use crate::ui::SessionUpdateMessage;
-use crate::ACPUserUI;
 use agent_client_protocol::{self as acp, Agent, Stdio};
 use anyhow::Result;
 use code_assistant_core::persistence::FileSessionPersistence;
 use code_assistant_core::session::watcher::SessionWatcher;
 use code_assistant_core::session::{SessionConfig, SessionManager};
-use code_assistant_core::ui::ui_events::UiEvent;
 use code_assistant_core::ui::UserInterface;
+use code_assistant_core::ui::ui_events::UiEvent;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, info, warn};
 
 /// Run the ACP agent against stdio.

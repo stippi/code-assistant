@@ -10,8 +10,8 @@ use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use gpui::{
-    div, prelude::*, px, ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
-    FocusHandle, Focusable, Render, SharedString, Subscription, Window,
+    ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable,
+    Render, SharedString, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
 use gpui_component::{ActiveTheme, Icon};

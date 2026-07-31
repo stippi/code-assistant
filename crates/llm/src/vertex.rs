@@ -1,8 +1,8 @@
 use crate::{
-    recording::APIRecorder, types::*, utils, ApiError, LLMProvider, RateLimitHandler,
-    StreamingCallback, StreamingChunk,
+    ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+    recording::APIRecorder, types::*, utils,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
@@ -294,10 +294,9 @@ fn finish_last_block(blocks: &mut [ContentBlock]) {
         | ContentBlock::Thinking { end_time, .. }
         | ContentBlock::ToolUse { end_time, .. },
     ) = blocks.last_mut()
+        && end_time.is_none()
     {
-        if end_time.is_none() {
-            *end_time = Some(now);
-        }
+        *end_time = Some(now);
     }
 }
 
@@ -1193,7 +1192,10 @@ impl VertexClient {
                                 continue;
                             }
                             Err(e) if e.to_string().contains("Tool limit reached") => {
-                                debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", state.content_blocks.len());
+                                debug!(
+                                    "Tool limit reached, stopping streaming early. Collected {} blocks so far",
+                                    state.content_blocks.len()
+                                );
 
                                 finish_last_block(&mut state.content_blocks);
 

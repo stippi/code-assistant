@@ -4,7 +4,7 @@
 
 use crate::client::McpServerConnection;
 use crate::config::McpServerConfig;
-use crate::registry::{register_connection_tools, server_scope_capability, MCP_CAPABILITY};
+use crate::registry::{MCP_CAPABILITY, register_connection_tools, server_scope_capability};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, ListToolsResult,
     PaginatedRequestParams, Tool as McpToolDescriptor,

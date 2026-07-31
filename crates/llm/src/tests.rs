@@ -3,7 +3,7 @@ use crate::types::ToolDefinition;
 use crate::{AnthropicClient, LLMProvider, OpenAIClient};
 use anyhow::Result;
 use axum::extract::Path;
-use axum::{response::IntoResponse, routing::post, Router};
+use axum::{Router, response::IntoResponse, routing::post};
 use bytes::Bytes;
 use chrono::Utc;
 use futures::stream;
@@ -406,28 +406,30 @@ impl MockResponseGenerator for VertexMockGenerator {
                 )
                 .into_bytes(),
             ],
-            Some(_) => vec![format!(
-                "data: {}\n\n",
-                json!({
-                    "candidates": [{
-                        "content": {
-                            "parts": [{
-                                "functionCall": {
-                                    "name": "get_weather",
-                                    "args": {"location": "current"}
-                                }
-                            }],
-                            "role": "model"
+            Some(_) => vec![
+                format!(
+                    "data: {}\n\n",
+                    json!({
+                        "candidates": [{
+                            "content": {
+                                "parts": [{
+                                    "functionCall": {
+                                        "name": "get_weather",
+                                        "args": {"location": "current"}
+                                    }
+                                }],
+                                "role": "model"
+                            }
+                        }],
+                        "usageMetadata": {
+                            "promptTokenCount": 15,
+                            "candidatesTokenCount": 12,
+                            "totalTokenCount": 27
                         }
-                    }],
-                    "usageMetadata": {
-                        "promptTokenCount": 15,
-                        "candidatesTokenCount": 12,
-                        "totalTokenCount": 27
-                    }
-                })
-            )
-            .into_bytes()],
+                    })
+                )
+                .into_bytes(),
+            ],
         }
     }
 }
@@ -493,24 +495,26 @@ impl MockResponseGenerator for OllamaMockGenerator {
                 )
                 .into_bytes(),
             ],
-            Some(_) => vec![format!(
-                "{}\n",
-                json!({
-                    "message": {
-                        "content": "",
-                        "tool_calls": [{
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": { "location": "current" }
-                            }
-                        }]
-                    },
-                    "done": true,
-                    "prompt_eval_count": 15,
-                    "eval_count": 12
-                })
-            )
-            .into_bytes()],
+            Some(_) => vec![
+                format!(
+                    "{}\n",
+                    json!({
+                        "message": {
+                            "content": "",
+                            "tool_calls": [{
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": { "location": "current" }
+                                }
+                            }]
+                        },
+                        "done": true,
+                        "prompt_eval_count": 15,
+                        "eval_count": 12
+                    })
+                )
+                .into_bytes(),
+            ],
         }
     }
 }

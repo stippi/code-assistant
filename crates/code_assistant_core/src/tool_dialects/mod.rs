@@ -16,9 +16,9 @@ pub use xml::XmlDialect;
 use crate::tools::core::ToolRegistry;
 use crate::types::ToolSyntax;
 use agent_core::ToolDialect;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use llm::{ContentBlock, Message, MessageContent};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -205,8 +205,8 @@ pub fn convert_params_to_json(
 #[cfg(test)]
 mod conversion_tests {
     use super::*;
-    use crate::tools::core::capabilities;
     use crate::tools::core::ResourcesTracker;
+    use crate::tools::core::capabilities;
     use crate::tools::core::{Tool, ToolContext, ToolSpec};
     use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
     use std::collections::HashMap;
@@ -345,10 +345,12 @@ mod conversion_tests {
         // Conversion should fail with a descriptive error
         let result = convert_params_to_json("test_tool", &params, &registry);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to parse 'not a number' as number"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to parse 'not a number' as number")
+        );
 
         // Test with invalid integer
         let mut params = HashMap::new();
@@ -358,10 +360,12 @@ mod conversion_tests {
         // Conversion should fail with a descriptive error
         let result = convert_params_to_json("test_tool", &params, &registry);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to parse '42.5' as integer"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to parse '42.5' as integer")
+        );
     }
 
     #[tokio::test]

@@ -6,14 +6,14 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_executor::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCallback};
 use fs_explorer::{
+    CodeExplorer, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode, SearchOptions,
+    SearchResult,
     file_updater::{
         apply_replacements_normalized, extract_stable_ranges, find_replacement_matches,
         reconstruct_formatted_replacements,
     },
-    CodeExplorer, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode, SearchOptions,
-    SearchResult,
 };
-use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback as LlmStreamingCallback};
+use llm::{LLMProvider, LLMRequest, StreamingCallback as LlmStreamingCallback, types::*};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -225,7 +225,7 @@ impl UserInterface for MockUI {
                 self.streaming.lock().unwrap().push(text.clone());
             }
 
-            crate::ui::DisplayFragment::ThinkingText { ref text, .. } => {
+            crate::ui::DisplayFragment::ThinkingText { text, .. } => {
                 self.streaming.lock().unwrap().push(text.clone());
             }
             crate::ui::DisplayFragment::Image { media_type, .. } => {
@@ -796,10 +796,11 @@ async fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
             },
         )
         .await?;
-    assert!(results.iter().any(|r| r
-        .line_content
-        .iter()
-        .any(|line| line.contains(&"line 1".to_string()))));
+    assert!(results.iter().any(|r| {
+        r.line_content
+            .iter()
+            .any(|line| line.contains(&"line 1".to_string()))
+    }));
 
     // Test regex search
     let results = explorer
@@ -812,10 +813,11 @@ async fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
             },
         )
         .await?;
-    assert!(results.iter().any(|r| r
-        .line_content
-        .iter()
-        .any(|line| line.contains(&"line 1".to_string()))));
+    assert!(results.iter().any(|r| {
+        r.line_content
+            .iter()
+            .any(|line| line.contains(&"line 1".to_string()))
+    }));
 
     // Test with max_results
     let results = explorer

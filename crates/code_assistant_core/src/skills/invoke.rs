@@ -11,7 +11,7 @@ use crate::config::ProjectManager;
 use crate::skills::config::SkillsConfig;
 use crate::skills::loader::discover_scope_skills_filtered;
 use crate::skills::manifest::parse_skill_content;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
 /// Cap on the returned skill body to keep context size reasonable.

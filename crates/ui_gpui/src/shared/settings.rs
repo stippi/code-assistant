@@ -2,7 +2,7 @@
 //!
 //! Stores theme, font scale, and window bounds to disk so they survive restarts.
 
-use gpui::{px, Bounds, Pixels, Point, Size};
+use gpui::{Bounds, Pixels, Point, Size, px};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{debug, warn};

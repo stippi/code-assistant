@@ -144,7 +144,7 @@ impl Gpui {
                     content: text.clone(),
                 });
             }
-            DisplayFragment::ThinkingText { ref text, .. } => {
+            DisplayFragment::ThinkingText { text, .. } => {
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: text.clone(),
                 });

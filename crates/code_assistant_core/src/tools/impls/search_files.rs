@@ -1,8 +1,8 @@
-use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
-};
 use crate::tools::ToolServicesAccess;
-use anyhow::{anyhow, Result};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+};
+use anyhow::{Result, anyhow};
 use fs_explorer::{DocumentMatchResult, SearchMode, SearchOptions, SearchResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -56,22 +56,20 @@ impl SearchFilesOutput {
         let mut end = line.len();
 
         // If we know where the match is on this line, center the excerpt around it.
-        if let Some(match_idx) = match_lines.iter().position(|&idx| idx == line_idx) {
-            if let Some(ranges) = match_ranges.get(match_idx) {
-                if let Some(&(range_start, range_end)) = ranges.first() {
-                    let context_start = range_start.saturating_sub(MATCH_CONTEXT);
-                    let context_end = (range_end + MATCH_CONTEXT).min(line.len());
-                    start = context_start;
-                    end = context_end;
+        if let Some(match_idx) = match_lines.iter().position(|&idx| idx == line_idx)
+            && let Some(ranges) = match_ranges.get(match_idx)
+            && let Some(&(range_start, range_end)) = ranges.first()
+        {
+            let context_start = range_start.saturating_sub(MATCH_CONTEXT);
+            let context_end = (range_end + MATCH_CONTEXT).min(line.len());
+            start = context_start;
+            end = context_end;
 
-                    if end.saturating_sub(start) > EXCERPT_TARGET {
-                        let mid =
-                            range_start.saturating_add(range_end.saturating_sub(range_start) / 2);
-                        let half_window = EXCERPT_TARGET / 2;
-                        start = mid.saturating_sub(half_window);
-                        end = (start + EXCERPT_TARGET).min(line.len());
-                    }
-                }
+            if end.saturating_sub(start) > EXCERPT_TARGET {
+                let mid = range_start.saturating_add(range_end.saturating_sub(range_start) / 2);
+                let half_window = EXCERPT_TARGET / 2;
+                start = mid.saturating_sub(half_window);
+                end = (start + EXCERPT_TARGET).min(line.len());
             }
         }
 

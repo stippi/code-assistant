@@ -158,10 +158,10 @@ impl UiStateStore {
         self.states.remove(session_id);
         self.dirty.remove(session_id);
         let path = self.file_path(session_id);
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                warn!("Failed to remove UI state file {}: {}", path.display(), e);
-            }
+        if path.exists()
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            warn!("Failed to remove UI state file {}: {}", path.display(), e);
         }
     }
 

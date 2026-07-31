@@ -2,8 +2,8 @@ use super::*;
 use crate::agent::persistence::MockStatePersistence;
 use crate::mocks::MockLLMProvider;
 use crate::mocks::{
-    create_command_executor_mock, create_test_response, create_test_response_text,
-    MockProjectManager, MockUI,
+    MockProjectManager, MockUI, create_command_executor_mock, create_test_response,
+    create_test_response_text,
 };
 use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
@@ -512,19 +512,18 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
                 is_error,
                 ..
             } = block
+                && tool_use_id == "write-file-escape"
             {
-                if tool_use_id == "write-file-escape" {
-                    found_tool_result = true;
-                    assert!(is_error.unwrap_or(false));
-                    assert!(
-                        content.contains("Access outside project root is not allowed"),
-                        "Tool result should mention access restriction: {content}"
-                    );
-                    assert!(
-                        !content.contains(&root_display),
-                        "Tool result should not leak the project root path: {content}"
-                    );
-                }
+                found_tool_result = true;
+                assert!(is_error.unwrap_or(false));
+                assert!(
+                    content.contains("Access outside project root is not allowed"),
+                    "Tool result should mention access restriction: {content}"
+                );
+                assert!(
+                    !content.contains(&root_display),
+                    "Tool result should not leak the project root path: {content}"
+                );
             }
         }
     } else {
@@ -1331,8 +1330,8 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
 
 #[test]
 fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
-    use crate::agent::runner::Agent;
     use crate::agent::ToolSyntax;
+    use crate::agent::runner::Agent;
     use crate::tools::ToolRequest;
     use serde_json::json;
 
@@ -1416,8 +1415,8 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
 
 #[test]
 fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
-    use crate::agent::runner::Agent;
     use crate::agent::ToolSyntax;
+    use crate::agent::runner::Agent;
     use crate::tools::ToolRequest;
     use serde_json::json;
 
@@ -1498,8 +1497,8 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
 
 #[test]
 fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
-    use crate::agent::runner::Agent;
     use crate::agent::ToolSyntax;
+    use crate::agent::runner::Agent;
     use crate::tools::ToolRequest;
     use serde_json::json;
 
@@ -1961,20 +1960,19 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
 
     // Verify the tool result is the original one (not a cancelled one)
     let result_message = &rendered_messages[2];
-    if let MessageContent::Structured(blocks) = &result_message.content {
-        if let ContentBlock::ToolResult {
+    if let MessageContent::Structured(blocks) = &result_message.content
+        && let ContentBlock::ToolResult {
             tool_use_id,
             content,
             is_error,
             ..
         } = &blocks[0]
-        {
-            assert_eq!(tool_use_id, "tool-1-1");
-            // Content should be the original, not "cancelled"
-            assert!(content.contains("File contents") || content.is_empty());
-            // Should not be marked as error
-            assert!(!is_error.unwrap_or(false));
-        }
+    {
+        assert_eq!(tool_use_id, "tool-1-1");
+        // Content should be the original, not "cancelled"
+        assert!(content.contains("File contents") || content.is_empty());
+        // Should not be marked as error
+        assert!(!is_error.unwrap_or(false));
     }
 
     Ok(())

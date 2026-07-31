@@ -7,10 +7,10 @@
 //! - Streaming with SSE
 
 use crate::{
+    LLMProvider, StreamingCallback,
     auth::TokenManager,
     openai_responses::{AuthProvider, OpenAIResponsesClient, RequestCustomizer},
     types::*,
-    LLMProvider, StreamingCallback,
 };
 use anyhow::Result;
 use async_trait::async_trait;

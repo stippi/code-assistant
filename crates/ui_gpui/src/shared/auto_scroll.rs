@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use gpui::{
-    div, prelude::*, px, Bounds, Context, Entity, Pixels, Point, ScrollHandle, SharedString, Size,
-    Task, Window,
+    Bounds, Context, Entity, Pixels, Point, ScrollHandle, SharedString, Size, Task, Window, div,
+    prelude::*, px,
 };
 use gpui_component::scroll::Scrollbar;
 use std::cell::{Cell, RefCell};
@@ -328,7 +328,10 @@ impl<T: Render> AutoScrollContainer<T> {
                 self.last_set_scroll_position.set(current_position);
 
                 self.autoscroll_active.set(true);
-                trace!("ContentChange: autoscroll_active set to true, starting task. Current position: {}", current_position);
+                trace!(
+                    "ContentChange: autoscroll_active set to true, starting task. Current position: {}",
+                    current_position
+                );
                 self.start_autoscroll_task(cx);
             } else {
                 self.autoscroll_active.set(false);

@@ -29,18 +29,18 @@
 //! It implements the same [`LLMProvider`] trait as all other providers.
 
 use crate::{
+    LLMProvider, StreamingCallback, StreamingChunk,
     openai_responses::{ApiKeyAuth, AuthProvider, RequestCustomizer},
     types::*,
-    LLMProvider, StreamingCallback, StreamingChunk,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{
@@ -1109,17 +1109,17 @@ impl OpenAIResponsesWsClient {
                             }
                         }
                         "response.output_text.delta" => {
-                            if let Some(delta) = event.delta {
-                                if let Some(cb) = streaming_callback {
-                                    cb(&StreamingChunk::Text(delta))?;
-                                }
+                            if let Some(delta) = event.delta
+                                && let Some(cb) = streaming_callback
+                            {
+                                cb(&StreamingChunk::Text(delta))?;
                             }
                         }
                         "response.reasoning_text.delta" => {
-                            if let Some(delta) = event.delta {
-                                if let Some(cb) = streaming_callback {
-                                    cb(&StreamingChunk::Thinking(delta))?;
-                                }
+                            if let Some(delta) = event.delta
+                                && let Some(cb) = streaming_callback
+                            {
+                                cb(&StreamingChunk::Thinking(delta))?;
                             }
                         }
                         "response.reasoning_summary_text.delta" => {
@@ -1150,28 +1150,26 @@ impl OpenAIResponsesWsClient {
                             // Tracked via reasoning_summary_text.delta state changes
                         }
                         "response.function_call_arguments.delta" => {
-                            if let Some(delta) = event.delta {
-                                if let Some(cb) = streaming_callback {
-                                    let (tool_name, tool_id) =
-                                        if let Some(id) = event.item_id.as_deref() {
-                                            active_function_calls
-                                                .get(id)
-                                                .map(|info| {
-                                                    (
-                                                        Some(info.name.clone()),
-                                                        Some(info.call_id.clone()),
-                                                    )
-                                                })
-                                                .unwrap_or((None, None))
-                                        } else {
-                                            (None, None)
-                                        };
-                                    cb(&StreamingChunk::InputJson {
-                                        content: delta,
-                                        tool_name,
-                                        tool_id,
-                                    })?;
-                                }
+                            if let Some(delta) = event.delta
+                                && let Some(cb) = streaming_callback
+                            {
+                                let (tool_name, tool_id) = if let Some(id) =
+                                    event.item_id.as_deref()
+                                {
+                                    active_function_calls
+                                        .get(id)
+                                        .map(|info| {
+                                            (Some(info.name.clone()), Some(info.call_id.clone()))
+                                        })
+                                        .unwrap_or((None, None))
+                                } else {
+                                    (None, None)
+                                };
+                                cb(&StreamingChunk::InputJson {
+                                    content: delta,
+                                    tool_name,
+                                    tool_id,
+                                })?;
                             }
                         }
                         "response.output_item.done" => {
@@ -1217,10 +1215,10 @@ impl OpenAIResponsesWsClient {
                                 reasoning_state.current_item_content.clear();
                             }
 
-                            if !reasoning_state.completed_items.is_empty() {
-                                if let Some(cb) = streaming_callback {
-                                    cb(&StreamingChunk::ReasoningComplete)?;
-                                }
+                            if !reasoning_state.completed_items.is_empty()
+                                && let Some(cb) = streaming_callback
+                            {
+                                cb(&StreamingChunk::ReasoningComplete)?;
                             }
 
                             // Extract usage and response_id
@@ -1230,17 +1228,17 @@ impl OpenAIResponsesWsClient {
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
 
-                                if let Some(usage_val) = resp.get("usage") {
-                                    if let Ok(u) = serde_json::from_value::<WsResponsesUsage>(
+                                if let Some(usage_val) = resp.get("usage")
+                                    && let Ok(u) = serde_json::from_value::<WsResponsesUsage>(
                                         usage_val.clone(),
-                                    ) {
-                                        usage.input_tokens = u.input_tokens;
-                                        usage.output_tokens = u.output_tokens;
-                                        usage.cache_read_input_tokens = u
-                                            .input_tokens_details
-                                            .map(|d| d.cached_tokens)
-                                            .unwrap_or(0);
-                                    }
+                                    )
+                                {
+                                    usage.input_tokens = u.input_tokens;
+                                    usage.output_tokens = u.output_tokens;
+                                    usage.cache_read_input_tokens = u
+                                        .input_tokens_details
+                                        .map(|d| d.cached_tokens)
+                                        .unwrap_or(0);
                                 }
                             }
 
@@ -1375,25 +1373,25 @@ fn convert_output_items(output: Vec<WsResponseOutputItem>) -> Vec<ContentBlock> 
                 content,
                 encrypted_content,
             } => {
-                if let Some(enc) = encrypted_content {
-                    if !enc.is_empty() {
-                        let summary_items: Vec<ReasoningSummaryItem> = summary
-                            .into_iter()
-                            .map(|s| match s {
-                                WsReasoningSummary::SummaryText { text } => {
-                                    ReasoningSummaryItem::SummaryText { text }
-                                }
-                            })
-                            .collect();
-                        blocks.push(ContentBlock::RedactedThinking {
-                            id,
-                            summary: summary_items,
-                            data: enc,
-                            start_time: None,
-                            end_time: None,
-                        });
-                        continue;
-                    }
+                if let Some(enc) = encrypted_content
+                    && !enc.is_empty()
+                {
+                    let summary_items: Vec<ReasoningSummaryItem> = summary
+                        .into_iter()
+                        .map(|s| match s {
+                            WsReasoningSummary::SummaryText { text } => {
+                                ReasoningSummaryItem::SummaryText { text }
+                            }
+                        })
+                        .collect();
+                    blocks.push(ContentBlock::RedactedThinking {
+                        id,
+                        summary: summary_items,
+                        data: enc,
+                        start_time: None,
+                        end_time: None,
+                    });
+                    continue;
                 }
                 let visible_text: String = content
                     .into_iter()

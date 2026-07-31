@@ -13,8 +13,8 @@ use std::time::Duration;
 use anyhow::Result;
 use code_assistant_core::session::service::SkillCatalogEntry;
 use gpui::{Context, Task, Window};
-use gpui_component::input::{InputState, RopeExt};
 use gpui_component::Rope;
+use gpui_component::input::{InputState, RopeExt};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
     TextEdit,

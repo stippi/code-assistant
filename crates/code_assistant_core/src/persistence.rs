@@ -49,10 +49,10 @@ impl MessageNodeExt for MessageNode {
     fn plan_snapshot(&self) -> Option<PlanState> {
         let value = self.extension.as_ref()?;
         // New combined shape: { "plan": {...}, "active_skills": [...] }.
-        if let Ok(ext) = serde_json::from_value::<NodeExtension>(value.clone()) {
-            if ext.plan.is_some() || ext.active_skills.is_some() {
-                return ext.plan;
-            }
+        if let Ok(ext) = serde_json::from_value::<NodeExtension>(value.clone())
+            && (ext.plan.is_some() || ext.active_skills.is_some())
+        {
+            return ext.plan;
         }
         // Legacy shape: a bare PlanState.
         serde_json::from_value::<PlanState>(value.clone()).ok()
@@ -240,10 +240,10 @@ impl ChatSession {
         if let Some(init_path) = self.legacy_init_path.take() {
             self.config.init_path = Some(init_path);
         }
-        if let Some(initial_project) = self.legacy_initial_project.take() {
-            if !initial_project.is_empty() {
-                self.config.initial_project = initial_project;
-            }
+        if let Some(initial_project) = self.legacy_initial_project.take()
+            && !initial_project.is_empty()
+        {
+            self.config.initial_project = initial_project;
         }
         if let Some(tool_syntax) = self.legacy_tool_syntax.take() {
             self.config.tool_syntax = tool_syntax;
@@ -396,10 +396,10 @@ impl ChatSession {
     /// to find the most recent plan_snapshot.
     pub fn get_plan_for_active_path(&self) -> PlanState {
         for &node_id in self.active_path.iter().rev() {
-            if let Some(node) = self.message_nodes.get(&node_id) {
-                if let Some(plan) = node.plan_snapshot() {
-                    return plan;
-                }
+            if let Some(node) = self.message_nodes.get(&node_id)
+                && let Some(plan) = node.plan_snapshot()
+            {
+                return plan;
             }
         }
         PlanState::default()
@@ -409,10 +409,10 @@ impl ChatSession {
     /// most recent active-skills snapshot.
     pub fn get_active_skills_for_active_path(&self) -> Vec<String> {
         for &node_id in self.active_path.iter().rev() {
-            if let Some(node) = self.message_nodes.get(&node_id) {
-                if let Some(active_skills) = node.active_skills_snapshot() {
-                    return active_skills;
-                }
+            if let Some(node) = self.message_nodes.get(&node_id)
+                && let Some(active_skills) = node.active_skills_snapshot()
+            {
+                return active_skills;
             }
         }
         Vec::new()
@@ -927,35 +927,35 @@ impl FileSessionPersistence {
             }
 
             // Extract session ID from filename
-            if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
-                if let Ok(Some(session)) = self.load_chat_session(filename) {
-                    // Calculate usage information
-                    let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
+            if let Some(filename) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(Some(session)) = self.load_chat_session(filename)
+            {
+                // Calculate usage information
+                let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
 
-                    debug!(
-                        "Rebuilding metadata for session {}: initial_project='{}'",
-                        session.id,
-                        session.initial_project()
-                    );
+                debug!(
+                    "Rebuilding metadata for session {}: initial_project='{}'",
+                    session.id,
+                    session.initial_project()
+                );
 
-                    let metadata = ChatMetadata {
-                        id: session.id.clone(),
-                        name: session.name.clone(),
-                        created_at: session.created_at,
-                        updated_at: session.updated_at,
-                        message_count: session.message_count(),
-                        total_usage,
-                        last_usage,
+                let metadata = ChatMetadata {
+                    id: session.id.clone(),
+                    name: session.name.clone(),
+                    created_at: session.created_at,
+                    updated_at: session.updated_at,
+                    message_count: session.message_count(),
+                    total_usage,
+                    last_usage,
 
-                        tokens_limit,
-                        tool_syntax: session.tool_syntax(),
-                        initial_project: session.initial_project().to_string(),
-                        plan_collapsed: session.plan_collapsed,
-                        is_resumable: session.is_resumable(),
-                    };
+                    tokens_limit,
+                    tool_syntax: session.tool_syntax(),
+                    initial_project: session.initial_project().to_string(),
+                    plan_collapsed: session.plan_collapsed,
+                    is_resumable: session.is_resumable(),
+                };
 
-                    metadata_list.push(metadata);
-                }
+                metadata_list.push(metadata);
             }
         }
 
@@ -1251,14 +1251,13 @@ impl DraftStorage {
             let entry = entry?;
             let path = entry.path();
 
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                if let Some(session_id) = file_name.strip_suffix(".json") {
-                    if !existing_session_ids.contains(&session_id.to_string()) {
-                        std::fs::remove_file(&path)?;
-                        cleaned_count += 1;
-                        debug!("Cleaned up orphaned draft: {}", session_id);
-                    }
-                }
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                && let Some(session_id) = file_name.strip_suffix(".json")
+                && !existing_session_ids.contains(&session_id.to_string())
+            {
+                std::fs::remove_file(&path)?;
+                cleaned_count += 1;
+                debug!("Cleaned up orphaned draft: {}", session_id);
             }
         }
 
@@ -1358,16 +1357,20 @@ mod tests {
         assert_eq!(remaining_sessions[0].id, "non_empty_session");
 
         // Verify the empty session file is gone
-        assert!(persistence
-            .load_chat_session("empty_session")
-            .expect("load")
-            .is_none());
+        assert!(
+            persistence
+                .load_chat_session("empty_session")
+                .expect("load")
+                .is_none()
+        );
 
         // Verify the non-empty session still exists
-        assert!(persistence
-            .load_chat_session("non_empty_session")
-            .expect("load")
-            .is_some());
+        assert!(
+            persistence
+                .load_chat_session("non_empty_session")
+                .expect("load")
+                .is_some()
+        );
     }
 
     #[test]

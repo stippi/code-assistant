@@ -151,28 +151,27 @@ pub fn tool_header_line(tool_block: &ToolUseBlock) -> Line<'static> {
 
 /// Render an error status message (if any) into a Buffer. Returns the next y.
 pub fn render_error_line(tool_block: &ToolUseBlock, area: Rect, buf: &mut Buffer, y: u16) -> u16 {
-    if tool_block.status == ToolStatus::Error {
-        if let Some(ref message) = tool_block.status_message {
-            if y < area.y + area.height {
-                let max_len = area.width.saturating_sub(2) as usize;
-                let display = truncate_to_width(message, max_len);
-                buf.set_string(area.x + 2, y, display, Style::default().fg(Color::LightRed));
-                return y + 1;
-            }
-        }
+    if tool_block.status == ToolStatus::Error
+        && let Some(ref message) = tool_block.status_message
+        && y < area.y + area.height
+    {
+        let max_len = area.width.saturating_sub(2) as usize;
+        let display = truncate_to_width(message, max_len);
+        buf.set_string(area.x + 2, y, display, Style::default().fg(Color::LightRed));
+        return y + 1;
     }
     y
 }
 
 /// Push an error status message Line for scrollback history, if applicable.
 pub fn push_error_history_line(tool_block: &ToolUseBlock, lines: &mut Vec<Line<'static>>) {
-    if tool_block.status == ToolStatus::Error {
-        if let Some(ref message) = tool_block.status_message {
-            lines.push(Line::styled(
-                format!("  {message}"),
-                Style::default().fg(Color::LightRed),
-            ));
-        }
+    if tool_block.status == ToolStatus::Error
+        && let Some(ref message) = tool_block.status_message
+    {
+        lines.push(Line::styled(
+            format!("  {message}"),
+            Style::default().fg(Color::LightRed),
+        ));
     }
 }
 

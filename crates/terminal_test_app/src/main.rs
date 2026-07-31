@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
-    actions, div, px, rems, size, App, Bounds, Context, Entity, IntoElement, KeyBinding,
-    ParentElement, Render, SharedString, Styled, Window, WindowBounds, WindowOptions,
+    App, Bounds, Context, Entity, IntoElement, KeyBinding, ParentElement, Render, SharedString,
+    Styled, Window, WindowBounds, WindowOptions, actions, div, px, rems, size,
 };
 use gpui_component::Root;
 use terminal::{Terminal, TerminalBuilder, TerminalOptions};
@@ -303,15 +303,15 @@ impl TestApp {
         let cmd_index = self.pool.next_id % SPAWN_COMMANDS.len();
         let command = SPAWN_COMMANDS[cmd_index];
         let id = self.pool.spawn(command, cx);
-        if self.cards_attached {
-            if let Some(entry) = self.pool.get(&id) {
-                let terminal = entry.terminal.clone();
-                let cmd = entry.command.clone();
-                let colors = self.theme_colors.clone();
-                let tid = id.clone();
-                let card = cx.new(|cx| TerminalCard::new(tid, terminal, cmd, colors, cx));
-                self.cards.insert(id.clone(), card);
-            }
+        if self.cards_attached
+            && let Some(entry) = self.pool.get(&id)
+        {
+            let terminal = entry.terminal.clone();
+            let cmd = entry.command.clone();
+            let colors = self.theme_colors.clone();
+            let tid = id.clone();
+            let card = cx.new(|cx| TerminalCard::new(tid, terminal, cmd, colors, cx));
+            self.cards.insert(id.clone(), card);
         }
         self.selected_terminal = Some(id);
         cx.notify();

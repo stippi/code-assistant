@@ -1,7 +1,7 @@
 use super::anthropic::{
     AnthropicClient, ApiKeyAuth, DefaultMessageConverter, DefaultRequestCustomizer,
 };
-use crate::{types::*, LLMProvider, StreamingCallback};
+use crate::{LLMProvider, StreamingCallback, types::*};
 use anyhow::Result;
 use async_trait::async_trait;
 

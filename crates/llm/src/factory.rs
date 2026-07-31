@@ -5,9 +5,9 @@ use crate::aicore::{
 use crate::auth::TokenManager;
 use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
 use crate::{
-    recording::PlaybackState, AnthropicClient, CerebrasClient, GroqClient, LLMProvider,
-    MinimaxClient, MistralAiClient, MoonshotClient, OllamaClient, OpenAIClient,
-    OpenAIResponsesClient, OpenAIResponsesWsClient, OpenRouterClient, VertexClient, ZaiClient,
+    AnthropicClient, CerebrasClient, GroqClient, LLMProvider, MinimaxClient, MistralAiClient,
+    MoonshotClient, OllamaClient, OpenAIClient, OpenAIResponsesClient, OpenAIResponsesWsClient,
+    OpenRouterClient, VertexClient, ZaiClient, recording::PlaybackState,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -285,7 +285,7 @@ pub async fn create_llm_client_from_configs(
             return Err(anyhow::anyhow!(
                 "Unknown provider type: {}",
                 provider_config.provider
-            ))
+            ));
         }
     };
 

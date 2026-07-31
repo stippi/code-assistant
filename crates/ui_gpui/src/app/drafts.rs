@@ -74,18 +74,18 @@ impl Gpui {
                 exists_in_cache && current_content == Some(&content_owned)
             };
 
-            if should_save || !attachments_owned.is_empty() || editing_branch_parent_id.is_some() {
-                if let Err(e) = draft_storage.save_draft(
+            if (should_save || !attachments_owned.is_empty() || editing_branch_parent_id.is_some())
+                && let Err(e) = draft_storage.save_draft(
                     &session_id_owned,
                     &content_owned,
                     &attachments_owned,
                     editing_branch_parent_id,
-                ) {
-                    warn!(
-                        "Failed to save draft for session {}: {}",
-                        session_id_owned, e
-                    );
-                }
+                )
+            {
+                warn!(
+                    "Failed to save draft for session {}: {}",
+                    session_id_owned, e
+                );
             }
         });
     }

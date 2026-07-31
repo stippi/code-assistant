@@ -1,8 +1,8 @@
-use crate::tools::core::{
-    capabilities, ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
-};
 use crate::tools::ToolServicesAccess;
-use anyhow::{anyhow, Result};
+use crate::tools::core::{
+    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+};
+use anyhow::{Result, anyhow};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

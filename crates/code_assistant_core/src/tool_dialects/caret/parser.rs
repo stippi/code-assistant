@@ -2,9 +2,9 @@
 //! response text.
 
 use crate::tool_dialects::convert_params_to_json;
+use crate::tools::ToolRequest;
 use crate::tools::core::ToolRegistry;
 use crate::tools::tool_use_filter::ToolUseFilter;
-use crate::tools::ToolRequest;
 use crate::types::ToolError;
 use anyhow::Result;
 use serde_json::Value;
@@ -40,11 +40,11 @@ pub fn parse_caret_tool_invocations(
 
         // Check filter before processing this tool
         let tool_index = tool_requests.len() + 1;
-        if let Some(filter) = filter {
-            if !filter.allow_tool_at_position(tool_name, tool_index) {
-                // Tool not allowed, keep existing truncation_pos
-                break;
-            }
+        if let Some(filter) = filter
+            && !filter.allow_tool_at_position(tool_name, tool_index)
+        {
+            // Tool not allowed, keep existing truncation_pos
+            break;
         }
 
         // Check if the tool exists in the registry
@@ -108,11 +108,11 @@ pub fn parse_caret_tool_invocations(
             truncation_pos = absolute_tool_end;
 
             // Check if we should allow content after this tool
-            if let Some(filter) = filter {
-                if !filter.allow_content_after_tool(tool_name, tool_index) {
-                    // No content allowed after this tool, truncate here
-                    break;
-                }
+            if let Some(filter) = filter
+                && !filter.allow_content_after_tool(tool_name, tool_index)
+            {
+                // No content allowed after this tool, truncate here
+                break;
             }
 
             current_offset += end_pos;
@@ -180,12 +180,11 @@ fn parse_caret_tool_parameters_raw(
 
                 // Collect content until end marker
                 while i < lines.len() {
-                    if let Some(end_caps) = multiline_end_regex.captures(lines[i]) {
-                        if let Some(end_param) = end_caps.get(1) {
-                            if end_param.as_str() == param_name.as_str() {
-                                break;
-                            }
-                        }
+                    if let Some(end_caps) = multiline_end_regex.captures(lines[i])
+                        && let Some(end_param) = end_caps.get(1)
+                        && end_param.as_str() == param_name.as_str()
+                    {
+                        break;
                     }
 
                     if !multiline_content.is_empty() {
@@ -277,14 +276,18 @@ mod tests {
         assert_eq!(result[0].name, "write_file");
         assert_eq!(result[0].input["project"], "test");
         assert_eq!(result[0].input["path"], "test.txt");
-        assert!(result[0].input["content"]
-            .as_str()
-            .unwrap()
-            .contains("multiline content"));
-        assert!(result[0].input["content"]
-            .as_str()
-            .unwrap()
-            .contains("several lines"));
+        assert!(
+            result[0].input["content"]
+                .as_str()
+                .unwrap()
+                .contains("multiline content")
+        );
+        assert!(
+            result[0].input["content"]
+                .as_str()
+                .unwrap()
+                .contains("several lines")
+        );
     }
 
     #[tokio::test]
@@ -368,10 +371,12 @@ mod tests {
         let result =
             parse_caret_tool_invocations(text, 123, 0, None, &crate::tools::test_registry());
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown tool: unknown_tool"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown tool: unknown_tool")
+        );
     }
 
     #[test]

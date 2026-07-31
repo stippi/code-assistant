@@ -46,12 +46,11 @@ impl McpToolOutput {
                 }
             }
         }
-        if text_parts.is_empty() {
-            if let Some(structured) = &result.structured_content {
-                text_parts.push(
-                    serde_json::to_string_pretty(structured).unwrap_or_else(|_| String::new()),
-                );
-            }
+        if text_parts.is_empty()
+            && let Some(structured) = &result.structured_content
+        {
+            text_parts
+                .push(serde_json::to_string_pretty(structured).unwrap_or_else(|_| String::new()));
         }
         Self {
             text: text_parts.join("\n"),

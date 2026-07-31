@@ -6,10 +6,10 @@
 
 use crate::config::McpServerConfig;
 use anyhow::{Context, Result};
+use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool as McpToolDescriptor};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::IntoTransport;
-use rmcp::ServiceExt;
 use std::time::Duration;
 
 /// Timeout for the initialize handshake and for tool discovery.

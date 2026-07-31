@@ -3,10 +3,10 @@
 //! This client wraps the Anthropic client with AI Core authentication.
 
 use crate::{
+    LLMProvider, StreamingCallback,
     anthropic::{AnthropicClient, AuthProvider, DefaultMessageConverter, RequestCustomizer},
     auth::TokenManager,
     types::*,
-    LLMProvider, StreamingCallback,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -40,7 +40,7 @@ pub struct AiCoreAnthropicRequestCustomizer;
 
 impl RequestCustomizer for AiCoreAnthropicRequestCustomizer {
     fn customize_request(&self, request: &mut serde_json::Value) -> Result<()> {
-        if let Value::Object(ref mut map) = request {
+        if let Value::Object(map) = request {
             // Remove stream and model fields after URL routing is done
             map.remove("stream");
             map.remove("model");

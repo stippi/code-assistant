@@ -8,14 +8,14 @@
 //!
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
-use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
+use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
 use code_assistant_core::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, rems, ClickEvent, Context, Element, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
+    ClickEvent, Context, Element, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
 use similar::{ChangeTag, TextDiff};
 
@@ -416,16 +416,14 @@ fn render_write_body(
         });
 
     // If we have original content and diff mode is on, show a unified diff
-    if diff_mode {
-        if let Some(ref original) = original_content {
-            return Some(render_unified_diff(
-                original,
-                content,
-                theme,
-                Some(1),
-                rem_size,
-            ));
-        }
+    if diff_mode && let Some(ref original) = original_content {
+        return Some(render_unified_diff(
+            original,
+            content,
+            theme,
+            Some(1),
+            rem_size,
+        ));
     }
 
     // Fall back to all-green additions (new file or diff mode toggled off)
@@ -1029,9 +1027,10 @@ mod tests {
         );
         assert_eq!(tags[0].1, "/// comment");
         // The actually new line should be Insert
-        assert!(tags
-            .iter()
-            .any(|(t, l)| *t == ChangeTag::Insert && l == "pub new_field: u32,"));
+        assert!(
+            tags.iter()
+                .any(|(t, l)| *t == ChangeTag::Insert && l == "pub new_field: u32,")
+        );
     }
 
     #[test]

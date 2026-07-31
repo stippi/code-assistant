@@ -2,9 +2,9 @@
 //! per-skill enable/disable list. Backed by `<config_dir>/skills.json`.
 
 use code_assistant_core::skills::{
-    discover_config_and_system_skills, install_system_skills, Skill, SkillsConfig,
+    Skill, SkillsConfig, discover_config_and_system_skills, install_system_skills,
 };
-use gpui::{div, prelude::*, px, App, Context, FocusHandle, Focusable, SharedString};
+use gpui::{App, Context, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use gpui_component::switch::Switch;
 use gpui_component::{ActiveTheme, Disableable, Sizable, Size};
 use tracing::warn;

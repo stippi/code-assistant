@@ -1,7 +1,7 @@
 use crate::browser::{BrowserLaunchConfig, LaunchedBrowser};
 use anyhow::Result;
 use htmd::{Element, HtmlToMarkdown};
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};

@@ -24,7 +24,7 @@
 //! plus the page's url/title/text.
 
 use crate::tools::core::{
-    capabilities, ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
+    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
 };
 use crate::tools::services::ToolServicesAccess;
 use anyhow::Result;
@@ -301,7 +301,7 @@ impl Tool for BrowserNavigateTool {
                 return Ok(BrowserOutput::failure(
                     &profile,
                     format!("Failed to open browser: {e}"),
-                ))
+                ));
             }
         };
         if let Err(e) = session.navigate(&input.url).await {
@@ -482,12 +482,12 @@ fn resolve_coord(value: &str, axis: Axis, vw: f64, vh: f64) -> Result<f64> {
         "" => {
             return Err(anyhow::anyhow!(
                 "coordinate '{value}' needs a unit — use vw/vh/%/px"
-            ))
+            ));
         }
         other => {
             return Err(anyhow::anyhow!(
                 "unit '{other}' not supported for coordinates; use vw/vh/%/px"
-            ))
+            ));
         }
     };
     let max = match axis {
@@ -770,7 +770,7 @@ async fn login_handoff(
             return Ok(BrowserOutput::failure(
                 profile,
                 format!("Failed to open browser: {e}"),
-            ))
+            ));
         }
     };
     if let Err(e) = session.navigate(url).await {
@@ -831,8 +831,7 @@ async fn login_handoff(
 
 /// Page shown briefly in the login window after a successful handoff, so the
 /// user sees it worked and knows the window is safe to close.
-const LOGIN_SUCCESS_PAGE: &str =
-    "data:text/html,<html><body style='font-family:sans-serif;padding:2rem'>\
+const LOGIN_SUCCESS_PAGE: &str = "data:text/html,<html><body style='font-family:sans-serif;padding:2rem'>\
      <h2>&#9989; Login successful</h2>\
      <p>You can close this window &mdash; the agent now continues in the background.</p>\
      </body></html>";

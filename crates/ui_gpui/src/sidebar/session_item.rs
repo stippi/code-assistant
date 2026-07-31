@@ -3,9 +3,9 @@
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use gpui::{
-    div, percentage, prelude::*, px, Animation, AnimationExt, ClickEvent, Context, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, SharedString, StatefulInteractiveElement, Styled,
-    Transformation, Window,
+    Animation, AnimationExt, ClickEvent, Context, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window,
+    div, percentage, prelude::*, px,
 };
 use gpui_component::{ActiveTheme, StyledExt};
 use std::time::SystemTime;

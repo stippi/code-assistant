@@ -152,10 +152,10 @@ impl ToolCallState {
         output: Option<String>,
     ) {
         self.status = status;
-        if let Some(message) = message {
-            if !message.is_empty() {
-                self.status_message = Some(message);
-            }
+        if let Some(message) = message
+            && !message.is_empty()
+        {
+            self.status_message = Some(message);
         }
         if let Some(output) = output {
             self.final_output = Some(output);
@@ -317,36 +317,35 @@ impl ToolCallState {
             content.push(text_content(lines.join("\n")));
         } else {
             // For all other tools, put the full output as the primary content
-            if let Some(output) = self.output_text() {
-                if !output.is_empty() {
-                    // For spawn_agent, try to render as markdown
-                    if self.tool_name.as_deref() == Some("spawn_agent") {
-                        if let Some(markdown) = render_sub_agent_output_as_markdown(&output) {
-                            content.push(text_content(markdown));
-                        } else {
-                            content.push(text_content(output));
-                        }
+            if let Some(output) = self.output_text()
+                && !output.is_empty()
+            {
+                // For spawn_agent, try to render as markdown
+                if self.tool_name.as_deref() == Some("spawn_agent") {
+                    if let Some(markdown) = render_sub_agent_output_as_markdown(&output) {
+                        content.push(text_content(markdown));
                     } else {
                         content.push(text_content(output));
                     }
+                } else {
+                    content.push(text_content(output));
                 }
             }
         }
 
         // Add error messages for failed tools
-        if is_failed {
-            if let Some(message) = &self.status_message {
-                if !message.is_empty() {
-                    // Only add status message if it's different from the output
-                    let should_add_status = self
-                        .output_text()
-                        .map(|output| message.trim() != output.trim())
-                        .unwrap_or(true);
+        if is_failed
+            && let Some(message) = &self.status_message
+            && !message.is_empty()
+        {
+            // Only add status message if it's different from the output
+            let should_add_status = self
+                .output_text()
+                .map(|output| message.trim() != output.trim())
+                .unwrap_or(true);
 
-                    if should_add_status {
-                        content.push(text_content(message.clone()));
-                    }
-                }
+            if should_add_status {
+                content.push(text_content(message.clone()));
             }
         }
 
@@ -470,13 +469,13 @@ fn render_sub_agent_output_as_markdown(json_str: &str) -> Option<String> {
     }
 
     // Render final response
-    if let Some(response) = &output.response {
-        if !response.is_empty() {
-            if !lines.is_empty() {
-                lines.push(String::new()); // Blank line before response
-            }
-            lines.push(response.clone());
+    if let Some(response) = &output.response
+        && !response.is_empty()
+    {
+        if !lines.is_empty() {
+            lines.push(String::new()); // Blank line before response
         }
+        lines.push(response.clone());
     }
 
     if lines.is_empty() {
@@ -561,15 +560,15 @@ impl ACPUserUI {
     {
         let tool_id = tool_id.to_string();
         let base_path = self.base_path.as_deref();
-        let update = {
+
+        {
             let mut tool_calls = self.tool_calls.lock().unwrap();
             let state = tool_calls
                 .entry(tool_id.clone())
                 .or_insert_with(|| ToolCallState::new(&tool_id));
             updater(state);
             state.to_update(base_path)
-        };
-        update
+        }
     }
 
     fn get_tool_call<F>(&self, tool_id: &str, mutator: F) -> acp::ToolCall
@@ -578,15 +577,15 @@ impl ACPUserUI {
     {
         let tool_id = tool_id.to_string();
         let base_path = self.base_path.as_deref();
-        let tool_call = {
+
+        {
             let mut tool_calls = self.tool_calls.lock().unwrap();
             let state = tool_calls
                 .entry(tool_id.clone())
                 .or_insert_with(|| ToolCallState::new(&tool_id));
             mutator(state);
             state.to_tool_call(base_path)
-        };
-        tool_call
+        }
     }
 
     pub(crate) fn queue_session_update(&self, update: acp::SessionUpdate) {
@@ -1003,7 +1002,7 @@ impl UserInterface for ACPUserUI {
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
 
-            DisplayFragment::ThinkingText { ref text, .. } => {
+            DisplayFragment::ThinkingText { text, .. } => {
                 // Check if we need a paragraph break after a hidden tool
                 self.maybe_emit_paragraph_break(LastContentType::Thinking)?;
 
@@ -1371,14 +1370,18 @@ mod tests {
         match &content[0] {
             acp::ToolCallContent::Content(content) => {
                 if let acp::ContentBlock::Text(text_content) = &content.content {
-                    assert!(text_content
-                        .text
-                        .contains("Successfully loaded the following file(s)"));
+                    assert!(
+                        text_content
+                            .text
+                            .contains("Successfully loaded the following file(s)")
+                    );
                     assert!(text_content.text.contains("Content of file 1"));
                     assert!(text_content.text.contains("Content of file 2"));
-                    assert!(!text_content
-                        .text
-                        .contains("paths: [\"file1.txt\", \"file2.txt\"]"));
+                    assert!(
+                        !text_content
+                            .text
+                            .contains("paths: [\"file1.txt\", \"file2.txt\"]")
+                    );
                 } else {
                     panic!("expected text content");
                 }

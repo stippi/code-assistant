@@ -9,7 +9,7 @@ use code_assistant_core::persistence::{BranchInfo, NodeId};
 
 use crate::shared::image;
 use code_assistant_core::ui::ToolStatus;
-use gpui::{prelude::*, Context, Entity};
+use gpui::{Context, Entity, prelude::*};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
 
@@ -388,46 +388,46 @@ impl MessageContainer {
 
         for element in elements.iter() {
             element.update(cx, |view, cx| {
-                if let Some(tool) = view.block.as_tool_mut() {
-                    if tool.id == tool_id {
-                        tool.status = status;
-                        tool.status_message = message.clone();
+                if let Some(tool) = view.block.as_tool_mut()
+                    && tool.id == tool_id
+                {
+                    tool.status = status;
+                    tool.status_message = message.clone();
 
-                        // Update output if provided
-                        // Note: UpdateToolStatus always replaces output (used by spawn_agent for JSON updates)
-                        // AppendToolOutput is used for streaming append behavior
-                        if let Some(ref new_output) = output {
-                            tool.output = Some(new_output.clone());
-                        }
-
-                        // Update styled output if provided (terminal color data)
-                        if styled_output.is_some() {
-                            tool.styled_output = styled_output.clone();
-                        }
-
-                        // Store duration from ContentBlock timestamps (stable across restores)
-                        if duration_seconds.is_some() {
-                            tool.duration_seconds = duration_seconds;
-                        }
-
-                        // Store image data from tools that produce visual output
-                        if !images.is_empty() {
-                            tool.images = images.clone();
-                        }
-
-                        // Update generating flag on completion — no automatic state changes.
-                        // The tool's collapse/expand state stays exactly as it was set at
-                        // creation time (Card=Expanded, Inline=Collapsed) or as toggled
-                        // by the user. The user is always in control.
-                        if status == ToolStatus::Success || status == ToolStatus::Error {
-                            view.set_generating(false);
-                        } else if !view.is_generating {
-                            view.set_generating(true);
-                        }
-
-                        updated = true;
-                        cx.notify();
+                    // Update output if provided
+                    // Note: UpdateToolStatus always replaces output (used by spawn_agent for JSON updates)
+                    // AppendToolOutput is used for streaming append behavior
+                    if let Some(ref new_output) = output {
+                        tool.output = Some(new_output.clone());
                     }
+
+                    // Update styled output if provided (terminal color data)
+                    if styled_output.is_some() {
+                        tool.styled_output = styled_output.clone();
+                    }
+
+                    // Store duration from ContentBlock timestamps (stable across restores)
+                    if duration_seconds.is_some() {
+                        tool.duration_seconds = duration_seconds;
+                    }
+
+                    // Store image data from tools that produce visual output
+                    if !images.is_empty() {
+                        tool.images = images.clone();
+                    }
+
+                    // Update generating flag on completion — no automatic state changes.
+                    // The tool's collapse/expand state stays exactly as it was set at
+                    // creation time (Card=Expanded, Inline=Collapsed) or as toggled
+                    // by the user. The user is always in control.
+                    if status == ToolStatus::Success || status == ToolStatus::Error {
+                        view.set_generating(false);
+                    } else if !view.is_generating {
+                        view.set_generating(true);
+                    }
+
+                    updated = true;
+                    cx.notify();
                 }
             });
         }
@@ -606,39 +606,39 @@ impl MessageContainer {
             let mut param_added = false;
 
             element.update(cx, |view, cx| {
-                if let Some(tool) = view.block.as_tool_mut() {
-                    if tool.id == tool_id {
-                        tool_found = true;
-                        trace!(
-                            "Found tool: {}, current params: {}",
-                            tool.name,
-                            tool.parameters.len()
-                        );
+                if let Some(tool) = view.block.as_tool_mut()
+                    && tool.id == tool_id
+                {
+                    tool_found = true;
+                    trace!(
+                        "Found tool: {}, current params: {}",
+                        tool.name,
+                        tool.parameters.len()
+                    );
 
-                        // Check if parameter with this name already exists
-                        for param in tool.parameters.iter_mut() {
-                            if param.name == name {
-                                // Update existing parameter
-                                param.value.push_str(&value);
-                                trace!("Found param: {}, len now {}", name, param.value.len());
-                                param_added = true;
-                                break;
-                            }
-                        }
-
-                        // Add new parameter if not found
-                        if !param_added {
-                            trace!("Adding param: {}, len {}", name, value.len());
-                            tool.parameters.push(ParameterBlock {
-                                name: name.clone(),
-                                value: value.clone(),
-                            });
+                    // Check if parameter with this name already exists
+                    for param in tool.parameters.iter_mut() {
+                        if param.name == name {
+                            // Update existing parameter
+                            param.value.push_str(&value);
+                            trace!("Found param: {}, len now {}", name, param.value.len());
                             param_added = true;
+                            break;
                         }
-
-                        trace!("After update, params: {}", tool.parameters.len());
-                        cx.notify();
                     }
+
+                    // Add new parameter if not found
+                    if !param_added {
+                        trace!("Adding param: {}, len {}", name, value.len());
+                        tool.parameters.push(ParameterBlock {
+                            name: name.clone(),
+                            value: value.clone(),
+                        });
+                        param_added = true;
+                    }
+
+                    trace!("After update, params: {}", tool.parameters.len());
+                    cx.notify();
                 }
             });
 
@@ -714,25 +714,25 @@ impl MessageContainer {
         for element in elements.iter().rev() {
             let mut found = false;
             element.update(cx, |view, cx| {
-                if let Some(tool) = view.block.as_tool_mut() {
-                    if tool.id == tool_id {
-                        for param in tool.parameters.iter_mut() {
-                            if param.name == name {
-                                param.value = value.clone();
-                                found = true;
-                                break;
-                            }
-                        }
-                        if !found {
-                            // Parameter doesn't exist yet — add it
-                            tool.parameters.push(ParameterBlock {
-                                name: name.clone(),
-                                value: value.clone(),
-                            });
+                if let Some(tool) = view.block.as_tool_mut()
+                    && tool.id == tool_id
+                {
+                    for param in tool.parameters.iter_mut() {
+                        if param.name == name {
+                            param.value = value.clone();
                             found = true;
+                            break;
                         }
-                        cx.notify();
                     }
+                    if !found {
+                        // Parameter doesn't exist yet — add it
+                        tool.parameters.push(ParameterBlock {
+                            name: name.clone(),
+                            value: value.clone(),
+                        });
+                        found = true;
+                    }
+                    cx.notify();
                 }
             });
             if found {
@@ -754,11 +754,11 @@ impl MessageContainer {
         // Find the tool and mark it as completed
         for element in elements.iter() {
             cx.update_entity(element, |block_view, cx| {
-                if let Some(tool_block) = block_view.block.as_tool_mut() {
-                    if tool_block.id == id {
-                        block_view.set_generating(false); // Mark as completed (not generating)
-                        cx.notify(); // Trigger re-render to show virtual parameters
-                    }
+                if let Some(tool_block) = block_view.block.as_tool_mut()
+                    && tool_block.id == id
+                {
+                    block_view.set_generating(false); // Mark as completed (not generating)
+                    cx.notify(); // Trigger re-render to show virtual parameters
                 }
             }); // Ignore errors from update_entity
         }
@@ -779,17 +779,17 @@ impl MessageContainer {
         // Find the tool and append the output chunk
         for element in elements.iter() {
             cx.update_entity(element, |block_view, cx| {
-                if let Some(tool_block) = block_view.block.as_tool_mut() {
-                    if tool_block.id == tool_id {
-                        found = true;
-                        // Append to existing output or create new output
-                        if let Some(existing_output) = &mut tool_block.output {
-                            existing_output.push_str(&chunk);
-                        } else {
-                            tool_block.output = Some(chunk.clone());
-                        }
-                        cx.notify(); // Trigger re-render
+                if let Some(tool_block) = block_view.block.as_tool_mut()
+                    && tool_block.id == tool_id
+                {
+                    found = true;
+                    // Append to existing output or create new output
+                    if let Some(existing_output) = &mut tool_block.output {
+                        existing_output.push_str(&chunk);
+                    } else {
+                        tool_block.output = Some(chunk.clone());
                     }
+                    cx.notify(); // Trigger re-render
                 }
             }); // Ignore errors from update_entity
         }
@@ -809,17 +809,17 @@ impl MessageContainer {
         // Mark any previous thinking blocks as completed and not generating
         for element in elements.iter() {
             element.update(cx, |view, cx| {
-                if let Some(thinking_block) = view.block.as_thinking_mut() {
-                    if !thinking_block.is_completed {
-                        // Finalize any reasoning content before marking as completed
-                        thinking_block.complete_reasoning();
+                if let Some(thinking_block) = view.block.as_thinking_mut()
+                    && !thinking_block.is_completed
+                {
+                    // Finalize any reasoning content before marking as completed
+                    thinking_block.complete_reasoning();
 
-                        thinking_block.is_completed = true;
-                        thinking_block.end_time = std::time::Instant::now();
-                        view.set_generating(false);
+                    thinking_block.is_completed = true;
+                    thinking_block.end_time = std::time::Instant::now();
+                    view.set_generating(false);
 
-                        cx.notify();
-                    }
+                    cx.notify();
                 }
             });
         }

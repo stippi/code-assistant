@@ -1,6 +1,6 @@
 //! Models settings section — list configured models, add/edit/remove.
 
-use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, SharedString};
+use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};
@@ -542,10 +542,10 @@ impl ModelsSection {
         };
 
         // When editing, remove old key if name changed
-        if let FormMode::Editing(ref old_name) = self.form_mode {
-            if old_name != name.trim() {
-                map.remove(old_name);
-            }
+        if let FormMode::Editing(ref old_name) = self.form_mode
+            && old_name != name.trim()
+        {
+            map.remove(old_name);
         }
 
         // Build model entry

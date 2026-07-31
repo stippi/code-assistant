@@ -103,13 +103,12 @@ impl TerminalPool {
         if let Some(previous_terminal_id) = self
             .tool_index
             .insert((session_id.clone(), tool_id.clone()), terminal_id.clone())
+            && previous_terminal_id != terminal_id
         {
-            if previous_terminal_id != terminal_id {
-                warn!(
-                    "TerminalPool remapped terminal: session='{}', tool_id='{}', old_terminal='{}', new_terminal='{}'",
-                    session_id, tool_id, previous_terminal_id, terminal_id
-                );
-            }
+            warn!(
+                "TerminalPool remapped terminal: session='{}', tool_id='{}', old_terminal='{}', new_terminal='{}'",
+                session_id, tool_id, previous_terminal_id, terminal_id
+            );
         }
     }
 

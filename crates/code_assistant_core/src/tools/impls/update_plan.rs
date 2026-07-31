@@ -1,10 +1,10 @@
-use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
-};
 use crate::tools::ToolServicesAccess;
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+};
 use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus, PlanState};
 use crate::ui::UiEvent;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -246,9 +246,11 @@ mod tests {
 
         let ui = fixture.ui().unwrap();
         let events = ui.events();
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, UiEvent::UpdatePlan { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, UiEvent::UpdatePlan { .. }))
+        );
     }
 
     #[tokio::test]
@@ -282,8 +284,9 @@ mod tests {
         };
 
         let err = tool.execute(&mut context, &mut input).await.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Plan entries must include non-empty content"));
+        assert!(
+            err.to_string()
+                .contains("Plan entries must include non-empty content")
+        );
     }
 }

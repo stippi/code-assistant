@@ -6,6 +6,7 @@ use std::fmt;
 use std::io;
 use std::io::Write;
 
+use crossterm::Command;
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::Color as CColor;
@@ -17,7 +18,6 @@ use crossterm::style::SetColors;
 use crossterm::style::SetForegroundColor;
 use crossterm::terminal::Clear;
 use crossterm::terminal::ClearType;
-use crossterm::Command;
 use ratatui::backend::Backend;
 use ratatui::layout::Size;
 use ratatui::style::Color;
@@ -373,13 +373,13 @@ fn wrap_lines_for_width_styled(lines: &[Line<'_>], width: usize) -> Vec<Line<'st
         }
 
         // Flush remaining
-        if let Some(idx) = current_span_idx {
-            if !current_span_text.is_empty() {
-                current_spans.push(Span::styled(
-                    std::mem::take(&mut current_span_text),
-                    line.spans[idx].style,
-                ));
-            }
+        if let Some(idx) = current_span_idx
+            && !current_span_text.is_empty()
+        {
+            current_spans.push(Span::styled(
+                std::mem::take(&mut current_span_text),
+                line.spans[idx].style,
+            ));
         }
         if !current_spans.is_empty() {
             out.push(Line {

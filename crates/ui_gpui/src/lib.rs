@@ -17,8 +17,8 @@ use code_assistant_core::session::service::{SessionService, SkillCatalogEntry};
 use code_assistant_core::types::PlanState;
 use code_assistant_core::ui::UiEvent;
 use gpui::{
-    actions, px, App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point,
-    SharedString,
+    App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point, SharedString,
+    actions, px,
 };
 use gpui_component::Root;
 pub use messages::MessagesView;

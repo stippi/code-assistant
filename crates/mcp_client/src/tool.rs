@@ -82,7 +82,7 @@ impl DynTool for McpTool {
                 return Err(tools_core::result::ToolError::ParseError(format!(
                     "MCP tool parameters must be a JSON object, got: {other}"
                 ))
-                .into())
+                .into());
             }
         };
         let output = match self

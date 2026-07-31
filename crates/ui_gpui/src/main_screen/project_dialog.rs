@@ -1,6 +1,6 @@
 use gpui::{
-    div, prelude::*, px, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
-    Subscription, Window,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, Window, div,
+    prelude::*, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, StyledExt};

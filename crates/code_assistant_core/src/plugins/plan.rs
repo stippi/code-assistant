@@ -21,15 +21,15 @@ impl ToolInterceptor for PlanSnapshotHook {
 
         // Find the last assistant message in the active path
         for &node_id in ctx.active_path.iter().rev() {
-            if let Some(node) = ctx.message_nodes.get(&node_id) {
-                if node.message.role == llm::MessageRole::Assistant {
-                    // Found it - set the snapshot
-                    if let Some(node_mut) = ctx.message_nodes.get_mut(&node_id) {
-                        node_mut.set_plan_snapshot(plan);
-                        trace!("Saved plan snapshot to assistant message node {}", node_id);
-                    }
-                    return;
+            if let Some(node) = ctx.message_nodes.get(&node_id)
+                && node.message.role == llm::MessageRole::Assistant
+            {
+                // Found it - set the snapshot
+                if let Some(node_mut) = ctx.message_nodes.get_mut(&node_id) {
+                    node_mut.set_plan_snapshot(plan);
+                    trace!("Saved plan snapshot to assistant message node {}", node_id);
                 }
+                return;
             }
         }
         // No assistant message found - this shouldn't happen in normal flow

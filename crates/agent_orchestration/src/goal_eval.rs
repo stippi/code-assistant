@@ -263,8 +263,8 @@ impl GoalEvaluator for LlmGoalEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::goals::{Budget, CompletionContract};
     use crate::OwnerKey;
+    use crate::goals::{Budget, CompletionContract};
     use chrono::NaiveDate;
     use std::sync::{Arc, Mutex as StdMutex};
 

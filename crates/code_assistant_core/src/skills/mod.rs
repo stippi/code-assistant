@@ -18,15 +18,15 @@ pub mod manifest;
 pub mod render;
 
 pub use bundled::install_system_skills;
-pub use config::{skills_config_path, SkillsConfig};
+pub use config::{SkillsConfig, skills_config_path};
 pub use invoke::{
-    load_skill_payload, render_skill_body_with_header, render_skill_invocation_message,
-    SkillPayload, MAX_BODY_LEN,
+    MAX_BODY_LEN, SkillPayload, load_skill_payload, render_skill_body_with_header,
+    render_skill_invocation_message,
 };
 pub use loader::{
-    discover_all_skills, discover_all_skills_filtered, discover_config_and_system_skills,
-    discover_scope_skills, discover_scope_skills_filtered, discover_session_catalog,
-    model_invocable, ScopeSkills, Skill, SkillScope,
+    ScopeSkills, Skill, SkillScope, discover_all_skills, discover_all_skills_filtered,
+    discover_config_and_system_skills, discover_scope_skills, discover_scope_skills_filtered,
+    discover_session_catalog, model_invocable,
 };
-pub use manifest::{parse_skill_content, SkillManifest};
+pub use manifest::{SkillManifest, parse_skill_content};
 pub use render::render_skills_section;

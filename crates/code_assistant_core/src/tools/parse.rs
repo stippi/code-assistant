@@ -211,11 +211,11 @@ pub fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>
 
                 // Check if this is a separator right before end marker
                 if current_line.trim_end() == "=======" {
-                    if let Some(next_line) = lines.peek() {
-                        if next_line.trim_end() == end_marker {
-                            // Skip this separator if it's right before the end marker
-                            continue;
-                        }
+                    if let Some(next_line) = lines.peek()
+                        && next_line.trim_end() == end_marker
+                    {
+                        // Skip this separator if it's right before the end marker
+                        continue;
                     }
 
                     // This should never happen due to our check above, but just in case

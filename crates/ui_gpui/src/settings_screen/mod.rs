@@ -9,7 +9,7 @@ mod providers_section;
 mod skills_section;
 
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, SharedString,
+    App, ClickEvent, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon, Sizable, Size};

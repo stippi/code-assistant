@@ -1,12 +1,12 @@
 //! Interact with a PTY session started by `execute_command`'s session mode:
 //! send input, poll for new output, or interrupt the process.
 
-use crate::tools::core::{
-    capabilities, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
-};
 use crate::tools::ToolServicesAccess;
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+};
 use crate::ui::streaming::DisplayFragment;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use pty_session::PtySessionStatus;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -195,13 +195,13 @@ impl Tool for WriteStdinTool {
         // chunk on this write_stdin card as a record of what came back.
         let collected = session.collect_output(yield_time).await;
 
-        if !collected.output.is_empty() {
-            if let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id) {
-                let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
-                    tool_id: tool_id.clone(),
-                    chunk: collected.output.clone(),
-                });
-            }
+        if !collected.output.is_empty()
+            && let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id)
+        {
+            let _ = ui.display_fragment(&DisplayFragment::ToolOutput {
+                tool_id: tool_id.clone(),
+                chunk: collected.output.clone(),
+            });
         }
 
         let output = match collected.status {

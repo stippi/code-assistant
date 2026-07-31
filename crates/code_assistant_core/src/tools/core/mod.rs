@@ -7,10 +7,10 @@
 //! place to import from.
 
 pub use tools_core::{
-    generate_tool_title, ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolError,
-    ToolRegistry, ToolResult, ToolSpec,
+    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
+    ToolSpec, generate_tool_title,
 };
 
 // Domain-side pieces that historically lived here.
 pub use crate::tools::config::ToolsConfig;
-pub use crate::tools::scope::{capabilities, ToolScope};
+pub use crate::tools::scope::{ToolScope, capabilities};

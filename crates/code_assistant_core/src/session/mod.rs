@@ -28,7 +28,7 @@ pub use turn::{
     ResourceRef, ToolRecord, TurnDispatch, TurnHandle, TurnOutcome, TurnRequest, TurnStatus,
     TurnUsage,
 };
-pub use wakeup::{spawn_wakeup_scheduler, SessionWakeups, WakeupHandle};
+pub use wakeup::{SessionWakeups, WakeupHandle, spawn_wakeup_scheduler};
 
 /// Owned snapshot of everything a frontend needs to render a session.
 ///

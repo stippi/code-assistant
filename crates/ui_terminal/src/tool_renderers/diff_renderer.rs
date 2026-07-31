@@ -9,7 +9,7 @@ use serde_json;
 use similar::{ChangeTag, TextDiff};
 
 use super::{
-    push_error_history_line, render_error_line, render_tool_header, tool_header_line, ToolRenderer,
+    ToolRenderer, push_error_history_line, render_error_line, render_tool_header, tool_header_line,
 };
 use crate::message::ToolUseBlock;
 use crate::terminal_color;

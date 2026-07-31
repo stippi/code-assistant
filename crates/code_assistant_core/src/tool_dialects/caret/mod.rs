@@ -14,9 +14,9 @@ pub use parser::parse_caret_tool_invocations;
 pub use stream::CaretStreamProcessor;
 
 use crate::tool_dialects::{example_placeholder, is_multiline_param, message_text_segments};
+use crate::tools::ToolRequest;
 use crate::tools::core::ToolRegistry;
 use crate::tools::tool_use_filter::SmartToolFilter;
-use crate::tools::ToolRequest;
 use agent_core::dialect::ToolDialect;
 use agent_core::ui::{AgentUi, HiddenTools, StreamProcessorTrait};
 use anyhow::Result;
@@ -233,12 +233,12 @@ impl CaretDialect {
         }
 
         // Add description if available
-        if let Some(description) = param.get("description") {
-            if let Some(desc_str) = description.as_str() {
-                // Remove any (required) markers from the description since we handle it separately
-                let desc_str = desc_str.replace("(required)", "").trim().to_string();
-                doc.push_str(&format!(": {desc_str}"));
-            }
+        if let Some(description) = param.get("description")
+            && let Some(desc_str) = description.as_str()
+        {
+            // Remove any (required) markers from the description since we handle it separately
+            let desc_str = desc_str.replace("(required)", "").trim().to_string();
+            doc.push_str(&format!(": {desc_str}"));
         }
 
         doc

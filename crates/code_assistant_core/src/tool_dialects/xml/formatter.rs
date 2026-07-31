@@ -1,7 +1,7 @@
 //! Formatting a `ToolRequest` back into XML syntax (format-on-save).
 
-use crate::tools::core::ToolRegistry;
 use crate::tools::ToolRequest;
+use crate::tools::core::ToolRegistry;
 use anyhow::Result;
 use serde_json::Value;
 
@@ -41,48 +41,47 @@ pub(crate) fn format_tool_request(
 
         for (key, value) in map {
             // Check if this parameter should be omitted (has default value and matches it)
-            if let Some(param_schema) = properties.get(key) {
-                if let Some(default_value) = param_schema.get("default") {
-                    // Skip if the value matches the default and parameter is not required
-                    if !required_params.contains(key.as_str()) && value == default_value {
-                        continue;
-                    }
+            if let Some(param_schema) = properties.get(key)
+                && let Some(default_value) = param_schema.get("default")
+            {
+                // Skip if the value matches the default and parameter is not required
+                if !required_params.contains(key.as_str()) && value == default_value {
+                    continue;
                 }
             }
 
             // Check if this is an array parameter and handle it specially
-            if let Some(param_schema) = properties.get(key) {
-                if let Some(param_type) = param_schema.get("type").and_then(|t| t.as_str()) {
-                    if param_type == "array" {
-                        // For arrays in XML, we repeat the parameter tag for each item
-                        if let Value::Array(items) = value {
-                            for item in items {
-                                let item_str = match item {
-                                    Value::String(s) => s.clone(),
-                                    _ => serde_json::to_string(item)?,
-                                };
+            if let Some(param_schema) = properties.get(key)
+                && let Some(param_type) = param_schema.get("type").and_then(|t| t.as_str())
+                && param_type == "array"
+            {
+                // For arrays in XML, we repeat the parameter tag for each item
+                if let Value::Array(items) = value {
+                    for item in items {
+                        let item_str = match item {
+                            Value::String(s) => s.clone(),
+                            _ => serde_json::to_string(item)?,
+                        };
 
-                                // Use singular form of the parameter name for XML tags
-                                let singular_name = if key.ends_with('s') && key.len() > 1 {
-                                    &key[..key.len() - 1]
-                                } else {
-                                    key
-                                };
+                        // Use singular form of the parameter name for XML tags
+                        let singular_name = if key.ends_with('s') && key.len() > 1 {
+                            &key[..key.len() - 1]
+                        } else {
+                            key
+                        };
 
-                                if tool_spec.is_multiline_param(key) {
-                                    formatted.push_str(&format!(
-                                        "<param:{singular_name}>\n{item_str}\n</param:{singular_name}>\n"
-                                    ));
-                                } else {
-                                    formatted.push_str(&format!(
-                                        "<param:{singular_name}>{item_str}</param:{singular_name}>\n"
-                                    ));
-                                }
-                            }
+                        if tool_spec.is_multiline_param(key) {
+                            formatted.push_str(&format!(
+                                "<param:{singular_name}>\n{item_str}\n</param:{singular_name}>\n"
+                            ));
+                        } else {
+                            formatted.push_str(&format!(
+                                "<param:{singular_name}>{item_str}</param:{singular_name}>\n"
+                            ));
                         }
-                        continue; // Skip the normal parameter processing for arrays
                     }
                 }
+                continue; // Skip the normal parameter processing for arrays
             }
 
             // For non-array parameters, use normal formatting

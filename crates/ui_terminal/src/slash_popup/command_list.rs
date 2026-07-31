@@ -1,6 +1,6 @@
 //! Root popup that lists all known slash commands.
 
-use crate::commands::{all_commands, CommandResult};
+use crate::commands::{CommandResult, all_commands};
 use crate::slash_popup::session_picker::SessionPickerPopup;
 use crate::slash_popup::skill_picker::SkillPickerPopup;
 use crate::slash_popup::{PopupAction, PopupRow, SlashPopup};

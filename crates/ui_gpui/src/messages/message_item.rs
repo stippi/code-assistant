@@ -1,8 +1,8 @@
 //! Single message row rendering logic.
 
-use super::branch_switcher::BranchSwitcherElement;
 use super::MessagesView;
-use gpui::{div, prelude::*, rems, rgb, Context, CursorStyle, Entity, SharedString, Window};
+use super::branch_switcher::BranchSwitcherElement;
+use gpui::{Context, CursorStyle, Entity, SharedString, Window, div, prelude::*, rems, rgb};
 use gpui_component::{ActiveTheme, Icon};
 
 /// Render a single message at the given index.
@@ -104,10 +104,9 @@ pub fn render_message(
                         .on_click(move |_event, _window, cx| {
                             if let (Some(session_id), Some(node_id)) =
                                 (session_id_for_edit.clone(), node_id_for_edit)
+                                && let Some(gpui) = cx.try_global::<super::super::Gpui>()
                             {
-                                if let Some(gpui) = cx.try_global::<super::super::Gpui>() {
-                                    gpui.cmd_start_message_edit(session_id, node_id);
-                                }
+                                gpui.cmd_start_message_edit(session_id, node_id);
                             }
                         })
                         .child(

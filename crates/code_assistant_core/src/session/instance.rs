@@ -359,10 +359,10 @@ impl SessionInstance {
     pub fn get_current_context_size(&self) -> u32 {
         // Find the most recent assistant message with usage data
         for message in self.session.get_active_messages().iter().rev() {
-            if matches!(message.role, llm::MessageRole::Assistant) {
-                if let Some(usage) = &message.usage {
-                    return usage.input_tokens + usage.cache_read_input_tokens;
-                }
+            if matches!(message.role, llm::MessageRole::Assistant)
+                && let Some(usage) = &message.usage
+            {
+                return usage.input_tokens + usage.cache_read_input_tokens;
             }
         }
         0
@@ -388,10 +388,10 @@ impl SessionInstance {
     /// Get usage from the most recent assistant message
     fn get_last_usage(&self) -> llm::Usage {
         for message in self.session.get_active_messages().iter().rev() {
-            if matches!(message.role, llm::MessageRole::Assistant) {
-                if let Some(usage) = &message.usage {
-                    return usage.clone();
-                }
+            if matches!(message.role, llm::MessageRole::Assistant)
+                && let Some(usage) = &message.usage
+            {
+                return usage.clone();
             }
         }
         llm::Usage::zero()
@@ -858,10 +858,10 @@ impl SessionInstance {
         for message in messages {
             if let llm::MessageContent::Structured(blocks) = &message.content {
                 for block in blocks {
-                    if let llm::ContentBlock::ToolResult { tool_use_id, .. } = block {
-                        if let Some(duration) = block.duration() {
-                            map.insert(tool_use_id.clone(), duration.as_secs_f64());
-                        }
+                    if let llm::ContentBlock::ToolResult { tool_use_id, .. } = block
+                        && let Some(duration) = block.duration()
+                    {
+                        map.insert(tool_use_id.clone(), duration.as_secs_f64());
                     }
                 }
             }

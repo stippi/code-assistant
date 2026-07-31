@@ -6,7 +6,7 @@
 
 #![allow(dead_code)] // Fields are part of the public API, used by UI code
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::process::Command;
 
 /// A suggested provider + model configuration that can be applied with minimal user input.
@@ -116,11 +116,7 @@ impl UserEnvironment {
         }
 
         let email = String::from_utf8(output.stdout).ok()?.trim().to_string();
-        if email.is_empty() {
-            None
-        } else {
-            Some(email)
-        }
+        if email.is_empty() { None } else { Some(email) }
     }
 
     /// Get the system username (whoami).
@@ -132,11 +128,7 @@ impl UserEnvironment {
         }
 
         let user = String::from_utf8(output.stdout).ok()?.trim().to_string();
-        if user.is_empty() {
-            None
-        } else {
-            Some(user)
-        }
+        if user.is_empty() { None } else { Some(user) }
     }
 
     /// Check if a username matches SAP's I-user or D-user pattern (e.g. I531928, D012345).
@@ -315,8 +307,7 @@ fn chatgpt_subscription_suggestion() -> ProviderSuggestion {
     ProviderSuggestion {
         id: "suggestion-chatgpt",
         title: "ChatGPT Subscription",
-        description:
-            "Use your existing ChatGPT Plus/Pro subscription. Requires browser login via OAuth.",
+        description: "Use your existing ChatGPT Plus/Pro subscription. Requires browser login via OAuth.",
         icon: "icons/ai_open_ai.svg",
         required_fields: vec![], // No fields needed - uses OAuth flow
         provider_key: "openai-chatgpt",
@@ -426,11 +417,11 @@ pub fn apply_suggestion(
 
     // Set the first model as default if no default is configured yet
     let mut settings = crate::shared::settings::UiSettings::load();
-    if settings.default_model.is_none() {
-        if let Some(first_model) = suggestion.models.first() {
-            settings.default_model = Some(first_model.display_name.to_string());
-            settings.save();
-        }
+    if settings.default_model.is_none()
+        && let Some(first_model) = suggestion.models.first()
+    {
+        settings.default_model = Some(first_model.display_name.to_string());
+        settings.save();
     }
 
     Ok(())

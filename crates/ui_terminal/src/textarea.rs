@@ -480,11 +480,7 @@ impl TextArea {
     pub fn kill_to_beginning_of_line(&mut self) {
         let bol = self.beginning_of_current_line();
         let range = if self.cursor_pos == bol {
-            if bol > 0 {
-                Some(bol - 1..bol)
-            } else {
-                None
-            }
+            if bol > 0 { Some(bol - 1..bol) } else { None }
         } else {
             Some(bol..self.cursor_pos)
         };
@@ -711,11 +707,7 @@ impl TextArea {
 
     fn wrapped_line_index_by_start(lines: &[Range<usize>], pos: usize) -> Option<usize> {
         let idx = lines.partition_point(|r| r.start <= pos);
-        if idx == 0 {
-            None
-        } else {
-            Some(idx - 1)
-        }
+        if idx == 0 { None } else { Some(idx - 1) }
     }
 
     fn move_to_display_col_on_line(
@@ -1142,9 +1134,9 @@ mod tests {
 
         // Move left: should skip from 'b' over element to 'a'
         ta.move_cursor_left(); // to end of element = 6 -> actually to start of 'b' which is 6
-                               // move_cursor_left goes to prev_atomic_boundary(7) = 6 ('b' start)
-                               // actually 'b' is at pos 6, so prev_atomic from 7 is 6
-                               // then move_cursor_left again from 6 should jump over element to 1
+        // move_cursor_left goes to prev_atomic_boundary(7) = 6 ('b' start)
+        // actually 'b' is at pos 6, so prev_atomic from 7 is 6
+        // then move_cursor_left again from 6 should jump over element to 1
         ta.move_cursor_left(); // from 6 to element start = 1
         assert_eq!(ta.cursor(), 1);
         ta.move_cursor_left(); // from 1 to 0

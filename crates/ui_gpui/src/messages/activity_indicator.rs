@@ -2,9 +2,9 @@
 //!
 //! Shows braille spinners for loading states and pending message cards.
 
-use super::{MessagesView, BRAILLE_FRAMES};
+use super::{BRAILLE_FRAMES, MessagesView};
 use code_assistant_core::session::instance::SessionActivityState;
-use gpui::{div, prelude::*, rems, Context};
+use gpui::{Context, div, prelude::*, rems};
 use gpui_component::ActiveTheme;
 
 /// Render the pending message indicator

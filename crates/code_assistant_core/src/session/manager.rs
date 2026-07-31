@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
 use crate::persistence::{
-    generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
+    ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig, generate_session_id,
 };
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
@@ -1485,30 +1485,29 @@ impl SessionManager {
     /// determined.
     pub fn resolve_project_path(&self, project_name: &str) -> Option<PathBuf> {
         // 1. Check persisted projects
-        if let Ok(projects) = crate::config::load_projects() {
-            if let Some(project) = projects.get(project_name) {
-                return Some(project.path.clone());
-            }
+        if let Ok(projects) = crate::config::load_projects()
+            && let Some(project) = projects.get(project_name)
+        {
+            return Some(project.path.clone());
         }
 
         // 2. Scan active sessions
         for instance in self.active_sessions.values() {
-            if instance.session.initial_project() == project_name {
-                if let Some(path) = instance.session.config.effective_project_path() {
-                    return Some(path.clone());
-                }
+            if instance.session.initial_project() == project_name
+                && let Some(path) = instance.session.config.effective_project_path()
+            {
+                return Some(path.clone());
             }
         }
 
         // 3. Scan persisted sessions
         if let Ok(metadata_list) = self.persistence.list_chat_sessions() {
             for meta in &metadata_list {
-                if meta.initial_project == project_name {
-                    if let Ok(Some(session)) = self.persistence.load_chat_session(&meta.id) {
-                        if let Some(path) = session.config.effective_project_path() {
-                            return Some(path.clone());
-                        }
-                    }
+                if meta.initial_project == project_name
+                    && let Ok(Some(session)) = self.persistence.load_chat_session(&meta.id)
+                    && let Some(path) = session.config.effective_project_path()
+                {
+                    return Some(path.clone());
                 }
             }
         }
@@ -1523,10 +1522,10 @@ impl SessionManager {
     pub fn is_agent_locked_externally(&self, session_id: &str) -> bool {
         // If *we* have the session in our active_sessions with a running task,
         // the lock is ours, not external.
-        if let Some(instance) = self.active_sessions.get(session_id) {
-            if !instance.get_activity_state().is_terminal() {
-                return false; // Our own agent holds the lock
-            }
+        if let Some(instance) = self.active_sessions.get(session_id)
+            && !instance.get_activity_state().is_terminal()
+        {
+            return false; // Our own agent holds the lock
         }
 
         let Ok(sessions_dir) = self.persistence.sessions_dir() else {
@@ -1609,10 +1608,10 @@ impl SessionManager {
     /// Returns the input tokens + cache reads from the most recent assistant message
     #[allow(dead_code)]
     pub fn get_current_context_size(&self) -> u32 {
-        if let Some(session_id) = &self.active_session_id {
-            if let Some(session_instance) = self.active_sessions.get(session_id) {
-                return session_instance.get_current_context_size();
-            }
+        if let Some(session_id) = &self.active_session_id
+            && let Some(session_instance) = self.active_sessions.get(session_id)
+        {
+            return session_instance.get_current_context_size();
         }
         0
     }
@@ -1620,10 +1619,10 @@ impl SessionManager {
     /// Calculate total usage for the active session
     #[allow(dead_code)]
     pub fn get_total_session_usage(&self) -> llm::Usage {
-        if let Some(session_id) = &self.active_session_id {
-            if let Some(session_instance) = self.active_sessions.get(session_id) {
-                return session_instance.calculate_total_usage();
-            }
+        if let Some(session_id) = &self.active_session_id
+            && let Some(session_instance) = self.active_sessions.get(session_id)
+        {
+            return session_instance.calculate_total_usage();
         }
         llm::Usage::zero()
     }

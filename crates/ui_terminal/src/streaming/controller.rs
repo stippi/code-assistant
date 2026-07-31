@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use ratatui::text::Line;
 
-use super::chunking::AdaptiveChunkingPolicy;
-use super::commit_tick::{run_commit_tick, CommitTickOutput};
 use super::StreamState;
+use super::chunking::AdaptiveChunkingPolicy;
+use super::commit_tick::{CommitTickOutput, run_commit_tick};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamKind {

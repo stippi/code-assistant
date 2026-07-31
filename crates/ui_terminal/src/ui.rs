@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use code_assistant_core::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tracing::{debug, warn};
 
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ThinkingBlock, ToolUseBlock};
@@ -72,10 +72,10 @@ impl TerminalUI {
             .event_sender
             .lock()
             .expect("event_sender lock poisoned");
-        if let Some(sender) = guard.as_ref() {
-            if let Err(err) = sender.try_send(event) {
-                warn!("Failed to send event via channel: {}", err);
-            }
+        if let Some(sender) = guard.as_ref()
+            && let Err(err) = sender.try_send(event)
+        {
+            warn!("Failed to send event via channel: {}", err);
         }
     }
 
@@ -322,12 +322,12 @@ impl TerminalUI {
                 let mut state = self.app_state.lock().await;
                 state.update_session_activity_state(session_id.clone(), activity_state.clone());
                 let is_terminal = activity_state.is_terminal();
-                if let Some(current_session_id) = &state.current_session_id {
-                    if current_session_id == &session_id {
-                        state.update_activity_state(Some(activity_state));
-                        if is_terminal {
-                            self.cancel_flag.store(false, Ordering::SeqCst);
-                        }
+                if let Some(current_session_id) = &state.current_session_id
+                    && current_session_id == &session_id
+                {
+                    state.update_activity_state(Some(activity_state));
+                    if is_terminal {
+                        self.cancel_flag.store(false, Ordering::SeqCst);
                     }
                 }
             }
@@ -657,7 +657,7 @@ impl UserInterface for TerminalUI {
                 });
             }
 
-            DisplayFragment::ThinkingText { ref text, .. } => {
+            DisplayFragment::ThinkingText { text, .. } => {
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: text.clone(),
                 });
@@ -686,7 +686,10 @@ impl UserInterface for TerminalUI {
                 tool_id,
             } => {
                 if tool_id.is_empty() {
-                    warn!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
+                    warn!(
+                        "StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!",
+                        name
+                    );
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("Empty tool ID for parameter '{name}'"),

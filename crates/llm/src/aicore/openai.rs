@@ -3,10 +3,10 @@
 //! This client wraps the OpenAI client with AI Core authentication.
 
 use crate::{
+    LLMProvider, StreamingCallback,
     auth::TokenManager,
     openai::{AuthProvider, OpenAIClient, RequestCustomizer},
     types::*,
-    LLMProvider, StreamingCallback,
 };
 use anyhow::Result;
 use async_trait::async_trait;

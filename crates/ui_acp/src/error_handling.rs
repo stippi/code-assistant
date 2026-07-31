@@ -79,7 +79,9 @@ mod tests {
 
     #[test]
     fn test_format_config_error_missing_file() {
-        let error = anyhow!("Providers configuration file not found.\nSearched locations:\n  /home/user/.config/code-assistant/providers.json\n\nPlease copy providers.example.json to /home/user/.config/code-assistant/providers.json and configure it.");
+        let error = anyhow!(
+            "Providers configuration file not found.\nSearched locations:\n  /home/user/.config/code-assistant/providers.json\n\nPlease copy providers.example.json to /home/user/.config/code-assistant/providers.json and configure it."
+        );
 
         let formatted = format_config_error(&error);
 

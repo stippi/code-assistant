@@ -6,10 +6,10 @@ use crate::tools::impls::write_file::{WriteFileInput, WriteFileTool};
 use crate::types::Project;
 use anyhow::Result;
 use command_executor::CommandOutput;
-use fs_explorer::file_updater::{
-    extract_stable_ranges, reconstruct_formatted_replacements, MatchRange,
-};
 use fs_explorer::FileReplacement;
+use fs_explorer::file_updater::{
+    MatchRange, extract_stable_ranges, reconstruct_formatted_replacements,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -223,9 +223,11 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
     // Verify that the formatter was called with the file path
     let captured_commands = command_executor.get_captured_commands();
     assert_eq!(captured_commands.len(), 1);
-    assert!(captured_commands[0]
-        .command_line
-        .contains("prettier --write test.js"));
+    assert!(
+        captured_commands[0]
+            .command_line
+            .contains("prettier --write test.js")
+    );
 
     // Verify that input parameters were updated to the formatted versions
     assert_eq!(input.old_text, "const y = 2;"); // search unchanged
@@ -373,9 +375,11 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
     // Verify that the formatter was called with the file path
     let captured = command_executor.get_captured_commands();
     assert_eq!(captured.len(), 1);
-    assert!(captured[0]
-        .command_line
-        .contains("taplo format config.toml"));
+    assert!(
+        captured[0]
+            .command_line
+            .contains("taplo format config.toml")
+    );
 
     // Verify that the diff input was updated to reflect formatted replacements
     // Expect spaces around '=' in the updated REPLACE parts
@@ -524,12 +528,16 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
     let captured_commands = command_executor.get_captured_commands();
     println!("Captured commands: {captured_commands:?}");
     assert_eq!(captured_commands.len(), 2);
-    assert!(captured_commands[0]
-        .command_line
-        .contains("prettier --write test.js"));
-    assert!(captured_commands[1]
-        .command_line
-        .contains("prettier --write test.ts"));
+    assert!(
+        captured_commands[0]
+            .command_line
+            .contains("prettier --write test.js")
+    );
+    assert!(
+        captured_commands[1]
+            .command_line
+            .contains("prettier --write test.ts")
+    );
 
     Ok(())
 }

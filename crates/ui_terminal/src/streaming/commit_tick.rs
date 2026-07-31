@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use ratatui::text::Line;
 
-use super::chunking::{AdaptiveChunkingPolicy, ChunkingDecision, DrainPlan, QueueSnapshot};
 use super::StreamState;
+use super::chunking::{AdaptiveChunkingPolicy, ChunkingDecision, DrainPlan, QueueSnapshot};
 
 pub struct CommitTickOutput {
     pub text_lines: Vec<Line<'static>>,

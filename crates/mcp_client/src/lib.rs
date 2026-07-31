@@ -17,8 +17,8 @@ pub mod tool;
 mod tests;
 
 pub use client::McpServerConnection;
-pub use config::{substitute_variables, McpServerConfig, McpServersConfig};
+pub use config::{McpServerConfig, McpServersConfig, substitute_variables};
 pub use registry::{
-    discover_tools, register_mcp_tools, DiscoveredTool, McpServerStatus, MCP_CAPABILITY,
+    DiscoveredTool, MCP_CAPABILITY, McpServerStatus, discover_tools, register_mcp_tools,
 };
 pub use tool::McpTool;

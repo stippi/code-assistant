@@ -540,11 +540,11 @@ impl CaretStreamProcessor {
                 let line_content = &self.buffer[..newline_pos];
 
                 // Check if this line is the end marker
-                if let Some(caps) = self.multiline_end_regex.captures(line_content) {
-                    if caps.get(1).is_some_and(|m| m.as_str() == param_name) {
-                        // This is the end marker, emit the complete line for processing
-                        return Ok(Some(self.buffer[..=newline_pos].to_string()));
-                    }
+                if let Some(caps) = self.multiline_end_regex.captures(line_content)
+                    && caps.get(1).is_some_and(|m| m.as_str() == param_name)
+                {
+                    // This is the end marker, emit the complete line for processing
+                    return Ok(Some(self.buffer[..=newline_pos].to_string()));
                 }
 
                 // Not an end marker, we can emit this line as part of the content
@@ -757,10 +757,10 @@ impl CaretStreamProcessor {
                 let param_name = caps.get(1).unwrap().as_str();
                 let mut content = String::new();
                 for content_line in lines.by_ref() {
-                    if let Some(end_caps) = self.multiline_end_regex.captures(content_line) {
-                        if end_caps.get(1).is_some_and(|m| m.as_str() == param_name) {
-                            break;
-                        }
+                    if let Some(end_caps) = self.multiline_end_regex.captures(content_line)
+                        && end_caps.get(1).is_some_and(|m| m.as_str() == param_name)
+                    {
+                        break;
                     }
                     content.push_str(content_line);
                     content.push('\n');
@@ -806,10 +806,10 @@ impl CaretStreamProcessor {
         match &self.streaming_state {
             StreamingState::Blocked => {
                 // Already blocked, check if this is just whitespace and ignore silently
-                if let DisplayFragment::PlainText(text) = &fragment {
-                    if text.trim().is_empty() {
-                        return Ok(());
-                    }
+                if let DisplayFragment::PlainText(text) = &fragment
+                    && text.trim().is_empty()
+                {
+                    return Ok(());
                 }
                 // Non-whitespace content after blocking - return the blocking error
                 return Err(UIError::IOError(std::io::Error::new(

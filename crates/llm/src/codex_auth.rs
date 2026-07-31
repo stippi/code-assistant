@@ -18,9 +18,9 @@
 //! The API base URL for ChatGPT-authenticated requests is
 //! `https://chatgpt.com/backend-api/codex` instead of `https://api.openai.com/v1`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -328,12 +328,11 @@ fn load_auth_state_from_provider(
 /// Delete codex auth tokens from a provider entry in providers.json.
 fn delete_auth_state_from_provider(provider_id: &str, providers_path: Option<&Path>) -> Result<()> {
     crate::provider_config::ConfigurationSystem::save_providers_config(providers_path, |raw| {
-        if let Some(provider) = raw.get_mut(provider_id) {
-            if let Some(config) = provider.get_mut("config") {
-                if let Some(obj) = config.as_object_mut() {
-                    obj.remove("codex_tokens");
-                }
-            }
+        if let Some(provider) = raw.get_mut(provider_id)
+            && let Some(config) = provider.get_mut("config")
+            && let Some(obj) = config.as_object_mut()
+        {
+            obj.remove("codex_tokens");
         }
         Ok(())
     })?;
@@ -669,22 +668,21 @@ pub async fn refresh_tokens(auth_state: &CodexAuthState) -> Result<CodexAuthStat
         let body_text = response.text().await.unwrap_or_default();
 
         // Parse specific error codes
-        if status.as_u16() == 401 {
-            if let Ok(error_body) = serde_json::from_str::<serde_json::Value>(&body_text) {
-                if let Some(error_code) = error_body.get("error_code").and_then(|v| v.as_str()) {
-                    match error_code {
-                        "refresh_token_expired" => {
-                            bail!("Refresh token expired. Please log in again.")
-                        }
-                        "refresh_token_reused" => {
-                            bail!("Refresh token was already used. Please log in again.")
-                        }
-                        "refresh_token_invalidated" => {
-                            bail!("Refresh token was revoked. Please log in again.")
-                        }
-                        _ => {}
-                    }
+        if status.as_u16() == 401
+            && let Ok(error_body) = serde_json::from_str::<serde_json::Value>(&body_text)
+            && let Some(error_code) = error_body.get("error_code").and_then(|v| v.as_str())
+        {
+            match error_code {
+                "refresh_token_expired" => {
+                    bail!("Refresh token expired. Please log in again.")
                 }
+                "refresh_token_reused" => {
+                    bail!("Refresh token was already used. Please log in again.")
+                }
+                "refresh_token_invalidated" => {
+                    bail!("Refresh token was revoked. Please log in again.")
+                }
+                _ => {}
             }
         }
 

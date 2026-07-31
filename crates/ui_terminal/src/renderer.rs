@@ -237,21 +237,20 @@ impl TerminalRenderer {
         if self.needs_paragraph_break_after_hidden_tool {
             if let (Some(last_type), Some(current_type)) =
                 (self.last_block_type_for_hidden_tool, current_block_type)
+                && last_type == current_type
             {
-                if last_type == current_type {
-                    // Same type as before the hidden tool - insert paragraph break
-                    if let Some(live_message) = self.transcript.active_message_mut() {
-                        if let Some(last_block) = live_message.blocks.last_mut() {
-                            match last_block {
-                                MessageBlock::PlainText(text_block) => {
-                                    text_block.content.push_str("\n\n");
-                                }
-                                MessageBlock::Thinking(thinking_block) => {
-                                    thinking_block.content.push_str("\n\n");
-                                }
-                                _ => {}
-                            }
+                // Same type as before the hidden tool - insert paragraph break
+                if let Some(live_message) = self.transcript.active_message_mut()
+                    && let Some(last_block) = live_message.blocks.last_mut()
+                {
+                    match last_block {
+                        MessageBlock::PlainText(text_block) => {
+                            text_block.content.push_str("\n\n");
                         }
+                        MessageBlock::Thinking(thinking_block) => {
+                            thinking_block.content.push_str("\n\n");
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -469,13 +468,13 @@ impl TerminalRenderer {
         // (session switch), where AppendMessages renders every message before
         // applying tool_results, so all but the last block are already
         // committed by the time their status/output arrives.
-        if let Some(active) = self.transcript.active_message_mut() {
-            if let Some(tool_block) = active.get_tool_block_mut(tool_id) {
-                tool_block.status = status;
-                tool_block.status_message = message;
-                tool_block.output = output;
-                return;
-            }
+        if let Some(active) = self.transcript.active_message_mut()
+            && let Some(tool_block) = active.get_tool_block_mut(tool_id)
+        {
+            tool_block.status = status;
+            tool_block.status_message = message;
+            tool_block.output = output;
+            return;
         }
         if let Some(tool_block) = self
             .transcript
@@ -688,10 +687,11 @@ impl TerminalRenderer {
 
         // Mark the active message so flush_new_finalized_messages() won't
         // re-send text/thinking content that was already sent to scrollback.
-        if self.streaming_open && has_lines {
-            if let Some(msg) = self.transcript.active_message_mut() {
-                msg.streamed_to_scrollback = true;
-            }
+        if self.streaming_open
+            && has_lines
+            && let Some(msg) = self.transcript.active_message_mut()
+        {
+            msg.streamed_to_scrollback = true;
         }
     }
 
@@ -712,12 +712,12 @@ impl TerminalRenderer {
             // blocks when the streaming controller actually managed the content
             // (has_seen_any_delta). If blocks were added directly via
             // append_to_live_block, they should not be stripped.
-            if self.streaming_controller.has_seen_any_delta() {
-                if let Some(live_message) = self.transcript.active_message_mut() {
-                    live_message
-                        .blocks
-                        .retain(|block| stream_kind_for_block(block).is_none());
-                }
+            if self.streaming_controller.has_seen_any_delta()
+                && let Some(live_message) = self.transcript.active_message_mut()
+            {
+                live_message
+                    .blocks
+                    .retain(|block| stream_kind_for_block(block).is_none());
             }
             return;
         }
@@ -782,13 +782,13 @@ impl TerminalRenderer {
         let mut content_height: u16 = 0;
 
         // Live message height
-        if let Some(live_message) = self.transcript.active_message() {
-            if live_message.has_content() {
-                for block in &live_message.blocks {
-                    content_height = content_height
-                        .saturating_add(block.calculate_height(screen_width))
-                        .saturating_add(1); // gap between blocks
-                }
+        if let Some(live_message) = self.transcript.active_message()
+            && live_message.has_content()
+        {
+            for block in &live_message.blocks {
+                content_height = content_height
+                    .saturating_add(block.calculate_height(screen_width))
+                    .saturating_add(1); // gap between blocks
             }
         }
 
@@ -854,7 +854,7 @@ impl TerminalRenderer {
                 has_any = true;
             }
             let show_status_info = self.info_message.is_some() && !self.info_in_footer(width);
-            if let (true, Some(ref info_msg)) = (show_status_info, &self.info_message) {
+            if let (true, Some(info_msg)) = (show_status_info, &self.info_message) {
                 if has_any {
                     height = height.saturating_add(1);
                 }
@@ -904,7 +904,7 @@ impl TerminalRenderer {
         // A short single-line info message is shown on the composer footer row
         // instead of here; only longer/multi-line info occupies the status area.
         let show_status_info = self.info_message.is_some() && !self.info_in_footer(width);
-        if let (true, Some(ref info_msg)) = (show_status_info, &self.info_message) {
+        if let (true, Some(info_msg)) = (show_status_info, &self.info_message) {
             status_entries.push(StatusEntry {
                 kind: StatusKind::Info,
                 content: info_msg.clone(),
@@ -982,36 +982,37 @@ impl TerminalRenderer {
         let status_height = status_height;
 
         // 1) Render spinner if active (closest to input)
-        if let Some((spinner_char, spinner_color)) = self.spinner_state.get_spinner_char() {
-            if cursor_y > 0 {
-                cursor_y = cursor_y.saturating_sub(1);
+        if let Some((spinner_char, spinner_color)) = self.spinner_state.get_spinner_char()
+            && cursor_y > 0
+        {
+            cursor_y = cursor_y.saturating_sub(1);
 
+            scratch.set_string(
+                2,
+                cursor_y,
+                spinner_char.to_string(),
+                Style::default().fg(spinner_color),
+            );
+
+            if let Some(status_text) = self.spinner_state.get_status_text() {
                 scratch.set_string(
-                    2,
+                    4,
                     cursor_y,
-                    spinner_char.to_string(),
-                    Style::default().fg(spinner_color),
+                    &status_text,
+                    Style::default().fg(Color::LightRed),
                 );
-
-                if let Some(status_text) = self.spinner_state.get_status_text() {
-                    scratch.set_string(
-                        4,
-                        cursor_y,
-                        &status_text,
-                        Style::default().fg(Color::LightRed),
-                    );
-                }
-
-                cursor_y = cursor_y.saturating_sub(1);
             }
+
+            cursor_y = cursor_y.saturating_sub(1);
         }
 
         // 2) Render current live message (so it is closest to the input)
-        if let Some(live_message) = self.transcript.active_message() {
-            if live_message.has_content() && cursor_y > 0 {
-                self.render_message_to_buffer(live_message, &mut scratch, &mut cursor_y, width);
-                cursor_y = cursor_y.saturating_sub(1);
-            }
+        if let Some(live_message) = self.transcript.active_message()
+            && live_message.has_content()
+            && cursor_y > 0
+        {
+            self.render_message_to_buffer(live_message, &mut scratch, &mut cursor_y, width);
+            cursor_y = cursor_y.saturating_sub(1);
         }
 
         // Composed content occupies rows [cursor_y .. scratch_height)
@@ -1078,10 +1079,10 @@ impl TerminalRenderer {
         self.composer.render(f, input_area, textarea, footer_info);
 
         // Render slash-command popup (above the composer) when a snapshot is set.
-        if let Some(snap) = self.popup.clone() {
-            if popup_area.height > 0 {
-                Self::render_popup(f, popup_area, input_area, &snap);
-            }
+        if let Some(snap) = self.popup.clone()
+            && popup_area.height > 0
+        {
+            Self::render_popup(f, popup_area, input_area, &snap);
         }
     }
 

@@ -813,9 +813,10 @@ mod tests {
         let mut w = wait(WaitKind::HumanInput, None);
         w.satisfy(None, at(2026, 7, 14, 10, 0)).unwrap();
         // A late barrier fire cannot rewrite the outcome.
-        assert!(w
-            .satisfy(Some("late".into()), at(2026, 7, 14, 10, 1))
-            .is_err());
+        assert!(
+            w.satisfy(Some("late".into()), at(2026, 7, 14, 10, 1))
+                .is_err()
+        );
         assert!(w.time_out(at(2026, 7, 14, 10, 2)).is_err());
         assert_eq!(w.state, WaitState::Satisfied);
         assert!(w.note.is_none());
@@ -1070,10 +1071,12 @@ mod tests {
         // Only the one human wait on the owner was consumed.
         assert_eq!(store.armed().unwrap().len(), 2);
         // A second call finds nothing left to take.
-        assert!(store
-            .take_human_input_for_owner(&owner(), at(2026, 7, 14, 10, 1))
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .take_human_input_for_owner(&owner(), at(2026, 7, 14, 10, 1))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

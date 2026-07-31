@@ -5,12 +5,13 @@ pub use session_item::{SessionListItem, SessionListItemEvent};
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use gpui::{
-    div, prelude::*, px, rems, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription, div,
+    prelude::*, px, rems,
 };
 use gpui_component::scroll::ScrollableElement;
 
-use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, Sizable, Size, StyledExt};
+use gpui_component::{ActiveTheme, Icon, Sizable, Size, StyledExt, tooltip::Tooltip};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -313,11 +314,11 @@ impl SessionSidebar {
             .cursor_pointer()
             .rounded_sm()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if let Some(g) = this.groups.get_mut(group_idx) {
-                    if g.is_hovered != *hovered {
-                        g.is_hovered = *hovered;
-                        cx.notify();
-                    }
+                if let Some(g) = this.groups.get_mut(group_idx)
+                    && g.is_hovered != *hovered
+                {
+                    g.is_hovered = *hovered;
+                    cx.notify();
                 }
             }))
             .on_click(cx.listener(move |this, _, _, cx| {

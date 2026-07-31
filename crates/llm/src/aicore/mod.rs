@@ -18,8 +18,8 @@ pub use openai_responses::AiCoreOpenAIResponsesClient;
 pub use types::AiCoreApiType;
 pub use vertex::AiCoreVertexClient;
 
-use crate::auth::TokenManager;
 use crate::LLMProvider;
+use crate::auth::TokenManager;
 use std::path::Path;
 use std::sync::Arc;
 

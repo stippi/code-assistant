@@ -1,7 +1,6 @@
 use base64::{
-    alphabet,
+    Engine as _, alphabet,
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
-    Engine as _,
 };
 use gpui::{Image, ImageFormat};
 use image;

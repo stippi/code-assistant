@@ -79,7 +79,6 @@ impl ToolsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
 
     #[test]
     fn test_default_config() {
@@ -90,13 +89,11 @@ mod tests {
 
     #[test]
     fn test_env_var_substitution() {
-        env::set_var("TEST_PERPLEXITY_KEY", "pplx-test-key");
-
-        let input = "${TEST_PERPLEXITY_KEY}";
-        let result = ToolsConfig::substitute_env_var_in_string(input).unwrap();
-        assert_eq!(result, "pplx-test-key");
-
-        env::remove_var("TEST_PERPLEXITY_KEY");
+        temp_env::with_var("TEST_PERPLEXITY_KEY", Some("pplx-test-key"), || {
+            let input = "${TEST_PERPLEXITY_KEY}";
+            let result = ToolsConfig::substitute_env_var_in_string(input).unwrap();
+            assert_eq!(result, "pplx-test-key");
+        });
     }
 
     #[test]

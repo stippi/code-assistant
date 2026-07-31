@@ -119,13 +119,14 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 tool_id,
             } => {
                 // If this is the first part with tool info, send a ToolName fragment
-                if let (Some(name), Some(id)) = (tool_name, tool_id) {
-                    if !name.is_empty() && !id.is_empty() {
-                        // Check if tool is hidden and update state
-                        self.state.current_tool_hidden = (self.hidden_tools)(name);
+                if let (Some(name), Some(id)) = (tool_name, tool_id)
+                    && !name.is_empty()
+                    && !id.is_empty()
+                {
+                    // Check if tool is hidden and update state
+                    self.state.current_tool_hidden = (self.hidden_tools)(name);
 
-                        self.emit_fragment(DisplayFragment::tool_name(name.clone(), id.clone()))?;
-                    }
+                    self.emit_fragment(DisplayFragment::tool_name(name.clone(), id.clone()))?;
                 }
 
                 // For now, show the JSON as plain text
@@ -484,7 +485,9 @@ impl XmlStreamProcessor {
                             current_pos = absolute_tag_pos + tag_len;
                         } else {
                             // Log and treat parameter tags outside of tool context as plain text
-                            warn!("Parameter tag found outside of tool context, treating as plain text");
+                            warn!(
+                                "Parameter tag found outside of tool context, treating as plain text"
+                            );
                             // Process as a single character (the '<')
                             let char_len = processing_text[absolute_tag_pos..]
                                 .chars()
@@ -513,7 +516,9 @@ impl XmlStreamProcessor {
                             current_pos = absolute_tag_pos + tag_len;
                         } else {
                             // Treat as plain text if not in valid parameter context
-                            warn!("Parameter end tag found outside of parameter context, treating as plain text");
+                            warn!(
+                                "Parameter end tag found outside of parameter context, treating as plain text"
+                            );
                             // Process as a single character (the '<')
                             let char_len = processing_text[absolute_tag_pos..]
                                 .chars()
@@ -638,10 +643,10 @@ impl XmlStreamProcessor {
         match &self.streaming_state {
             StreamingState::Blocked => {
                 // Already blocked, check if this is just whitespace and ignore silently
-                if let DisplayFragment::PlainText(text) = &fragment {
-                    if text.trim().is_empty() {
-                        return Ok(());
-                    }
+                if let DisplayFragment::PlainText(text) = &fragment
+                    && text.trim().is_empty()
+                {
+                    return Ok(());
                 }
                 // Non-whitespace content after blocking - return the blocking error
                 return Err(UIError::IOError(std::io::Error::new(
@@ -871,7 +876,7 @@ impl XmlStreamProcessor {
         for prefix in &TAG_PREFIXES {
             let text_chars: Vec<char> = text.chars().collect(); // Convert text to Vec<char>
             let prefix_chars: Vec<char> = prefix.chars().collect(); // Convert prefix to Vec<char>
-                                                                    // Loop through all possible partial matches
+            // Loop through all possible partial matches
             for i in 1..=prefix_chars.len().min(text_chars.len()) {
                 // Check if the last `i` characters of text match the first `i` characters of prefix
                 if text_chars[text_chars.len() - i..] == prefix_chars[..i] {

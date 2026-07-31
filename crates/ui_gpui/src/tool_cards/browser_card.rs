@@ -7,15 +7,15 @@
 //! caption. The lightweight `browser_read` / `browser_close` render inline
 //! instead (see [`super::inline_renderer`]).
 
-use super::{animated_card_body, CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
+use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
 use code_assistant_core::ui::ToolStatus;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, img, percentage, px, rems, Animation, AnimationExt, AnyElement, ClickEvent, Context,
-    ImageSource, InteractiveElement, IntoElement, ObjectFit, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, Transformation, Window,
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, ImageSource, InteractiveElement,
+    IntoElement, ObjectFit, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    StyledImage, Transformation, Window, div, img, percentage, px, rems,
 };
 use std::time::Duration;
 
@@ -276,12 +276,11 @@ fn describe(tool: &ToolUseBlock) -> String {
 
 /// For `browser_act`, summarize the action count when the JSON parses.
 fn describe_act(actions_json: Option<&str>) -> String {
-    if let Some(json) = actions_json {
-        if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(json)
-        {
-            let n = items.len();
-            return format!("Interact ({n} step{})", if n == 1 { "" } else { "s" });
-        }
+    if let Some(json) = actions_json
+        && let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(json)
+    {
+        let n = items.len();
+        return format!("Interact ({n} step{})", if n == 1 { "" } else { "s" });
     }
     "Interact with page".to_string()
 }
