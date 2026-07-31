@@ -143,9 +143,17 @@ enum WsInputItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WsContentItem {
-    InputText { text: String },
-    InputImage { image_url: String },
-    OutputText { text: String },
+    InputText {
+        text: String,
+    },
+    InputImage {
+        image_url: String,
+    },
+    OutputText {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -589,9 +597,13 @@ impl OpenAIResponsesWsClient {
                         MessageRole::Assistant => "assistant",
                     };
                     // Assistant text must use OutputText; InputText is only
-                    // valid for user-role messages.
+                    // valid for user-role messages. Simple text messages have
+                    // no tool use, so they always get phase = "final_answer".
                     let content_item = if message.role == MessageRole::Assistant {
-                        WsContentItem::OutputText { text: text.clone() }
+                        WsContentItem::OutputText {
+                            text: text.clone(),
+                            phase: Some("final_answer".to_string()),
+                        }
                     } else {
                         WsContentItem::InputText { text: text.clone() }
                     };
@@ -619,6 +631,21 @@ impl OpenAIResponsesWsClient {
             MessageRole::Assistant => "assistant",
         };
 
+        // Pre-scan: determine the phase for OutputText items in this message.
+        let has_tool_use = *role == MessageRole::Assistant
+            && blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let phase: Option<String> = if *role == MessageRole::Assistant {
+            Some(if has_tool_use {
+                "commentary".to_string()
+            } else {
+                "final_answer".to_string()
+            })
+        } else {
+            None
+        };
+
         let mut current_content: Vec<WsContentItem> = Vec::new();
 
         for block in blocks {
@@ -627,7 +654,10 @@ impl OpenAIResponsesWsClient {
                     let item = if *role == MessageRole::User {
                         WsContentItem::InputText { text: text.clone() }
                     } else {
-                        WsContentItem::OutputText { text: text.clone() }
+                        WsContentItem::OutputText {
+                            text: text.clone(),
+                            phase: phase.clone(),
+                        }
                     };
                     current_content.push(item);
                 }
@@ -738,10 +768,24 @@ impl OpenAIResponsesWsClient {
         let mut items = Vec::new();
         let mut current_text_parts: Vec<WsContentItem> = Vec::new();
 
+        // Pre-scan to determine the phase for OutputText items. The response
+        // blocks from a single assistant turn share the same phase.
+        let has_tool_use = blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let phase: Option<String> = Some(if has_tool_use {
+            "commentary".to_string()
+        } else {
+            "final_answer".to_string()
+        });
+
         for block in blocks {
             match block {
                 ContentBlock::Text { text, .. } => {
-                    current_text_parts.push(WsContentItem::OutputText { text: text.clone() });
+                    current_text_parts.push(WsContentItem::OutputText {
+                        text: text.clone(),
+                        phase: phase.clone(),
+                    });
                 }
                 ContentBlock::Thinking { .. } => {
                     // Visible thinking — no standard input representation, skip
@@ -1681,6 +1725,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![WsContentItem::OutputText {
                 text: "Hi!".to_string(),
+                phase: Some("final_answer".to_string()),
             }],
         });
         extended.push(WsInputItem::Message {

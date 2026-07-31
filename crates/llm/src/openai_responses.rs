@@ -306,9 +306,17 @@ enum ResponseInputItem {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponseContentItem {
-    InputText { text: String },
-    InputImage { image_url: String },
-    OutputText { text: String },
+    InputText {
+        text: String,
+    },
+    InputImage {
+        image_url: String,
+    },
+    OutputText {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
+    },
 }
 
 /// Response structure from the Responses API
@@ -608,7 +616,10 @@ impl OpenAIResponsesClient {
                 MessageContent::Text(text) => {
                     let content_item = match message.role {
                         MessageRole::User => ResponseContentItem::InputText { text },
-                        MessageRole::Assistant => ResponseContentItem::OutputText { text },
+                        MessageRole::Assistant => ResponseContentItem::OutputText {
+                            text,
+                            phase: Some("final_answer".to_string()),
+                        },
                     };
                     result.push(ResponseInputItem::Message {
                         role: match message.role {
@@ -654,6 +665,22 @@ impl OpenAIResponsesClient {
             MessageRole::Assistant => "assistant".to_string(),
         };
 
+        // Pre-scan: determine whether this assistant message contains any tool use.
+        // This drives the `phase` value for every OutputText item in this message.
+        let has_tool_use = role == MessageRole::Assistant
+            && blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let phase = if role == MessageRole::Assistant {
+            Some(if has_tool_use {
+                "commentary".to_string()
+            } else {
+                "final_answer".to_string()
+            })
+        } else {
+            None
+        };
+
         for block in blocks {
             match block {
                 ContentBlock::Text { text, .. } => match role {
@@ -661,7 +688,10 @@ impl OpenAIResponsesClient {
                         current_message_content.push(ResponseContentItem::InputText { text });
                     }
                     MessageRole::Assistant => {
-                        current_message_content.push(ResponseContentItem::OutputText { text });
+                        current_message_content.push(ResponseContentItem::OutputText {
+                            text,
+                            phase: phase.clone(),
+                        });
                     }
                 },
                 ContentBlock::Image {
@@ -676,8 +706,10 @@ impl OpenAIResponsesClient {
                             .push(ResponseContentItem::InputText { text: thinking });
                     }
                     MessageRole::Assistant => {
-                        current_message_content
-                            .push(ResponseContentItem::OutputText { text: thinking });
+                        current_message_content.push(ResponseContentItem::OutputText {
+                            text: thinking,
+                            phase: phase.clone(),
+                        });
                     }
                 },
                 // Non-message content blocks: flush current message and add as separate items
@@ -1599,7 +1631,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Hello from assistant");
                     }
                     _ => panic!("Expected OutputText for assistant message"),
@@ -1785,7 +1817,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "2+2 equals 4.");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1839,7 +1871,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "First text");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1863,7 +1895,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Second text");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1886,7 +1918,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Third text");
                     }
                     _ => panic!("Expected OutputText"),
@@ -1940,7 +1972,7 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::OutputText { text, .. } => {
                         assert_eq!(text, "Based on my reasoning, here's the answer.");
                     }
                     _ => panic!("Expected OutputText"),
