@@ -262,11 +262,15 @@ impl Gpui {
     }
 
     /// Notify the MessagesView that the message_queue was fully reset (cleared + reloaded).
-    /// This resets the ListState, discarding all cached heights.
+    /// This resets the ListState. Scroll handling is session-aware: switching
+    /// sessions saves/restores each session's scroll position, while a
+    /// same-session resync (stream lag, file-watcher refresh, structural edit)
+    /// freezes the visible offset instead of jumping to the bottom.
     fn notify_messages_reset(&self, cx: &mut gpui::AsyncApp) {
         let new_len = self.message_queue.lock().unwrap().len();
+        let session_id = self.current_session_id.lock().unwrap().clone();
         self.update_messages_view(cx, |view, cx| {
-            view.messages_reset(new_len, cx);
+            view.messages_reset_for_session(session_id, new_len, cx);
             cx.notify();
         });
     }
@@ -296,9 +300,12 @@ impl Gpui {
         drop(queue);
 
         if new_len != old_len {
-            // Full reset since items may have been removed from arbitrary positions
+            // Full reset since items may have been removed from arbitrary positions.
+            // Route through the session-aware reset so the visible offset is
+            // frozen (same-session change) rather than snapping to the bottom.
+            let session_id = self.current_session_id.lock().unwrap().clone();
             self.update_messages_view(cx, |view, cx| {
-                view.messages_reset(new_len, cx);
+                view.messages_reset_for_session(session_id, new_len, cx);
                 cx.notify();
             });
         }
