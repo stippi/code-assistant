@@ -2,13 +2,24 @@
 # Build a macOS .app bundle for Code Assistant.
 #
 # Uses the static Info.plist from assets/ and replaces only the version.
-# Only relies on tools that ship with macOS (plutil, codesign).
+# Only relies on tools that ship with macOS / Xcode (plutil, codesign, xcrun).
 #
 # Usage:
 #   ./scripts/bundle-macos.sh                   # build for the host arch
 #   ./scripts/bundle-macos.sh --no-build ARCH   # reuse existing binary
 #
 # ARCH can be: aarch64, x86_64, universal
+#
+# Code signing & notarization (all optional, via environment variables):
+#   MACOS_SIGN_IDENTITY    Developer ID Application identity to sign with,
+#                          e.g. "Developer ID Application: Jane Doe (TEAMID)".
+#                          If unset, the bundle is ad-hoc signed (as before).
+#
+#   Notarization runs only when ALL of these are set (and signing happened
+#   with a real identity):
+#   MACOS_NOTARY_APPLE_ID  Apple ID email used for notarization.
+#   MACOS_NOTARY_PASSWORD  App-specific password for that Apple ID.
+#   MACOS_NOTARY_TEAM_ID   Apple Developer Team ID.
 #
 # Output:
 #   target/macos-bundle/Code Assistant.app
@@ -32,7 +43,7 @@ for arg in "$@"; do
     aarch64|arm64) ARCH="aarch64" ;;
     x86_64|intel)  ARCH="x86_64" ;;
     universal)     ARCH="universal" ;;
-    -h|--help)     sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,32p' "$0"; exit 0 ;;
     *)             echo "error: unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -134,10 +145,33 @@ printf 'APPL????' > "$CONTENTS/PkgInfo"
 touch "$APP_DIR"
 
 # ---------------------------------------------------------------------------
-# Ad-hoc code signature
+# Code signature
 # ---------------------------------------------------------------------------
-if command -v codesign >/dev/null 2>&1; then
-  echo "==> Ad-hoc signing"
+# When MACOS_SIGN_IDENTITY is provided we sign with a Developer ID identity,
+# enabling the hardened runtime and applying our entitlements (required for
+# notarization). Otherwise we fall back to an ad-hoc signature, which is enough
+# for local use but cannot be notarized or distributed without Gatekeeper
+# warnings.
+ENTITLEMENTS="$ASSETS_DIR/Entitlements.plist"
+
+if ! command -v codesign >/dev/null 2>&1; then
+  echo "==> codesign not available; skipping signature"
+elif [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
+  echo "==> Signing with Developer ID: $MACOS_SIGN_IDENTITY"
+  # Sign the inner executable first, then the bundle (deep), all under the
+  # hardened runtime and with a secure timestamp (required by notarization).
+  codesign --force --timestamp --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    --sign "$MACOS_SIGN_IDENTITY" \
+    "$CONTENTS/MacOS/$EXECUTABLE_NAME"
+  codesign --force --deep --timestamp --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    --sign "$MACOS_SIGN_IDENTITY" \
+    "$APP_DIR"
+  echo "==> Verifying signature"
+  codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+else
+  echo "==> No MACOS_SIGN_IDENTITY set; ad-hoc signing"
   codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || true
 fi
 
@@ -145,8 +179,40 @@ fi
 # Zip for distribution
 # ---------------------------------------------------------------------------
 ZIP_PATH="$OUT_DIR/Code-Assistant-$VERSION-$ARCH.zip"
-rm -f "$ZIP_PATH"
-( cd "$OUT_DIR" && zip -qry "$ZIP_PATH" "Code Assistant.app" )
+make_zip() {
+  rm -f "$ZIP_PATH"
+  # ditto preserves the bundle structure and extended attributes; notarytool
+  # requires a ditto/zip archive of the .app.
+  ( cd "$OUT_DIR" && ditto -c -k --keepParent "Code Assistant.app" "$ZIP_PATH" )
+}
+make_zip
+
+# ---------------------------------------------------------------------------
+# Notarization + stapling
+# ---------------------------------------------------------------------------
+# Only attempt notarization when we signed with a real identity and all notary
+# credentials are present.
+if [[ -n "${MACOS_SIGN_IDENTITY:-}" &&
+      -n "${MACOS_NOTARY_APPLE_ID:-}" &&
+      -n "${MACOS_NOTARY_PASSWORD:-}" &&
+      -n "${MACOS_NOTARY_TEAM_ID:-}" ]]; then
+  echo "==> Submitting to Apple notary service (this can take a few minutes)"
+  xcrun notarytool submit "$ZIP_PATH" \
+    --apple-id "$MACOS_NOTARY_APPLE_ID" \
+    --password "$MACOS_NOTARY_PASSWORD" \
+    --team-id "$MACOS_NOTARY_TEAM_ID" \
+    --wait
+
+  echo "==> Stapling notarization ticket to the .app"
+  xcrun stapler staple "$APP_DIR"
+  xcrun stapler validate "$APP_DIR"
+
+  # Re-zip so the distributed archive contains the stapled bundle.
+  echo "==> Re-packaging stapled bundle"
+  make_zip
+else
+  echo "==> Skipping notarization (identity and/or notary credentials not set)"
+fi
 
 echo
 echo "==> Done:"
