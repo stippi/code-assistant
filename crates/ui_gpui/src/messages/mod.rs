@@ -253,16 +253,21 @@ impl MessagesView {
 
         if is_switch {
             // Persist where we were in the session we are leaving.
-            self.save_current_scroll();
+            self.save_current_scroll(cx);
 
             self.list_state.reset(new_count);
             self.stop_animation();
 
             // Restore the target session's remembered scroll, or follow the
-            // tail if we've never displayed it before.
-            let restored = session_id
-                .as_ref()
-                .and_then(|id| self.saved_scroll.get(id).copied());
+            // tail if we've never displayed it before. In-memory state (from
+            // an earlier switch this run) takes precedence over the on-disk
+            // position from a previous run.
+            let restored = session_id.as_ref().and_then(|id| {
+                self.saved_scroll
+                    .get(id)
+                    .copied()
+                    .or_else(|| self.load_persisted_scroll(id))
+            });
 
             self.displayed_session_id = session_id;
 
@@ -318,17 +323,82 @@ impl MessagesView {
     }
 
     /// Snapshot the current scroll anchor + follow-tail flag for the session
-    /// the list currently reflects, so it can be restored on return.
-    fn save_current_scroll(&mut self) {
+    /// the list currently reflects, so it can be restored on return (both
+    /// in-memory this run and on disk across restarts).
+    fn save_current_scroll(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.displayed_session_id.clone() {
+            let anchor = self.list_state.logical_scroll_top();
             self.saved_scroll.insert(
-                id,
+                id.clone(),
                 SavedScroll {
-                    anchor: self.list_state.logical_scroll_top(),
+                    anchor,
                     follow_tail: self.follow_tail,
                 },
             );
+            // Mark the on-disk state dirty and schedule the debounced flush so
+            // the position survives a restart even if the user never wheel-
+            // scrolled (e.g. only dragged the scrollbar) before switching.
+            if self.write_persisted_scroll(&id, anchor, self.follow_tail)
+                && let Some(sender) = cx.try_global::<crate::UiEventSender>()
+            {
+                let _ = sender
+                    .0
+                    .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
+            }
         }
+    }
+
+    /// Persist the current scroll position to the per-session UI-state store
+    /// and schedule a debounced flush to disk. Called on real user scrolling
+    /// (not on programmatic restores), so the write is throttled to the last
+    /// position after the user settles.
+    fn persist_current_scroll(&self, cx: &mut Context<Self>) {
+        let Some(id) = self.displayed_session_id.clone() else {
+            return;
+        };
+        let anchor = self.list_state.logical_scroll_top();
+        if self.write_persisted_scroll(&id, anchor, self.follow_tail)
+            && let Some(sender) = cx.try_global::<crate::UiEventSender>()
+        {
+            let _ = sender
+                .0
+                .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
+        }
+    }
+
+    /// Write a scroll position into the global UI-state store. Returns `true`
+    /// if the value changed (and the session was therefore marked dirty).
+    fn write_persisted_scroll(
+        &self,
+        session_id: &str,
+        anchor: gpui::ListOffset,
+        follow_tail: bool,
+    ) -> bool {
+        let pos = crate::shared::ui_state::ScrollPosition {
+            item_ix: anchor.item_ix,
+            offset_in_item: anchor.offset_in_item.into(),
+            follow_tail,
+        };
+        if let Some(store) = crate::shared::ui_state::UiStateStore::try_global()
+            && let Ok(mut store) = store.lock()
+        {
+            return store.set_scroll(session_id, pos);
+        }
+        false
+    }
+
+    /// Load a previously persisted scroll position for a session from the
+    /// global UI-state store (from a prior app run).
+    fn load_persisted_scroll(&self, session_id: &str) -> Option<SavedScroll> {
+        let store = crate::shared::ui_state::UiStateStore::try_global()?;
+        let pos = store.lock().ok()?.get_scroll(session_id)?;
+        Some(SavedScroll {
+            anchor: gpui::ListOffset {
+                item_ix: pos.item_ix,
+                offset_in_item: px(pos.offset_in_item),
+            },
+            follow_tail: pos.follow_tail,
+        })
     }
 
     /// Forget any remembered scroll for a session (e.g. after deletion).
@@ -671,6 +741,9 @@ impl MessagesView {
                     // longer following the tail.
                     if this.follow_tail && new_y > -max + 1.0 {
                         this.follow_tail = false;
+                        // Persist the new (non-following) position on this drag
+                        // transition; subsequent frames are no-ops.
+                        this.persist_current_scroll(cx);
                     }
                     cx.notify();
                 });
@@ -934,6 +1007,7 @@ impl Render for MessagesView {
                                 )
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.activate_follow_tail();
+                                    this.persist_current_scroll(cx);
                                     cx.notify();
                                 })),
                         ),

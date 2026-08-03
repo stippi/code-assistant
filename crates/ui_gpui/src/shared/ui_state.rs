@@ -28,6 +28,22 @@ pub fn debounce_duration() -> std::time::Duration {
 // UiSessionState — the data model
 // ---------------------------------------------------------------------------
 
+/// A persisted scroll position for a session's message list.
+///
+/// The anchor is the list's *logical* scroll position (an item index plus a
+/// pixel offset within that item), which survives remeasuring far better than a
+/// raw pixel offset. `follow_tail` records whether the view was pinned to the
+/// bottom.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
+pub struct ScrollPosition {
+    /// Index of the item at the top of the viewport.
+    pub item_ix: usize,
+    /// Pixel offset within that item.
+    pub offset_in_item: f32,
+    /// Whether the view was following the tail (pinned to the bottom).
+    pub follow_tail: bool,
+}
+
 /// Per-session UI state that is persisted to a separate file.
 ///
 /// New fields can be added freely with `#[serde(default)]` for backward
@@ -51,6 +67,11 @@ pub struct UiSessionState {
     /// from the default (diff mode = true).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tool_diff_mode_overrides: HashMap<String, bool>,
+
+    /// Last known scroll position of the message list, so the session is shown
+    /// exactly as it was left across app restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollPosition>,
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +172,26 @@ impl UiStateStore {
             .tool_diff_mode_overrides
             .insert(tool_id.to_owned(), diff_mode);
         self.dirty.insert(session_id.to_owned());
+    }
+
+    /// Return the persisted scroll position for a session, loading from disk if
+    /// the session hasn't been loaded yet.
+    pub fn get_scroll(&mut self, session_id: &str) -> Option<ScrollPosition> {
+        self.get(session_id).scroll
+    }
+
+    /// Set the persisted scroll position for a session. Marks the session dirty
+    /// so the next debounced flush writes it to disk. Returns `true` if the
+    /// value actually changed (a no-op update from a settling scroll animation
+    /// neither dirties the session nor returns `true`).
+    pub fn set_scroll(&mut self, session_id: &str, scroll: ScrollPosition) -> bool {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.scroll == Some(scroll) {
+            return false;
+        }
+        state.scroll = Some(scroll);
+        self.dirty.insert(session_id.to_owned());
+        true
     }
 
     /// Remove the in-memory state and on-disk file for a deleted session.
@@ -292,6 +333,65 @@ mod tests {
     }
 
     #[test]
+    fn test_set_scroll_roundtrip_and_dirty() {
+        let (mut store, _dir) = test_store();
+        assert_eq!(store.get_scroll("s1"), None);
+
+        let pos = ScrollPosition {
+            item_ix: 7,
+            offset_in_item: 12.5,
+            follow_tail: false,
+        };
+        store.set_scroll("s1", pos);
+        assert!(store.dirty.contains("s1"));
+        assert_eq!(store.get_scroll("s1"), Some(pos));
+    }
+
+    #[test]
+    fn test_set_scroll_no_op_when_unchanged() {
+        let (mut store, _dir) = test_store();
+        let pos = ScrollPosition {
+            item_ix: 3,
+            offset_in_item: 0.0,
+            follow_tail: true,
+        };
+        store.set_scroll("s1", pos);
+        // Clear dirty (simulate a flush), then set the identical value again.
+        store.dirty.clear();
+        let changed = store.set_scroll("s1", pos);
+        assert!(!changed, "identical scroll must report no change");
+        assert!(
+            !store.dirty.contains("s1"),
+            "identical scroll must not re-dirty the session"
+        );
+    }
+
+    #[test]
+    fn test_scroll_survives_serialization() {
+        let (mut store, _dir) = test_store();
+        store.set_scroll(
+            "s1",
+            ScrollPosition {
+                item_ix: 42,
+                offset_in_item: 3.25,
+                follow_tail: false,
+            },
+        );
+        let files = store.take_dirty();
+        assert_eq!(files.len(), 1);
+        let (_path, json) = &files[0];
+        let parsed: UiSessionState = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed.scroll,
+            Some(ScrollPosition {
+                item_ix: 42,
+                offset_in_item: 3.25,
+                follow_tail: false,
+            })
+        );
+    }
+
+    #[test]
     fn test_take_dirty_clears_dirty_set() {
         let (mut store, _dir) = test_store();
         store.set_plan_collapsed("s1", true);
@@ -324,6 +424,7 @@ mod tests {
             plan_collapsed: true,
             tool_collapse_overrides: HashMap::from([("t1".to_owned(), false)]),
             tool_diff_mode_overrides: HashMap::new(),
+            scroll: None,
         };
         let path = dir.path().join("s1.ui_state.json");
         let mut f = std::fs::File::create(&path).unwrap();
