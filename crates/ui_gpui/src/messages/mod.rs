@@ -356,10 +356,16 @@ impl MessagesView {
     }
 
     /// Jump to the bottom instantly (no animation).
+    ///
+    /// Uses [`ListState::scroll_to_end`] (anchoring past the last item) rather
+    /// than `scroll_to_reveal_item`: right after a `reset()` the list items are
+    /// still unmeasured, and `scroll_to_reveal_item` would compute a pixel
+    /// target from those zero heights and land at the top. `scroll_to_end`
+    /// instead lets the layout pass walk backwards from the end, which reveals
+    /// the true bottom regardless of measurement state.
     fn scroll_to_bottom_instant(&self) {
-        let count = self.list_state.item_count();
-        if count > 0 {
-            self.list_state.scroll_to_reveal_item(count - 1);
+        if self.list_state.item_count() > 0 {
+            self.list_state.scroll_to_end();
         }
     }
 
@@ -372,6 +378,15 @@ impl MessagesView {
     fn remeasure_preserving_anchor(&self) {
         let count = self.list_state.item_count();
         if count == 0 {
+            return;
+        }
+
+        if self.follow_tail {
+            // A following session stays pinned to the bottom across remeasures
+            // (e.g. markdown reflow settling after a restore). Anchor past the
+            // last item so the layout re-reveals the true bottom.
+            self.list_state.reset(count);
+            self.list_state.scroll_to_end();
             return;
         }
 
@@ -1334,6 +1349,46 @@ mod tests {
                 assert_eq!(anchor.offset_in_item, px(7.0));
                 // And follow_tail stays disabled.
                 assert!(!view.follow_tail);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_restoring_bottom_session_anchors_to_end(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                // A long session the user scrolled to the very end (follow_tail
+                // stays true near the bottom).
+                view.messages_reset_for_session(Some("long".to_string()), 100, cx);
+                assert!(view.follow_tail);
+
+                // Switch away, then back.
+                view.messages_reset_for_session(Some("other".to_string()), 3, cx);
+                view.messages_reset_for_session(Some("long".to_string()), 100, cx);
+
+                // A following session must anchor to the END sentinel so the
+                // layout can walk backwards and reveal the bottom — even though
+                // the freshly reset items are still unmeasured. Anchoring to a
+                // concrete item index (scroll_to_reveal_item) would land at the
+                // top here.
+                assert!(view.follow_tail);
+                let anchor = view.list_state.logical_scroll_top();
+                assert_eq!(
+                    anchor.item_ix,
+                    view.list_state.item_count(),
+                    "follow-tail restore must anchor past the last item (scroll_to_end)"
+                );
             })
             .unwrap();
     }
