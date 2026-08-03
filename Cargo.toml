@@ -4,6 +4,11 @@ members = ["crates/agent_core", "crates/agent_orchestration", "crates/code_assis
 resolver = "2"
 
 [patch.crates-io]
+# Fork adding structure-aware DOCX -> Markdown conversion (headings, bullet vs
+# ordered lists, tables) plus real page-count reporting. Upstream (v0.3.4) only
+# extracts plain run text and stubs tables as "[Table content]".
+# Branch: feat/docx-structure (PR pending upstream).
+transmutation = { git = "https://github.com/stippi/transmutation", rev = "87f48d18ce3ff61659d7182c1b733eae8ec6f2c9" }
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
 # gpui-component depends on gpui via an unpinned `git = ".../zed"` dependency.
