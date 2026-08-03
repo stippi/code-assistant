@@ -357,7 +357,11 @@ async fn convert_document(path: &std::path::Path) -> Result<(String, usize)> {
         .await
         .map_err(|e| anyhow!("Document conversion error: {e}"))?;
 
-    let page_count = result.page_count();
+    // Prefer the document's own page count (DOCX/PDF/PPTX/XLSX report a
+    // meaningful value); fall back to the number of output chunks for formats
+    // that don't. `page_count()` alone is just `content.len()`, which is 1 for
+    // a non-split document and hid the real page count.
+    let page_count = result.metadata.page_count.max(result.page_count());
 
     // Collect all content into a single markdown string.
     // ConversionOutput.data is Vec<u8> containing UTF-8 markdown text.
