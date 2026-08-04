@@ -659,7 +659,10 @@ impl MainScreen {
             self.messages_view.update(cx, |view, cx| {
                 view.set_current_session_id(None);
                 view.forget_session_scroll(session_id.as_str());
-                view.messages_reset(0, cx);
+                // Disconnect the view: clear to the empty state. Passing `None`
+                // routes through the session-aware reset (displayed session was
+                // just cleared above), so no stale scroll is restored.
+                view.messages_reset_for_session(None, 0, cx);
                 cx.notify();
             });
 

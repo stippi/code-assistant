@@ -216,21 +216,8 @@ impl MessagesView {
         }
     }
 
-    /// Notify that all messages have been cleared and replaced.
-    /// Resets the ListState with the new count.
-    pub fn messages_reset(&mut self, new_count: usize, cx: &mut Context<Self>) {
-        self.list_state.reset(new_count);
-        self.follow_tail = true;
-        // For a full reset, jump instantly — no need to animate.
-        self.stop_animation();
-        if new_count > 0 {
-            self.scroll_to_bottom_instant();
-            self.schedule_height_cache_refresh(cx);
-        }
-        tracing::trace!("ListState reset with {} items", new_count);
-    }
-
-    /// Session-aware variant of [`Self::messages_reset`].
+    /// Reset the message list after its contents were rebuilt from scratch,
+    /// making the scroll behavior session-aware.
     ///
     /// The message queue is rebuilt from scratch on two very different
     /// occasions, and they want opposite scroll behavior:
@@ -1181,10 +1168,10 @@ mod tests {
             })
             .unwrap();
 
-        // Reset to 2 items
+        // Reset to 2 items (same-session clear/reload path)
         window
             .update(cx, |view, _, cx| {
-                view.messages_reset(2, cx);
+                view.messages_reset_for_session(None, 2, cx);
                 assert_eq!(view.list_state.item_count(), 2);
                 // follow_tail should be re-enabled on reset
                 assert!(view.follow_tail);
@@ -1208,7 +1195,7 @@ mod tests {
         window
             .update(cx, |view, _, cx| {
                 view.messages_spliced(0, 10, cx);
-                view.messages_reset(0, cx);
+                view.messages_reset_for_session(None, 0, cx);
                 assert_eq!(view.list_state.item_count(), 0);
                 assert!(view.follow_tail);
             })
