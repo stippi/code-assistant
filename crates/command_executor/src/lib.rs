@@ -71,6 +71,7 @@ impl PtySpawnSpec {
         #[cfg(target_family = "unix")]
         let argv = vec![
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+            "-l".to_string(),
             "-c".to_string(),
             command_line.to_string(),
         ];

@@ -36,7 +36,7 @@ impl CommandExecutor for DefaultCommandExecutor {
         #[cfg(target_family = "unix")]
         let mut cmd = Command::new(shell);
         #[cfg(target_family = "unix")]
-        cmd.args(["-c", &format!("{command_line} 2>&1")]);
+        cmd.args(["-l", "-c", &format!("{command_line} 2>&1")]);
 
         #[cfg(target_family = "windows")]
         let mut cmd = Command::new("cmd");
@@ -88,7 +88,7 @@ impl CommandExecutor for DefaultCommandExecutor {
         #[cfg(target_family = "unix")]
         let mut cmd = Command::new(shell);
         #[cfg(target_family = "unix")]
-        cmd.args(["-c", command_line]);
+        cmd.args(["-l", "-c", command_line]);
 
         #[cfg(target_family = "windows")]
         let mut cmd = Command::new("cmd");

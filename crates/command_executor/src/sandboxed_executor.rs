@@ -287,6 +287,7 @@ impl SandboxedCommandExecutor {
 fn shell_command(command_line: &str, redirect_stderr: bool) -> (String, Vec<String>) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let mut args = Vec::new();
+    args.push("-l".to_string());
     args.push("-c".to_string());
     if redirect_stderr {
         args.push(format!("{command_line} 2>&1"));
