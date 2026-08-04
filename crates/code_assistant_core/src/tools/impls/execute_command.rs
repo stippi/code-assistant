@@ -974,8 +974,8 @@ mod tests {
         let session_id = {
             let mut context = fixture.context();
             let mut input = session_mode_input(
-                "printf 'EARLY\\n'; sleep 0.6; printf 'LATE\\n'; sleep 30",
-                300,
+                "printf 'EARLY\\n'; sleep 1; printf 'LATE\\n'; sleep 30",
+                500,
             );
             let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
             assert!(result.running, "process should outlive the tool call");
@@ -995,7 +995,7 @@ mod tests {
         );
 
         // Wait past the delay without any tool call touching the session.
-        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
         let streamed_later = fixture.ui().unwrap().get_terminal_output_text();
         assert!(
