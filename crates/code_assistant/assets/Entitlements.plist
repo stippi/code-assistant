@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements applied when signing with a Developer ID identity under the
+      hardened runtime (required for notarization).
+
+      Code Assistant embeds gpui (Zed's UI framework), which relies on JIT /
+      dynamically generated executable memory. Without these two allowances the
+      process is killed by the hardened runtime at launch.
+
+      This mirrors the hardened-runtime keys that Zed itself uses
+      (crates/zed/resources/zed.entitlements). We deliberately do NOT set the
+      weaker keys such as com.apple.security.cs.disable-library-validation,
+      disable-executable-page-protection or allow-dyld-environment-variables:
+      Zed does not need them either (it keeps library validation commented out),
+      and Apple's notary service scrutinizes them.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

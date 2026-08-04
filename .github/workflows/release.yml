@@ -201,9 +201,61 @@ jobs:
             zip code-assistant-${{ matrix.name }}.zip "code-assistant${{ matrix.extension }}"
           fi
 
+      - name: Set up macOS code signing
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          # Skip silently when no certificate is configured: the bundle script
+          # then falls back to ad-hoc signing and the release still builds.
+          if [ -z "$MACOS_CERT_P12_BASE64" ]; then
+            echo "No MACOS_CERT_P12_BASE64 secret set; skipping code-signing setup."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          # Materialize the base64-encoded .p12 certificate.
+          echo -n "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+
+          # Create a dedicated, ephemeral keychain and make it the default so
+          # codesign can find the identity non-interactively.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the Developer ID Application certificate + private key.
+          security import "$CERT_PATH" \
+            -P "$MACOS_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Allow codesign/productsign to use the key without a UI prompt.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Put our keychain in the search list so codesign sees the identity.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          echo "Available signing identities:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          rm -f "$CERT_PATH"
+
       - name: Build macOS .app bundle
         if: matrix.os == 'macos-latest'
         shell: bash
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
         run: |
           # Map matrix target -> bundle script arch argument
           case "${{ matrix.target }}" in
