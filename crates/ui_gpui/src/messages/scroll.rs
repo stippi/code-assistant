@@ -97,6 +97,10 @@ pub fn install_scroll_handler(
                         }
                     }
                 }
+
+                // Remember the new position for this session, throttled to disk
+                // via the debounced UI-state flush.
+                this.persist_current_scroll(cx);
             });
         });
     });

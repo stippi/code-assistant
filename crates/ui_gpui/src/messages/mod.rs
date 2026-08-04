@@ -8,13 +8,14 @@ use crate::Gpui;
 use code_assistant_core::session::instance::SessionActivityState;
 
 use gpui::{
-    App, Bounds, Context, Entity, FocusHandle, Focusable, ListAlignment, ListState, MouseButton,
-    MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Task, Window, div, list, prelude::*, px,
-    rems,
+    App, Bounds, Context, Entity, FocusHandle, Focusable, ListAlignment, ListOffset, ListState,
+    MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Task, Window, div, list,
+    prelude::*, px, rems,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Icon};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,6 +33,18 @@ const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 /// Maximum width of the message content area. On wide viewports, messages
 /// stay centered rather than stretching edge-to-edge for comfortable reading.
 const MAX_MESSAGE_WIDTH: f32 = 720.0;
+
+/// Persisted scroll state for a single session.
+///
+/// The `anchor` is the list's *logical* scroll position (an item index plus a
+/// pixel offset within that item), which survives remeasuring far better than a
+/// raw pixel offset. `follow_tail` records whether the user was pinned to the
+/// bottom, so a session that was following the tail keeps doing so on return.
+#[derive(Clone, Copy)]
+struct SavedScroll {
+    anchor: ListOffset,
+    follow_tail: bool,
+}
 
 /// MessagesView - Component responsible for displaying the message history.
 ///
@@ -86,6 +99,18 @@ pub struct MessagesView {
     edge_drag_active: Rc<Cell<bool>>,
     /// Running edge auto-scroll task. Dropping it cancels the loop.
     edge_scroll_task: Option<Task<()>>,
+
+    // -- Per-session scroll persistence --
+    /// The session id whose scroll position the `list_state` currently
+    /// reflects. Distinct from `current_session_id` (which the app sets
+    /// eagerly on switch): this is updated only when the list is actually
+    /// rebuilt, so a reset can compare the two to tell a genuine session
+    /// switch apart from a same-session resync.
+    displayed_session_id: Option<String>,
+    /// Last known scroll anchor + follow-tail flag per session, captured
+    /// whenever we switch away. Restored when the session is shown again so
+    /// the user sees it exactly as they left it.
+    saved_scroll: HashMap<String, SavedScroll>,
 }
 
 impl MessagesView {
@@ -152,6 +177,8 @@ impl MessagesView {
             edge_scroll_velocity: Rc::new(Cell::new(0.0)),
             edge_drag_active: Rc::new(Cell::new(false)),
             edge_scroll_task: None,
+            displayed_session_id: None,
+            saved_scroll: HashMap::new(),
         }
     }
 
@@ -189,18 +216,184 @@ impl MessagesView {
         }
     }
 
-    /// Notify that all messages have been cleared and replaced.
-    /// Resets the ListState with the new count.
-    pub fn messages_reset(&mut self, new_count: usize, cx: &mut Context<Self>) {
-        self.list_state.reset(new_count);
-        self.follow_tail = true;
-        // For a full reset, jump instantly — no need to animate.
-        self.stop_animation();
-        if new_count > 0 {
-            self.scroll_to_bottom_instant();
-            self.schedule_height_cache_refresh(cx);
+    /// Reset the message list after its contents were rebuilt from scratch,
+    /// making the scroll behavior session-aware.
+    ///
+    /// The message queue is rebuilt from scratch on two very different
+    /// occasions, and they want opposite scroll behavior:
+    ///
+    /// * **Session switch** (`session_id` differs from the currently displayed
+    ///   one): save the outgoing session's scroll position, then either restore
+    ///   the incoming session's remembered position or — if it was never shown —
+    ///   follow the tail.
+    /// * **Same-session resync** (`session_id` unchanged): a stream lag, a file
+    ///   watcher refresh, or a structural edit rebuilt the identical transcript.
+    ///   The visible viewport must not jump, so we snapshot the scroll anchor
+    ///   before the reset and restore it afterwards (freeze the offset).
+    pub fn messages_reset_for_session(
+        &mut self,
+        session_id: Option<String>,
+        new_count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let is_switch = session_id != self.displayed_session_id;
+
+        if is_switch {
+            // Persist where we were in the session we are leaving.
+            self.save_current_scroll(cx);
+
+            self.list_state.reset(new_count);
+            self.stop_animation();
+
+            // Restore the target session's remembered scroll, or follow the
+            // tail if we've never displayed it before. In-memory state (from
+            // an earlier switch this run) takes precedence over the on-disk
+            // position from a previous run.
+            let restored = session_id.as_ref().and_then(|id| {
+                self.saved_scroll
+                    .get(id)
+                    .copied()
+                    .or_else(|| self.load_persisted_scroll(id))
+            });
+
+            self.displayed_session_id = session_id;
+
+            match restored {
+                Some(saved) if !saved.follow_tail => {
+                    self.follow_tail = false;
+                    if new_count > 0 {
+                        self.list_state.scroll_to(saved.anchor);
+                        self.schedule_height_cache_refresh(cx);
+                    }
+                }
+                // Either following the tail previously, or a fresh session.
+                _ => {
+                    self.follow_tail = true;
+                    if new_count > 0 {
+                        self.scroll_to_bottom_instant();
+                        self.schedule_height_cache_refresh(cx);
+                    }
+                }
+            }
+            tracing::trace!(
+                "ListState reset for session switch → {} items, follow_tail={}",
+                new_count,
+                self.follow_tail
+            );
+        } else {
+            // Same-session resync: freeze the visible offset. Snapshot the
+            // anchor, rebuild, and restore it (unless we were following the
+            // tail, in which case stay pinned to the bottom).
+            let anchor = self.list_state.logical_scroll_top();
+            let was_following = self.follow_tail;
+
+            self.list_state.reset(new_count);
+            self.stop_animation();
+
+            if new_count == 0 {
+                self.follow_tail = true;
+            } else if was_following {
+                self.follow_tail = true;
+                self.scroll_to_bottom_instant();
+                self.schedule_height_cache_refresh(cx);
+            } else {
+                self.follow_tail = false;
+                self.list_state.scroll_to(anchor);
+                self.schedule_height_cache_refresh(cx);
+            }
+            tracing::trace!(
+                "ListState reset for same-session resync → {} items, follow_tail={}",
+                new_count,
+                self.follow_tail
+            );
         }
-        tracing::trace!("ListState reset with {} items", new_count);
+    }
+
+    /// Snapshot the current scroll anchor + follow-tail flag for the session
+    /// the list currently reflects, so it can be restored on return (both
+    /// in-memory this run and on disk across restarts).
+    fn save_current_scroll(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.displayed_session_id.clone() {
+            let anchor = self.list_state.logical_scroll_top();
+            self.saved_scroll.insert(
+                id.clone(),
+                SavedScroll {
+                    anchor,
+                    follow_tail: self.follow_tail,
+                },
+            );
+            // Mark the on-disk state dirty and schedule the debounced flush so
+            // the position survives a restart even if the user never wheel-
+            // scrolled (e.g. only dragged the scrollbar) before switching.
+            if self.write_persisted_scroll(&id, anchor, self.follow_tail)
+                && let Some(sender) = cx.try_global::<crate::UiEventSender>()
+            {
+                let _ = sender
+                    .0
+                    .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
+            }
+        }
+    }
+
+    /// Persist the current scroll position to the per-session UI-state store
+    /// and schedule a debounced flush to disk. Called on real user scrolling
+    /// (not on programmatic restores), so the write is throttled to the last
+    /// position after the user settles.
+    fn persist_current_scroll(&self, cx: &mut Context<Self>) {
+        let Some(id) = self.displayed_session_id.clone() else {
+            return;
+        };
+        let anchor = self.list_state.logical_scroll_top();
+        if self.write_persisted_scroll(&id, anchor, self.follow_tail)
+            && let Some(sender) = cx.try_global::<crate::UiEventSender>()
+        {
+            let _ = sender
+                .0
+                .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
+        }
+    }
+
+    /// Write a scroll position into the global UI-state store. Returns `true`
+    /// if the value changed (and the session was therefore marked dirty).
+    fn write_persisted_scroll(
+        &self,
+        session_id: &str,
+        anchor: gpui::ListOffset,
+        follow_tail: bool,
+    ) -> bool {
+        let pos = crate::shared::ui_state::ScrollPosition {
+            item_ix: anchor.item_ix,
+            offset_in_item: anchor.offset_in_item.into(),
+            follow_tail,
+        };
+        if let Some(store) = crate::shared::ui_state::UiStateStore::try_global()
+            && let Ok(mut store) = store.lock()
+        {
+            return store.set_scroll(session_id, pos);
+        }
+        false
+    }
+
+    /// Load a previously persisted scroll position for a session from the
+    /// global UI-state store (from a prior app run).
+    fn load_persisted_scroll(&self, session_id: &str) -> Option<SavedScroll> {
+        let store = crate::shared::ui_state::UiStateStore::try_global()?;
+        let pos = store.lock().ok()?.get_scroll(session_id)?;
+        Some(SavedScroll {
+            anchor: gpui::ListOffset {
+                item_ix: pos.item_ix,
+                offset_in_item: px(pos.offset_in_item),
+            },
+            follow_tail: pos.follow_tail,
+        })
+    }
+
+    /// Forget any remembered scroll for a session (e.g. after deletion).
+    pub fn forget_session_scroll(&mut self, session_id: &str) {
+        self.saved_scroll.remove(session_id);
+        if self.displayed_session_id.as_deref() == Some(session_id) {
+            self.displayed_session_id = None;
+        }
     }
 
     // -----------------------------------------------------------------
@@ -220,10 +413,16 @@ impl MessagesView {
     }
 
     /// Jump to the bottom instantly (no animation).
+    ///
+    /// Uses [`ListState::scroll_to_end`] (anchoring past the last item) rather
+    /// than `scroll_to_reveal_item`: right after a `reset()` the list items are
+    /// still unmeasured, and `scroll_to_reveal_item` would compute a pixel
+    /// target from those zero heights and land at the top. `scroll_to_end`
+    /// instead lets the layout pass walk backwards from the end, which reveals
+    /// the true bottom regardless of measurement state.
     fn scroll_to_bottom_instant(&self) {
-        let count = self.list_state.item_count();
-        if count > 0 {
-            self.list_state.scroll_to_reveal_item(count - 1);
+        if self.list_state.item_count() > 0 {
+            self.list_state.scroll_to_end();
         }
     }
 
@@ -236,6 +435,15 @@ impl MessagesView {
     fn remeasure_preserving_anchor(&self) {
         let count = self.list_state.item_count();
         if count == 0 {
+            return;
+        }
+
+        if self.follow_tail {
+            // A following session stays pinned to the bottom across remeasures
+            // (e.g. markdown reflow settling after a restore). Anchor past the
+            // last item so the layout re-reveals the true bottom.
+            self.list_state.reset(count);
+            self.list_state.scroll_to_end();
             return;
         }
 
@@ -520,6 +728,9 @@ impl MessagesView {
                     // longer following the tail.
                     if this.follow_tail && new_y > -max + 1.0 {
                         this.follow_tail = false;
+                        // Persist the new (non-following) position on this drag
+                        // transition; subsequent frames are no-ops.
+                        this.persist_current_scroll(cx);
                     }
                     cx.notify();
                 });
@@ -783,6 +994,7 @@ impl Render for MessagesView {
                                 )
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.activate_follow_tail();
+                                    this.persist_current_scroll(cx);
                                     cx.notify();
                                 })),
                         ),
@@ -956,10 +1168,10 @@ mod tests {
             })
             .unwrap();
 
-        // Reset to 2 items
+        // Reset to 2 items (same-session clear/reload path)
         window
             .update(cx, |view, _, cx| {
-                view.messages_reset(2, cx);
+                view.messages_reset_for_session(None, 2, cx);
                 assert_eq!(view.list_state.item_count(), 2);
                 // follow_tail should be re-enabled on reset
                 assert!(view.follow_tail);
@@ -983,7 +1195,7 @@ mod tests {
         window
             .update(cx, |view, _, cx| {
                 view.messages_spliced(0, 10, cx);
-                view.messages_reset(0, cx);
+                view.messages_reset_for_session(None, 0, cx);
                 assert_eq!(view.list_state.item_count(), 0);
                 assert!(view.follow_tail);
             })
@@ -1162,6 +1374,127 @@ mod tests {
                 view.messages_spliced(0, 3, cx);
                 // Animation should NOT be triggered because follow_tail is false
                 assert!(!view.animation_active.get());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_same_session_reset_preserves_scroll_offset(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                // Show a session with some messages, scrolled away from the bottom.
+                view.messages_reset_for_session(Some("s1".to_string()), 10, cx);
+                view.follow_tail = false;
+                view.list_state.scroll_to(ListOffset {
+                    item_ix: 4,
+                    offset_in_item: px(7.0),
+                });
+
+                // A same-session resync arrives (e.g. lagged stream, file watcher).
+                view.messages_reset_for_session(Some("s1".to_string()), 10, cx);
+
+                // The scroll anchor must be preserved, not jumped to bottom.
+                let anchor = view.list_state.logical_scroll_top();
+                assert_eq!(anchor.item_ix, 4);
+                assert_eq!(anchor.offset_in_item, px(7.0));
+                // And follow_tail stays disabled.
+                assert!(!view.follow_tail);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_restoring_bottom_session_anchors_to_end(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                // A long session the user scrolled to the very end (follow_tail
+                // stays true near the bottom).
+                view.messages_reset_for_session(Some("long".to_string()), 100, cx);
+                assert!(view.follow_tail);
+
+                // Switch away, then back.
+                view.messages_reset_for_session(Some("other".to_string()), 3, cx);
+                view.messages_reset_for_session(Some("long".to_string()), 100, cx);
+
+                // A following session must anchor to the END sentinel so the
+                // layout can walk backwards and reveal the bottom — even though
+                // the freshly reset items are still unmeasured. Anchoring to a
+                // concrete item index (scroll_to_reveal_item) would land at the
+                // top here.
+                assert!(view.follow_tail);
+                let anchor = view.list_state.logical_scroll_top();
+                assert_eq!(
+                    anchor.item_ix,
+                    view.list_state.item_count(),
+                    "follow-tail restore must anchor past the last item (scroll_to_end)"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_session_switch_saves_and_restores_scroll(cx: &mut TestAppContext) {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let activity = Arc::new(Mutex::new(None));
+
+        let window = cx.update(|cx| {
+            init_test_globals(cx);
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| MessagesView::new(queue, activity, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                // Session s1: scroll to a specific anchor and stop following.
+                view.messages_reset_for_session(Some("s1".to_string()), 10, cx);
+                view.follow_tail = false;
+                view.list_state.scroll_to(ListOffset {
+                    item_ix: 3,
+                    offset_in_item: px(12.0),
+                });
+
+                // Switch to s2 — s1's scroll must be saved; s2 (unseen) defaults
+                // to following the tail.
+                view.messages_reset_for_session(Some("s2".to_string()), 8, cx);
+                assert!(view.follow_tail, "unseen session should follow the tail");
+
+                // Scroll s2 somewhere too.
+                view.follow_tail = false;
+                view.list_state.scroll_to(ListOffset {
+                    item_ix: 1,
+                    offset_in_item: px(0.0),
+                });
+
+                // Back to s1 — the saved anchor and follow_tail=false are restored.
+                view.messages_reset_for_session(Some("s1".to_string()), 10, cx);
+                assert!(!view.follow_tail, "returning session restores follow state");
+                let anchor = view.list_state.logical_scroll_top();
+                assert_eq!(anchor.item_ix, 3);
+                assert_eq!(anchor.offset_in_item, px(12.0));
             })
             .unwrap();
     }
