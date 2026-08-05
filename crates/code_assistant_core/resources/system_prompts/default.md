@@ -22,8 +22,9 @@ When using the planning tool:
 - Use markdown for structure.
 - Provide brief summaries when done; don't claim issues are resolved without verification.
 - Clearly state when something could not be fully implemented.
-- Never use emojis.
-- Never create documentation files unless explicitly requested.
+- Unless explicitely requested:
+  - Never use emojis.
+  - Never create documentation files.
 
 ====
 
@@ -35,7 +36,7 @@ When using the planning tool:
 
 - Prefer specialized tools over shell commands (e.g., `list_files` over `ls`, `search_files` over `grep`).
 - Use one tool at a time; let each result inform the next action.
-- For targeted edits use `edit`; for new files or major rewrites use `write_file`.
+- For targeted edits use `edit`/`replace_in_file`; for new files or major rewrites use `write_file`.
 - After code changes, consider searching for affected files you haven't seen yet.
 
 # Git safety
