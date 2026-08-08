@@ -81,39 +81,9 @@ impl DefaultMessageConverter {
         Self
     }
 
-    /// Get cache marker positions based on the stable prefix length.
-    ///
-    /// Messages at and after the first volatile message are excluded because they
-    /// may change or disappear between requests, which would invalidate the
-    /// provider-side cached prefix.
-    ///
-    /// 0-4 messages: no cache markers
-    /// 5-9 messages: marker at index 4
-    /// 10-14 messages: markers at indices 4 and 9
-    /// 15-19 messages: markers at indices 9 and 14
-    /// 20-24 messages: markers at indices 14 and 19
-    /// etc.
-    fn get_cache_marker_positions(&self, messages: &[Message]) -> Vec<usize> {
-        let stable_len = messages
-            .iter()
-            .position(|message| message.volatile)
-            .unwrap_or(messages.len());
-
-        if stable_len < 5 {
-            return vec![];
-        }
-        let remainder = stable_len % 5;
-        let last_marker = stable_len - remainder;
-        if last_marker > 5 {
-            vec![last_marker - 6, last_marker - 1]
-        } else {
-            vec![last_marker - 1]
-        }
-    }
-
     /// Convert generic messages to Anthropic-specific format with cache control
     fn convert_messages_with_cache(&self, messages: Vec<Message>) -> Vec<AnthropicMessage> {
-        let cache_positions = self.get_cache_marker_positions(&messages);
+        let cache_positions = crate::prompt_caching::cache_marker_positions(&messages);
 
         messages
             .into_iter()
