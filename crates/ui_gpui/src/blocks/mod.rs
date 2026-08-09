@@ -7,7 +7,7 @@ pub use data::*;
 
 use gpui::prelude::*;
 use gpui::{Context, Entity, Pixels, Task, px};
-use gpui_component::text::{TextView, TextViewState};
+use gpui_component::text::{SelectionFormat, TextView, TextViewState};
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -237,9 +237,14 @@ impl BlockView {
         // selection (e.g. `**bold**`, list markers, code fences) rather than the
         // rendered plain text. The hover copy button already copies full-block
         // source; this keeps partial-selection copy consistent.
+        let selection_format = if selectable {
+            SelectionFormat::Source
+        } else {
+            SelectionFormat::Plain
+        };
         TextView::new(&state)
             .selectable(selectable)
-            .selectable_source(selectable)
+            .selection_format(selection_format)
     }
 
     /// Whether the copy button should currently render its "copied" checkmark.

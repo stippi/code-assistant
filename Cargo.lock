@@ -2536,7 +2536,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2816,7 +2816,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4528,7 +4528,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.5.2"
-source = "git+https://github.com/stippi/gpui-component?rev=1a66dc72424ae70300aae2ee02b04c4ce4e71d5a#1a66dc72424ae70300aae2ee02b04c4ce4e71d5a"
+source = "git+https://github.com/stippi/gpui-component?rev=ab37c62a6be0e9315deafa39bde1ae9f2c0894eb#ab37c62a6be0e9315deafa39bde1ae9f2c0894eb"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4576,7 +4576,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-assets"
 version = "0.5.1"
-source = "git+https://github.com/stippi/gpui-component?rev=1a66dc72424ae70300aae2ee02b04c4ce4e71d5a#1a66dc72424ae70300aae2ee02b04c4ce4e71d5a"
+source = "git+https://github.com/stippi/gpui-component?rev=ab37c62a6be0e9315deafa39bde1ae9f2c0894eb#ab37c62a6be0e9315deafa39bde1ae9f2c0894eb"
 dependencies = [
  "anyhow",
  "gpui",
@@ -4590,7 +4590,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.5.1"
-source = "git+https://github.com/stippi/gpui-component?rev=1a66dc72424ae70300aae2ee02b04c4ce4e71d5a#1a66dc72424ae70300aae2ee02b04c4ce4e71d5a"
+source = "git+https://github.com/stippi/gpui-component?rev=ab37c62a6be0e9315deafa39bde1ae9f2c0894eb#ab37c62a6be0e9315deafa39bde1ae9f2c0894eb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5313,7 +5313,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5751,7 +5751,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6818,7 +6818,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8311,7 +8311,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.3",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9002,7 +9002,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10424,7 +10424,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -12224,7 +12224,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
