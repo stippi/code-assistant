@@ -81,39 +81,9 @@ impl DefaultMessageConverter {
         Self
     }
 
-    /// Get cache marker positions based on the stable prefix length.
-    ///
-    /// Messages at and after the first volatile message are excluded because they
-    /// may change or disappear between requests, which would invalidate the
-    /// provider-side cached prefix.
-    ///
-    /// 0-4 messages: no cache markers
-    /// 5-9 messages: marker at index 4
-    /// 10-14 messages: markers at indices 4 and 9
-    /// 15-19 messages: markers at indices 9 and 14
-    /// 20-24 messages: markers at indices 14 and 19
-    /// etc.
-    fn get_cache_marker_positions(&self, messages: &[Message]) -> Vec<usize> {
-        let stable_len = messages
-            .iter()
-            .position(|message| message.volatile)
-            .unwrap_or(messages.len());
-
-        if stable_len < 5 {
-            return vec![];
-        }
-        let remainder = stable_len % 5;
-        let last_marker = stable_len - remainder;
-        if last_marker > 5 {
-            vec![last_marker - 6, last_marker - 1]
-        } else {
-            vec![last_marker - 1]
-        }
-    }
-
     /// Convert generic messages to Anthropic-specific format with cache control
     fn convert_messages_with_cache(&self, messages: Vec<Message>) -> Vec<AnthropicMessage> {
-        let cache_positions = self.get_cache_marker_positions(&messages);
+        let cache_positions = crate::prompt_caching::per_request_marker_positions(&messages);
 
         messages
             .into_iter()
@@ -1432,99 +1402,55 @@ mod tests {
 
     use serde_json::json;
 
-    /// Test cache marker placement based on message count (stateless)
+    /// Test per-request cache marker placement (stateless): leading marker on
+    /// the last message, trailing marker directly before the last assistant
+    /// message — i.e. on the previous request's leading marker position.
     #[test]
-    fn test_message_count_based_cache_markers() {
+    fn test_per_request_cache_markers() {
         let converter = DefaultMessageConverter::new();
 
         // Helper to count cache markers in messages
         fn count_message_cache_markers(result: &[AnthropicMessage]) -> Vec<usize> {
-            let mut marker_positions = Vec::new();
-            for (msg_idx, msg) in result.iter().enumerate() {
-                if msg
-                    .content
-                    .iter()
-                    .any(|block| block.cache_control.is_some())
-                {
-                    marker_positions.push(msg_idx);
-                }
-            }
-            marker_positions
+            result
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, msg)| {
+                    msg.content
+                        .iter()
+                        .any(|block| block.cache_control.is_some())
+                        .then_some(idx)
+                })
+                .collect()
         }
 
-        // Test 0-4 messages: No cache markers
-        for msg_count in 0..=4 {
-            let messages: Vec<Message> = (0..msg_count)
-                .map(|i| Message::new_user(format!("Message {i}")))
-                .collect();
+        // No history → no markers
+        let result = converter.convert_messages_with_cache(vec![]);
+        assert!(count_message_cache_markers(&result).is_empty());
 
-            let result = converter.convert_messages_with_cache(messages);
-            let markers = count_message_cache_markers(&result);
-            assert!(
-                markers.is_empty(),
-                "{msg_count} messages: Should have no cache markers"
-            );
-        }
+        // User-only history → single marker on the last message
+        let messages: Vec<Message> = (0..3)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        let result = converter.convert_messages_with_cache(messages);
+        assert_eq!(count_message_cache_markers(&result), vec![2]);
 
-        // Test 5-9 messages: Cache marker at index 4
-        for msg_count in 5..=9 {
-            let messages: Vec<Message> = (0..msg_count)
-                .map(|i| Message::new_user(format!("Message {i}")))
-                .collect();
+        // Growing conversation: each request's trailing marker must land on
+        // the previous request's leading marker position
+        let mut messages = vec![Message::new_user("u0")];
+        let result = converter.convert_messages_with_cache(messages.clone());
+        assert_eq!(count_message_cache_markers(&result), vec![0]);
 
-            let result = converter.convert_messages_with_cache(messages);
-            let markers = count_message_cache_markers(&result);
-            assert_eq!(
-                markers,
-                vec![4],
-                "{msg_count} messages: Should have cache marker at index 4"
-            );
-        }
+        messages.push(Message::new_assistant("a1"));
+        messages.push(Message::new_user("u2"));
+        let result = converter.convert_messages_with_cache(messages.clone());
+        assert_eq!(count_message_cache_markers(&result), vec![0, 2]);
 
-        // Test 10-14 messages: Cache markers at indices 4 and 9
-        for msg_count in 10..=14 {
-            let messages: Vec<Message> = (0..msg_count)
-                .map(|i| Message::new_user(format!("Message {i}")))
-                .collect();
-
-            let result = converter.convert_messages_with_cache(messages);
-            let markers = count_message_cache_markers(&result);
-            assert_eq!(
-                markers,
-                vec![4, 9],
-                "{msg_count} messages: Should have cache markers at indices 4 and 9"
-            );
-        }
-
-        // Test 15-19 messages: Cache markers at indices 9 and 14
-        for msg_count in 15..=19 {
-            let messages: Vec<Message> = (0..msg_count)
-                .map(|i| Message::new_user(format!("Message {i}")))
-                .collect();
-
-            let result = converter.convert_messages_with_cache(messages);
-            let markers = count_message_cache_markers(&result);
-            assert_eq!(
-                markers,
-                vec![9, 14],
-                "{msg_count} messages: Should have cache markers at indices 9 and 14"
-            );
-        }
-
-        // Test 20-24 messages: Cache markers at indices 14 and 19
-        for msg_count in 20..=24 {
-            let messages: Vec<Message> = (0..msg_count)
-                .map(|i| Message::new_user(format!("Message {i}")))
-                .collect();
-
-            let result = converter.convert_messages_with_cache(messages);
-            let markers = count_message_cache_markers(&result);
-            assert_eq!(
-                markers,
-                vec![14, 19],
-                "{msg_count} messages: Should have cache markers at indices 14 and 19"
-            );
-        }
+        // Pending user message appended on top of the regular turn
+        messages.push(Message::new_assistant("a3"));
+        messages.push(Message::new_user("u4"));
+        messages.push(Message::new_user("u5 (pending)"));
+        let result = converter.convert_messages_with_cache(messages);
+        assert_eq!(count_message_cache_markers(&result), vec![2, 5]);
     }
 
     /// Test that volatile messages cap the cacheable history prefix.
@@ -1545,25 +1471,33 @@ mod tests {
                 .collect()
         }
 
-        let mut messages: Vec<Message> = (0..18)
-            .map(|i| Message::new_user(format!("Message {i}")))
-            .collect();
+        fn alternating_messages(count: usize) -> Vec<Message> {
+            (0..count)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        Message::new_user(format!("u{i}"))
+                    } else {
+                        Message::new_assistant(format!("a{i}"))
+                    }
+                })
+                .collect()
+        }
+
+        let mut messages = alternating_messages(18);
         messages[12].volatile = true;
         let result = converter.convert_messages_with_cache(messages);
         assert_eq!(
             count_message_cache_markers(&result),
-            vec![4, 9],
-            "18 messages with first volatile at 12 should use markers for the 12-message stable prefix"
+            vec![10, 11],
+            "First volatile at 12 caps markers to the 12-message stable prefix"
         );
 
-        let mut messages: Vec<Message> = (0..18)
-            .map(|i| Message::new_user(format!("Message {i}")))
-            .collect();
-        messages[4].volatile = true;
+        let mut messages = alternating_messages(18);
+        messages[0].volatile = true;
         let result = converter.convert_messages_with_cache(messages);
         assert!(
             count_message_cache_markers(&result).is_empty(),
-            "A volatile message before index 5 should suppress message-history cache markers"
+            "A fully volatile history should carry no cache markers"
         );
     }
 
@@ -1599,7 +1533,8 @@ mod tests {
 
         let result = converter.convert_messages_with_cache(messages);
 
-        // Should have cache markers at indices 9 and 14
+        // Leading marker on the last message (14), trailing marker directly
+        // before the last assistant message (13) → index 12
         let mut cache_markers = Vec::new();
         for (idx, msg) in result.iter().enumerate() {
             if msg
@@ -1612,8 +1547,8 @@ mod tests {
         }
         assert_eq!(
             cache_markers,
-            vec![9, 14],
-            "15 messages should have cache markers at indices 9 and 14"
+            vec![12, 14],
+            "15 messages should have cache markers at indices 12 and 14"
         );
 
         // Verify structured content is preserved
@@ -1693,7 +1628,7 @@ mod tests {
             })
             .collect();
 
-        // Both should have identical cache marker placement (indices 9, 14)
+        // Both should have identical cache marker placement (indices 12, 14)
         let result_a = converter.convert_messages_with_cache(messages_a);
         let result_b = converter.convert_messages_with_cache(messages_b);
 
@@ -1721,13 +1656,13 @@ mod tests {
 
         assert_eq!(
             markers_a,
-            vec![9, 14],
-            "Message set A should have markers at indices 9, 14"
+            vec![12, 14],
+            "Message set A should have markers at indices 12, 14"
         );
         assert_eq!(
             markers_b,
-            vec![9, 14],
-            "Message set B should have markers at indices 9, 14"
+            vec![12, 14],
+            "Message set B should have markers at indices 12, 14"
         );
         assert_eq!(
             markers_a, markers_b,
@@ -1743,8 +1678,8 @@ mod tests {
         let markers_short = get_markers(&result_short);
         assert_eq!(
             markers_short,
-            vec![4],
-            "7 messages should have marker at index 4"
+            vec![6],
+            "7 user-only messages should have a single marker on the last one"
         );
     }
 
@@ -1825,13 +1760,14 @@ mod tests {
                 .collect()
         };
 
-        // Test with the full 30-message conversation
+        // Test with the full 30-message conversation: leading marker on the
+        // last message (29), trailing before the last assistant message (28)
         let result30 = converter.convert_messages_with_cache(messages.clone());
         let markers30 = get_markers(&result30);
         assert_eq!(
             markers30,
-            vec![24, 29],
-            "30 messages: Should have cache markers at indices 24 and 29, found: {markers30:?}"
+            vec![27, 29],
+            "30 messages: Should have cache markers at indices 27 and 29, found: {markers30:?}"
         );
 
         // Test different message counts to demonstrate stateless behavior
@@ -1843,8 +1779,8 @@ mod tests {
         let markers_short = get_markers(&result_short);
         assert_eq!(
             markers_short,
-            vec![4],
-            "7 messages should have marker at index 4"
+            vec![3, 6],
+            "7 messages should have markers at indices 3 and 6"
         );
 
         // Agent 2: Medium conversation (12 messages)
@@ -1853,8 +1789,8 @@ mod tests {
         let markers_medium = get_markers(&result_medium);
         assert_eq!(
             markers_medium,
-            vec![4, 9],
-            "12 messages should have markers at indices 4, 9"
+            vec![9, 11],
+            "12 messages should have markers at indices 9, 11"
         );
 
         // Agent 3: Long conversation (18 messages)
@@ -1863,8 +1799,8 @@ mod tests {
         let markers_long = get_markers(&result_long);
         assert_eq!(
             markers_long,
-            vec![9, 14],
-            "18 messages should have markers at indices 9, 14"
+            vec![15, 17],
+            "18 messages should have markers at indices 15, 17"
         );
 
         // Agent 4: Very long conversation (25 messages)
@@ -1873,8 +1809,8 @@ mod tests {
         let markers_very_long = get_markers(&result_very_long);
         assert_eq!(
             markers_very_long,
-            vec![19, 24],
-            "25 messages should have markers at indices 19, 24"
+            vec![21, 24],
+            "25 messages should have markers at indices 21, 24"
         );
 
         // Verify that cache markers are only placed on first content block of structured messages

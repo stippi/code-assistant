@@ -52,7 +52,7 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 
 // Re-export types shared with the HTTP provider
-use crate::openai_responses::Verbosity;
+use crate::openai_responses::{PromptCacheBreakpoint, Verbosity, model_supports_explicit_cache};
 
 // ============================================================================
 // Request / Response types (WebSocket-specific envelope)
@@ -145,15 +145,79 @@ enum WsInputItem {
 enum WsContentItem {
     InputText {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_breakpoint: Option<PromptCacheBreakpoint>,
     },
     InputImage {
         image_url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_breakpoint: Option<PromptCacheBreakpoint>,
     },
     OutputText {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         phase: Option<String>,
     },
+}
+
+impl WsContentItem {
+    fn input_text(text: String) -> Self {
+        Self::InputText {
+            text,
+            prompt_cache_breakpoint: None,
+        }
+    }
+
+    fn input_image(image_url: String) -> Self {
+        Self::InputImage {
+            image_url,
+            prompt_cache_breakpoint: None,
+        }
+    }
+
+    /// Set the explicit cache breakpoint if this is an input block that
+    /// supports one. Returns whether the marker could be applied.
+    fn try_mark_cache_breakpoint(&mut self) -> bool {
+        match self {
+            Self::InputText {
+                prompt_cache_breakpoint,
+                ..
+            }
+            | Self::InputImage {
+                prompt_cache_breakpoint,
+                ..
+            } => {
+                *prompt_cache_breakpoint = Some(PromptCacheBreakpoint::explicit());
+                true
+            }
+            Self::OutputText { .. } => false,
+        }
+    }
+}
+
+/// Place an explicit cache breakpoint on the last breakpoint-eligible content
+/// block within `items[..end]`.
+///
+/// A breakpoint marks the end of the cached prefix including everything
+/// rendered before it, but is only valid on input blocks (`input_text`,
+/// `input_image`). Function calls, tool outputs and assistant text cannot
+/// carry one, so the marker is shifted backwards to the nearest eligible
+/// block. The scan only depends on content before the anchor, which is stable
+/// across requests, so placement stays deterministic.
+///
+/// Markers serialize as part of the input items, so `compute_delta` naturally
+/// forces a full resend whenever marker positions move — the previously
+/// cached token prefix stays valid because markers are not prompt content.
+fn apply_cache_breakpoint(items: &mut [WsInputItem], end: usize) {
+    for item in items[..end].iter_mut().rev() {
+        if let WsInputItem::Message { content, .. } = item {
+            for content_item in content.iter_mut().rev() {
+                if content_item.try_mark_cache_breakpoint() {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +313,32 @@ struct WsResponsesUsage {
 #[derive(Debug, Deserialize)]
 struct WsInputTokensDetails {
     cached_tokens: u32,
+    /// Tokens written to the prompt cache (explicit caching, GPT-5.6+).
+    #[serde(default)]
+    cache_write_tokens: u32,
+}
+
+impl WsResponsesUsage {
+    /// Convert to the provider-independent `Usage`.
+    ///
+    /// OpenAI reports `input_tokens` inclusive of cached (and cache-write)
+    /// tokens, while the internal `Usage` follows Anthropic semantics where
+    /// `input_tokens` counts only uncached input.
+    fn to_usage(&self) -> Usage {
+        let (cache_read, cache_write) = self
+            .input_tokens_details
+            .as_ref()
+            .map(|d| (d.cached_tokens, d.cache_write_tokens))
+            .unwrap_or((0, 0));
+        Usage {
+            input_tokens: self
+                .input_tokens
+                .saturating_sub(cache_read.saturating_add(cache_write)),
+            output_tokens: self.output_tokens,
+            cache_creation_input_tokens: cache_write,
+            cache_read_input_tokens: cache_read,
+        }
+    }
 }
 
 // ============================================================================
@@ -262,11 +352,15 @@ struct ModelCapabilities {
     default_summary: Option<String>,
     supports_verbosity: bool,
     default_verbosity: Option<Verbosity>,
+    /// Whether the model supports explicit prompt cache breakpoints
+    /// (`prompt_cache_breakpoint`, GPT-5.6 and later; older models reject the field)
+    supports_explicit_cache: bool,
 }
 
 impl ModelCapabilities {
     fn for_model(model: &str) -> Self {
         let m = model.to_lowercase();
+        let supports_explicit_cache = model_supports_explicit_cache(&m);
 
         if m.contains("gpt-5") || m.starts_with("gpt5") {
             return Self {
@@ -275,6 +369,7 @@ impl ModelCapabilities {
                 default_summary: Some("auto".into()),
                 supports_verbosity: true,
                 default_verbosity: Some(Verbosity::Medium),
+                supports_explicit_cache,
             };
         }
         if m.starts_with("o3") || m.starts_with("o4") {
@@ -284,6 +379,7 @@ impl ModelCapabilities {
                 default_summary: Some("auto".into()),
                 supports_verbosity: false,
                 default_verbosity: None,
+                supports_explicit_cache,
             };
         }
         if m.starts_with("o1") {
@@ -293,6 +389,7 @@ impl ModelCapabilities {
                 default_summary: Some("auto".into()),
                 supports_verbosity: false,
                 default_verbosity: None,
+                supports_explicit_cache,
             };
         }
         if m.contains("gpt-4o") || m.contains("gpt4o") || m.contains("gpt-4") || m.contains("gpt4")
@@ -303,6 +400,7 @@ impl ModelCapabilities {
                 default_summary: None,
                 supports_verbosity: false,
                 default_verbosity: None,
+                supports_explicit_cache,
             };
         }
         // Default: assume reasoning support with conservative defaults
@@ -312,6 +410,7 @@ impl ModelCapabilities {
             default_summary: Some("auto".into()),
             supports_verbosity: false,
             default_verbosity: None,
+            supports_explicit_cache,
         }
     }
 }
@@ -587,8 +686,24 @@ impl OpenAIResponsesWsClient {
     // Message conversion (internal types → WS input items)
     // -----------------------------------------------------------------------
 
-    fn convert_messages(&self, messages: Vec<Message>) -> Vec<WsInputItem> {
+    /// Convert internal messages to WS input items, optionally placing
+    /// explicit cache breakpoints at stable history positions.
+    fn convert_messages_with_cache(
+        &self,
+        messages: Vec<Message>,
+        explicit_cache: bool,
+    ) -> Vec<WsInputItem> {
+        let cache_positions = if explicit_cache {
+            crate::prompt_caching::cache_marker_positions(&messages)
+        } else {
+            Vec::new()
+        };
+
         let mut items = Vec::new();
+        // Number of converted items after each message, so marker positions
+        // (message indices) can be mapped back to converted input items.
+        let mut items_after_message = Vec::with_capacity(messages.len());
+
         for message in messages {
             match &message.content {
                 MessageContent::Text(text) => {
@@ -605,7 +720,7 @@ impl OpenAIResponsesWsClient {
                             phase: Some("final_answer".to_string()),
                         }
                     } else {
-                        WsContentItem::InputText { text: text.clone() }
+                        WsContentItem::input_text(text.clone())
                     };
                     items.push(WsInputItem::Message {
                         role: role.to_string(),
@@ -616,7 +731,13 @@ impl OpenAIResponsesWsClient {
                     self.convert_structured_message(&message.role, blocks, &mut items);
                 }
             }
+            items_after_message.push(items.len());
         }
+
+        for &position in &cache_positions {
+            apply_cache_breakpoint(&mut items, items_after_message[position]);
+        }
+
         items
     }
 
@@ -652,7 +773,7 @@ impl OpenAIResponsesWsClient {
             match block {
                 ContentBlock::Text { text, .. } => {
                     let item = if *role == MessageRole::User {
-                        WsContentItem::InputText { text: text.clone() }
+                        WsContentItem::input_text(text.clone())
                     } else {
                         WsContentItem::OutputText {
                             text: text.clone(),
@@ -662,9 +783,10 @@ impl OpenAIResponsesWsClient {
                     current_content.push(item);
                 }
                 ContentBlock::Image { data, .. } => {
-                    current_content.push(WsContentItem::InputImage {
-                        image_url: format!("data:image/png;base64,{}", data),
-                    });
+                    current_content.push(WsContentItem::input_image(format!(
+                        "data:image/png;base64,{}",
+                        data
+                    )));
                 }
                 ContentBlock::Thinking {
                     thinking,
@@ -906,7 +1028,15 @@ impl OpenAIResponsesWsClient {
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
-        let input = self.convert_messages(request.messages);
+        let capabilities = ModelCapabilities::for_model(&self.model);
+
+        // Explicit cache breakpoints are only sent to models that support
+        // them (older models reject the field). The system prompt travels as
+        // `instructions` (a plain string, no breakpoint possible); a marker on
+        // a history message still caches instructions and tools, since a
+        // breakpoint covers everything rendered before it.
+        let input = self
+            .convert_messages_with_cache(request.messages, capabilities.supports_explicit_cache);
 
         // Add system prompt as the top-level `instructions` field (WebSocket style)
         // but also keep it as a developer message in `input` for compatibility.
@@ -929,8 +1059,6 @@ impl OpenAIResponsesWsClient {
                 })
                 .collect()
         });
-
-        let capabilities = ModelCapabilities::for_model(&self.model);
 
         let reasoning = if capabilities.supports_reasoning {
             Some(ReasoningConfig {
@@ -1277,12 +1405,7 @@ impl OpenAIResponsesWsClient {
                                         usage_val.clone(),
                                     )
                                 {
-                                    usage.input_tokens = u.input_tokens;
-                                    usage.output_tokens = u.output_tokens;
-                                    usage.cache_read_input_tokens = u
-                                        .input_tokens_details
-                                        .map(|d| d.cached_tokens)
-                                        .unwrap_or(0);
+                                    usage = u.to_usage();
                                 }
                             }
 
@@ -1632,9 +1755,7 @@ mod tests {
             previous_response_id: None,
             input: vec![WsInputItem::Message {
                 role: "user".to_string(),
-                content: vec![WsContentItem::InputText {
-                    text: "Hello".to_string(),
-                }],
+                content: vec![WsContentItem::input_text("Hello".to_string())],
             }],
             tools: None,
             tool_choice: Some("auto".to_string()),
@@ -1663,9 +1784,7 @@ mod tests {
             previous_response_id: Some("resp_abc123".to_string()),
             input: vec![WsInputItem::Message {
                 role: "user".to_string(),
-                content: vec![WsContentItem::InputText {
-                    text: "Follow-up".to_string(),
-                }],
+                content: vec![WsContentItem::input_text("Follow-up".to_string())],
             }],
             tools: None,
             tool_choice: None,
@@ -1709,9 +1828,7 @@ mod tests {
         // No previous state => no delta
         let input = vec![WsInputItem::Message {
             role: "user".to_string(),
-            content: vec![WsContentItem::InputText {
-                text: "Hello".to_string(),
-            }],
+            content: vec![WsContentItem::input_text("Hello".to_string())],
         }];
         assert!(client.compute_delta(&input).is_none());
 
@@ -1730,9 +1847,7 @@ mod tests {
         });
         extended.push(WsInputItem::Message {
             role: "user".to_string(),
-            content: vec![WsContentItem::InputText {
-                text: "How are you?".to_string(),
-            }],
+            content: vec![WsContentItem::input_text("How are you?".to_string())],
         });
 
         let result = client.compute_delta(&extended);
@@ -1832,7 +1947,7 @@ mod tests {
         );
 
         let messages = vec![Message::new_assistant("Hello from assistant")];
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
@@ -1866,7 +1981,7 @@ mod tests {
             ContentBlock::new_tool_use("call_1", "search", serde_json::json!({"query": "weather"})),
         ])];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         // Should produce: Message(OutputText), FunctionCall
         assert_eq!(converted.len(), 2);
 
@@ -1897,7 +2012,7 @@ mod tests {
         );
 
         let messages = vec![Message::new_user("Hello")];
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
@@ -1931,10 +2046,92 @@ mod tests {
         let json = serde_json::to_value(&commentary_item).unwrap();
         assert_eq!(json["phase"], "commentary");
 
-        let input_item = WsContentItem::InputText {
-            text: "hello".to_string(),
-        };
+        let input_item = WsContentItem::input_text("hello".to_string());
         let json = serde_json::to_value(&input_item).unwrap();
         assert!(json.get("phase").is_none());
+    }
+
+    fn ws_items_with_breakpoint(items: &[WsInputItem]) -> Vec<usize> {
+        items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| match item {
+                WsInputItem::Message { content, .. } => content
+                    .iter()
+                    .any(|c| {
+                        matches!(
+                            c,
+                            WsContentItem::InputText {
+                                prompt_cache_breakpoint: Some(_),
+                                ..
+                            } | WsContentItem::InputImage {
+                                prompt_cache_breakpoint: Some(_),
+                                ..
+                            }
+                        )
+                    })
+                    .then_some(idx),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_explicit_cache_breakpoints_on_user_messages() {
+        let client = OpenAIResponsesWsClient::new(
+            "test_key".to_string(),
+            "gpt-5.6".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        // 10 user messages → markers at message indices 4 and 9 (1:1 items)
+        let messages: Vec<Message> = (0..10)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        let items = client.convert_messages_with_cache(messages, true);
+        assert_eq!(ws_items_with_breakpoint(&items), vec![4, 9]);
+
+        // Without explicit caching no markers are placed
+        let messages: Vec<Message> = (0..10)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        let items = client.convert_messages_with_cache(messages, false);
+        assert!(ws_items_with_breakpoint(&items).is_empty());
+    }
+
+    /// Moving cache markers must invalidate the incremental-input delta so
+    /// the full input (with markers at their new positions) is resent.
+    #[test]
+    fn test_moved_cache_marker_invalidates_delta() {
+        let mut client = OpenAIResponsesWsClient::new(
+            "test_key".to_string(),
+            "gpt-5.6".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages: Vec<Message> = (0..10)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        let prev_items = client.convert_messages_with_cache(messages.clone(), true);
+        client.last_response_id = Some("resp_1".to_string());
+        client.last_input_items = prev_items;
+
+        // Growing to 12 messages keeps markers at 4 and 9 → strict extension
+        let mut extended = messages.clone();
+        extended.push(Message::new_user("Message 10"));
+        extended.push(Message::new_user("Message 11"));
+        let items = client.convert_messages_with_cache(extended, true);
+        let delta = client.compute_delta(&items);
+        assert!(delta.is_some());
+        assert_eq!(delta.unwrap().1.len(), 2);
+
+        // Growing to 15 messages moves markers to 9 and 14 → full resend
+        let mut extended = messages;
+        for i in 10..15 {
+            extended.push(Message::new_user(format!("Message {i}")));
+        }
+        let items = client.convert_messages_with_cache(extended, true);
+        assert_eq!(ws_items_with_breakpoint(&items), vec![9, 14]);
+        assert!(client.compute_delta(&items).is_none());
     }
 }

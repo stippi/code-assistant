@@ -852,6 +852,25 @@ mod tests {
         }
     }
 
+    /// Poll the mock UI's live terminal text until it contains `needle` or the
+    /// timeout elapses, returning the last observed text either way. Session
+    /// mode spawns a login shell, whose startup latency on a loaded CI runner
+    /// makes exact wall-clock timing of the first output unreliable.
+    async fn wait_for_terminal_text(
+        fixture: &ToolTestFixture,
+        needle: &str,
+        timeout: std::time::Duration,
+    ) -> String {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let text = fixture.ui().unwrap().get_terminal_output_text();
+            if text.contains(needle) || tokio::time::Instant::now() >= deadline {
+                return text;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn session_mode_returns_session_id_while_running() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -970,11 +989,14 @@ mod tests {
             .with_tool_id("tool-bg-1".to_string());
 
         // Short yield: the tool returns while the process is still running,
-        // before it prints the delayed "LATE" marker.
+        // before it prints the delayed "LATE" marker. The gap between the
+        // markers is generous so that login-shell startup latency (session
+        // mode spawns `$SHELL -l -c ...`) on a loaded CI runner cannot blur
+        // EARLY into LATE.
         let session_id = {
             let mut context = fixture.context();
             let mut input = session_mode_input(
-                "printf 'EARLY\\n'; sleep 1; printf 'LATE\\n'; sleep 30",
+                "printf 'EARLY\\n'; sleep 3; printf 'LATE\\n'; sleep 30",
                 500,
             );
             let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
@@ -984,20 +1006,24 @@ mod tests {
         // The tool call is over (context dropped). The agent would now be
         // doing other work — no tool is polling the session.
 
-        let streamed_at_return = fixture.ui().unwrap().get_terminal_output_text();
+        // The login shell may still be starting up when the tool returns, so
+        // don't demand EARLY at that exact instant; poll for it (comfortably
+        // within the 3s gap before LATE). This is the "output keeps streaming
+        // with no tool call polling the session" guarantee.
+        let streamed_early =
+            wait_for_terminal_text(&fixture, "EARLY", std::time::Duration::from_secs(2)).await;
         assert!(
-            streamed_at_return.contains("EARLY"),
-            "early output should have streamed: {streamed_at_return:?}"
+            streamed_early.contains("EARLY"),
+            "early output should have streamed: {streamed_early:?}"
         );
         assert!(
-            !streamed_at_return.contains("LATE"),
-            "the delayed output cannot have streamed yet: {streamed_at_return:?}"
+            !streamed_early.contains("LATE"),
+            "the delayed output cannot have streamed yet: {streamed_early:?}"
         );
 
         // Wait past the delay without any tool call touching the session.
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-
-        let streamed_later = fixture.ui().unwrap().get_terminal_output_text();
+        let streamed_later =
+            wait_for_terminal_text(&fixture, "LATE", std::time::Duration::from_secs(5)).await;
         assert!(
             streamed_later.contains("LATE"),
             "output produced between turns should keep streaming to the card: {streamed_later:?}"

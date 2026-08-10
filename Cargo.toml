@@ -11,18 +11,25 @@ resolver = "2"
 transmutation = { git = "https://github.com/stippi/transmutation", rev = "87f48d18ce3ff61659d7182c1b733eae8ec6f2c9" }
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
-# gpui-component depends on gpui via an unpinned `git = ".../zed"` dependency.
-# The workspace must resolve to the *same* zed commit that gpui-component
-# resolves to, otherwise two copies of gpui end up in the graph and cause
-# E0053/E0277/E0599 type mismatches. We pin the zed crates to the exact commit
-# that the pinned gpui-component revision locks to (see gpui-component's own
-# Cargo.lock). At this commit the zed workspace exposes two crates literally
-# named `gpui` (a `0.0.0` internal placeholder and the real `0.2.2`), so the
-# `gpui` patch must carry `version = "=0.2.2"` to disambiguate.
-# When bumping gpui-component, update the `rev` to match gpui-component's
-# Cargo.lock, then run `cargo update -p gpui-component -p gpui`.
+# gpui-component depends on gpui via a `git = ".../zed"` dependency. On its
+# upstream `main` that dependency is UNPINNED, so it floats to zed's branch
+# tip. If we pinned our workspace `gpui` to a fixed `?rev=`, that would be a
+# different Cargo source than gpui-component's floating one, and two copies of
+# gpui would end up in the graph -> E0053/E0277/E0599 type mismatches.
+# To get a single copy we consume gpui-component from the `stippi` fork on a
+# thin "pin-zed" branch: it is upstream `main` plus one commit that pins the
+# zed git deps (gpui/gpui_platform/gpui_web/gpui_macros/reqwest_client) to the
+# exact rev below, so both gpui-component and this workspace resolve to the
+# identical `git+.../zed?rev=<rev>` source.
+# At this zed commit the workspace exposes two crates literally named `gpui`
+# (a `0.0.0` internal placeholder and the real `0.2.2`), so the `gpui` patch
+# must carry `version = "=0.2.2"` to disambiguate.
+# When bumping: rebase the pin-zed commit onto the new gpui-component main,
+# set the zed `rev` to whatever that main's Cargo.lock locks gpui to, push the
+# branch, then update both `rev`s here and run
+# `cargo update -p gpui-component -p gpui`.
 # CI builds with `--locked`. See .github/workflows/release.yml.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", version = "=0.2.2" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba" }
-gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba" }
-gpui-component = { git = "https://github.com/stippi/gpui-component", rev = "1a66dc72424ae70300aae2ee02b04c4ce4e71d5a" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1", version = "=0.2.2" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1" }
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1" }
+gpui-component = { git = "https://github.com/stippi/gpui-component", rev = "abeab54c" }

@@ -30,6 +30,7 @@ pub mod openai;
 pub mod openai_responses;
 pub mod openai_responses_ws;
 pub mod openrouter;
+pub mod prompt_caching;
 pub mod provider_config;
 pub mod recording;
 pub mod streaming;

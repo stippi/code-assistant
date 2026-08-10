@@ -204,12 +204,38 @@ struct ModelCapabilities {
     supports_verbosity: bool,
     /// Default verbosity for the model
     default_verbosity: Option<Verbosity>,
+    /// Whether the model supports explicit prompt cache breakpoints
+    /// (`prompt_cache_breakpoint`, GPT-5.6 and later; older models reject the field)
+    supports_explicit_cache: bool,
+}
+
+/// Whether a model supports explicit prompt cache breakpoints.
+///
+/// Per OpenAI docs, explicit prompt caching is supported by "GPT-5.6 and later
+/// model families". Older models reject requests containing
+/// `prompt_cache_breakpoint`, so this must stay conservative.
+pub(crate) fn model_supports_explicit_cache(model_lower: &str) -> bool {
+    let Some(pos) = model_lower.find("gpt-") else {
+        return false;
+    };
+    let version: String = model_lower[pos + 4..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = version.split('.');
+    let major: u32 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(m) => m,
+        None => return false,
+    };
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    major > 5 || (major == 5 && minor >= 6)
 }
 
 impl ModelCapabilities {
     /// Get model capabilities based on model ID
     fn for_model(model: &str) -> Self {
         let model_lower = model.to_lowercase();
+        let supports_explicit_cache = model_supports_explicit_cache(&model_lower);
 
         // GPT-5 and variants - full reasoning and verbosity support
         if model_lower.contains("gpt-5") || model_lower.starts_with("gpt5") {
@@ -219,6 +245,7 @@ impl ModelCapabilities {
                 default_summary: Some("auto".to_string()),
                 supports_verbosity: true,
                 default_verbosity: Some(Verbosity::Medium),
+                supports_explicit_cache,
             };
         }
 
@@ -230,6 +257,7 @@ impl ModelCapabilities {
                 default_summary: Some("auto".to_string()),
                 supports_verbosity: false,
                 default_verbosity: None,
+                supports_explicit_cache,
             };
         }
 
@@ -241,6 +269,7 @@ impl ModelCapabilities {
                 default_summary: Some("auto".to_string()),
                 supports_verbosity: false,
                 default_verbosity: None,
+                supports_explicit_cache,
             };
         }
 
@@ -252,6 +281,7 @@ impl ModelCapabilities {
                 default_summary: None,
                 supports_verbosity: false,
                 default_verbosity: None,
+                supports_explicit_cache,
             };
         }
 
@@ -263,6 +293,7 @@ impl ModelCapabilities {
                 default_summary: None,
                 supports_verbosity: false,
                 default_verbosity: None,
+                supports_explicit_cache,
             };
         }
 
@@ -274,6 +305,28 @@ impl ModelCapabilities {
             default_summary: Some("auto".to_string()),
             supports_verbosity: false,
             default_verbosity: None,
+            supports_explicit_cache,
+        }
+    }
+}
+
+/// Place an explicit cache breakpoint on the last breakpoint-eligible content
+/// block within `items[..end]`.
+///
+/// A breakpoint marks the end of the cached prefix including everything
+/// rendered before it, but is only valid on input blocks (`input_text`,
+/// `input_image`). Function calls, tool outputs and assistant text cannot
+/// carry one, so the marker is shifted backwards to the nearest eligible
+/// block. The scan only depends on content before the anchor, which is stable
+/// across requests, so placement stays deterministic.
+fn apply_cache_breakpoint(items: &mut [ResponseInputItem], end: usize) {
+    for item in items[..end].iter_mut().rev() {
+        if let ResponseInputItem::Message { content, .. } = item {
+            for content_item in content.iter_mut().rev() {
+                if content_item.try_mark_cache_breakpoint() {
+                    return;
+                }
+            }
         }
     }
 }
@@ -302,21 +355,78 @@ enum ResponseInputItem {
     },
 }
 
+/// Explicit cache breakpoint marker on an input content block (GPT-5.6+).
+///
+/// Marks the end of a cacheable prompt prefix, including the marked block and
+/// all prompt content rendered before it. Older models reject this field, so
+/// it must only be sent when `ModelCapabilities::supports_explicit_cache`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptCacheBreakpoint {
+    mode: String,
+}
+
+impl PromptCacheBreakpoint {
+    pub(crate) fn explicit() -> Self {
+        Self {
+            mode: "explicit".to_string(),
+        }
+    }
+}
+
 /// Content item within messages
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponseContentItem {
     InputText {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_breakpoint: Option<PromptCacheBreakpoint>,
     },
     InputImage {
         image_url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_breakpoint: Option<PromptCacheBreakpoint>,
     },
     OutputText {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         phase: Option<String>,
     },
+}
+
+impl ResponseContentItem {
+    fn input_text(text: String) -> Self {
+        Self::InputText {
+            text,
+            prompt_cache_breakpoint: None,
+        }
+    }
+
+    fn input_image(image_url: String) -> Self {
+        Self::InputImage {
+            image_url,
+            prompt_cache_breakpoint: None,
+        }
+    }
+
+    /// Set the explicit cache breakpoint if this is an input block that
+    /// supports one. Returns whether the marker could be applied.
+    fn try_mark_cache_breakpoint(&mut self) -> bool {
+        match self {
+            Self::InputText {
+                prompt_cache_breakpoint,
+                ..
+            }
+            | Self::InputImage {
+                prompt_cache_breakpoint,
+                ..
+            } => {
+                *prompt_cache_breakpoint = Some(PromptCacheBreakpoint::explicit());
+                true
+            }
+            Self::OutputText { .. } => false,
+        }
+    }
 }
 
 /// Response structure from the Responses API
@@ -399,6 +509,32 @@ struct ResponsesUsage {
 #[derive(Debug, Deserialize)]
 struct InputTokensDetails {
     cached_tokens: u32,
+    /// Tokens written to the prompt cache (explicit caching, GPT-5.6+).
+    #[serde(default)]
+    cache_write_tokens: u32,
+}
+
+impl ResponsesUsage {
+    /// Convert to the provider-independent `Usage`.
+    ///
+    /// OpenAI reports `input_tokens` inclusive of cached (and cache-write)
+    /// tokens, while the internal `Usage` follows Anthropic semantics where
+    /// `input_tokens` counts only uncached input.
+    fn to_usage(&self) -> Usage {
+        let (cache_read, cache_write) = self
+            .input_tokens_details
+            .as_ref()
+            .map(|d| (d.cached_tokens, d.cache_write_tokens))
+            .unwrap_or((0, 0));
+        Usage {
+            input_tokens: self
+                .input_tokens
+                .saturating_sub(cache_read.saturating_add(cache_write)),
+            output_tokens: self.output_tokens,
+            cache_creation_input_tokens: cache_write,
+            cache_read_input_tokens: cache_read,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -607,15 +743,29 @@ impl OpenAIResponsesClient {
             .customize_url(&self.base_url, streaming)
     }
 
-    /// Convert internal messages to Responses API format
-    fn convert_messages(&self, messages: Vec<Message>) -> Vec<ResponseInputItem> {
+    /// Convert internal messages to Responses API format, optionally placing
+    /// explicit cache breakpoints at stable history positions.
+    fn convert_messages_with_cache(
+        &self,
+        messages: Vec<Message>,
+        explicit_cache: bool,
+    ) -> Vec<ResponseInputItem> {
+        let cache_positions = if explicit_cache {
+            crate::prompt_caching::cache_marker_positions(&messages)
+        } else {
+            Vec::new()
+        };
+
         let mut result = Vec::new();
+        // Number of converted items after each message, so marker positions
+        // (message indices) can be mapped back to converted input items.
+        let mut items_after_message = Vec::with_capacity(messages.len());
 
         for message in messages {
             match message.content {
                 MessageContent::Text(text) => {
                     let content_item = match message.role {
-                        MessageRole::User => ResponseContentItem::InputText { text },
+                        MessageRole::User => ResponseContentItem::input_text(text),
                         MessageRole::Assistant => ResponseContentItem::OutputText {
                             text,
                             phase: Some("final_answer".to_string()),
@@ -633,6 +783,11 @@ impl OpenAIResponsesClient {
                     self.convert_structured_message(message.role, blocks, &mut result);
                 }
             }
+            items_after_message.push(result.len());
+        }
+
+        for &position in &cache_positions {
+            apply_cache_breakpoint(&mut result, items_after_message[position]);
         }
 
         result
@@ -685,7 +840,7 @@ impl OpenAIResponsesClient {
             match block {
                 ContentBlock::Text { text, .. } => match role {
                     MessageRole::User => {
-                        current_message_content.push(ResponseContentItem::InputText { text });
+                        current_message_content.push(ResponseContentItem::input_text(text));
                     }
                     MessageRole::Assistant => {
                         current_message_content.push(ResponseContentItem::OutputText {
@@ -698,12 +853,11 @@ impl OpenAIResponsesClient {
                     media_type, data, ..
                 } => {
                     let image_url = format!("data:{media_type};base64,{data}");
-                    current_message_content.push(ResponseContentItem::InputImage { image_url });
+                    current_message_content.push(ResponseContentItem::input_image(image_url));
                 }
                 ContentBlock::Thinking { thinking, .. } => match role {
                     MessageRole::User => {
-                        current_message_content
-                            .push(ResponseContentItem::InputText { text: thinking });
+                        current_message_content.push(ResponseContentItem::input_text(thinking));
                     }
                     MessageRole::Assistant => {
                         current_message_content.push(ResponseContentItem::OutputText {
@@ -932,15 +1086,7 @@ impl OpenAIResponsesClient {
             let content = self.convert_output(responses_response.output);
             let usage = responses_response
                 .usage
-                .map_or_else(Usage::zero, |u| Usage {
-                    input_tokens: u.input_tokens,
-                    output_tokens: u.output_tokens,
-                    cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: u
-                        .input_tokens_details
-                        .map(|d| d.cached_tokens)
-                        .unwrap_or(0),
-                });
+                .map_or_else(Usage::zero, |u| u.to_usage());
 
             Ok(LLMResponse {
                 content,
@@ -1044,15 +1190,7 @@ impl OpenAIResponsesClient {
         let content = self.convert_output(responses_response.output);
         let usage = responses_response
             .usage
-            .map_or_else(Usage::zero, |u| Usage {
-                input_tokens: u.input_tokens,
-                output_tokens: u.output_tokens,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: u
-                    .input_tokens_details
-                    .map(|d| d.cached_tokens)
-                    .unwrap_or(0),
-            });
+            .map_or_else(Usage::zero, |u| u.to_usage());
 
         Ok((
             LLMResponse {
@@ -1452,12 +1590,7 @@ impl<'a> StreamProcessor<'a> {
                     .clone(),
             )
         {
-            self.usage.input_tokens = usage_data.input_tokens;
-            self.usage.output_tokens = usage_data.output_tokens;
-            self.usage.cache_read_input_tokens = usage_data
-                .input_tokens_details
-                .map(|d| d.cached_tokens)
-                .unwrap_or(0);
+            *self.usage = usage_data.to_usage();
         }
 
         // Create a RedactedThinking block from collected reasoning items if any
@@ -1489,17 +1622,26 @@ impl LLMProvider for OpenAIResponsesClient {
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
-        let mut input = self.convert_messages(request.messages);
+        // Get model capabilities; explicit cache breakpoints are only sent to
+        // models that support them (older models reject the field).
+        let capabilities = ModelCapabilities::for_model(&self.model);
+
+        let mut input = self
+            .convert_messages_with_cache(request.messages, capabilities.supports_explicit_cache);
 
         // Add system prompt as developer message at the beginning
         if !request.system_prompt.is_empty() {
+            // The system prompt (plus tools rendered before it) is the largest
+            // stable prefix — always mark it, mirroring the Anthropic client.
+            let mut system_item = ResponseContentItem::input_text(request.system_prompt);
+            if capabilities.supports_explicit_cache {
+                system_item.try_mark_cache_breakpoint();
+            }
             input.insert(
                 0,
                 ResponseInputItem::Message {
                     role: "developer".to_string(),
-                    content: vec![ResponseContentItem::InputText {
-                        text: request.system_prompt,
-                    }],
+                    content: vec![system_item],
                 },
             );
         }
@@ -1521,8 +1663,7 @@ impl LLMProvider for OpenAIResponsesClient {
         // Configure for stateless mode with encrypted reasoning
         let store = false;
 
-        // Get model capabilities and build reasoning config
-        let capabilities = ModelCapabilities::for_model(&self.model);
+        // Build reasoning config from model capabilities
         let reasoning = if capabilities.supports_reasoning {
             Some(ReasoningConfig {
                 effort: capabilities.default_effort,
@@ -1594,7 +1735,7 @@ mod tests {
 
         let messages = vec![Message::new_user("Hello")];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
@@ -1602,7 +1743,7 @@ mod tests {
                 assert_eq!(role, "user");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::InputText { text } => {
+                    ResponseContentItem::InputText { text, .. } => {
                         assert_eq!(text, "Hello");
                     }
                     _ => panic!("Expected InputText"),
@@ -1623,7 +1764,7 @@ mod tests {
         // Test that assistant messages with simple text use OutputText, not InputText
         let messages = vec![Message::new_assistant("Hello from assistant")];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
@@ -1653,7 +1794,7 @@ mod tests {
             ContentBlock::new_tool_result("test_id", "Tool output"),
         ])];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
@@ -1780,7 +1921,7 @@ mod tests {
             Message::new_user("What about 3+3?"),
         ];
 
-        let converted = client.convert_messages(conversation);
+        let converted = client.convert_messages_with_cache(conversation, false);
         assert_eq!(converted.len(), 4);
 
         // First: User question
@@ -1832,7 +1973,7 @@ mod tests {
                 assert_eq!(role, "user");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::InputText { text } => {
+                    ResponseContentItem::InputText { text, .. } => {
                         assert_eq!(text, "What about 3+3?");
                     }
                     _ => panic!("Expected InputText"),
@@ -1862,7 +2003,7 @@ mod tests {
             ContentBlock::new_text("Third text"),
         ])];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 5);
 
         // First: First text
@@ -1945,7 +2086,7 @@ mod tests {
             ContentBlock::new_text("Based on my reasoning, here's the answer."),
         ])];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 2);
 
         // First should be the encrypted reasoning (maintains original order)
@@ -2167,7 +2308,7 @@ mod tests {
 
         // Simulate converting messages with a system prompt
         let messages = vec![Message::new_user("Hello")];
-        let mut input = client.convert_messages(messages);
+        let mut input = client.convert_messages_with_cache(messages, false);
 
         // Add system prompt as developer message (simulating what send_message does)
         let system_prompt = "You are a helpful assistant.";
@@ -2176,9 +2317,7 @@ mod tests {
                 0,
                 ResponseInputItem::Message {
                     role: "developer".to_string(),
-                    content: vec![ResponseContentItem::InputText {
-                        text: system_prompt.to_string(),
-                    }],
+                    content: vec![ResponseContentItem::input_text(system_prompt.to_string())],
                 },
             );
         }
@@ -2191,7 +2330,7 @@ mod tests {
                 assert_eq!(role, "developer");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::InputText { text } => {
+                    ResponseContentItem::InputText { text, .. } => {
                         assert_eq!(text, "You are a helpful assistant.");
                     }
                     _ => panic!("Expected InputText"),
@@ -2206,7 +2345,7 @@ mod tests {
                 assert_eq!(role, "user");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::InputText { text } => {
+                    ResponseContentItem::InputText { text, .. } => {
                         assert_eq!(text, "Hello");
                     }
                     _ => panic!("Expected InputText"),
@@ -2341,7 +2480,7 @@ mod tests {
         );
 
         let messages = vec![Message::new_assistant("Hello from assistant")];
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
@@ -2375,7 +2514,7 @@ mod tests {
             ContentBlock::new_tool_use("call_1", "search", serde_json::json!({"query": "weather"})),
         ])];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         // Should produce: Message(OutputText), FunctionCall
         assert_eq!(converted.len(), 2);
 
@@ -2419,7 +2558,7 @@ mod tests {
             ContentBlock::new_text("Second thought."),
         ])];
 
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         // Message("First thought."), FunctionCall, Message("Second thought.")
         assert_eq!(converted.len(), 3);
 
@@ -2447,7 +2586,7 @@ mod tests {
         );
 
         let messages = vec![Message::new_user("Hello")];
-        let converted = client.convert_messages(messages);
+        let converted = client.convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
@@ -2483,9 +2622,7 @@ mod tests {
         assert_eq!(json["phase"], "commentary");
 
         // InputText must not carry a phase key
-        let input_item = ResponseContentItem::InputText {
-            text: "hello".to_string(),
-        };
+        let input_item = ResponseContentItem::input_text("hello".to_string());
         let json = serde_json::to_value(&input_item).unwrap();
         assert!(json.get("phase").is_none());
     }
@@ -2575,5 +2712,124 @@ mod tests {
             .downcast_ref::<ApiErrorContext<ResponsesRateLimitInfo>>()
             .expect("error should be retryable");
         assert!(matches!(ctx.error, ApiError::RateLimit(_)));
+    }
+
+    #[test]
+    fn test_model_supports_explicit_cache_version_gating() {
+        // GPT-5.6 and later model families support explicit cache breakpoints
+        assert!(model_supports_explicit_cache("gpt-5.6"));
+        assert!(model_supports_explicit_cache("gpt-5.6-codex"));
+        assert!(model_supports_explicit_cache("gpt-5.7-mini"));
+        assert!(model_supports_explicit_cache("gpt-6"));
+
+        // Older models reject the field and must not receive it
+        assert!(!model_supports_explicit_cache("gpt-5"));
+        assert!(!model_supports_explicit_cache("gpt-5-codex"));
+        assert!(!model_supports_explicit_cache("gpt-5.1"));
+        assert!(!model_supports_explicit_cache("gpt-4o"));
+        assert!(!model_supports_explicit_cache("o3-mini"));
+        assert!(!model_supports_explicit_cache("o1"));
+    }
+
+    fn content_items_with_breakpoint(items: &[ResponseInputItem]) -> Vec<usize> {
+        items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| match item {
+                ResponseInputItem::Message { content, .. } => content
+                    .iter()
+                    .any(|c| {
+                        matches!(
+                            c,
+                            ResponseContentItem::InputText {
+                                prompt_cache_breakpoint: Some(_),
+                                ..
+                            } | ResponseContentItem::InputImage {
+                                prompt_cache_breakpoint: Some(_),
+                                ..
+                            }
+                        )
+                    })
+                    .then_some(idx),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_explicit_cache_breakpoints_on_user_messages() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5.6".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        // 10 user messages → markers at message indices 4 and 9 (1:1 items)
+        let messages: Vec<Message> = (0..10)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        let items = client.convert_messages_with_cache(messages, true);
+        assert_eq!(content_items_with_breakpoint(&items), vec![4, 9]);
+
+        // Without explicit caching no markers are placed
+        let messages: Vec<Message> = (0..10)
+            .map(|i| Message::new_user(format!("Message {i}")))
+            .collect();
+        let items = client.convert_messages_with_cache(messages, false);
+        assert!(content_items_with_breakpoint(&items).is_empty());
+    }
+
+    #[test]
+    fn test_explicit_cache_breakpoint_shifts_to_eligible_block() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5.6".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        // Message index 4 is a tool result (function_call_output, no
+        // breakpoint support) — the marker must shift back to the nearest
+        // input block, the user message at index 3.
+        let messages = vec![
+            Message::new_user("Message 0"),
+            Message::new_assistant("Answer 0"),
+            Message::new_user("Message 1"),
+            Message::new_user("Message 2"),
+            Message::new_user_content(vec![ContentBlock::new_tool_result("call_1", "result")]),
+        ];
+
+        let items = client.convert_messages_with_cache(messages, true);
+        assert_eq!(content_items_with_breakpoint(&items), vec![3]);
+    }
+
+    #[test]
+    fn test_prompt_cache_breakpoint_serialization() {
+        let mut item = ResponseContentItem::input_text("hello".to_string());
+        let json = serde_json::to_value(&item).unwrap();
+        assert!(json.get("prompt_cache_breakpoint").is_none());
+
+        assert!(item.try_mark_cache_breakpoint());
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["prompt_cache_breakpoint"]["mode"], "explicit");
+    }
+
+    #[test]
+    fn test_usage_normalization_subtracts_cached_tokens() {
+        let usage: ResponsesUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens": 1000,
+            "output_tokens": 50,
+            "total_tokens": 1050,
+            "input_tokens_details": {
+                "cached_tokens": 700,
+                "cache_write_tokens": 200
+            }
+        }))
+        .unwrap();
+
+        let converted = usage.to_usage();
+        assert_eq!(converted.input_tokens, 100);
+        assert_eq!(converted.cache_read_input_tokens, 700);
+        assert_eq!(converted.cache_creation_input_tokens, 200);
+        assert_eq!(converted.output_tokens, 50);
     }
 }
