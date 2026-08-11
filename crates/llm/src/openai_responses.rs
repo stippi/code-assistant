@@ -682,6 +682,10 @@ pub struct OpenAIResponsesClient {
     recorder: Option<APIRecorder>,
     playback: Option<PlaybackState>,
     custom_config: Option<serde_json::Value>,
+    /// Whether explicit cache breakpoints may be sent at all. Some backends
+    /// (e.g. the ChatGPT/Codex backend) reject `prompt_cache_breakpoint`
+    /// even for models that support it on the OpenAI API.
+    explicit_cache_enabled: bool,
 }
 
 impl OpenAIResponsesClient {
@@ -699,6 +703,7 @@ impl OpenAIResponsesClient {
             recorder: None,
             playback: None,
             custom_config: None,
+            explicit_cache_enabled: true,
         }
     }
 
@@ -717,6 +722,7 @@ impl OpenAIResponsesClient {
             recorder: None,
             playback: None,
             custom_config: None,
+            explicit_cache_enabled: true,
         }
     }
 
@@ -735,6 +741,14 @@ impl OpenAIResponsesClient {
     /// Set custom model configuration to be merged into API requests
     pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
         self.custom_config = Some(custom_config);
+        self
+    }
+
+    /// Enable or disable explicit cache breakpoints (`prompt_cache_breakpoint`)
+    /// independently of model capabilities. Disable this for backends that
+    /// reject the field regardless of model (e.g. the ChatGPT/Codex backend).
+    pub fn with_explicit_cache_breakpoints(mut self, enabled: bool) -> Self {
+        self.explicit_cache_enabled = enabled;
         self
     }
 
@@ -1623,18 +1637,20 @@ impl LLMProvider for OpenAIResponsesClient {
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
         // Get model capabilities; explicit cache breakpoints are only sent to
-        // models that support them (older models reject the field).
+        // models that support them (older models reject the field) and only
+        // when the client allows them (some backends reject the field for
+        // every model).
         let capabilities = ModelCapabilities::for_model(&self.model);
+        let explicit_cache = capabilities.supports_explicit_cache && self.explicit_cache_enabled;
 
-        let mut input = self
-            .convert_messages_with_cache(request.messages, capabilities.supports_explicit_cache);
+        let mut input = self.convert_messages_with_cache(request.messages, explicit_cache);
 
         // Add system prompt as developer message at the beginning
         if !request.system_prompt.is_empty() {
             // The system prompt (plus tools rendered before it) is the largest
             // stable prefix — always mark it, mirroring the Anthropic client.
             let mut system_item = ResponseContentItem::input_text(request.system_prompt);
-            if capabilities.supports_explicit_cache {
+            if explicit_cache {
                 system_item.try_mark_cache_breakpoint();
             }
             input.insert(

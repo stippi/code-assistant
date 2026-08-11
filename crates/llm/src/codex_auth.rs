@@ -905,12 +905,15 @@ pub fn create_codex_responses_client(
     let auth_provider = Box::new(CodexAuthProvider::new(auth_state, storage));
     let request_customizer = Box::new(CodexRequestCustomizer);
 
+    // The ChatGPT/Codex backend rejects `prompt_cache_breakpoint` even for
+    // models that support it on the OpenAI API.
     crate::openai_responses::OpenAIResponsesClient::with_customization(
         model,
         CHATGPT_BASE_URL.to_string(),
         auth_provider,
         request_customizer,
     )
+    .with_explicit_cache_breakpoints(false)
 }
 
 /// Create an `OpenAIResponsesWsClient` configured for ChatGPT-authenticated
@@ -926,12 +929,15 @@ pub fn create_codex_responses_ws_client(
     let auth_provider = Box::new(CodexAuthProvider::new(auth_state, storage));
     let request_customizer = Box::new(crate::openai_responses_ws::CodexWsRequestCustomizer);
 
+    // The ChatGPT/Codex backend rejects `prompt_cache_breakpoint` even for
+    // models that support it on the OpenAI API.
     crate::openai_responses_ws::OpenAIResponsesWsClient::with_customization(
         model,
         CHATGPT_BASE_URL.to_string(),
         auth_provider,
         request_customizer,
     )
+    .with_explicit_cache_breakpoints(false)
 }
 
 #[cfg(test)]

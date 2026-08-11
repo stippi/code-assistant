@@ -532,6 +532,10 @@ pub struct OpenAIResponsesWsClient {
     last_input_items: Vec<WsInputItem>,
     /// Idle timeout for reading from the WebSocket (per-event).
     idle_timeout: Duration,
+    /// Whether explicit cache breakpoints may be sent at all. Some backends
+    /// (e.g. the ChatGPT/Codex backend) reject `prompt_cache_breakpoint`
+    /// even for models that support it on the OpenAI API.
+    explicit_cache_enabled: bool,
 }
 
 impl OpenAIResponsesWsClient {
@@ -551,6 +555,7 @@ impl OpenAIResponsesWsClient {
             last_response_id: None,
             last_input_items: Vec::new(),
             idle_timeout: Duration::from_secs(600), // 10 min default
+            explicit_cache_enabled: true,
         }
     }
 
@@ -571,12 +576,21 @@ impl OpenAIResponsesWsClient {
             last_response_id: None,
             last_input_items: Vec::new(),
             idle_timeout: Duration::from_secs(600),
+            explicit_cache_enabled: true,
         }
     }
 
     /// Set custom model configuration to be merged into API requests.
     pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
         self.custom_config = Some(custom_config);
+        self
+    }
+
+    /// Enable or disable explicit cache breakpoints (`prompt_cache_breakpoint`)
+    /// independently of model capabilities. Disable this for backends that
+    /// reject the field regardless of model (e.g. the ChatGPT/Codex backend).
+    pub fn with_explicit_cache_breakpoints(mut self, enabled: bool) -> Self {
+        self.explicit_cache_enabled = enabled;
         self
     }
 
@@ -1031,12 +1045,14 @@ impl OpenAIResponsesWsClient {
         let capabilities = ModelCapabilities::for_model(&self.model);
 
         // Explicit cache breakpoints are only sent to models that support
-        // them (older models reject the field). The system prompt travels as
-        // `instructions` (a plain string, no breakpoint possible); a marker on
-        // a history message still caches instructions and tools, since a
-        // breakpoint covers everything rendered before it.
-        let input = self
-            .convert_messages_with_cache(request.messages, capabilities.supports_explicit_cache);
+        // them (older models reject the field) and only when the client
+        // allows them (some backends reject the field for every model). The
+        // system prompt travels as `instructions` (a plain string, no
+        // breakpoint possible); a marker on a history message still caches
+        // instructions and tools, since a breakpoint covers everything
+        // rendered before it.
+        let explicit_cache = capabilities.supports_explicit_cache && self.explicit_cache_enabled;
+        let input = self.convert_messages_with_cache(request.messages, explicit_cache);
 
         // Add system prompt as the top-level `instructions` field (WebSocket style)
         // but also keep it as a developer message in `input` for compatibility.
