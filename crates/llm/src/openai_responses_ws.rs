@@ -1099,6 +1099,14 @@ impl OpenAIResponsesWsClient {
             None
         };
 
+        // Ensure the connection is live BEFORE computing the incremental
+        // delta: a stale connection is dropped here, which clears
+        // `last_response_id`. The server only knows previous responses for
+        // the lifetime of one WebSocket connection (store: false), so a
+        // delta computed against a dead connection's response id would be
+        // rejected with `previous_response_not_found`.
+        self.ensure_connection().await?;
+
         // Compute incremental delta if possible
         let (previous_response_id, send_input) =
             if let Some((prev_id, delta)) = self.compute_delta(&input) {
@@ -1143,9 +1151,6 @@ impl OpenAIResponsesWsClient {
             request_text.len(),
             &request_text[..request_text.len().min(1000)]
         );
-
-        // Ensure connection
-        self.ensure_connection().await?;
 
         // Send the request via the shared sink
         {
