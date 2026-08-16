@@ -74,13 +74,14 @@ headless binary without gpui.
 - Integrates with Claude Desktop as MCP server
 
 ### MCP Client Mode
-- Connects to configured MCP servers (stdio, official `rmcp` SDK) and
-  registers their tools in the `ToolRegistry` as `mcp__<server>__<tool>`
-  with scope tags `scope:agent`/`scope:agent-diff` plus `mcp` and
-  `scope:mcp-<server>`
+- Connects to configured MCP servers over stdio (child process) or HTTP
+  (streamable transport, official `rmcp` SDK) and registers their tools in
+  the `ToolRegistry` as `mcp__<server>__<tool>` with scope tags
+  `scope:agent`/`scope:agent-diff` plus `mcp` and `scope:mcp-<server>`
 - Configured in `<config_dir>/mcp-servers.json` (per-server `enabled`,
-  `enabled_tools` allowlist, `disabled_tools` denylist; `${ENV_VAR}`
-  substitution in `env` values) or programmatically via
+  `enabled_tools` allowlist, `disabled_tools` denylist; a stdio server has
+  `command`/`args`/`env`, an HTTP server has `url`/`headers`; `${ENV_VAR}`
+  substitution in `env`/`headers` values) or programmatically via
   `mcp_client::register_mcp_tools`
 - The tool registry is rebuilt from the current config at the start of
   every agent run via the `ToolRegistryProvider` seam

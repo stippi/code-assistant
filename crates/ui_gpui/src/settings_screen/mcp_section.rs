@@ -6,7 +6,9 @@
 //! placeholders); only the discovery connection resolves them. Servers are
 //! connected when the app starts, so config changes apply after a restart.
 
-use code_assistant_core::tools::mcp::{self, DiscoveredTool, McpServerConfig, McpServersConfig};
+use code_assistant_core::tools::mcp::{
+    self, DiscoveredTool, McpServerConfig, McpServersConfig, McpTransport,
+};
 use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use gpui_component::input::{Input, InputState};
 use gpui_component::switch::Switch;
@@ -19,6 +21,13 @@ enum FormMode {
     Hidden,
     Adding,
     Editing(String),
+}
+
+/// Which transport the add/edit form is currently editing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FormTransport {
+    Stdio,
+    Http,
 }
 
 /// Result of the async tool discovery for one server.
@@ -37,10 +46,14 @@ pub struct McpSection {
     discovered: HashMap<String, DiscoveryState>,
 
     form_mode: FormMode,
+    /// Transport selected in the add/edit form.
+    form_transport: FormTransport,
     form_name_input: Entity<InputState>,
     form_command_input: Entity<InputState>,
     form_args_input: Entity<InputState>,
     form_env_input: Entity<InputState>,
+    form_url_input: Entity<InputState>,
+    form_headers_input: Entity<InputState>,
 }
 
 impl McpSection {
@@ -57,16 +70,27 @@ impl McpSection {
                 .auto_grow(2, 6)
                 .placeholder("one per line, e.g. API_TOKEN=${MY_TOKEN}")
         });
+        let form_url_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. https://example.com/mcp"));
+        let form_headers_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(2, 6)
+                .placeholder("one per line, e.g. Authorization=Bearer ${MY_TOKEN}")
+        });
         Self {
             focus_handle: cx.focus_handle(),
             config: load_config(),
             expanded: HashSet::new(),
             discovered: HashMap::new(),
             form_mode: FormMode::Hidden,
+            form_transport: FormTransport::Stdio,
             form_name_input,
             form_command_input,
             form_args_input,
             form_env_input,
+            form_url_input,
+            form_headers_input,
         }
     }
 
@@ -172,19 +196,24 @@ impl McpSection {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let command = server.map(|s| s.command.clone()).unwrap_or_default();
-        let args = server.map(|s| s.args.join(" ")).unwrap_or_default();
-        let env = server
-            .map(|s| {
-                let mut entries: Vec<_> = s.env.iter().collect();
-                entries.sort();
-                entries
-                    .into_iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
+        // Pick the transport tab from the existing server, defaulting new
+        // servers to stdio.
+        self.form_transport = match server.map(|s| &s.transport) {
+            Some(McpTransport::Http { .. }) => FormTransport::Http,
+            _ => FormTransport::Stdio,
+        };
+
+        let (command, args, env) = match server.map(|s| &s.transport) {
+            Some(McpTransport::Stdio { command, args, env }) => {
+                (command.clone(), args.join(" "), format_map(env))
+            }
+            _ => (String::new(), String::new(), String::new()),
+        };
+        let (url, headers) = match server.map(|s| &s.transport) {
+            Some(McpTransport::Http { url, headers }) => (url.clone(), format_map(headers)),
+            _ => (String::new(), String::new()),
+        };
+
         self.form_name_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(name.to_string()), window, cx)
         });
@@ -197,36 +226,48 @@ impl McpSection {
         self.form_env_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(env), window, cx)
         });
+        self.form_url_input.update(cx, |state, cx| {
+            state.set_value(SharedString::from(url), window, cx)
+        });
+        self.form_headers_input.update(cx, |state, cx| {
+            state.set_value(SharedString::from(headers), window, cx)
+        });
     }
 
     fn save_form(&mut self, cx: &mut Context<Self>) {
         let name = self.form_name_input.read(cx).value().trim().to_string();
-        let command = self.form_command_input.read(cx).value().trim().to_string();
-        if name.is_empty() || command.is_empty() {
-            warn!("MCP server needs both a name and a command");
+        if name.is_empty() {
+            warn!("MCP server needs a name");
             return;
         }
-        let args: Vec<String> = self
-            .form_args_input
-            .read(cx)
-            .value()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        let env: HashMap<String, String> = self
-            .form_env_input
-            .read(cx)
-            .value()
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                if line.is_empty() {
-                    return None;
+
+        let transport = match self.form_transport {
+            FormTransport::Stdio => {
+                let command = self.form_command_input.read(cx).value().trim().to_string();
+                if command.is_empty() {
+                    warn!("A stdio MCP server needs a command");
+                    return;
                 }
-                let (key, value) = line.split_once('=')?;
-                Some((key.trim().to_string(), value.trim().to_string()))
-            })
-            .collect();
+                let args: Vec<String> = self
+                    .form_args_input
+                    .read(cx)
+                    .value()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect();
+                let env = parse_map(&self.form_env_input.read(cx).value());
+                McpTransport::Stdio { command, args, env }
+            }
+            FormTransport::Http => {
+                let url = self.form_url_input.read(cx).value().trim().to_string();
+                if url.is_empty() {
+                    warn!("An HTTP MCP server needs a URL");
+                    return;
+                }
+                let headers = parse_map(&self.form_headers_input.read(cx).value());
+                McpTransport::Http { url, headers }
+            }
+        };
 
         // Renaming moves the entry (and its tool filter) to the new key.
         let previous = match &self.form_mode {
@@ -234,16 +275,12 @@ impl McpSection {
             _ => None,
         };
         let mut server = previous.unwrap_or_else(|| McpServerConfig {
-            command: String::new(),
-            args: Vec::new(),
-            env: HashMap::new(),
+            transport: McpTransport::stdio(String::new()),
             enabled: true,
             enabled_tools: None,
             disabled_tools: Vec::new(),
         });
-        server.command = command;
-        server.args = args;
-        server.env = env;
+        server.transport = transport;
         self.config.servers.insert(name.clone(), server);
 
         self.form_mode = FormMode::Hidden;
@@ -272,10 +309,15 @@ impl McpSection {
         let name_for_expand = name.to_string();
         let name_for_switch = name.to_string();
 
-        let summary = if server.args.is_empty() {
-            server.command.clone()
-        } else {
-            format!("{} {}", server.command, server.args.join(" "))
+        let summary = match &server.transport {
+            McpTransport::Stdio { command, args, .. } => {
+                if args.is_empty() {
+                    command.clone()
+                } else {
+                    format!("{} {}", command, args.join(" "))
+                }
+            }
+            McpTransport::Http { url, .. } => url.clone(),
         };
 
         div()
@@ -537,12 +579,14 @@ impl McpSection {
             )
     }
 
-    /// The add/edit form: name, command, args, env.
+    /// The add/edit form: name, a transport selector, and the fields for the
+    /// selected transport (command/args/env for stdio, url/headers for HTTP).
     fn render_inline_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let editing_name = match &self.form_mode {
             FormMode::Editing(name) => Some(name.clone()),
             _ => None,
         };
+        let is_http = self.form_transport == FormTransport::Http;
 
         div()
             .flex()
@@ -558,21 +602,36 @@ impl McpSection {
                 Input::new(&self.form_name_input).into_any_element(),
                 cx,
             ))
-            .child(self.render_form_row(
-                "Command",
-                Input::new(&self.form_command_input).into_any_element(),
-                cx,
-            ))
-            .child(self.render_form_row(
-                "Arguments",
-                Input::new(&self.form_args_input).into_any_element(),
-                cx,
-            ))
-            .child(self.render_form_row(
-                "Env",
-                Input::new(&self.form_env_input).into_any_element(),
-                cx,
-            ))
+            .child(self.render_form_row("Transport", self.render_transport_selector(cx), cx))
+            .when(!is_http, |el| {
+                el.child(self.render_form_row(
+                    "Command",
+                    Input::new(&self.form_command_input).into_any_element(),
+                    cx,
+                ))
+                .child(self.render_form_row(
+                    "Arguments",
+                    Input::new(&self.form_args_input).into_any_element(),
+                    cx,
+                ))
+                .child(self.render_form_row(
+                    "Env",
+                    Input::new(&self.form_env_input).into_any_element(),
+                    cx,
+                ))
+            })
+            .when(is_http, |el| {
+                el.child(self.render_form_row(
+                    "URL",
+                    Input::new(&self.form_url_input).into_any_element(),
+                    cx,
+                ))
+                .child(self.render_form_row(
+                    "Headers",
+                    Input::new(&self.form_headers_input).into_any_element(),
+                    cx,
+                ))
+            })
             // Action buttons
             .child(
                 div()
@@ -639,6 +698,56 @@ impl McpSection {
                             ),
                     ),
             )
+    }
+
+    /// Two toggle pills to pick the transport type in the add/edit form.
+    fn render_transport_selector(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let pill = |label: &str,
+                    id: &str,
+                    selected: bool,
+                    target: FormTransport,
+                    cx: &mut Context<Self>| {
+            div()
+                .id(SharedString::from(id.to_string()))
+                .px_3()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                .text_xs()
+                .when(selected, |s| {
+                    s.bg(cx.theme().primary)
+                        .text_color(cx.theme().primary_foreground)
+                })
+                .when(!selected, |s| {
+                    s.text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.bg(cx.theme().muted))
+                })
+                .child(SharedString::from(label.to_string()))
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.form_transport = target;
+                    cx.notify();
+                }))
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(pill(
+                "Command (stdio)",
+                "mcp-transport-stdio",
+                self.form_transport == FormTransport::Stdio,
+                FormTransport::Stdio,
+                cx,
+            ))
+            .child(pill(
+                "HTTP",
+                "mcp-transport-http",
+                self.form_transport == FormTransport::Http,
+                FormTransport::Http,
+                cx,
+            ))
+            .into_any_element()
     }
 
     fn render_form_row(
@@ -715,6 +824,32 @@ fn load_config() -> McpServersConfig {
         warn!("Failed to load mcp-servers.json: {e:#}");
         McpServersConfig::default()
     })
+}
+
+/// Render a `KEY=value` map as one sorted `KEY=value` line per entry, for
+/// display in a multi-line input.
+fn format_map(map: &HashMap<String, String>) -> String {
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort();
+    entries
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Parse a multi-line `KEY=value` input back into a map, ignoring blank lines.
+fn parse_map(text: &str) -> HashMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
 }
 
 impl Focusable for McpSection {

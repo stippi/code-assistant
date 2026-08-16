@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub use mcp_client::{
-    DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig, discover_tools,
+    DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig, McpTransport,
+    discover_tools,
 };
 
 /// Scope tags every MCP tool carries in code-assistant: offered to the main
@@ -185,7 +186,10 @@ mod tests {
             )
             .unwrap();
             let loaded = load_mcp_servers_config_from(&path).unwrap();
-            assert_eq!(loaded.servers["jira"].env["API_TOKEN"], "secret-123");
+            let McpTransport::Stdio { env, .. } = &loaded.servers["jira"].transport else {
+                panic!("expected stdio transport");
+            };
+            assert_eq!(env["API_TOKEN"], "secret-123");
         });
     }
 

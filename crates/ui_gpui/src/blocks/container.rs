@@ -333,7 +333,7 @@ impl MessageContainer {
             // renderer (cards expanded by default, browser cards collapsed).
             let starts_collapsed = crate::tool_cards::ToolBlockRendererRegistry::global()
                 .as_ref()
-                .and_then(|registry| registry.get(&name).cloned())
+                .and_then(|registry| registry.resolve(&name))
                 .map(|r| r.starts_collapsed())
                 .unwrap_or(true);
             if starts_collapsed {

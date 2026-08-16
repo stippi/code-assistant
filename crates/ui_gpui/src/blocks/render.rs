@@ -181,6 +181,9 @@ impl BlockView {
             renderer.describe(block)
         };
 
+        // Optional right-aligned pill (e.g. the MCP server name).
+        let header_tag = renderer.header_tag(block);
+
         // Determine expansion state — purely based on ToolBlockState, no is_generating override
         let is_expanded = block.state == ToolBlockState::Expanded;
         let has_output =
@@ -281,6 +284,21 @@ impl BlockView {
                             .child(description),
                     ),
             )
+            // Optional pill (e.g. MCP server name), right-aligned before the
+            // chevron.
+            .when_some(header_tag, |d, tag| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .bg(theme.muted)
+                        .text_size(rems(0.6875))
+                        .text_color(theme.muted_foreground)
+                        .child(tag),
+                )
+            })
             // Chevron area — always laid out to prevent height changes when
             // output becomes available. The icon itself is only visible when
             // expandable, with a highlight on hover.
@@ -550,7 +568,7 @@ impl gpui::Render for BlockView {
             BlockData::ToolUse(block) => {
                 // Unified tool block rendering via ToolBlockRendererRegistry
                 if let Some(registry) = crate::tool_cards::ToolBlockRendererRegistry::global() {
-                    if let Some(renderer) = registry.get(&block.name) {
+                    if let Some(renderer) = registry.resolve(&block.name) {
                         match renderer.style() {
                             crate::tool_cards::ToolBlockStyle::Inline => {
                                 let block_clone = block.clone();

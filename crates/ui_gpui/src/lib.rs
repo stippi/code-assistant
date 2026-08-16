@@ -343,7 +343,7 @@ impl Gpui {
 
         // Initialize tool block renderer registry
         {
-            use tool_cards::{InlineToolRenderer, ToolBlockRendererRegistry};
+            use tool_cards::{InlineToolRenderer, McpToolRenderer, ToolBlockRendererRegistry};
             let mut tbr_registry = ToolBlockRendererRegistry::default();
             tbr_registry.register(Arc::new(InlineToolRenderer::new()));
             tbr_registry.register(Arc::new(tool_cards::terminal_card::TerminalCardRenderer));
@@ -351,6 +351,9 @@ impl Gpui {
             tbr_registry.register(Arc::new(tool_cards::sub_agent_card::SubAgentCardRenderer));
             tbr_registry.register(Arc::new(tool_cards::code_card::CodeCardRenderer));
             tbr_registry.register(Arc::new(tool_cards::browser_card::BrowserCardRenderer));
+            // MCP tools have dynamic `mcp__<server>__<tool>` names; one inline
+            // fallback renderer handles all of them.
+            tbr_registry.set_mcp_fallback(Arc::new(McpToolRenderer::new()));
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 
