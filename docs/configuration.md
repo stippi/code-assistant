@@ -155,9 +155,29 @@ code-assistant can connect to external Model Context Protocol servers and
 register their tools. Configure them via the Settings screen ("MCP Servers") or
 in `~/.config/code-assistant/mcp-servers.json` (per-server `enabled`,
 `enabled_tools` allowlist, `disabled_tools` denylist, and `${ENV_VAR}`
-substitution in `env` values). Configuration changes apply on the next agent
-run — no restart required. A running agent keeps the tool set it started with;
-the next message picks up added, removed or re-configured servers.
+substitution in `env`/`headers` values). Configuration changes apply on the
+next agent run — no restart required. A running agent keeps the tool set it
+started with; the next message picks up added, removed or re-configured servers.
+
+Each server is reached over one of two transports, selected by the fields you
+give it — a `command` runs it as a child process over stdio, a `url` connects
+over HTTP (streamable transport):
+
+```json
+{
+  "servers": {
+    "jira": {
+      "command": "npx",
+      "args": ["-y", "some-jira-server"],
+      "env": { "JIRA_TOKEN": "${JIRA_TOKEN}" }
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${REMOTE_TOKEN}" }
+    }
+  }
+}
+```
 
 ## Advanced CLI options
 

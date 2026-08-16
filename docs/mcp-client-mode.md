@@ -106,15 +106,40 @@ What landed (step 2 of the order above, plus code-assistant UI):
 - **Protocol via the official SDK.** Instead of extracting `mcp_server`'s
   types into a shared crate, the client is built on `rmcp`
   (`modelcontextprotocol/rust-sdk`, features `client` +
-  `transport-child-process`) — same choice as codex and vtcode. Transport
-  is stdio only, as planned.
+  `transport-child-process` +
+  `transport-streamable-http-client-reqwest`) — same choice as codex and
+  vtcode. Both stdio and HTTP (streamable) transports are supported.
 - **New generic crate `crates/mcp_client`** (depends only on `tools_core`
   + `rmcp`): `McpServersConfig`/`McpServerConfig` (pure data, file I/O is
-  the embedder's), `McpServerConnection`, the `DynTool` proxy `McpTool`
+  the embedder's), `McpTransport` (the untagged stdio/HTTP transport
+  choice), `McpServerConnection`, the `DynTool` proxy `McpTool`
   (registry name `mcp__<server>__<tool>`, sanitized, 64-byte cap with
   deterministic hash suffix), and `register_mcp_tools(&mut registry,
   &config, extra_tags)`. A dead server degrades to error tool outputs.
   `discover_tools` provides ephemeral discovery for configuration UIs.
+
+### Transports
+
+A server is reached either as a child process over **stdio** or over an
+**HTTP (streamable)** endpoint. The transport is chosen by the shape of the
+server's JSON object — an object with a `url` is HTTP, one with a `command`
+is stdio (so existing stdio configs stay valid):
+
+```json
+{
+  "servers": {
+    "jira":   { "command": "npx", "args": ["-y", "some-jira-server"] },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${REMOTE_TOKEN}" }
+    }
+  }
+}
+```
+
+`${VAR}` substitution applies to stdio `env` values and HTTP `headers`
+values (both carry secrets); the raw placeholders are what the settings UI
+shows and preserves.
 - **Tool filter**: per-server `enabled` flag, `enabled_tools` allowlist
   (None = all, deviating from the opt-in-only default proposed above —
   code-assistant is interactive, the settings UI makes per-tool disabling
@@ -132,8 +157,9 @@ What landed (step 2 of the order above, plus code-assistant UI):
   apply on the next run, not only on restart. A running agent keeps the
   registry it started with.
 - **gpui settings page** ("MCP Servers"): expandable card per server with
-  enable switch, add/edit/delete, live tool discovery and per-tool
-  toggles persisted to `disabled_tools`.
+  enable switch, add/edit/delete (including a transport selector for
+  stdio command/args/env vs HTTP url/headers), live tool discovery and
+  per-tool toggles persisted to `disabled_tools`.
 
 Still open from this note: additive scope selection (step 1),
 read-only/outward classification and the outward-confirmation

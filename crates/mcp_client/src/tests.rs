@@ -269,3 +269,50 @@ async fn non_object_params_are_rejected() {
 
     assert!(result.is_err());
 }
+
+/// Serve `TestServer` over the streamable HTTP transport on an ephemeral
+/// localhost port, returning its `/mcp` URL and the server task (aborted on
+/// drop).
+async fn spawn_http_server() -> (String, tokio::task::JoinHandle<()>) {
+    use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+    use rmcp::transport::streamable_http_server::tower::{
+        StreamableHttpServerConfig, StreamableHttpService,
+    };
+
+    let service = StreamableHttpService::new(
+        || Ok(TestServer),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (format!("http://{addr}/mcp"), server)
+}
+
+#[tokio::test]
+async fn connects_and_calls_over_http() {
+    let (url, _server) = spawn_http_server().await;
+    let config = server_config(json!({ "url": url }));
+
+    let connection = Arc::new(
+        McpServerConnection::connect("http-test", &config)
+            .await
+            .expect("client failed to connect over HTTP"),
+    );
+    let mut registry = ToolRegistry::new();
+    let registered = register_connection_tools(&mut registry, connection, &config, &[])
+        .await
+        .unwrap();
+    assert_eq!(registered, ["mcp__http-test__echo", "mcp__http-test__fail"]);
+
+    let tool = registry.get("mcp__http-test__echo").unwrap();
+    let mut params = json!({ "message": "over http" });
+    let output = tool.invoke(&mut test_context(), &mut params).await.unwrap();
+    assert!(output.is_success());
+    let rendered = output.as_render().render(&mut ResourcesTracker::new());
+    assert_eq!(rendered, "echo: over http");
+}

@@ -9,9 +9,12 @@ rmcp = { version = "2.1", default-features = false, features = [
     "base64",
     "client",
     "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
 ] }
 anyhow = "1.0"
 async-trait = "0.1"
+http = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.48", features = ["macros", "process", "rt", "io-util", "time", "sync"] }
@@ -24,5 +27,9 @@ rmcp = { version = "2.1", default-features = false, features = [
     "client",
     "server",
     "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "transport-streamable-http-server",
+    "reqwest",
 ] }
+axum = "0.8"
 tokio = { version = "1.48", features = ["full"] }

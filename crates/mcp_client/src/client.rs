@@ -1,15 +1,18 @@
 //! Connection to a single MCP server, built on the official rmcp SDK.
 //!
-//! One connection per configured server; the child process lives as long as
-//! the connection. Wrapped tools hold the connection behind an `Arc`, so a
-//! dead server degrades to tool errors, never a crashed agent.
+//! One connection per configured server. For a stdio server the child process
+//! lives as long as the connection; for an HTTP server it is a streamable HTTP
+//! session. Wrapped tools hold the connection behind an `Arc`, so a dead
+//! server degrades to tool errors, never a crashed agent.
 
-use crate::config::McpServerConfig;
+use crate::config::{McpServerConfig, McpTransport};
 use anyhow::{Context, Result};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool as McpToolDescriptor};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::IntoTransport;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Timeout for the initialize handshake and for tool discovery.
@@ -26,16 +29,59 @@ pub struct McpServerConnection {
 }
 
 impl McpServerConnection {
-    /// Launch the configured command as a child process and run the MCP
-    /// initialize handshake over its stdio.
+    /// Connect to the configured server, running the MCP initialize handshake
+    /// over its transport: a launched child process (stdio) or an HTTP
+    /// streamable endpoint.
     pub async fn connect(name: &str, config: &McpServerConfig) -> Result<Self> {
-        let mut command = tokio::process::Command::new(&config.command);
-        command.args(&config.args).envs(&config.env);
-        let transport = rmcp::transport::child_process::TokioChildProcess::new(command)
-            .with_context(|| {
-                format!("failed to launch MCP server '{name}' ({})", config.command)
-            })?;
+        match &config.transport {
+            McpTransport::Stdio { command, args, env } => {
+                Self::connect_stdio(name, command, args, env).await
+            }
+            McpTransport::Http { url, headers } => Self::connect_http(name, url, headers).await,
+        }
+    }
+
+    /// Launch `command` as a child process and run the MCP initialize
+    /// handshake over its stdio.
+    async fn connect_stdio(
+        name: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> Result<Self> {
+        let mut process = tokio::process::Command::new(command);
+        process.args(args).envs(env);
+        let transport = rmcp::transport::child_process::TokioChildProcess::new(process)
+            .with_context(|| format!("failed to launch MCP server '{name}' ({command})"))?;
         Self::connect_transport(name, transport).await
+    }
+
+    /// Connect to an HTTP (streamable) MCP server at `url`, sending the given
+    /// custom headers (e.g. `Authorization`) with every request.
+    async fn connect_http(
+        name: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+    ) -> Result<Self> {
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+        if !headers.is_empty() {
+            let mut header_map = HashMap::with_capacity(headers.len());
+            for (key, value) in headers {
+                let name = http::HeaderName::from_bytes(key.as_bytes())
+                    .with_context(|| format!("invalid HTTP header name '{key}'"))?;
+                let value = http::HeaderValue::from_str(value)
+                    .with_context(|| format!("invalid value for HTTP header '{key}'"))?;
+                header_map.insert(name, value);
+            }
+            config = config.custom_headers(header_map);
+        }
+        let transport =
+            rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_config(
+                config,
+            );
+        Self::connect_transport(name, transport)
+            .await
+            .with_context(|| format!("failed to connect to HTTP MCP server '{name}' ({url})"))
     }
 
     /// Run the MCP initialize handshake over an arbitrary transport. Used by
