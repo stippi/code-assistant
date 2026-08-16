@@ -51,6 +51,7 @@ pub const TOOL_USER_INPUT: &str = "person"; // person.svg
 pub const TOOL_UPDATE_PLAN: &str = "todo_list"; // todo_list.svg
 pub const TOOL_SPAWN_AGENT: &str = "rerun"; // rerun.svg - for spawning sub-agents
 pub const TOOL_VIEW_DOCUMENTS: &str = "file_generic"; // file_generic.svg - for viewing documents
+pub const TOOL_MCP: &str = "mcp"; // link.svg - generic icon for MCP server tools
 pub const TOOL_GENERIC: &str = "file_code"; // file_code.svg
 
 const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
@@ -143,6 +144,7 @@ impl FileIcons {
             TOOL_UPDATE_PLAN => Some("icons/file_generic.svg"),
             TOOL_SPAWN_AGENT => Some("icons/rerun.svg"),
             TOOL_VIEW_DOCUMENTS => Some("icons/file_generic.svg"),
+            TOOL_MCP => Some("icons/link.svg"),
             TOOL_GENERIC => Some("icons/file_code.svg"),
             // For file_types.json types we missed
             _ => None,
@@ -180,6 +182,7 @@ impl FileIcons {
             TOOL_UPDATE_PLAN => Some(SharedString::from("📝")),
             TOOL_SPAWN_AGENT => Some(SharedString::from("🔄")),
             TOOL_VIEW_DOCUMENTS => Some(SharedString::from("📑")),
+            TOOL_MCP => Some(SharedString::from("🔌")),
             TOOL_GENERIC => Some(SharedString::from("🔧")),
             _ => Some(SharedString::from("📄")), // Default fallback
         }
@@ -187,6 +190,11 @@ impl FileIcons {
 
     /// Get tool-specific icon based on tool name
     pub fn get_tool_icon(&self, tool_name: &str) -> Option<SharedString> {
+        // MCP server tools (`mcp__<server>__<tool>`) share one generic icon;
+        // the server identity is shown as a pill in the block header instead.
+        if tool_name.starts_with("mcp__") {
+            return self.get_type_icon(TOOL_MCP);
+        }
         let icon_type = match tool_name {
             "read_files" => TOOL_READ_FILES,
             "list_files" => TOOL_LIST_FILES,

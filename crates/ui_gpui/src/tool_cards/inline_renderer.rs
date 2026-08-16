@@ -155,79 +155,103 @@ impl ToolBlockRenderer for InlineToolRenderer {
         _window: &mut Window,
         _cx: &mut Context<BlockView>,
     ) -> Option<AnyElement> {
-        // Inline tools: render the output text with a left-border style when
-        // expanded.  If there's no output yet, return None.
-        let output = tool.output.as_deref().unwrap_or("");
-        let has_images = !tool.images.is_empty();
+        render_inline_output(tool, theme)
+    }
+}
 
-        if output.is_empty() && !has_images {
-            return None;
-        }
+/// Render the expandable output area shared by all inline tool renderers:
+/// the text output with a left-border style, plus any images. Returns `None`
+/// when there is nothing to show yet.
+pub(crate) fn render_inline_output(
+    tool: &ToolUseBlock,
+    theme: &gpui_component::theme::Theme,
+) -> Option<AnyElement> {
+    let output = tool.output.as_deref().unwrap_or("");
+    render_inline_output_text(output, false, tool, theme)
+}
 
-        let output_color = if tool.status == ToolStatus::Error {
-            theme.danger
-        } else {
-            theme.muted_foreground
-        };
+/// Like [`render_inline_output`], but renders `output` (which may differ from
+/// `tool.output`, e.g. pretty-printed) and optionally in a monospace font —
+/// used by the MCP renderer to show formatted JSON. Images still come from the
+/// tool.
+pub(crate) fn render_inline_output_text(
+    output: &str,
+    monospace: bool,
+    tool: &ToolUseBlock,
+    theme: &gpui_component::theme::Theme,
+) -> Option<AnyElement> {
+    let has_images = !tool.images.is_empty();
 
-        let mut container = div()
-            .pl(px(8.))
-            .ml(px(8.))
-            .border_l_2()
-            .border_color(theme.border)
-            .py(px(4.))
+    if output.is_empty() && !has_images {
+        return None;
+    }
+
+    let output_color = if tool.status == ToolStatus::Error {
+        theme.danger
+    } else {
+        theme.muted_foreground
+    };
+
+    let mut container = div()
+        .pl(px(8.))
+        .ml(px(8.))
+        .border_l_2()
+        .border_color(theme.border)
+        .py(px(4.))
+        .overflow_hidden();
+
+    // Text output
+    if !output.is_empty() {
+        let mut text_el = div()
             .text_size(rems(0.8125))
             .text_color(output_color)
             .overflow_hidden();
-
-        // Text output
-        if !output.is_empty() {
-            container = container.child(output.to_string());
+        if monospace {
+            text_el = text_el.font_family("Menlo").line_height(rems(0.8125 * 1.4));
         }
-
-        // Render images when expanded (for view_images tool)
-        if has_images {
-            let mut gallery = div().flex().flex_wrap().gap_2().mt_2();
-
-            for (media_type, base64_data) in &tool.images {
-                if let Some(image) =
-                    crate::shared::image::parse_base64_image(media_type, base64_data)
-                {
-                    gallery = gallery.child(
-                        div()
-                            .flex_none()
-                            .border_1()
-                            .border_color(theme.border)
-                            .rounded_md()
-                            .overflow_hidden()
-                            .bg(theme.popover)
-                            .shadow_sm()
-                            .child(
-                                img(ImageSource::Image(image))
-                                    .max_h(px(200.))
-                                    .max_w(px(400.))
-                                    .object_fit(ObjectFit::Contain),
-                            ),
-                    );
-                } else {
-                    gallery = gallery.child(
-                        div()
-                            .flex_none()
-                            .p_2()
-                            .bg(theme.warning.opacity(0.1))
-                            .border_1()
-                            .border_color(theme.warning.opacity(0.3))
-                            .rounded_md()
-                            .text_color(theme.warning_foreground.opacity(0.8))
-                            .text_xs()
-                            .child(format!("Failed to decode: {}", media_type)),
-                    );
-                }
-            }
-
-            container = container.child(gallery);
-        }
-
-        Some(container.into_any())
+        container = container.child(text_el.child(output.to_string()));
     }
+
+    // Render images when expanded (for view_images tool)
+    if has_images {
+        let mut gallery = div().flex().flex_wrap().gap_2().mt_2();
+
+        for (media_type, base64_data) in &tool.images {
+            if let Some(image) = crate::shared::image::parse_base64_image(media_type, base64_data) {
+                gallery = gallery.child(
+                    div()
+                        .flex_none()
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded_md()
+                        .overflow_hidden()
+                        .bg(theme.popover)
+                        .shadow_sm()
+                        .child(
+                            img(ImageSource::Image(image))
+                                .max_h(px(200.))
+                                .max_w(px(400.))
+                                .object_fit(ObjectFit::Contain),
+                        ),
+                );
+            } else {
+                gallery = gallery.child(
+                    div()
+                        .flex_none()
+                        .p_2()
+                        .bg(theme.warning.opacity(0.1))
+                        .border_1()
+                        .border_color(theme.warning.opacity(0.3))
+                        .rounded_md()
+                        .text_color(theme.warning_foreground.opacity(0.8))
+                        .text_xs()
+                        .child(format!("Failed to decode: {}", media_type)),
+                );
+            }
+        }
+
+        container = container.child(gallery);
+    }
+
+    Some(container.into_any())
 }

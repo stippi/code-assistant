@@ -19,6 +19,7 @@ pub mod browser_card;
 pub mod code_card;
 pub mod diff_card;
 pub mod inline_renderer;
+pub mod mcp_tool;
 pub mod sub_agent_card;
 pub mod terminal_card;
 
@@ -33,6 +34,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 // Re-exports for backward compatibility
 pub use animated_card::animated_card_body;
 pub use inline_renderer::InlineToolRenderer;
+pub use mcp_tool::McpToolRenderer;
 
 // ---------------------------------------------------------------------------
 // CardRenderContext — passed to Card-style renderers
@@ -105,6 +107,13 @@ pub trait ToolBlockRenderer: Send + Sync {
         tool.name.clone()
     }
 
+    /// Optional short tag shown as a pill on the right of an inline block's
+    /// header (before the chevron). Used by MCP tools to surface the server
+    /// name; defaults to `None` (no pill).
+    fn header_tag(&self, _tool: &ToolUseBlock) -> Option<String> {
+        None
+    }
+
     /// Render the tool block content.
     ///
     /// For **Inline** renderers this returns the expanded output area
@@ -133,6 +142,9 @@ pub trait ToolBlockRenderer: Send + Sync {
 #[derive(Default)]
 pub struct ToolBlockRendererRegistry {
     renderers: HashMap<String, Arc<dyn ToolBlockRenderer>>,
+    /// Fallback renderer for dynamically-named MCP tools (`mcp__<server>__<tool>`),
+    /// which cannot be registered by a fixed name.
+    mcp_fallback: Option<Arc<dyn ToolBlockRenderer>>,
 }
 
 static GLOBAL_REGISTRY: OnceLock<Mutex<Option<Arc<ToolBlockRendererRegistry>>>> = OnceLock::new();
@@ -145,10 +157,29 @@ impl ToolBlockRendererRegistry {
         }
     }
 
+    /// Install the fallback renderer used for MCP tools, whose names are
+    /// discovered at runtime (`mcp__<server>__<tool>`) and therefore can't be
+    /// registered by name.
+    pub fn set_mcp_fallback(&mut self, renderer: Arc<dyn ToolBlockRenderer>) {
+        self.mcp_fallback = Some(renderer);
+    }
+
     /// Look up the renderer for a tool.  Returns `None` if no renderer is
     /// registered (fall back to existing rendering).
     pub fn get(&self, tool_name: &str) -> Option<&Arc<dyn ToolBlockRenderer>> {
         self.renderers.get(tool_name)
+    }
+
+    /// Resolve the renderer for a tool: an exact by-name match, or — for
+    /// `mcp__…` tool names — the MCP fallback renderer if one is installed.
+    pub fn resolve(&self, tool_name: &str) -> Option<Arc<dyn ToolBlockRenderer>> {
+        if let Some(renderer) = self.renderers.get(tool_name) {
+            return Some(renderer.clone());
+        }
+        if tool_name.starts_with("mcp__") {
+            return self.mcp_fallback.clone();
+        }
+        None
     }
 
     // -- global singleton --
