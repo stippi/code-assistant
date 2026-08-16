@@ -54,7 +54,7 @@ pub use openai_responses::OpenAIResponsesClient;
 pub use openai_responses_ws::OpenAIResponsesWsClient;
 pub use openrouter::OpenRouterClient;
 pub use types::*;
-pub use vertex::VertexClient;
+pub use vertex::{VertexClient, sanitize_google_schema};
 pub use zai::ZaiClient;
 
 use anyhow::Result;

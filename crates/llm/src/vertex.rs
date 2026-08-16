@@ -314,6 +314,88 @@ fn enable_streaming_function_call_arguments(request_json: &mut serde_json::Value
     });
 }
 
+/// The JSON-Schema keywords Google's `Schema` type knows.
+///
+/// Its parser is strict and rejects the *whole request* over a single
+/// unknown key anywhere in a tool declaration:
+///
+/// ```text
+/// 400 Invalid JSON payload received. Unknown name "exclusiveMinimum" at
+/// 'tools[0].function_declarations[4].parameters.properties[0].value'
+/// ```
+///
+/// Tool schemas written against full JSON Schema (which Anthropic and
+/// OpenAI accept verbatim) therefore have to be projected onto this set
+/// before they go on the wire. Keep in sync with
+/// <https://ai.google.dev/api/caching#Schema>.
+pub const GOOGLE_SCHEMA_KEYS: &[&str] = &[
+    "type",
+    "format",
+    "title",
+    "description",
+    "nullable",
+    "enum",
+    "items",
+    "properties",
+    "required",
+    "anyOf",
+    "default",
+    "example",
+    "pattern",
+    "minimum",
+    "maximum",
+    "minItems",
+    "maxItems",
+    "minLength",
+    "maxLength",
+    "minProperties",
+    "maxProperties",
+    "propertyOrdering",
+];
+
+/// Project a JSON Schema onto the subset Google accepts, recursively.
+///
+/// Dropping a constraint (`exclusiveMinimum`, `additionalProperties`,
+/// `oneOf`, `$schema`, …) is deliberate and lossy: the tool's own
+/// description carries the intent for the model, and the caller validates
+/// arguments anyway. Losing a bound is survivable; losing every request to
+/// a 400 is not.
+///
+/// Public because the Gemini Live (BidiGenerateContent) WebSocket API uses
+/// the very same `Schema` type, so realtime callers need the same
+/// projection.
+pub fn sanitize_google_schema(schema: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match schema {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, _)| GOOGLE_SCHEMA_KEYS.contains(&key.as_str()))
+                .map(|(key, value)| {
+                    let value = match key.as_str() {
+                        // Sub-schemas: recurse into the shape itself.
+                        "items" | "anyOf" => sanitize_google_schema(value),
+                        // A map of property name → sub-schema.
+                        "properties" => match value {
+                            Value::Object(properties) => Value::Object(
+                                properties
+                                    .iter()
+                                    .map(|(name, sub)| (name.clone(), sanitize_google_schema(sub)))
+                                    .collect(),
+                            ),
+                            other => other.clone(),
+                        },
+                        // Plain values (type, enum, description, bounds…).
+                        _ => value.clone(),
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(sanitize_google_schema).collect()),
+        other => other.clone(),
+    }
+}
+
 fn emit_vertex_input_json_snapshot(
     callback: &StreamingCallback,
     tool: &ActiveVertexToolCall,
@@ -1285,7 +1367,7 @@ impl LLMProvider for VertexClient {
                         json!({
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": tool.parameters,
+                            "parameters": sanitize_google_schema(&tool.parameters),
                         })
                     }).collect::<Vec<_>>()
                 })]
@@ -1372,6 +1454,112 @@ Note, there is no ID associated with each function call/result, only the order.
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// Google rejects the whole request over one unknown keyword, so the
+    /// projection has to reach every nesting level — while leaving the
+    /// constraints it *does* understand untouched.
+    #[test]
+    fn sanitize_google_schema_drops_only_unsupported_keywords() {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "description": "Animate a group",
+            "properties": {
+                "duration": {
+                    "type": "number",
+                    "description": "Seconds",
+                    "exclusiveMinimum": 0,
+                    "minimum": 0.1,
+                    "maximum": 60
+                },
+                "params": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "oneOf": [{"type": "number"}, {"type": "array"}]
+                    }
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "ease": {"type": "string", "enum": ["in", "out"], "const": "in"}
+                        }
+                    }
+                }
+            },
+            "required": ["duration"],
+            "additionalProperties": false
+        });
+
+        let sanitized = sanitize_google_schema(&schema);
+
+        // Supported keywords survive at every level.
+        assert_eq!(sanitized["type"], "object");
+        assert_eq!(sanitized["description"], "Animate a group");
+        assert_eq!(sanitized["required"], json!(["duration"]));
+        assert_eq!(sanitized["properties"]["duration"]["minimum"], 0.1);
+        assert_eq!(sanitized["properties"]["duration"]["maximum"], 60);
+        assert_eq!(
+            sanitized["properties"]["duration"]["description"],
+            "Seconds"
+        );
+        assert_eq!(
+            sanitized["properties"]["steps"]["items"]["properties"]["ease"]["enum"],
+            json!(["in", "out"])
+        );
+
+        // Unsupported ones are gone at every level.
+        assert!(sanitized["$schema"].is_null());
+        assert!(sanitized["additionalProperties"].is_null());
+        assert!(sanitized["properties"]["duration"]["exclusiveMinimum"].is_null());
+        assert!(sanitized["properties"]["params"]["additionalProperties"].is_null());
+        assert!(sanitized["properties"]["steps"]["items"]["additionalProperties"].is_null());
+        assert!(sanitized["properties"]["steps"]["items"]["properties"]["ease"]["const"].is_null());
+    }
+
+    #[test]
+    fn sanitize_google_schema_leaves_a_clean_schema_alone() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"]
+        });
+        assert_eq!(sanitize_google_schema(&schema), schema);
+    }
+
+    /// The declarations the request builder emits must be clean, not just
+    /// the helper's output.
+    #[test]
+    fn tool_declarations_are_sanitized_before_they_go_on_the_wire() {
+        let tools = vec![ToolDefinition {
+            name: "animate_group".to_string(),
+            description: "Animate a group".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "duration": {"type": "number", "exclusiveMinimum": 0}
+                },
+                "additionalProperties": false
+            }),
+        }];
+
+        let declarations = json!({
+            "function_declarations": tools.into_iter().map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": sanitize_google_schema(&tool.parameters),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let parameters = &declarations["function_declarations"][0]["parameters"];
+        assert!(parameters["additionalProperties"].is_null());
+        assert!(parameters["properties"]["duration"]["exclusiveMinimum"].is_null());
+        assert_eq!(parameters["properties"]["duration"]["type"], "number");
+    }
 
     fn partial_string(path: &str, value: &str, will_continue: Option<bool>) -> VertexPartialArg {
         let mut partial_value = serde_json::Map::new();
