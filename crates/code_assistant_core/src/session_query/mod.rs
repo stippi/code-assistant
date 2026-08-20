@@ -34,10 +34,14 @@ use crate::persistence::{ChatMetadata, ChatSession, FileSessionPersistence};
 
 pub mod extract;
 pub mod matcher;
+pub mod projection;
 pub mod search;
 
 pub use extract::{ContentKind, ExtractedItem, Role, extract_items};
 pub use matcher::StringMatch;
+pub use projection::{
+    ContentItem, ContentPart, ContentProjection, MessageRange, SessionContent, get_session_content,
+};
 pub use search::{
     SessionMatch, SessionSearchQuery, ToolCallFilter, ToolCallMatch, search_sessions,
 };
