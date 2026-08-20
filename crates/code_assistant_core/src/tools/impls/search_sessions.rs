@@ -293,6 +293,9 @@ impl Tool for SearchSessionsTool {
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_READ_ONLY,
+                capabilities::SCOPE_SUBAGENT_DEFAULT,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ]),
             multiline_params: &[],
             hidden: false,
@@ -563,5 +566,16 @@ mod tests {
         assert_eq!(output.total, 0);
         let rendered = output.render(&mut ResourcesTracker::new());
         assert!(rendered.contains("No sessions matched"));
+    }
+
+    #[test]
+    fn offered_in_agent_and_sub_agent_scopes() {
+        let spec = SearchSessionsTool.spec();
+        assert!(spec.has_capability(capabilities::READ_ONLY));
+        assert!(spec.has_capability(capabilities::SCOPE_AGENT));
+        assert!(spec.has_capability(capabilities::SCOPE_SUBAGENT_READ_ONLY));
+        assert!(spec.has_capability(capabilities::SCOPE_SUBAGENT_DEFAULT));
+        // Not an MCP tool.
+        assert!(!spec.has_capability(capabilities::SCOPE_MCP));
     }
 }

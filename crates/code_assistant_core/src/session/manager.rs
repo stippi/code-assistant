@@ -932,6 +932,7 @@ impl SessionManager {
                 permission_handler.clone(),
                 permissions.clone(),
                 self.tool_registry.clone(),
+                Some(Arc::new(self.persistence.clone())),
                 self.hooks_factory.clone(),
             ));
 

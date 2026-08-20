@@ -236,6 +236,9 @@ impl Tool for GetSessionContentTool {
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
+                capabilities::SCOPE_SUBAGENT_READ_ONLY,
+                capabilities::SCOPE_SUBAGENT_DEFAULT,
+                capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ]),
             multiline_params: &[],
             hidden: false,
@@ -476,5 +479,15 @@ mod tests {
                 .all(|i| i.text.chars().count() <= CHAR_BUDGET)
         );
         assert!(output.items.iter().any(|i| i.truncated));
+    }
+
+    #[test]
+    fn offered_in_agent_and_sub_agent_scopes() {
+        let spec = GetSessionContentTool.spec();
+        assert!(spec.has_capability(capabilities::READ_ONLY));
+        assert!(spec.has_capability(capabilities::SCOPE_AGENT));
+        assert!(spec.has_capability(capabilities::SCOPE_SUBAGENT_READ_ONLY));
+        assert!(spec.has_capability(capabilities::SCOPE_SUBAGENT_DEFAULT));
+        assert!(!spec.has_capability(capabilities::SCOPE_MCP));
     }
 }
