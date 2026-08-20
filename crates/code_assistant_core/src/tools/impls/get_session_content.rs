@@ -47,6 +47,7 @@ pub struct GetSessionContentOutput {
     /// Total messages along the walked path (before filtering).
     pub message_count: usize,
     /// Items selected by the projection (before the item cap).
+    #[serde(default)]
     pub total_items: usize,
     /// Items actually returned (after the item cap).
     pub returned_items: usize,
