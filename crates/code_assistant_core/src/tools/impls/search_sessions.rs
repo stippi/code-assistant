@@ -15,6 +15,19 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+// Output-size guards. The tool degrades gracefully instead of flooding the
+// context with an unbounded result (mirrors `search_files`):
+//   * FULL     — sessions with their matched tool calls listed.
+//   * SUMMARY  — sessions only, with a count of their matched calls.
+//   * TRUNCATED — the session list itself is capped, with a hint to narrow.
+/// Beyond this many sessions the list is capped (and forced into summary mode).
+const MAX_SESSIONS: usize = 100;
+/// Beyond this many matched-call lines (across all shown sessions) the
+/// per-call detail is dropped in favor of counts.
+const MAX_DETAIL_ROWS: usize = 120;
+/// Per-session cap on listed matched calls in full mode.
+const MAX_CALLS_PER_SESSION: usize = 12;
+
 /// Input for the `search_sessions` tool. Mirrors [`SessionSearchQuery`] with
 /// timestamps as RFC 3339 strings.
 #[derive(Deserialize, Serialize, Default)]
@@ -57,20 +70,65 @@ pub struct SessionMatchData {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchSessionsOutput {
+    /// Total sessions that matched (may exceed the number in `sessions` when
+    /// the list was capped — see `truncated`).
     pub total: usize,
+    /// The matching sessions (capped to [`MAX_SESSIONS`]).
     pub sessions: Vec<SessionMatchData>,
+    /// Whether the session list itself was capped.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Whether per-session matched-call detail was dropped for brevity.
+    #[serde(default)]
+    pub summary_mode: bool,
+}
+
+impl SearchSessionsOutput {
+    /// Deduplicated `(tool_name, matched_value)` display lines for one session.
+    fn unique_call_lines(session: &SessionMatchData) -> Vec<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut lines = Vec::new();
+        for tc in &session.matched_tool_calls {
+            let line = match &tc.matched_value {
+                Some(v) => format!("{} → {}", tc.tool_name, v),
+                None => tc.tool_name.clone(),
+            };
+            if seen.insert(line.clone()) {
+                lines.push(line);
+            }
+        }
+        lines
+    }
 }
 
 impl Render for SearchSessionsOutput {
     fn status(&self) -> String {
-        format!("Found {} matching session(s)", self.total)
+        if self.truncated {
+            format!(
+                "Found {} matching session(s) (showing {})",
+                self.total,
+                self.sessions.len()
+            )
+        } else {
+            format!("Found {} matching session(s)", self.total)
+        }
     }
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if self.sessions.is_empty() {
             return "No sessions matched the query.".to_string();
         }
-        let mut out = format!("{} matching session(s):\n", self.total);
+
+        let mut out = if self.truncated {
+            format!(
+                "{} matching session(s) (showing first {}):\n",
+                self.total,
+                self.sessions.len()
+            )
+        } else {
+            format!("{} matching session(s):\n", self.total)
+        };
+
         for s in &self.sessions {
             let name = if s.name.is_empty() {
                 "(unnamed)"
@@ -81,20 +139,65 @@ impl Render for SearchSessionsOutput {
                 "\n- {} [{}] \"{}\" — {} message(s), updated {}\n",
                 s.session_id, s.project, name, s.message_count, s.updated_at
             ));
-            // Show unique matched values (e.g. distinct file paths).
-            let mut seen = std::collections::BTreeSet::new();
-            for tc in &s.matched_tool_calls {
-                let line = match &tc.matched_value {
-                    Some(v) => format!("    {} → {}", tc.tool_name, v),
-                    None => format!("    {}", tc.tool_name),
-                };
-                if seen.insert(line.clone()) {
-                    out.push_str(&line);
-                    out.push('\n');
+
+            let lines = Self::unique_call_lines(s);
+            if lines.is_empty() {
+                continue;
+            }
+            if self.summary_mode {
+                out.push_str(&format!("    ({} matching tool call(s))\n", lines.len()));
+            } else {
+                for line in lines.iter().take(MAX_CALLS_PER_SESSION) {
+                    out.push_str(&format!("    {line}\n"));
+                }
+                if lines.len() > MAX_CALLS_PER_SESSION {
+                    out.push_str(&format!(
+                        "    … and {} more\n",
+                        lines.len() - MAX_CALLS_PER_SESSION
+                    ));
                 }
             }
         }
+
+        if self.truncated {
+            out.push_str(&format!(
+                "\n… and {} more session(s). Narrow with `project`, `tool_call.value` \
+                 (e.g. a glob like \"**/docs/*.md\"), a time range (`updated_after`/\
+                 `updated_before`), or `limit`.\n",
+                self.total - self.sessions.len()
+            ));
+        }
         out
+    }
+
+    fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
+        let sessions: Vec<serde_json::Value> = self
+            .sessions
+            .iter()
+            .map(|s| {
+                let calls = Self::unique_call_lines(s);
+                json!({
+                    "session_id": s.session_id,
+                    "name": s.name,
+                    "project": s.project,
+                    "updated_at": s.updated_at,
+                    "message_count": s.message_count,
+                    "matched_calls": if self.summary_mode { Vec::new() } else {
+                        calls.iter().take(MAX_CALLS_PER_SESSION).cloned().collect::<Vec<_>>()
+                    },
+                    "matched_call_count": calls.len(),
+                })
+            })
+            .collect();
+
+        json!({
+            "kind": "search_sessions",
+            "total": self.total,
+            "truncated": self.truncated,
+            "summary_mode": self.summary_mode,
+            "sessions": sessions,
+        })
+        .to_string()
     }
 }
 
@@ -187,6 +290,7 @@ impl Tool for SearchSessionsTool {
                 "idempotentHint": true
             })),
             capabilities: ToolSpec::capabilities(&[
+                capabilities::READ_ONLY,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
             ]),
@@ -215,10 +319,31 @@ impl Tool for SearchSessionsTool {
         };
 
         let matches = search_sessions(source.as_ref(), &query)?;
-        Ok(SearchSessionsOutput {
-            total: matches.len(),
-            sessions: matches.into_iter().map(to_data).collect(),
-        })
+        Ok(build_output(matches))
+    }
+}
+
+/// Apply the display-size guards and choose the output mode.
+fn build_output(matches: Vec<SessionMatch>) -> SearchSessionsOutput {
+    let total = matches.len();
+    let mut sessions: Vec<SessionMatchData> = matches.into_iter().map(to_data).collect();
+
+    let truncated = sessions.len() > MAX_SESSIONS;
+    if truncated {
+        sessions.truncate(MAX_SESSIONS);
+    }
+
+    let detail_rows: usize = sessions
+        .iter()
+        .map(|s| SearchSessionsOutput::unique_call_lines(s).len())
+        .sum();
+    let summary_mode = truncated || detail_rows > MAX_DETAIL_ROWS;
+
+    SearchSessionsOutput {
+        total,
+        sessions,
+        truncated,
+        summary_mode,
     }
 }
 
@@ -332,6 +457,8 @@ mod tests {
         .await;
 
         assert_eq!(output.total, 1);
+        assert!(!output.truncated);
+        assert!(!output.summary_mode);
         assert_eq!(output.sessions[0].session_id, "a");
         assert_eq!(
             output.sessions[0].matched_tool_calls[0]
@@ -342,6 +469,76 @@ mod tests {
 
         let rendered = output.render(&mut ResourcesTracker::new());
         assert!(rendered.contains("selfhosting-poc/docs/plan.md"));
+    }
+
+    #[tokio::test]
+    async fn caps_and_truncates_a_large_result() {
+        let mut source = InMemorySource::new();
+        for i in 0..150 {
+            source = source.with_session(wrote(
+                &format!("s{i:03}"),
+                "mlflow",
+                "write_file",
+                &format!("docs/f{i}.md"),
+            ));
+        }
+        let output = run(source, json!({ "project": "mlflow" })).await;
+
+        assert_eq!(output.total, 150);
+        assert_eq!(output.sessions.len(), MAX_SESSIONS);
+        assert!(output.truncated);
+        assert!(output.summary_mode);
+
+        let rendered = output.render(&mut ResourcesTracker::new());
+        assert!(rendered.contains("showing first"));
+        assert!(rendered.contains("more session(s)"));
+        // Narrowing hint mentions the time-range option.
+        assert!(rendered.contains("updated_after"));
+    }
+
+    #[tokio::test]
+    async fn summary_mode_drops_per_call_detail() {
+        // Many matched calls across few sessions → summary mode, but the
+        // session list is not truncated.
+        let mut source = InMemorySource::new();
+        for s in 0..3 {
+            let mut session = ChatSession::new_empty(
+                format!("big{s}"),
+                format!("Big {s}"),
+                SessionConfig {
+                    initial_project: "mlflow".to_string(),
+                    ..SessionConfig::default()
+                },
+                None,
+            );
+            for c in 0..60 {
+                session.add_message(Message::new_assistant_content(vec![
+                    ContentBlock::new_tool_use(
+                        format!("{s}-{c}"),
+                        "write_file",
+                        serde_json::json!({ "path": format!("docs/f{s}_{c}.md") }),
+                    ),
+                ]));
+            }
+            source = source.with_session(session);
+        }
+
+        let output = run(
+            source,
+            json!({
+                "project": "mlflow",
+                "tool_call": { "names": ["write_file"], "arg": "path" }
+            }),
+        )
+        .await;
+
+        assert_eq!(output.total, 3);
+        assert!(!output.truncated);
+        assert!(output.summary_mode);
+        let rendered = output.render(&mut ResourcesTracker::new());
+        assert!(rendered.contains("matching tool call(s)"));
+        // No per-call file line in summary mode.
+        assert!(!rendered.contains("write_file → docs/f0_0.md"));
     }
 
     #[tokio::test]

@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+// Output-size guards, so an unbounded projection cannot flood the context:
+//   * item cap    — at most MAX_ITEMS items are returned (older ones kept).
+//   * char budget — when the caller set no `max_chars_per_item` and the total
+//     text exceeds CHAR_BUDGET, each item is auto-truncated to a computed cap.
+const MAX_ITEMS: usize = 200;
+const CHAR_BUDGET: usize = 16_000;
+const MIN_AUTO_CAP: usize = 200;
+
 /// Input for the `get_session_content` tool. Mirrors [`ContentProjection`]
 /// plus the target session id.
 #[derive(Deserialize, Serialize, Default)]
@@ -38,7 +46,17 @@ pub struct GetSessionContentOutput {
     pub project: String,
     /// Total messages along the walked path (before filtering).
     pub message_count: usize,
+    /// Items selected by the projection (before the item cap).
+    pub total_items: usize,
+    /// Items actually returned (after the item cap).
     pub returned_items: usize,
+    /// Whether items were dropped by the item cap.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Whether item text was auto-truncated to fit the character budget
+    /// (only happens when the caller set no `max_chars_per_item`).
+    #[serde(default)]
+    pub auto_truncated: bool,
     pub items: Vec<ContentItem>,
 }
 
@@ -64,7 +82,52 @@ impl Render for GetSessionContentOutput {
             out.push('\n');
             out.push_str(&render_item(item));
         }
+        if self.truncated {
+            out.push_str(&format!(
+                "\n… {} more item(s) not shown. Narrow with `range`, `parts`, `tool_names`, \
+                 or set `max_chars_per_item`.\n",
+                self.total_items - self.returned_items
+            ));
+        } else if self.auto_truncated {
+            out.push_str(
+                "\n(item text auto-truncated to fit; set `max_chars_per_item` or a `range` \
+                 for finer control.)\n",
+            );
+        }
         out
+    }
+
+    fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
+        let items: Vec<serde_json::Value> = self
+            .items
+            .iter()
+            .map(|item| {
+                json!({
+                    "message_index": item.message_index,
+                    "role": item.role,
+                    "kind": item.kind,
+                    "text": item.text,
+                    "tool_name": item.tool_name,
+                    "tool_input": item.tool_input,
+                    "is_error": item.is_error,
+                    "truncated": item.truncated,
+                })
+            })
+            .collect();
+
+        json!({
+            "kind": "get_session_content",
+            "session_id": self.session_id,
+            "name": self.name,
+            "project": self.project,
+            "message_count": self.message_count,
+            "total_items": self.total_items,
+            "returned_items": self.returned_items,
+            "truncated": self.truncated,
+            "auto_truncated": self.auto_truncated,
+            "items": items,
+        })
+        .to_string()
     }
 }
 
@@ -169,6 +232,7 @@ impl Tool for GetSessionContentTool {
                 "idempotentHint": true
             })),
             capabilities: ToolSpec::capabilities(&[
+                capabilities::READ_ONLY,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
             ]),
@@ -194,14 +258,50 @@ impl Tool for GetSessionContentTool {
         };
 
         let content = get_session_content(source.as_ref(), &input.session_id, &projection)?;
-        Ok(GetSessionContentOutput {
-            session_id: content.session_id,
-            name: content.name,
-            project: content.project,
-            message_count: content.message_count,
-            returned_items: content.items.len(),
-            items: content.items,
-        })
+        Ok(build_output(content, input.max_chars_per_item.is_some()))
+    }
+}
+
+/// Apply the output-size guards to a projected session.
+fn build_output(
+    content: crate::session_query::SessionContent,
+    caller_set_char_cap: bool,
+) -> GetSessionContentOutput {
+    let total_items = content.items.len();
+    let mut items = content.items;
+
+    let truncated = total_items > MAX_ITEMS;
+    if truncated {
+        items.truncate(MAX_ITEMS);
+    }
+
+    // Character-budget auto-truncation, only when the caller left the per-item
+    // cap unset (otherwise the caller's choice is authoritative).
+    let mut auto_truncated = false;
+    if !caller_set_char_cap && !items.is_empty() {
+        let total_chars: usize = items.iter().map(|i| i.text.chars().count()).sum();
+        if total_chars > CHAR_BUDGET {
+            let cap = (CHAR_BUDGET / items.len()).max(MIN_AUTO_CAP);
+            for item in &mut items {
+                if item.text.chars().count() > cap {
+                    item.text = item.text.chars().take(cap).collect();
+                    item.truncated = true;
+                    auto_truncated = true;
+                }
+            }
+        }
+    }
+
+    GetSessionContentOutput {
+        session_id: content.session_id,
+        name: content.name,
+        project: content.project,
+        message_count: content.message_count,
+        total_items,
+        returned_items: items.len(),
+        truncated,
+        auto_truncated,
+        items,
     }
 }
 
@@ -247,14 +347,21 @@ mod tests {
         session
     }
 
-    async fn run(params: serde_json::Value) -> Result<GetSessionContentOutput> {
-        let source = InMemorySource::new().with_session(sample());
+    async fn run_on(
+        session: ChatSession,
+        params: serde_json::Value,
+    ) -> Result<GetSessionContentOutput> {
+        let source = InMemorySource::new().with_session(session);
         let mut fixture = ToolTestFixture::new().with_session_source(Arc::new(source));
         let mut context = fixture.context();
         let mut input: GetSessionContentInput = serde_json::from_value(params).unwrap();
         GetSessionContentTool
             .execute(&mut context, &mut input)
             .await
+    }
+
+    async fn run(params: serde_json::Value) -> Result<GetSessionContentOutput> {
+        run_on(sample(), params).await
     }
 
     #[tokio::test]
@@ -270,6 +377,8 @@ mod tests {
             ]
         );
         assert_eq!(output.message_count, 4);
+        assert!(!output.truncated);
+        assert!(!output.auto_truncated);
         let rendered = output.render(&mut ResourcesTracker::new());
         assert!(rendered.contains("User: Investigate the OAuth token refresh"));
     }
@@ -299,7 +408,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn truncation_marks_items() {
+    async fn explicit_truncation_marks_items() {
         let output = run(json!({
             "session_id": "s1",
             "parts": ["user_text"],
@@ -310,5 +419,61 @@ mod tests {
         assert_eq!(output.items.len(), 1);
         assert!(output.items[0].truncated);
         assert_eq!(output.items[0].text.chars().count(), 5);
+        // Explicit cap is not reported as auto-truncation.
+        assert!(!output.auto_truncated);
+    }
+
+    #[tokio::test]
+    async fn item_cap_truncates_huge_sessions() {
+        let mut session = ChatSession::new_empty(
+            "big".to_string(),
+            "Big".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+        for i in 0..(MAX_ITEMS + 50) {
+            session.add_message(Message::new_user(format!("msg {i}")));
+        }
+        let output = run_on(
+            session,
+            json!({ "session_id": "big", "parts": ["user_text"] }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.total_items, MAX_ITEMS + 50);
+        assert_eq!(output.returned_items, MAX_ITEMS);
+        assert!(output.truncated);
+        let rendered = output.render(&mut ResourcesTracker::new());
+        assert!(rendered.contains("more item(s) not shown"));
+    }
+
+    #[tokio::test]
+    async fn char_budget_auto_truncates_when_no_cap_set() {
+        let mut session = ChatSession::new_empty(
+            "big".to_string(),
+            "Big".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+        // Ten long messages, well over the budget.
+        for _ in 0..10 {
+            session.add_message(Message::new_user("x".repeat(4_000)));
+        }
+        let output = run_on(
+            session,
+            json!({ "session_id": "big", "parts": ["user_text"] }),
+        )
+        .await
+        .unwrap();
+        assert!(output.auto_truncated);
+        assert!(!output.truncated);
+        // Each item capped to CHAR_BUDGET / items (>= MIN_AUTO_CAP).
+        assert!(
+            output
+                .items
+                .iter()
+                .all(|i| i.text.chars().count() <= CHAR_BUDGET)
+        );
+        assert!(output.items.iter().any(|i| i.truncated));
     }
 }
