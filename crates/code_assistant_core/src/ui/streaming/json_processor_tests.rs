@@ -814,9 +814,9 @@ mod tests {
         let tool_name = "complex_tool";
         let tool_id = "complex-obj-001";
         let json_chunks = vec![
-            "{{\"key1\": \"value1\", \"complex_param\": {{\"nested_key\": ".to_string(),
+            "{\"key1\": \"value1\", \"complex_param\": {\"nested_key\": ".to_string(),
             "\"nested_value\", \"nested_arr\": [1, ".to_string(),
-            "true, \"str\"]}}}}".to_string(),
+            "true, \"str\"]}}".to_string(),
         ];
         let fragments = process_json_chunks(&json_chunks, tool_name, tool_id);
         print_fragments(&fragments); // Merged fragments by default from process_json_chunks
@@ -850,8 +850,8 @@ mod tests {
         let tool_name = "simple_num_tool";
         let tool_id = "simple-num-002";
         let json_chunks = vec![
-            "{{\"count\": 12".to_string(),
-            "345, \"another\": true}}".to_string(),
+            "{\"count\": 12".to_string(),
+            "345, \"another\": true}".to_string(),
         ];
         let fragments = process_json_chunks(&json_chunks, tool_name, tool_id);
         print_fragments(&fragments);
