@@ -34,9 +34,13 @@ use crate::persistence::{ChatMetadata, ChatSession, FileSessionPersistence};
 
 pub mod extract;
 pub mod matcher;
+pub mod search;
 
 pub use extract::{ContentKind, ExtractedItem, Role, extract_items};
 pub use matcher::StringMatch;
+pub use search::{
+    SessionMatch, SessionSearchQuery, ToolCallFilter, ToolCallMatch, search_sessions,
+};
 
 /// Read-only access to the session store the query engine operates on.
 ///
