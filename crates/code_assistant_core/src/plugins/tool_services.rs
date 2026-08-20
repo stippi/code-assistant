@@ -22,6 +22,7 @@ pub struct CodeAssistantToolServices {
     pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
     pub terminal_interrupts: Option<Arc<crate::tools::TerminalInterrupts>>,
     pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
+    pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -36,6 +37,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             pty_sessions: self.pty_sessions.clone(),
             terminal_interrupts: self.terminal_interrupts.clone(),
             browser_sessions: self.browser_sessions.clone(),
+            session_source: self.session_source.clone(),
         })
     }
 
@@ -56,6 +58,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             pty_sessions: self.pty_sessions.clone(),
             terminal_interrupts: self.terminal_interrupts.clone(),
             browser_sessions: self.browser_sessions.clone(),
+            session_source: self.session_source.clone(),
         })
     }
 }

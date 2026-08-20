@@ -137,6 +137,10 @@ pub struct DefaultSubAgentRunner {
     permissions: ToolPermissions,
     /// The tool registry sub-agents run with (shared with the parent agent).
     tool_registry: Arc<crate::tools::core::ToolRegistry>,
+    /// Read-only view of the session store, so sub-agents get the session
+    /// introspection tools (`search_sessions`, `get_session_content`) — this
+    /// is what lets the parent split up work across the session archive.
+    session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
     /// Hook factory sub-agents run with (shared with the parent agent);
     /// `None` uses code-assistant's default hooks.
     hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
@@ -153,6 +157,7 @@ impl DefaultSubAgentRunner {
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         permissions: ToolPermissions,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
+        session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
         hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
     ) -> Self {
         let sandbox_policy = session_config.sandbox_policy.clone();
@@ -166,6 +171,7 @@ impl DefaultSubAgentRunner {
             permission_handler,
             permissions,
             tool_registry,
+            session_source,
             hooks_factory,
         }
     }
@@ -233,6 +239,9 @@ impl DefaultSubAgentRunner {
             pty_sessions: Some(Arc::new(pty_session::PtySessionManager::default())),
             browser_sessions: Some(Arc::new(web::BrowserSessionManager::default())),
             terminal_interrupts: Some(Arc::new(crate::tools::TerminalInterrupts::default())),
+            // Read-only session archive access, so the introspection tools
+            // work in sub-agents (parent shares its store).
+            session_source: self.session_source.clone(),
             hooks_factory: self.hooks_factory.clone(),
         };
 

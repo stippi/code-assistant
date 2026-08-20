@@ -932,6 +932,7 @@ impl SessionManager {
                 permission_handler.clone(),
                 permissions.clone(),
                 self.tool_registry.clone(),
+                Some(Arc::new(self.persistence.clone())),
                 self.hooks_factory.clone(),
             ));
 
@@ -963,6 +964,7 @@ impl SessionManager {
                 .active_sessions
                 .get(session_id)
                 .map(|instance| instance.terminal_interrupts.clone()),
+            session_source: Some(Arc::new(self.persistence.clone())),
             hooks_factory: self.hooks_factory.clone(),
         };
 

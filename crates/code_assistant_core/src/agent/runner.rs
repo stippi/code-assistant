@@ -52,6 +52,10 @@ pub struct AgentComponents {
     /// instance so an authenticated browser survives across agent runs.
     pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
 
+    /// Optional read-only view of the session store for the session
+    /// introspection tools (`search_sessions`, `get_session_content`).
+    pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
+
     /// Hook set for this agent; `None` uses code-assistant's default hooks.
     /// Embedders install a factory to customize e.g. the system
     /// prompt while reusing the rest of the runtime.
@@ -86,6 +90,7 @@ impl Agent {
             pty_sessions,
             terminal_interrupts,
             browser_sessions,
+            session_source,
             hooks_factory,
         } = components;
 
@@ -105,6 +110,7 @@ impl Agent {
             pty_sessions,
             terminal_interrupts,
             browser_sessions,
+            session_source,
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {

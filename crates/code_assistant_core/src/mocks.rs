@@ -1182,6 +1182,16 @@ impl ToolTestFixture {
         self
     }
 
+    /// Attach a read-only session store for the session-introspection tools
+    /// (`search_sessions`, `get_session_content`).
+    pub fn with_session_source(
+        mut self,
+        source: Arc<dyn crate::session_query::SessionSource>,
+    ) -> Self {
+        self.services.session_source = Some(source);
+        self
+    }
+
     /// The browser session registry, for assertions.
     pub fn browser_sessions(&self) -> Option<&web::BrowserSessionManager> {
         self.services.browser_sessions.as_deref()

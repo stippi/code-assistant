@@ -19,6 +19,7 @@ pub mod goals;
 pub mod persistence;
 pub mod plugins;
 pub mod session;
+pub mod session_query;
 pub mod skills;
 pub mod tool_dialects;
 pub mod tools;

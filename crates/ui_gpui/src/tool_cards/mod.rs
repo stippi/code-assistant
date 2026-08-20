@@ -20,6 +20,7 @@ pub mod code_card;
 pub mod diff_card;
 pub mod inline_renderer;
 pub mod mcp_tool;
+pub mod session_card;
 pub mod sub_agent_card;
 pub mod terminal_card;
 
