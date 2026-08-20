@@ -52,7 +52,10 @@ pub use search::{
 /// listing of lightweight [`ChatMetadata`] (used for the coarse, no-load
 /// pre-filter) and a full [`ChatSession`] load on demand (only for sessions
 /// that survive the pre-filter or are read in full).
-pub trait SessionSource {
+///
+/// `Send + Sync` so a source can be shared (`Arc<dyn SessionSource>`) across
+/// the tool services that travel type-erased into a tool invocation.
+pub trait SessionSource: Send + Sync {
     /// The metadata index of all sessions, newest first (as the persistence
     /// layer returns it).
     fn list_metadata(&self) -> Result<Vec<ChatMetadata>>;

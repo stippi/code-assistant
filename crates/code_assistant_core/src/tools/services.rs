@@ -45,6 +45,11 @@ pub struct ToolServices {
     /// Lives on the session instance so an authenticated browser survives
     /// across agent runs.
     pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
+    /// Optional read-only view of the session store, for the session
+    /// introspection tools (`search_sessions`, `get_session_content`). Wired
+    /// from the owning `SessionManager`'s persistence; when absent the tools
+    /// fall back to the default on-disk store.
+    pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
 }
 
 impl ToolServices {
@@ -58,6 +63,7 @@ impl ToolServices {
             pty_sessions: None,
             terminal_interrupts: None,
             browser_sessions: None,
+            session_source: None,
         }
     }
 }

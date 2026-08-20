@@ -963,6 +963,7 @@ impl SessionManager {
                 .active_sessions
                 .get(session_id)
                 .map(|instance| instance.terminal_interrupts.clone()),
+            session_source: Some(Arc::new(self.persistence.clone())),
             hooks_factory: self.hooks_factory.clone(),
         };
 

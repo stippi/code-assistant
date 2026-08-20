@@ -79,10 +79,11 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
     use impls::{
         BrowserActTool, BrowserCloseTool, BrowserLoginTool, BrowserNavigateTool,
         BrowserProfilesTool, BrowserReadTool, CancelWakeupTool, DeleteFilesTool, EditTool,
-        ExecuteCommandTool, GlobFilesTool, ListFilesTool, ListProjectsTool, ListSkillsTool,
-        NameSessionTool, PerplexityAskTool, ReadFilesTool, ReadSkillTool, ReplaceInFileTool,
-        ScheduleWakeupTool, SearchFilesTool, SpawnAgentTool, UpdatePlanTool, ViewDocumentsTool,
-        ViewImagesTool, WebFetchTool, WebSearchTool, WriteFileTool, WriteStdinTool,
+        ExecuteCommandTool, GetSessionContentTool, GlobFilesTool, ListFilesTool, ListProjectsTool,
+        ListSkillsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool, ReadSkillTool,
+        ReplaceInFileTool, ScheduleWakeupTool, SearchFilesTool, SearchSessionsTool, SpawnAgentTool,
+        UpdatePlanTool, ViewDocumentsTool, ViewImagesTool, WebFetchTool, WebSearchTool,
+        WriteFileTool, WriteStdinTool,
     };
 
     registry.register(Box::new(BrowserNavigateTool));
@@ -109,6 +110,8 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
     registry.register(Box::new(ReadSkillTool));
     registry.register(Box::new(ReplaceInFileTool));
     registry.register(Box::new(SearchFilesTool));
+    registry.register(Box::new(SearchSessionsTool));
+    registry.register(Box::new(GetSessionContentTool));
     registry.register(Box::new(ScheduleWakeupTool));
     registry.register(Box::new(CancelWakeupTool));
     registry.register(Box::new(SpawnAgentTool));

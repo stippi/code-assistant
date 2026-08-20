@@ -233,6 +233,8 @@ impl DefaultSubAgentRunner {
             pty_sessions: Some(Arc::new(pty_session::PtySessionManager::default())),
             browser_sessions: Some(Arc::new(web::BrowserSessionManager::default())),
             terminal_interrupts: Some(Arc::new(crate::tools::TerminalInterrupts::default())),
+            // Sub-agents are not offered the session-introspection tools.
+            session_source: None,
             hooks_factory: self.hooks_factory.clone(),
         };
 
