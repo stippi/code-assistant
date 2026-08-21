@@ -1,3 +1,4 @@
+mod about_dialog;
 pub mod project_dialog;
 mod status_popover;
 
@@ -14,6 +15,7 @@ use crate::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
 
 use code_assistant_core::ui::ui_events::UiEvent;
 
+use about_dialog::{AboutDialog, AboutDialogEvent};
 use project_dialog::{NewProjectDialog, NewProjectDialogEvent};
 
 use gpui::{
@@ -87,6 +89,8 @@ pub struct MainScreen {
     last_worktree_data: Option<WorktreeData>,
     /// Modal dialog for creating a new project (shown as overlay when Some)
     new_project_dialog: Option<Entity<NewProjectDialog>>,
+    /// Modal "About" dialog (shown as overlay when Some)
+    about_dialog: Option<Entity<AboutDialog>>,
     /// Pending folder path from the file picker, waiting to create the dialog in render
     pending_project_path: Option<std::path::PathBuf>,
 
@@ -105,6 +109,7 @@ pub struct MainScreen {
     _plan_banner_subscription: Subscription,
     _project_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
+    _about_dialog_subscription: Option<Subscription>,
     _window_bounds_subscription: Subscription,
 }
 
@@ -158,6 +163,7 @@ impl MainScreen {
             plan_collapsed: false,
             last_worktree_data: None,
             new_project_dialog: None,
+            about_dialog: None,
             pending_project_path: None,
 
             sidebar_animation_state: SidebarAnimationState::Idle,
@@ -170,6 +176,7 @@ impl MainScreen {
             _plan_banner_subscription: plan_banner_subscription,
             _project_sidebar_subscription: project_sidebar_subscription,
             _new_project_dialog_subscription: None,
+            _about_dialog_subscription: None,
             _window_bounds_subscription: window_bounds_subscription,
         };
 
@@ -198,6 +205,30 @@ impl MainScreen {
         cx: &mut Context<Self>,
     ) {
         cx.emit(MainScreenEvent::OpenSettings);
+    }
+
+    fn on_open_about(&mut self, _: &ClickEvent, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let dialog = cx.new(|cx| AboutDialog::new(window, cx));
+        let subscription = cx.subscribe_in(&dialog, window, Self::on_about_dialog_event);
+        self.about_dialog = Some(dialog);
+        self._about_dialog_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    fn on_about_dialog_event(
+        &mut self,
+        _dialog: &Entity<AboutDialog>,
+        event: &AboutDialogEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            AboutDialogEvent::Closed => {
+                self.about_dialog = None;
+                self._about_dialog_subscription = None;
+                cx.notify();
+            }
+        }
     }
 
     // ── Sidebar animation ─────────────────────────────────────────────────
@@ -1349,6 +1380,7 @@ impl Render for MainScreen {
         }
 
         let new_project_dialog = self.new_project_dialog.clone();
+        let about_dialog = self.about_dialog.clone();
         let sidebar_scale = self.sidebar_animation_scale();
         let permission_prompts = self.render_permission_prompts(cx);
 
@@ -1485,31 +1517,56 @@ impl Render for MainScreen {
                                     .on_click(cx.listener(Self::on_zoom_in)),
                             ),
                     )
-                    // Right side - settings button
+                    // Right side - about + settings buttons
                     .child(
                         div()
-                            .id("settings-btn")
                             .flex()
                             .items_center()
                             .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(cx.theme().muted))
-                            .child(
-                                Icon::default()
-                                    .path(SharedString::from("icons/settings.svg"))
-                                    .with_size(Size::Small)
-                                    .text_color(cx.theme().muted_foreground),
-                            )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Settings"),
+                                    .id("about-btn")
+                                    .size(px(28.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from("icons/info.svg"))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .on_click(cx.listener(Self::on_open_about)),
                             )
-                            .on_click(cx.listener(Self::on_open_settings)),
+                            // Settings button
+                            .child(
+                                div()
+                                    .id("settings-btn")
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from("icons/settings.svg"))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Settings"),
+                                    )
+                                    .on_click(cx.listener(Self::on_open_settings)),
+                            ),
                     ),
             )
             // Main content area with project sidebar and messages+input (2-column layout)
@@ -1594,6 +1651,8 @@ impl Render for MainScreen {
             )
             // Modal dialog overlay for new project creation
             .when_some(new_project_dialog, |el, dialog| el.child(dialog))
+            // Modal "About" dialog overlay
+            .when_some(about_dialog, |el, dialog| el.child(dialog))
     }
 }
 

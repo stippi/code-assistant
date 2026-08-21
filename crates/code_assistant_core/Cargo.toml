@@ -76,6 +76,10 @@ transmutation = { version = "0.3", features = ["office"], optional = true }
 # Prevent system sleep while agents are running
 keepawake = "0.6"
 
+[build-dependencies]
+# Format the build timestamp as RFC3339 UTC in build.rs.
+chrono = "0.4"
+
 [dev-dependencies]
 axum = "0.7"
 # test-util enables the paused clock (`start_paused`) for timer tests

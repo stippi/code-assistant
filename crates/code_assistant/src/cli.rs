@@ -1,5 +1,6 @@
 use crate::types::ToolSyntax;
-use clap::{Parser, Subcommand, ValueEnum};
+use crate::version;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use llm::provider_config::ConfigurationSystem;
 use sandbox::SandboxPolicy;
 use std::path::PathBuf;
@@ -66,7 +67,7 @@ pub enum Mode {
 
 /// Define the application arguments
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(about, long_about = None)]
 pub struct Args {
     #[command(subcommand)]
     pub mode: Option<Mode>,
@@ -138,7 +139,17 @@ pub struct Args {
 
 impl Args {
     pub fn parse() -> Self {
-        <Args as Parser>::parse()
+        // Build the command with goreleaser-style version strings captured at
+        // compile time: `-V` prints the one-line summary, `--version` prints
+        // the full commit/build/toolchain block. Leaked to `&'static str`
+        // because clap wants an owned static; `parse` runs once at startup.
+        let short: &'static str = Box::leak(version::short().into_boxed_str());
+        let long: &'static str = Box::leak(version::long().into_boxed_str());
+        let command = <Args as CommandFactory>::command()
+            .version(short)
+            .long_version(long);
+        let matches = command.get_matches();
+        <Args as FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
     }
 
     /// Resolve a model name, ensuring it exists in the configuration and providing a fallback.

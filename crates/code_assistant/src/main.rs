@@ -8,7 +8,7 @@ mod logging;
 #[allow(unused_imports)]
 pub(crate) use code_assistant_core::{
     agent, config, config_dir, persistence, plugins, session, skills, tool_dialects, tools, types,
-    ui, utils,
+    ui, utils, version,
 };
 
 use crate::cli::{Args, Mode};
