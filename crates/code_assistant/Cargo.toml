@@ -1,6 +1,6 @@
 [package]
 name = "code-assistant"
-version = "0.2.15"
+version = "0.2.16"
 edition = "2024"
 
 # Bundling via `cargo bundle` (cargo install cargo-bundle && cargo bundle --release).

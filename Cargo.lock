@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "code-assistant"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "clap",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "code_assistant_core"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "agent_core",
  "agent_orchestration",
@@ -6231,7 +6231,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llm"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6604,7 +6604,7 @@ dependencies = [
 
 [[package]]
 name = "mcp_server"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "code_assistant_core",
@@ -11468,7 +11468,7 @@ dependencies = [
 
 [[package]]
 name = "ui_acp"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -11491,7 +11491,7 @@ dependencies = [
 
 [[package]]
 name = "ui_gpui"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "agent_core",
  "anyhow",
@@ -11526,7 +11526,7 @@ dependencies = [
 
 [[package]]
 name = "ui_terminal"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "agent_core",
  "anyhow",
@@ -12235,7 +12235,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "async-trait",
