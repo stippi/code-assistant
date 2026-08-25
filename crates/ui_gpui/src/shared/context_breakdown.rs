@@ -36,14 +36,18 @@ impl ContextUsage {
             .saturating_add(self.output_tokens)
     }
 
-    /// Fraction of the context window occupied by the categories that count as
-    /// prompt context (input + cache read). This matches the ratio used by the
-    /// ring indicator so the two stay consistent.
+    /// Fraction of the context window occupied by the last API request.
+    ///
+    /// All token categories count towards the occupancy: input and cache-write
+    /// tokens are both part of the prompt, cache-read tokens were replayed from
+    /// the cache into the prompt, and the output tokens of the last request
+    /// become part of the prompt on the next request. This is the same total
+    /// the breakdown bar visualizes, so the ring and the bar stay in sync.
     pub fn context_ratio(&self) -> Option<f32> {
         if self.limit == 0 {
             return None;
         }
-        let used = self.input_tokens.saturating_add(self.cache_read_tokens);
+        let used = self.total();
         if used == 0 {
             return None;
         }
@@ -242,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn context_ratio_matches_input_plus_cache_read() {
+    fn context_ratio_counts_all_categories() {
         let usage = ContextUsage {
             input_tokens: 10,
             cache_write_tokens: 5,
@@ -251,7 +255,7 @@ mod tests {
             limit: 100,
         };
         assert_eq!(usage.total(), 53);
-        assert_eq!(usage.context_ratio(), Some(0.4));
+        assert_eq!(usage.context_ratio(), Some(0.53));
     }
 
     #[test]

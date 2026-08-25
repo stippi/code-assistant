@@ -617,8 +617,15 @@ impl ACPUserUI {
 
         // Context window usage -> UsageUpdate
         if let Some(limit) = self.context_token_limit.filter(|l| *l > 0) {
+            // All token categories of the last request occupy the context
+            // window: input and cache-write tokens are both part of the prompt,
+            // cache-read tokens were replayed from the cache into the prompt,
+            // and the output tokens become part of the prompt on the next
+            // request.
             let used = metadata.last_usage.input_tokens as u64
-                + metadata.last_usage.cache_read_input_tokens as u64;
+                + metadata.last_usage.cache_creation_input_tokens as u64
+                + metadata.last_usage.cache_read_input_tokens as u64
+                + metadata.last_usage.output_tokens as u64;
             if used > 0 {
                 let mut last = self.last_reported_usage.lock().unwrap();
                 if *last != Some((used, limit)) {
