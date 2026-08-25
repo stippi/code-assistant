@@ -90,6 +90,8 @@ pub struct InputArea {
 
     // Context usage of the last API request (drives the ring + breakdown tooltip)
     context_usage: Option<ContextUsage>,
+    // Context usage summed across the active node path of the session
+    context_total_usage: Option<ContextUsage>,
 
     // Branch editing state
     /// When editing a message, this is the parent node ID where the new branch will be created
@@ -159,6 +161,7 @@ impl InputArea {
             cancel_enabled: false,
             externally_locked: false,
             context_usage: None,
+            context_total_usage: None,
 
             branch_parent_id: None,
 
@@ -327,6 +330,12 @@ impl InputArea {
     /// its breakdown tooltip).
     pub fn set_context_usage(&mut self, usage: Option<ContextUsage>) {
         self.context_usage = usage;
+    }
+
+    /// Update the session-total context usage (summed across the active node
+    /// path), shown as a second section in the breakdown tooltip.
+    pub fn set_context_total_usage(&mut self, usage: Option<ContextUsage>) {
+        self.context_total_usage = usage;
     }
     /// Handle the Enter action in the capture phase.
     ///
@@ -774,6 +783,7 @@ impl InputArea {
                                     )
                                     .child({
                                         let usage = self.context_usage;
+                                        let total_usage = self.context_total_usage;
                                         let ratio = usage
                                             .and_then(|u| u.context_ratio())
                                             .unwrap_or(0.0);
@@ -793,6 +803,7 @@ impl InputArea {
                                                     gpui_component::tooltip::Tooltip::element(
                                                         move |_window, _cx| {
                                                             ContextBreakdown::new(usage)
+                                                                .session_total(total_usage)
                                                         },
                                                     )
                                                     .build(window, cx)
