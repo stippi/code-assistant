@@ -68,23 +68,35 @@ pub struct SubAgentUsage {
     /// Input tokens from the last LLM request (for context ratio computation)
     #[serde(default)]
     pub last_request_input_tokens: u32,
+    /// Cache write (creation) tokens from the last LLM request
+    #[serde(default)]
+    pub last_request_cache_write_tokens: u32,
     /// Cache read tokens from the last LLM request (for context ratio computation)
     #[serde(default)]
     pub last_request_cache_read_tokens: u32,
+    /// Output tokens from the last LLM request
+    #[serde(default)]
+    pub last_request_output_tokens: u32,
 }
 
 impl SubAgentUsage {
     /// Compute the context usage ratio (0.0..=1.0) for the last LLM request.
     ///
-    /// This mirrors how the parent agent computes usage: the *last* assistant
-    /// message's `input_tokens + cache_read_input_tokens` divided by the
-    /// model's context limit.
+    /// This mirrors how the parent agent computes usage: all token categories
+    /// of the last request occupy the context window. Input and cache-write
+    /// tokens are both part of the prompt, cache-read tokens were replayed from
+    /// the cache into the prompt, and the last request's output tokens become
+    /// part of the prompt on the next request.
     pub fn context_ratio(&self) -> Option<f32> {
         let limit = self.context_limit?;
         if limit == 0 {
             return None;
         }
-        let used = self.last_request_input_tokens + self.last_request_cache_read_tokens;
+        let used = self
+            .last_request_input_tokens
+            .saturating_add(self.last_request_cache_write_tokens)
+            .saturating_add(self.last_request_cache_read_tokens)
+            .saturating_add(self.last_request_output_tokens);
         if used > 0 {
             Some(used as f32 / limit as f32)
         } else {
@@ -400,7 +412,9 @@ fn compute_sub_agent_usage(messages: &[Message], model_name: &str) -> SubAgentUs
             // Track last assistant message's usage for context ratio
             if matches!(message.role, llm::MessageRole::Assistant) {
                 total.last_request_input_tokens = usage.input_tokens;
+                total.last_request_cache_write_tokens = usage.cache_creation_input_tokens;
                 total.last_request_cache_read_tokens = usage.cache_read_input_tokens;
+                total.last_request_output_tokens = usage.output_tokens;
             }
         }
     }

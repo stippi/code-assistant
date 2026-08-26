@@ -570,6 +570,8 @@ impl Gpui {
                     // (not in chat_sessions, which can be overwritten by stale disk data)
                     *self.current_session_last_usage.lock().unwrap() =
                         Some(metadata.last_usage.clone());
+                    *self.current_session_total_usage.lock().unwrap() =
+                        Some(metadata.total_usage.clone());
 
                     // Update MessagesView with current project
                     self.update_messages_view(cx, |messages_view, _cx| {

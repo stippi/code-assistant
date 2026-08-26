@@ -1182,6 +1182,7 @@ impl Render for MainScreen {
             current_permission_tier,
             current_worktree_data,
             current_last_usage,
+            current_total_usage,
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
             (
                 gpui.get_chat_sessions(),
@@ -1193,9 +1194,21 @@ impl Render for MainScreen {
                 gpui.get_current_permission_tier(),
                 gpui.get_current_worktree_data(),
                 gpui.get_current_session_last_usage(),
+                gpui.get_current_session_total_usage(),
             )
         } else {
-            (Vec::new(), None, None, None, None, None, None, None, None)
+            (
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
         };
 
         // Update project sidebar if needed
@@ -1344,9 +1357,10 @@ impl Render for MainScreen {
             false
         };
 
-        // Compute context usage ratio from the current session's last_usage
-        // (stored in Gpui global, immune to sessions overwrites) + cached model limit
-        let context_usage_ratio = self
+        // Build the context usage breakdown from the current session's
+        // last_usage (stored in Gpui global, immune to sessions overwrites)
+        // combined with the cached model context limit.
+        let context_usage = self
             .context_limit_cache
             .as_ref()
             .and_then(|(_model, limit)| {
@@ -1354,17 +1368,50 @@ impl Render for MainScreen {
                     return None;
                 }
                 let usage = current_last_usage.as_ref()?;
-                let used = usage.input_tokens + usage.cache_read_input_tokens;
-                if used > 0 {
-                    Some(used as f32 / *limit as f32)
-                } else {
-                    None
+                if usage.input_tokens == 0
+                    && usage.output_tokens == 0
+                    && usage.cache_read_input_tokens == 0
+                    && usage.cache_creation_input_tokens == 0
+                {
+                    return None;
                 }
+                Some(crate::shared::context_breakdown::ContextUsage {
+                    input_tokens: usage.input_tokens,
+                    cache_write_tokens: usage.cache_creation_input_tokens,
+                    cache_read_tokens: usage.cache_read_input_tokens,
+                    output_tokens: usage.output_tokens,
+                    limit: *limit,
+                })
             });
+
+        // Session total: usage summed across the active node path. Shown as a
+        // proportional (full-width) bar, so the context limit is not required.
+        let context_total_usage = current_total_usage.as_ref().and_then(|usage| {
+            if usage.input_tokens == 0
+                && usage.output_tokens == 0
+                && usage.cache_read_input_tokens == 0
+                && usage.cache_creation_input_tokens == 0
+            {
+                return None;
+            }
+            let limit = self
+                .context_limit_cache
+                .as_ref()
+                .map(|(_model, limit)| *limit)
+                .unwrap_or(0);
+            Some(crate::shared::context_breakdown::ContextUsage {
+                input_tokens: usage.input_tokens,
+                cache_write_tokens: usage.cache_creation_input_tokens,
+                cache_read_tokens: usage.cache_read_input_tokens,
+                output_tokens: usage.output_tokens,
+                limit,
+            })
+        });
 
         self.input_area.update(cx, |input_area, _cx| {
             input_area.set_agent_state(agent_is_running, cancel_enabled, externally_locked);
-            input_area.set_context_usage_ratio(context_usage_ratio);
+            input_area.set_context_usage(context_usage);
+            input_area.set_context_total_usage(context_total_usage);
         });
 
         let plan_for_banner = plan_state.clone().filter(|plan| !plan.entries.is_empty());

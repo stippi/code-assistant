@@ -113,6 +113,10 @@ pub struct Gpui {
     // stale metadata loaded from disk (via UpdateChatList / ListSessions).
     current_session_last_usage: Arc<Mutex<Option<llm::Usage>>>,
 
+    // Total usage summed across the active node path of the current session.
+    // Stored separately from chat_sessions for the same reason as last_usage.
+    current_session_total_usage: Arc<Mutex<Option<llm::Usage>>>,
+
     // Pending message edit state (for branching)
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
 
@@ -332,6 +336,7 @@ impl Gpui {
         self.pending_permission_requests.lock().unwrap().clear();
         *self.current_worktree_data.lock().unwrap() = None;
         *self.current_session_last_usage.lock().unwrap() = None;
+        *self.current_session_total_usage.lock().unwrap() = None;
     }
 
     #[allow(clippy::new_without_default)]
@@ -431,6 +436,9 @@ impl Gpui {
 
             // Current session last usage
             current_session_last_usage: Arc::new(Mutex::new(None)),
+
+            // Current session total usage
+            current_session_total_usage: Arc::new(Mutex::new(None)),
 
             // Debounce task for UI state persistence
             ui_state_save_task: Arc::new(Mutex::new(None)),
@@ -727,6 +735,10 @@ impl Gpui {
 
     pub fn get_current_session_last_usage(&self) -> Option<llm::Usage> {
         self.current_session_last_usage.lock().unwrap().clone()
+    }
+
+    pub fn get_current_session_total_usage(&self) -> Option<llm::Usage> {
+        self.current_session_total_usage.lock().unwrap().clone()
     }
 
     /// Get and clear pending edit (used by RootView to pick up edit state)

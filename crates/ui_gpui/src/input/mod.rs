@@ -5,6 +5,7 @@ pub mod sandbox_selector;
 pub mod skill_completion;
 pub mod worktree_selector;
 
+use super::shared::context_breakdown::{ContextBreakdown, ContextUsage};
 use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
@@ -87,8 +88,10 @@ pub struct InputArea {
     cancel_enabled: bool,
     externally_locked: bool,
 
-    // Context usage ratio (0.0–1.0)
-    context_usage_ratio: Option<f32>,
+    // Context usage of the last API request (drives the ring + breakdown tooltip)
+    context_usage: Option<ContextUsage>,
+    // Context usage summed across the active node path of the session
+    context_total_usage: Option<ContextUsage>,
 
     // Branch editing state
     /// When editing a message, this is the parent node ID where the new branch will be created
@@ -157,7 +160,8 @@ impl InputArea {
             agent_is_running: false,
             cancel_enabled: false,
             externally_locked: false,
-            context_usage_ratio: None,
+            context_usage: None,
+            context_total_usage: None,
 
             branch_parent_id: None,
 
@@ -322,9 +326,16 @@ impl InputArea {
         self.externally_locked = externally_locked;
     }
 
-    /// Update the context usage ratio (0.0–1.0)
-    pub fn set_context_usage_ratio(&mut self, ratio: Option<f32>) {
-        self.context_usage_ratio = ratio;
+    /// Update the context usage of the last API request (drives the ring and
+    /// its breakdown tooltip).
+    pub fn set_context_usage(&mut self, usage: Option<ContextUsage>) {
+        self.context_usage = usage;
+    }
+
+    /// Update the session-total context usage (summed across the active node
+    /// path), shown as a second section in the breakdown tooltip.
+    pub fn set_context_total_usage(&mut self, usage: Option<ContextUsage>) {
+        self.context_total_usage = usage;
     }
     /// Handle the Enter action in the capture phase.
     ///
@@ -771,7 +782,11 @@ impl InputArea {
                                             .child(self.permission_selector.clone()),
                                     )
                                     .child({
-                                        let ratio = self.context_usage_ratio.unwrap_or(0.0);
+                                        let usage = self.context_usage;
+                                        let total_usage = self.context_total_usage;
+                                        let ratio = usage
+                                            .and_then(|u| u.context_ratio())
+                                            .unwrap_or(0.0);
                                         let progress_color = if ratio >= 0.8 {
                                             cx.theme().warning
                                         } else {
@@ -783,12 +798,16 @@ impl InputArea {
                                             .flex()
                                             .items_center()
                                             .ml_1()
-                                            .tooltip(move |window, cx| {
-                                                gpui_component::tooltip::Tooltip::new(format!(
-                                                    "Context: {:.0}%",
-                                                    ratio * 100.0
-                                                ))
-                                                .build(window, cx)
+                                            .when_some(usage, |el, usage| {
+                                                el.tooltip(move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::element(
+                                                        move |_window, _cx| {
+                                                            ContextBreakdown::new(usage)
+                                                                .session_total(total_usage)
+                                                        },
+                                                    )
+                                                    .build(window, cx)
+                                                })
                                             })
                                             .child({
                                                 let scale = cx.theme().font_size / px(16.0);

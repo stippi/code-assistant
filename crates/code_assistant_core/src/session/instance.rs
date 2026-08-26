@@ -353,8 +353,11 @@ impl SessionInstance {
         Ok(node_id)
     }
 
-    /// Get the current context size (input tokens + cache reads from most recent assistant message)
-    /// This represents the total tokens being processed in the current LLM request
+    /// Get the current context size occupied by the most recent assistant
+    /// message. All token categories count: input and cache-write tokens are
+    /// both part of the prompt, cache-read tokens were replayed from the cache
+    /// into the prompt, and the output tokens become part of the prompt on the
+    /// next request.
     #[allow(dead_code)]
     pub fn get_current_context_size(&self) -> u32 {
         // Find the most recent assistant message with usage data
@@ -362,7 +365,11 @@ impl SessionInstance {
             if matches!(message.role, llm::MessageRole::Assistant)
                 && let Some(usage) = &message.usage
             {
-                return usage.input_tokens + usage.cache_read_input_tokens;
+                return usage
+                    .input_tokens
+                    .saturating_add(usage.cache_creation_input_tokens)
+                    .saturating_add(usage.cache_read_input_tokens)
+                    .saturating_add(usage.output_tokens);
             }
         }
         0
