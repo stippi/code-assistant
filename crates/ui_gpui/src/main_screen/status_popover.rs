@@ -5,6 +5,7 @@
 use gpui::{AnyElement, SharedString, Styled, div, px, rems, rgba, svg};
 use gpui::{Context, prelude::*};
 use gpui_component::ActiveTheme;
+use gpui_component::text::TextView;
 
 use crate::{Gpui, UiEventSender};
 use code_assistant_core::ui::ui_events::UiEvent;
@@ -86,7 +87,10 @@ pub(super) fn render_status_popover(
                                 .overflow_hidden() // Prevent text from overflowing
                                 .whitespace_normal() // Enable text wrapping
                                 .line_height(rems(0.875)) // Set line height for better readability
-                                .child(error_message),
+                                .child(
+                                    TextView::markdown("error-message-text", &error_message)
+                                        .selectable(true),
+                                ),
                         )
                         .child(
                             // Add a close button
