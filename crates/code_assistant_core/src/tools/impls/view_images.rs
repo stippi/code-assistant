@@ -1,6 +1,7 @@
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
-    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+    ImageData, MAX_IMAGE_EDGE, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
+    cap_base64_image, capabilities,
 };
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
@@ -300,6 +301,16 @@ impl Tool for ViewImagesTool {
 
             let base64_data = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let file_size = bytes.len();
+
+            // Cap oversized images once, at load time, so the bounded version
+            // is stored in the tool result and re-sent on later turns without
+            // repeated resize work. `file_size` keeps reporting the original
+            // on-disk size.
+            let (media_type, base64_data) =
+                match cap_base64_image(&media_type, &base64_data, MAX_IMAGE_EDGE) {
+                    Some(capped) => capped,
+                    None => (media_type, base64_data),
+                };
 
             loaded_images.push(LoadedImage {
                 path: path_str.clone(),

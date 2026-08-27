@@ -7,8 +7,8 @@
 //! place to import from.
 
 pub use tools_core::{
-    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
-    ToolSpec, generate_tool_title,
+    ImageData, MAX_IMAGE_EDGE, Render, ResourcesTracker, Tool, ToolContext, ToolError,
+    ToolRegistry, ToolResult, ToolSpec, cap_base64_image, cap_image_data, generate_tool_title,
 };
 
 // Domain-side pieces that historically lived here.

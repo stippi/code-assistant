@@ -126,7 +126,21 @@ impl BrowserOutput {
         session.settle().await;
         let observation = session.observe_with(include_text).await.ok();
         let screenshot_base64 = match session.screenshot(full_page).await {
-            Ok(png) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
+            Ok(png) => {
+                let base64_data = base64::engine::general_purpose::STANDARD.encode(png);
+                // Cap the screenshot once, here at capture time, so the bounded
+                // version is stored in the tool result and re-sent on later
+                // turns without repeated resize work. Full-page screenshots in
+                // particular can be very tall.
+                let capped = crate::tools::core::cap_base64_image(
+                    "image/png",
+                    &base64_data,
+                    crate::tools::core::MAX_IMAGE_EDGE,
+                )
+                .map(|(_media_type, data)| data)
+                .unwrap_or(base64_data);
+                Some(capped)
+            }
             Err(_) => None,
         };
         Self {
