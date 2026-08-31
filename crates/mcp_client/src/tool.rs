@@ -85,7 +85,7 @@ impl DynTool for McpTool {
                 .into());
             }
         };
-        let output = match self
+        let mut output = match self
             .connection
             .call_tool(&self.remote_name, arguments)
             .await
@@ -95,11 +95,15 @@ impl DynTool for McpTool {
             // can react to, never a crashed agent loop.
             Err(error) => McpToolOutput::transport_error(format!("{error:#}")),
         };
+        // Cap oversized images once, at creation.
+        tools_core::render::Render::cap_images(&mut output, tools_core::MAX_IMAGE_EDGE);
         Ok(Box::new(output))
     }
 
     fn deserialize_output(&self, json: Value) -> Result<Box<dyn AnyOutput>> {
-        let output: McpToolOutput = serde_json::from_value(json)?;
+        let mut output: McpToolOutput = serde_json::from_value(json)?;
+        // Re-check dimensions on load for sessions persisted before capping.
+        tools_core::render::Render::cap_images(&mut output, tools_core::MAX_IMAGE_EDGE);
         Ok(Box::new(output))
     }
 }

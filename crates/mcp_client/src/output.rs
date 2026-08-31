@@ -33,21 +33,10 @@ impl McpToolOutput {
         for block in &result.content {
             match block {
                 ContentBlock::Text(text) => text_parts.push(text.text.clone()),
-                ContentBlock::Image(image) => {
-                    // Cap oversized images once, at ingestion, so the bounded
-                    // version is stored in the tool result and re-sent on later
-                    // turns without repeated resize work.
-                    let (media_type, base64_data) = tools_core::cap_base64_image(
-                        &image.mime_type,
-                        &image.data,
-                        tools_core::MAX_IMAGE_EDGE,
-                    )
-                    .unwrap_or_else(|| (image.mime_type.clone(), image.data.clone()));
-                    images.push(McpImage {
-                        media_type,
-                        base64_data,
-                    })
-                }
+                ContentBlock::Image(image) => images.push(McpImage {
+                    media_type: image.mime_type.clone(),
+                    base64_data: image.data.clone(),
+                }),
                 other => {
                     // Resource/audio/… content: pass through as raw JSON
                     // rather than dropping it silently.
@@ -119,5 +108,16 @@ impl Render for McpToolOutput {
                 base64_data: image.base64_data.clone(),
             })
             .collect()
+    }
+
+    fn cap_images(&mut self, max_edge: u32) {
+        for image in &mut self.images {
+            if let Some((media_type, base64_data)) =
+                tools_core::cap_base64_image(&image.media_type, &image.base64_data, max_edge)
+            {
+                image.media_type = media_type;
+                image.base64_data = base64_data;
+            }
+        }
     }
 }

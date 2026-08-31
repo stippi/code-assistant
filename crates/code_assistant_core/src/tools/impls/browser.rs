@@ -24,7 +24,8 @@
 //! plus the page's url/title/text.
 
 use crate::tools::core::{
-    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, cap_base64_image,
+    capabilities,
 };
 use crate::tools::services::ToolServicesAccess;
 use anyhow::Result;
@@ -126,21 +127,7 @@ impl BrowserOutput {
         session.settle().await;
         let observation = session.observe_with(include_text).await.ok();
         let screenshot_base64 = match session.screenshot(full_page).await {
-            Ok(png) => {
-                let base64_data = base64::engine::general_purpose::STANDARD.encode(png);
-                // Cap the screenshot once, here at capture time, so the bounded
-                // version is stored in the tool result and re-sent on later
-                // turns without repeated resize work. Full-page screenshots in
-                // particular can be very tall.
-                let capped = crate::tools::core::cap_base64_image(
-                    "image/png",
-                    &base64_data,
-                    crate::tools::core::MAX_IMAGE_EDGE,
-                )
-                .map(|(_media_type, data)| data)
-                .unwrap_or(base64_data);
-                Some(capped)
-            }
+            Ok(png) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
             Err(_) => None,
         };
         Self {
@@ -226,6 +213,15 @@ impl Render for BrowserOutput {
                 base64_data: data.clone(),
             })
             .collect()
+    }
+
+    fn cap_images(&mut self, max_edge: u32) {
+        if let Some(data) = self.screenshot_base64.take() {
+            let capped = cap_base64_image("image/png", &data, max_edge)
+                .map(|(_media_type, capped)| capped)
+                .unwrap_or(data);
+            self.screenshot_base64 = Some(capped);
+        }
     }
 }
 
