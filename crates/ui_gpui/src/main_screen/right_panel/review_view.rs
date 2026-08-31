@@ -332,8 +332,7 @@ impl ReviewView {
         // existing sections in place (preserving expansion / selection).
         let incoming_roots: Vec<PathBuf> =
             listing.repos.iter().map(|r| r.repo_root.clone()).collect();
-        let current_roots: Vec<PathBuf> =
-            self.repos.iter().map(|r| r.repo_root.clone()).collect();
+        let current_roots: Vec<PathBuf> = self.repos.iter().map(|r| r.repo_root.clone()).collect();
 
         if incoming_roots != current_roots {
             self.repos = listing
@@ -401,14 +400,10 @@ impl ReviewView {
         tree.update(cx, |t, cx| t.set_files(&data.files, cx));
 
         let root_for_tree = data.repo_root.clone();
-        let tree_sub = cx.subscribe_in(
-            &tree,
-            window,
-            move |this, _tree, event, _window, cx| {
-                let ChangedFilesTreeEvent::FileSelected(path) = event;
-                this.on_file_selected(root_for_tree.clone(), path.clone(), cx);
-            },
-        );
+        let tree_sub = cx.subscribe_in(&tree, window, move |this, _tree, event, _window, cx| {
+            let ChangedFilesTreeEvent::FileSelected(path) = event;
+            this.on_file_selected(root_for_tree.clone(), path.clone(), cx);
+        });
 
         let items: Vec<BaseOption> = data
             .base_candidates
@@ -456,7 +451,9 @@ impl ReviewView {
         cx: &mut Context<Self>,
     ) {
         section.label = data.label.clone();
-        section.tree.update(cx, |t, cx| t.set_files(&data.files, cx));
+        section
+            .tree
+            .update(cx, |t, cx| t.set_files(&data.files, cx));
 
         if section.base_candidates != data.base_candidates {
             section.base_candidates = data.base_candidates.clone();
@@ -612,9 +609,7 @@ impl ReviewView {
                             .child(section.label.clone()),
                     )
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        if let Some(s) =
-                            this.repos.iter_mut().find(|s| s.repo_root == repo_root)
-                        {
+                        if let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == repo_root) {
                             s.collapsed = !s.collapsed;
                             cx.notify();
                         }

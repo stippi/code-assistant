@@ -63,7 +63,8 @@ impl RightPanel {
 
     /// Point the active view(s) at a session.
     pub fn set_session(&mut self, session_id: Option<String>, cx: &mut Context<Self>) {
-        self.review_view.update(cx, |v, cx| v.set_session(session_id, cx));
+        self.review_view
+            .update(cx, |v, cx| v.set_session(session_id, cx));
     }
 
     /// Re-request data for the active view.

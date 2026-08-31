@@ -1098,8 +1098,7 @@ impl SessionService {
                         (files, None)
                     }
                     ReviewMode::BranchVsBase => {
-                        let resolved =
-                            resolve_review_base(&repo, override_base, &base_candidates);
+                        let resolved = resolve_review_base(&repo, override_base, &base_candidates);
                         match &resolved {
                             Some(b) => {
                                 let files = repo
@@ -1464,7 +1463,10 @@ mod discover_tests {
         git_init(tmp.path());
         let repos = discover_review_repos(tmp.path());
         assert_eq!(repos.len(), 1);
-        assert_eq!(repos[0].0.canonicalize().unwrap(), tmp.path().canonicalize().unwrap());
+        assert_eq!(
+            repos[0].0.canonicalize().unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
     }
 
     #[test]

@@ -1857,14 +1857,13 @@ impl Render for MainScreen {
                         };
                         let sidebar_width = self.right_sidebar_width * right_sidebar_scale;
                         let resizing = self.right_sidebar_resizing;
-                        let handle_mouse_down = cx.listener(
-                            |this, ev: &gpui::MouseDownEvent, _window, cx| {
+                        let handle_mouse_down =
+                            cx.listener(|this, ev: &gpui::MouseDownEvent, _window, cx| {
                                 this.right_sidebar_resizing = true;
                                 this.resize_start_x = f32::from(ev.position.x);
                                 this.resize_start_width = f32::from(this.right_sidebar_width);
                                 cx.notify();
-                            },
-                        );
+                            });
                         move |el| {
                             el.child(
                                 div()
@@ -1910,17 +1909,19 @@ impl Render for MainScreen {
                         .absolute()
                         .inset_0()
                         .cursor_col_resize()
-                        .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _window, cx| {
-                            if !this.right_sidebar_resizing {
-                                return;
-                            }
-                            // Dragging the left edge leftward widens the sidebar.
-                            let delta = f32::from(ev.position.x) - this.resize_start_x;
-                            let new_width =
-                                (this.resize_start_width - delta).clamp(320.0, 1800.0);
-                            this.right_sidebar_width = px(new_width);
-                            cx.notify();
-                        }))
+                        .on_mouse_move(cx.listener(
+                            |this, ev: &gpui::MouseMoveEvent, _window, cx| {
+                                if !this.right_sidebar_resizing {
+                                    return;
+                                }
+                                // Dragging the left edge leftward widens the sidebar.
+                                let delta = f32::from(ev.position.x) - this.resize_start_x;
+                                let new_width =
+                                    (this.resize_start_width - delta).clamp(320.0, 1800.0);
+                                this.right_sidebar_width = px(new_width);
+                                cx.notify();
+                            },
+                        ))
                         .on_mouse_up(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _ev: &gpui::MouseUpEvent, _window, cx| {

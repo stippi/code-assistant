@@ -548,10 +548,7 @@ mod tests {
         let files = repo.changed_files_vs_base(&base_branch).await.unwrap();
 
         assert_eq!(find(&files, "shared.txt").status, ChangeStatus::Modified);
-        assert_eq!(
-            find(&files, "feature_only.txt").status,
-            ChangeStatus::Added
-        );
+        assert_eq!(find(&files, "feature_only.txt").status, ChangeStatus::Added);
 
         let d = repo
             .file_diff_vs_base(&base_branch, find(&files, "shared.txt"))

@@ -99,9 +99,11 @@ fn sort_nodes(nodes: &mut [TreeNode]) {
     nodes.sort_by(|a, b| {
         // Directories sort before files.
         let rank = |n: &TreeNode| matches!(n, TreeNode::File { .. }) as u8;
-        rank(a)
-            .cmp(&rank(b))
-            .then_with(|| node_name(a).to_lowercase().cmp(&node_name(b).to_lowercase()))
+        rank(a).cmp(&rank(b)).then_with(|| {
+            node_name(a)
+                .to_lowercase()
+                .cmp(&node_name(b).to_lowercase())
+        })
     });
     for n in nodes.iter_mut() {
         if let TreeNode::Dir { children, .. } = n {
@@ -322,8 +324,7 @@ impl Render for ChangedFilesTree {
                         .child(svg().size(px(14.)).path(folder).text_color(muted))
                         .child(div().text_color(fg).child(row.name.clone()));
                 } else {
-                    let (badge, badge_color) =
-                        row.status.map(status_badge).unwrap_or((" ", muted));
+                    let (badge, badge_color) = row.status.map(status_badge).unwrap_or((" ", muted));
                     let icon = file_icons::get().get_icon_for_filename(&row.name);
                     container = container
                         // Align file rows under the folder glyph (skip chevron slot).
@@ -378,7 +379,11 @@ mod tests {
         // Root: dir "a" first, then file "z.rs".
         assert_eq!(tree.len(), 2);
         match &tree[0] {
-            TreeNode::Dir { name, path, children } => {
+            TreeNode::Dir {
+                name,
+                path,
+                children,
+            } => {
                 assert_eq!(name, "a");
                 assert_eq!(path, "a");
                 // Inside "a": dir "sub" first, then files b.rs, c.rs (sorted).

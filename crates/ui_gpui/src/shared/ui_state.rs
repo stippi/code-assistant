@@ -227,10 +227,7 @@ impl UiStateStore {
     }
 
     /// Return the persisted review compare mode / base branch for a session.
-    pub fn get_review_settings(
-        &mut self,
-        session_id: &str,
-    ) -> (Option<String>, Option<String>) {
+    pub fn get_review_settings(&mut self, session_id: &str) -> (Option<String>, Option<String>) {
         let state = self.get(session_id);
         (state.review_compare_mode, state.review_base_branch)
     }
@@ -252,7 +249,8 @@ impl UiStateStore {
     }
 
     /// Remove the in-memory state and on-disk file for a deleted session.
-    pub fn remove_session(&mut self, session_id: &str) {        self.states.remove(session_id);
+    pub fn remove_session(&mut self, session_id: &str) {
+        self.states.remove(session_id);
         self.dirty.remove(session_id);
         let path = self.file_path(session_id);
         if path.exists()
