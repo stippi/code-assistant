@@ -65,6 +65,33 @@ impl AuthProvider for ApiKeyAuth {
     }
 }
 
+/// Bearer token authentication provider (sends `Authorization: Bearer <token>` header)
+///
+/// Used for endpoints or proxies that require the key in an `Authorization`
+/// header rather than the `?key=` query parameter used by [`ApiKeyAuth`].
+pub struct BearerTokenAuth {
+    api_key: String,
+}
+
+impl BearerTokenAuth {
+    pub fn new(api_key: String) -> Self {
+        Self { api_key }
+    }
+}
+
+#[async_trait]
+impl AuthProvider for BearerTokenAuth {
+    async fn get_auth(&self) -> Result<VertexAuth> {
+        Ok(VertexAuth {
+            query_params: vec![],
+            headers: vec![(
+                "Authorization".to_string(),
+                format!("Bearer {}", self.api_key),
+            )],
+        })
+    }
+}
+
 /// Default request customizer for Google Generative Language API
 pub struct DefaultRequestCustomizer;
 
