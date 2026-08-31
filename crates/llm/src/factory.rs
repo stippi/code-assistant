@@ -608,7 +608,27 @@ async fn create_vertex_client(
         .and_then(|v| v.as_str())
         .unwrap_or(&default_base_url);
 
-    let client = if let Some(path) = record_path {
+    // When `bearer_auth` is true, send the key as an `Authorization: Bearer <token>`
+    // header instead of the default `?key=<api_key>` query parameter. Required for
+    // endpoints or proxies that expect the key in an Authorization header. Defaults
+    // to false so existing Vertex configs are unaffected.
+    let bearer_auth = config
+        .get("bearer_auth")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let client = if bearer_auth {
+        let mut client = VertexClient::with_customization(
+            model_config.id.clone(),
+            base_url.to_string(),
+            Box::new(crate::vertex::BearerTokenAuth::new(api_key.to_string())),
+            Box::new(crate::vertex::DefaultRequestCustomizer),
+        );
+        if let Some(path) = record_path {
+            client = client.with_recorder(path);
+        }
+        client
+    } else if let Some(path) = record_path {
         VertexClient::new_with_recorder(
             api_key.to_string(),
             model_config.id.clone(),
