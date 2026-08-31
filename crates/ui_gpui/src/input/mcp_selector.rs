@@ -107,27 +107,29 @@ impl Render for McpSelector {
                     .flex_col()
                     .gap_0p5()
                     .children(servers.into_iter().map(|server| {
-                    let name = server.name.clone();
-                    let switch_name = server.name.clone();
-                    let toggle_name = server.name.clone();
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_xs()
-                                .text_color(cx.theme().foreground)
-                                .truncate()
-                                .child(SharedString::from(name)),
-                        )
-                        .child(
-                            Switch::new(SharedString::from(format!("mcp-toggle-{switch_name}")))
+                        let name = server.name.clone();
+                        let switch_name = server.name.clone();
+                        let toggle_name = server.name.clone();
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().foreground)
+                                    .truncate()
+                                    .child(SharedString::from(name)),
+                            )
+                            .child(
+                                Switch::new(SharedString::from(format!(
+                                    "mcp-toggle-{switch_name}"
+                                )))
                                 .checked(server.enabled)
                                 .with_size(Size::Small)
                                 .on_click(cx.listener(
@@ -145,8 +147,9 @@ impl Render for McpSelector {
                                         cx.notify();
                                     },
                                 )),
-                        )
-                })));
+                            )
+                    })),
+            );
             root = root.child(panel);
         }
 
