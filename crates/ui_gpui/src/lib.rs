@@ -46,6 +46,22 @@ pub struct UiSettingsGlobal(pub shared::settings::UiSettings);
 
 impl Global for UiSettingsGlobal {}
 
+/// Mutate the global [`UiSettings`] and persist to disk on a background thread.
+///
+/// Callable anywhere with access to `&mut App` (including via `Context` deref),
+/// so both `MainScreen` handlers and `ReviewView` resize callbacks can use it.
+pub fn update_ui_settings(cx: &mut App, f: impl FnOnce(&mut shared::settings::UiSettings)) {
+    if cx.has_global::<UiSettingsGlobal>() {
+        let global = cx.global_mut::<UiSettingsGlobal>();
+        f(&mut global.0);
+        let settings = global.0.clone();
+        cx.background_spawn(async move {
+            settings.save();
+        })
+        .detach();
+    }
+}
+
 /// Snapshot of worktree/branch data for the active session, kept in `Gpui`
 /// so that `RootView::render()` can push it into the `WorktreeSelector`.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +69,34 @@ pub struct WorktreeData {
     pub worktrees: Vec<git::Worktree>,
     pub current_worktree_path: Option<std::path::PathBuf>,
     pub is_git_repo: bool,
+}
+
+/// Latest changed-files listing for the Review panel, mirrored from the
+/// backend into a global the `ReviewView` reads during render.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewData {
+    pub repos: Vec<RepoReviewData>,
+    pub is_git_repo: bool,
+    pub mode: code_assistant_core::session::ReviewMode,
+}
+
+/// Per-repo changed-files data within a [`ReviewData`] listing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoReviewData {
+    pub repo_root: std::path::PathBuf,
+    pub label: String,
+    pub current_branch: Option<String>,
+    pub base_candidates: Vec<String>,
+    pub base: Option<String>,
+    pub files: Vec<git::ChangedFile>,
+}
+
+/// Latest loaded diff for a single file in the Review panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewDiff {
+    pub repo_root: std::path::PathBuf,
+    pub path: String,
+    pub diff: git::FileDiffContent,
 }
 
 // Our main UI struct that implements the UserInterface trait
@@ -107,6 +151,11 @@ pub struct Gpui {
 
     // Current worktree state (branches + worktrees listing from backend)
     current_worktree_data: Arc<Mutex<Option<WorktreeData>>>,
+
+    // Review panel state (changed-files listing + selected-file diff) mirrored
+    // from the backend for the ReviewView to read during render.
+    current_review_listing: Arc<Mutex<Option<ReviewData>>>,
+    current_review_diff: Arc<Mutex<Option<ReviewDiff>>>,
 
     // Last usage from the active session's most recent assistant message.
     // Stored separately from chat_sessions so it cannot be overwritten by
@@ -335,6 +384,8 @@ impl Gpui {
         *self.current_permission_tier.lock().unwrap() = None;
         self.pending_permission_requests.lock().unwrap().clear();
         *self.current_worktree_data.lock().unwrap() = None;
+        *self.current_review_listing.lock().unwrap() = None;
+        *self.current_review_diff.lock().unwrap() = None;
         *self.current_session_last_usage.lock().unwrap() = None;
         *self.current_session_total_usage.lock().unwrap() = None;
     }
@@ -433,6 +484,8 @@ impl Gpui {
 
             // Current worktree state
             current_worktree_data: Arc::new(Mutex::new(None)),
+            current_review_listing: Arc::new(Mutex::new(None)),
+            current_review_diff: Arc::new(Mutex::new(None)),
 
             // Current session last usage
             current_session_last_usage: Arc::new(Mutex::new(None)),
@@ -731,6 +784,22 @@ impl Gpui {
 
     pub fn get_current_worktree_data(&self) -> Option<WorktreeData> {
         self.current_worktree_data.lock().unwrap().clone()
+    }
+
+    pub fn get_current_review_listing(&self) -> Option<ReviewData> {
+        self.current_review_listing.lock().unwrap().clone()
+    }
+
+    pub fn set_current_review_listing(&self, data: Option<ReviewData>) {
+        *self.current_review_listing.lock().unwrap() = data;
+    }
+
+    pub fn get_current_review_diff(&self) -> Option<ReviewDiff> {
+        self.current_review_diff.lock().unwrap().clone()
+    }
+
+    pub fn set_current_review_diff(&self, diff: Option<ReviewDiff>) {
+        *self.current_review_diff.lock().unwrap() = diff;
     }
 
     pub fn get_current_session_last_usage(&self) -> Option<llm::Usage> {

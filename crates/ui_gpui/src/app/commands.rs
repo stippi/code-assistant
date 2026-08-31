@@ -588,6 +588,74 @@ impl Gpui {
     }
 
     // ========================================================================
+    // Review panel
+    // ========================================================================
+
+    /// Fetch the changed-files listing for the Review panel in the given mode.
+    pub(crate) fn cmd_list_review_files(
+        &self,
+        session_id: String,
+        mode: code_assistant_core::session::ReviewMode,
+        base_overrides: std::collections::HashMap<PathBuf, String>,
+    ) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            match service
+                .list_review_files(session_id.clone(), mode, base_overrides)
+                .await
+            {
+                Ok(listing) => {
+                    if gpui.is_current_session(&session_id) {
+                        gpui.push_event(UiEvent::UpdateReviewFiles {
+                            repos: listing.repos,
+                            is_git_repo: listing.is_git_repo,
+                            mode: listing.mode,
+                        });
+                    }
+                }
+                Err(e) => debug!("Failed to list review files: {e:#}"),
+            }
+        });
+    }
+
+    /// Fetch the diff for a single file selected in the Review panel.
+    pub(crate) fn cmd_get_review_file_diff(
+        &self,
+        session_id: String,
+        repo_root: PathBuf,
+        mode: code_assistant_core::session::ReviewMode,
+        base: Option<String>,
+        file: git::ChangedFile,
+    ) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        let path = file.path.clone();
+        let event_repo_root = repo_root.clone();
+        self.dispatch(async move {
+            match service
+                .get_review_file_diff(session_id.clone(), repo_root, mode, base, file)
+                .await
+            {
+                Ok(diff) => {
+                    if gpui.is_current_session(&session_id) {
+                        gpui.push_event(UiEvent::UpdateReviewDiff {
+                            repo_root: event_repo_root,
+                            path,
+                            diff,
+                        });
+                    }
+                }
+                Err(e) => gpui.display_error(format!("Failed to load diff: {e:#}")),
+            }
+        });
+    }
+
+    // ========================================================================
     // Projects
     // ========================================================================
 

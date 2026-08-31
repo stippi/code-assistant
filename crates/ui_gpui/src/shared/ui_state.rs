@@ -72,6 +72,22 @@ pub struct UiSessionState {
     /// exactly as it was left across app restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<ScrollPosition>,
+
+    /// Whether the right (review) sidebar is open for this session.
+    #[serde(default)]
+    pub right_panel_open: bool,
+
+    /// Which view the right panel last showed (e.g. "review").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_panel_view: Option<String>,
+
+    /// Last review compare mode ("working_tree" or "branch_vs_base").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_compare_mode: Option<String>,
+
+    /// Last review base branch (only meaningful in branch-vs-base mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_base_branch: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -194,9 +210,49 @@ impl UiStateStore {
         true
     }
 
+    /// Return whether the right (review) sidebar is open for a session.
+    /// Loads from disk if the session hasn't been loaded yet.
+    pub fn get_right_panel_open(&mut self, session_id: &str) -> bool {
+        self.get(session_id).right_panel_open
+    }
+
+    /// Set whether the right (review) sidebar is open for a session.
+    pub fn set_right_panel_open(&mut self, session_id: &str, open: bool) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.right_panel_open == open {
+            return;
+        }
+        state.right_panel_open = open;
+        self.dirty.insert(session_id.to_owned());
+    }
+
+    /// Return the persisted review compare mode / base branch for a session.
+    pub fn get_review_settings(
+        &mut self,
+        session_id: &str,
+    ) -> (Option<String>, Option<String>) {
+        let state = self.get(session_id);
+        (state.review_compare_mode, state.review_base_branch)
+    }
+
+    /// Persist the review compare mode / base branch for a session.
+    pub fn set_review_settings(
+        &mut self,
+        session_id: &str,
+        mode: Option<String>,
+        base: Option<String>,
+    ) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.review_compare_mode == mode && state.review_base_branch == base {
+            return;
+        }
+        state.review_compare_mode = mode;
+        state.review_base_branch = base;
+        self.dirty.insert(session_id.to_owned());
+    }
+
     /// Remove the in-memory state and on-disk file for a deleted session.
-    pub fn remove_session(&mut self, session_id: &str) {
-        self.states.remove(session_id);
+    pub fn remove_session(&mut self, session_id: &str) {        self.states.remove(session_id);
         self.dirty.remove(session_id);
         let path = self.file_path(session_id);
         if path.exists()
@@ -425,6 +481,7 @@ mod tests {
             tool_collapse_overrides: HashMap::from([("t1".to_owned(), false)]),
             tool_diff_mode_overrides: HashMap::new(),
             scroll: None,
+            ..Default::default()
         };
         let path = dir.path().join("s1.ui_state.json");
         let mut f = std::fs::File::create(&path).unwrap();

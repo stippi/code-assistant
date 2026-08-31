@@ -318,6 +318,20 @@ pub enum UiEvent {
         is_git_repo: bool,
     },
 
+    // === Review Panel Events ===
+    /// Updated list of changed files for the Review panel, grouped per repo.
+    UpdateReviewFiles {
+        repos: Vec<crate::session::RepoReview>,
+        is_git_repo: bool,
+        mode: crate::session::ReviewMode,
+    },
+    /// The loaded diff for a single file selected in the Review panel.
+    UpdateReviewDiff {
+        repo_root: PathBuf,
+        path: String,
+        diff: git::FileDiffContent,
+    },
+
     // === Configuration Events ===
     /// Configuration files (providers.json / models.json) were changed on disk.
     /// The UI should reload model lists, settings sections, etc.

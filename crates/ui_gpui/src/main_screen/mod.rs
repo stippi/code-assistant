@@ -1,5 +1,6 @@
 mod about_dialog;
 pub mod project_dialog;
+pub mod right_panel;
 mod status_popover;
 
 use crate::sidebar::{SessionSidebar, SessionSidebarEvent};
@@ -37,6 +38,9 @@ use tracing::{debug, error, warn};
 const SIDEBAR_ANIMATION_DURATION_MS: f32 = 250.0;
 const SIDEBAR_ANIMATION_FRAME_MS: u64 = 8; // ~120 FPS
 
+/// Fixed width of the right (review) sidebar when fully expanded.
+const RIGHT_SIDEBAR_WIDTH: f32 = 440.0;
+
 /// Return the argument text for a syntactically separate `/goal` command.
 /// Prefixes such as `/goals` remain ordinary input.
 fn goal_command_args(input: &str) -> Option<&str> {
@@ -60,6 +64,103 @@ enum SidebarAnimationState {
         target: f32, // 0.0 = collapsing, 1.0 = expanding
         start_time: Instant,
     },
+}
+
+/// Drives the width animation for one collapsible sidebar. Multiple animators
+/// can share a single ticking task on [`MainScreen`]; each tracks its own
+/// easing state independently.
+#[derive(Clone, Debug)]
+struct SidebarAnimator {
+    state: SidebarAnimationState,
+}
+
+impl SidebarAnimator {
+    fn new() -> Self {
+        Self {
+            state: SidebarAnimationState::Idle,
+        }
+    }
+
+    /// Begin animating towards expanded (`true`) or collapsed (`false`).
+    /// Reverses smoothly if an animation is already in flight.
+    fn start(&mut self, should_expand: bool) {
+        let target = if should_expand { 1.0 } else { 0.0 };
+        let now = Instant::now();
+
+        match &self.state {
+            SidebarAnimationState::Animating {
+                width_scale,
+                target: current_target,
+                ..
+            } if *current_target != target => {
+                // Reverse mid-animation: keep current scale, adjust start for smooth transition
+                let current_progress = if target == 1.0 {
+                    *width_scale
+                } else {
+                    1.0 - *width_scale
+                };
+                let adjusted_start = now
+                    - Duration::from_millis(
+                        (current_progress * SIDEBAR_ANIMATION_DURATION_MS) as u64,
+                    );
+                self.state = SidebarAnimationState::Animating {
+                    width_scale: *width_scale,
+                    target,
+                    start_time: adjusted_start,
+                };
+            }
+            _ => {
+                let initial = if should_expand { 0.0 } else { 1.0 };
+                self.state = SidebarAnimationState::Animating {
+                    width_scale: initial,
+                    target,
+                    start_time: now,
+                };
+            }
+        }
+    }
+
+    /// Advance one frame. Returns `true` while still animating.
+    fn tick(&mut self) -> bool {
+        match &mut self.state {
+            SidebarAnimationState::Animating {
+                width_scale,
+                target,
+                start_time,
+            } => {
+                let elapsed = start_time.elapsed().as_millis() as f32;
+                let progress = (elapsed / SIDEBAR_ANIMATION_DURATION_MS).min(1.0);
+                // ease-out cubic
+                let eased = 1.0 - (1.0 - progress).powi(3);
+
+                *width_scale = if *target == 1.0 { eased } else { 1.0 - eased };
+
+                if progress >= 1.0 {
+                    *width_scale = *target;
+                    self.state = SidebarAnimationState::Idle;
+                    false
+                } else {
+                    true
+                }
+            }
+            SidebarAnimationState::Idle => false,
+        }
+    }
+
+    /// Current animation scale: 0.0 = fully collapsed, 1.0 = fully expanded.
+    /// `collapsed` supplies the resting value when no animation is running.
+    fn scale(&self, collapsed: bool) -> f32 {
+        match &self.state {
+            SidebarAnimationState::Animating { width_scale, .. } => *width_scale,
+            SidebarAnimationState::Idle => {
+                if collapsed {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+        }
+    }
 }
 
 /// Events emitted by MainScreen to its parent (the AppShell/RootView).
@@ -94,13 +195,27 @@ pub struct MainScreen {
     /// Pending folder path from the file picker, waiting to create the dialog in render
     pending_project_path: Option<std::path::PathBuf>,
 
+    // Right (review) sidebar state
+    right_sidebar_collapsed: bool,
+    right_panel: Entity<right_panel::RightPanel>,
+    /// Session id last pushed into the right panel (change detection).
+    right_panel_session_id: Option<String>,
+
     // Sidebar animation
-    sidebar_animation_state: SidebarAnimationState,
+    left_animator: SidebarAnimator,
+    right_animator: SidebarAnimator,
     sidebar_content_width: Rc<Cell<Pixels>>,
     sidebar_animation_task: Option<Task<()>>,
 
     /// UI zoom scale factor (1.0 = 100%, multiplied with the base font size)
     ui_scale: f32,
+    /// Current (persisted) width of the right review sidebar when expanded.
+    right_sidebar_width: Pixels,
+    /// Whether the user is currently dragging the sidebar's resize handle.
+    right_sidebar_resizing: bool,
+    /// Drag anchor: pointer x and sidebar width captured at mouse-down.
+    resize_start_x: f32,
+    resize_start_width: f32,
     /// Cached context token limit for the current model (model_name, limit).
     /// Reloaded when the model changes.
     context_limit_cache: Option<(String, u32)>,
@@ -144,9 +259,18 @@ impl MainScreen {
             .map(|s| s.0.ui_scale)
             .unwrap_or(1.0);
 
+        // Restore the persisted right-sidebar width (default fallback).
+        let initial_sidebar_width = cx
+            .try_global::<UiSettingsGlobal>()
+            .and_then(|s| s.0.right_sidebar_width)
+            .unwrap_or(RIGHT_SIDEBAR_WIDTH);
+
         // Watch for window move / resize so we can persist bounds.
         let window_bounds_subscription =
             cx.observe_window_bounds(window, Self::on_window_bounds_changed);
+
+        // Create the right (review) sidebar panel.
+        let right_panel = cx.new(|cx| right_panel::RightPanel::new(window, cx));
 
         let mut root_view = Self {
             input_area,
@@ -166,11 +290,20 @@ impl MainScreen {
             about_dialog: None,
             pending_project_path: None,
 
-            sidebar_animation_state: SidebarAnimationState::Idle,
+            right_sidebar_collapsed: true, // Review sidebar hidden by default
+            right_panel,
+            right_panel_session_id: None,
+
+            left_animator: SidebarAnimator::new(),
+            right_animator: SidebarAnimator::new(),
             sidebar_content_width: Rc::new(Cell::new(px(0.0))),
             sidebar_animation_task: None,
 
             ui_scale: initial_scale,
+            right_sidebar_width: px(initial_sidebar_width),
+            right_sidebar_resizing: false,
+            resize_start_x: 0.0,
+            resize_start_width: 0.0,
             context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
@@ -194,8 +327,48 @@ impl MainScreen {
     ) {
         let should_expand = self.sidebar_collapsed;
         self.sidebar_collapsed = !self.sidebar_collapsed;
-        self.start_sidebar_animation(should_expand, cx);
+        self.left_animator.start(should_expand);
+        self.ensure_sidebar_animation_task(cx);
         cx.notify();
+    }
+
+    pub fn on_toggle_right_sidebar(
+        &mut self,
+        _: &ClickEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let should_expand = self.right_sidebar_collapsed;
+        self.right_sidebar_collapsed = !self.right_sidebar_collapsed;
+        self.right_animator.start(should_expand);
+        self.ensure_sidebar_animation_task(cx);
+
+        // When opening, make sure the panel reflects the current session and
+        // has fresh data.
+        if should_expand {
+            let session_id = self.current_session_id.clone();
+            self.right_panel.update(cx, |panel, cx| {
+                panel.set_session(session_id, cx);
+            });
+        }
+
+        // Persist the open/closed state for the active session.
+        if let Some(session_id) = &self.current_session_id {
+            if let Ok(mut store) = crate::shared::ui_state::UiStateStore::global().lock() {
+                store.set_right_panel_open(session_id, !self.right_sidebar_collapsed);
+            }
+            if let Some(sender) = cx.try_global::<UiEventSender>() {
+                let _ = sender.0.try_send(UiEvent::PersistUiState);
+            }
+        }
+
+        cx.notify();
+    }
+
+    fn ensure_sidebar_animation_task(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_animation_task.is_none() {
+            self.start_sidebar_animation_task(cx);
+        }
     }
 
     fn on_open_settings(
@@ -233,47 +406,8 @@ impl MainScreen {
 
     // ── Sidebar animation ─────────────────────────────────────────────────
 
-    fn start_sidebar_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
-        let target = if should_expand { 1.0 } else { 0.0 };
-        let now = Instant::now();
-
-        match &self.sidebar_animation_state {
-            SidebarAnimationState::Animating {
-                width_scale,
-                target: current_target,
-                ..
-            } if *current_target != target => {
-                // Reverse mid-animation: keep current scale, adjust start for smooth transition
-                let current_progress = if target == 1.0 {
-                    *width_scale
-                } else {
-                    1.0 - *width_scale
-                };
-                let adjusted_start = now
-                    - Duration::from_millis(
-                        (current_progress * SIDEBAR_ANIMATION_DURATION_MS) as u64,
-                    );
-                self.sidebar_animation_state = SidebarAnimationState::Animating {
-                    width_scale: *width_scale,
-                    target,
-                    start_time: adjusted_start,
-                };
-            }
-            _ => {
-                let initial = if should_expand { 0.0 } else { 1.0 };
-                self.sidebar_animation_state = SidebarAnimationState::Animating {
-                    width_scale: initial,
-                    target,
-                    start_time: now,
-                };
-            }
-        }
-
-        if self.sidebar_animation_task.is_none() {
-            self.start_sidebar_animation_task(cx);
-        }
-    }
-
+    /// Ticking task shared by both sidebar animators. Runs until neither the
+    /// left nor the right animator is still animating.
     fn start_sidebar_animation_task(&mut self, cx: &mut Context<Self>) {
         let task = cx.spawn(async move |weak_entity, async_cx| {
             loop {
@@ -283,14 +417,13 @@ impl MainScreen {
                     .await;
 
                 let should_continue = weak_entity.update(async_cx, |view, cx| {
-                    view.update_sidebar_animation();
-                    match &view.sidebar_animation_state {
-                        SidebarAnimationState::Idle => false,
-                        _ => {
-                            cx.notify();
-                            true
-                        }
+                    let left = view.left_animator.tick();
+                    let right = view.right_animator.tick();
+                    let cont = left || right;
+                    if cont {
+                        cx.notify();
                     }
+                    cont
                 });
 
                 if let Ok(should_continue) = should_continue {
@@ -308,41 +441,14 @@ impl MainScreen {
         self.sidebar_animation_task = Some(task);
     }
 
-    fn update_sidebar_animation(&mut self) {
-        match &mut self.sidebar_animation_state {
-            SidebarAnimationState::Animating {
-                width_scale,
-                target,
-                start_time,
-            } => {
-                let elapsed = start_time.elapsed().as_millis() as f32;
-                let progress = (elapsed / SIDEBAR_ANIMATION_DURATION_MS).min(1.0);
-                // ease-out cubic
-                let eased = 1.0 - (1.0 - progress).powi(3);
-
-                *width_scale = if *target == 1.0 { eased } else { 1.0 - eased };
-
-                if progress >= 1.0 {
-                    *width_scale = *target;
-                    self.sidebar_animation_state = SidebarAnimationState::Idle;
-                }
-            }
-            SidebarAnimationState::Idle => {}
-        }
+    /// Current left (project) sidebar animation scale.
+    fn sidebar_animation_scale(&self) -> f32 {
+        self.left_animator.scale(self.sidebar_collapsed)
     }
 
-    /// Current sidebar animation scale: 0.0 = fully collapsed, 1.0 = fully expanded
-    fn sidebar_animation_scale(&self) -> f32 {
-        match &self.sidebar_animation_state {
-            SidebarAnimationState::Animating { width_scale, .. } => *width_scale,
-            SidebarAnimationState::Idle => {
-                if self.sidebar_collapsed {
-                    0.0
-                } else {
-                    1.0
-                }
-            }
-        }
+    /// Current right (review) sidebar animation scale.
+    fn right_sidebar_animation_scale(&self) -> f32 {
+        self.right_animator.scale(self.right_sidebar_collapsed)
     }
 
     fn on_plan_banner_event(
@@ -446,15 +552,7 @@ impl MainScreen {
 
     /// Update the global [`UiSettings`], persist to disk on a background thread.
     fn update_settings(cx: &mut Context<Self>, f: impl FnOnce(&mut settings::UiSettings)) {
-        if cx.has_global::<UiSettingsGlobal>() {
-            let global = cx.global_mut::<UiSettingsGlobal>();
-            f(&mut global.0);
-            let settings = global.0.clone();
-            cx.background_spawn(async move {
-                settings.save();
-            })
-            .detach();
-        }
+        crate::update_ui_settings(cx, f);
     }
 
     /// Called when the window is moved or resized.
@@ -1114,9 +1212,11 @@ impl MainScreen {
                 ("".to_string(), Vec::new(), None)
             };
 
-            // Clear worktree data while we hold the ref
+            // Clear worktree + review data while we hold the ref
             let gpui_handle = if let Some(gpui) = &gpui {
                 *gpui.current_worktree_data.lock().unwrap() = None;
+                gpui.set_current_review_listing(None);
+                gpui.set_current_review_diff(None);
                 Some((*gpui).clone())
             } else {
                 None
@@ -1158,6 +1258,31 @@ impl MainScreen {
             selector.update(cx, |sel, cx| {
                 sel.set_local(window, cx);
             });
+        });
+
+        // Restore the right (review) sidebar's open state for the new session.
+        let restored_open = new_session_id
+            .as_ref()
+            .and_then(|id| {
+                crate::shared::ui_state::UiStateStore::try_global()
+                    .and_then(|store| store.lock().ok())
+                    .map(|mut store| store.get_right_panel_open(id))
+            })
+            .unwrap_or(false);
+
+        // Animate to the restored state if it differs from the current one.
+        if restored_open == self.right_sidebar_collapsed {
+            // (collapsed == !open) — they differ, so kick the animation.
+            self.right_animator.start(restored_open);
+            self.ensure_sidebar_animation_task(cx);
+        }
+        self.right_sidebar_collapsed = !restored_open;
+
+        // Point the panel at the new session (clears stale tree/diff) and, when
+        // open, request fresh data.
+        self.right_panel_session_id = new_session_id.clone();
+        self.right_panel.update(cx, |panel, cx| {
+            panel.set_session(new_session_id.clone(), cx);
         });
     }
 }
@@ -1429,6 +1554,7 @@ impl Render for MainScreen {
         let new_project_dialog = self.new_project_dialog.clone();
         let about_dialog = self.about_dialog.clone();
         let sidebar_scale = self.sidebar_animation_scale();
+        let right_sidebar_scale = self.right_sidebar_animation_scale();
         let permission_prompts = self.render_permission_prompts(cx);
 
         // Main container with titlebar and content
@@ -1570,6 +1696,31 @@ impl Render for MainScreen {
                             .flex()
                             .items_center()
                             .gap_1()
+                            // Review (right) sidebar toggle button
+                            .child(
+                                div()
+                                    .id("toggle-right-sidebar-btn")
+                                    .size(px(28.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from(
+                                                if self.right_sidebar_collapsed {
+                                                    "icons/panel_right_open.svg"
+                                                } else {
+                                                    "icons/panel_right_close.svg"
+                                                },
+                                            ))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .on_click(cx.listener(Self::on_toggle_right_sidebar)),
+                            )
                             .child(
                                 div()
                                     .id("about-btn")
@@ -1694,12 +1845,98 @@ impl Render for MainScreen {
                                     .border_color(cx.theme().border)
                                     .child(self.input_area.clone()),
                             ),
-                    ),
+                    )
+                    // Right sidebar: Review panel (animated width, resizable)
+                    .when(right_sidebar_scale > 0.0, {
+                        let right_panel = self.right_panel.clone();
+                        let border = cx.theme().border;
+                        let handle_color = if self.right_sidebar_resizing {
+                            cx.theme().drag_border
+                        } else {
+                            cx.theme().border
+                        };
+                        let sidebar_width = self.right_sidebar_width * right_sidebar_scale;
+                        let resizing = self.right_sidebar_resizing;
+                        let handle_mouse_down = cx.listener(
+                            |this, ev: &gpui::MouseDownEvent, _window, cx| {
+                                this.right_sidebar_resizing = true;
+                                this.resize_start_x = f32::from(ev.position.x);
+                                this.resize_start_width = f32::from(this.right_sidebar_width);
+                                cx.notify();
+                            },
+                        );
+                        move |el| {
+                            el.child(
+                                div()
+                                    .relative()
+                                    .flex_none()
+                                    .h_full()
+                                    .overflow_hidden()
+                                    .border_l_1()
+                                    .border_color(border)
+                                    .w(sidebar_width)
+                                    .child(right_panel)
+                                    // Left-edge drag handle to resize the sidebar.
+                                    .child(
+                                        div()
+                                            .id("right-sidebar-resize-handle")
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .h_full()
+                                            .w(px(6.))
+                                            .cursor_col_resize()
+                                            .bg(handle_color)
+                                            .opacity(if resizing { 1.0 } else { 0.0 })
+                                            .hover(|s| s.opacity(1.0))
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                handle_mouse_down,
+                                            ),
+                                    ),
+                            )
+                        }
+                    }),
             )
             // Modal dialog overlay for new project creation
             .when_some(new_project_dialog, |el, dialog| el.child(dialog))
             // Modal "About" dialog overlay
             .when_some(about_dialog, |el, dialog| el.child(dialog))
+            // While resizing the sidebar, a transparent full-window overlay
+            // captures pointer motion so the drag tracks even over child views.
+            .when(self.right_sidebar_resizing, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .cursor_col_resize()
+                        .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _window, cx| {
+                            if !this.right_sidebar_resizing {
+                                return;
+                            }
+                            // Dragging the left edge leftward widens the sidebar.
+                            let delta = f32::from(ev.position.x) - this.resize_start_x;
+                            let new_width =
+                                (this.resize_start_width - delta).clamp(320.0, 1800.0);
+                            this.right_sidebar_width = px(new_width);
+                            cx.notify();
+                        }))
+                        .on_mouse_up(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _ev: &gpui::MouseUpEvent, _window, cx| {
+                                if !this.right_sidebar_resizing {
+                                    return;
+                                }
+                                this.right_sidebar_resizing = false;
+                                let width = f32::from(this.right_sidebar_width);
+                                crate::update_ui_settings(cx, |s| {
+                                    s.right_sidebar_width = Some(width);
+                                });
+                                cx.notify();
+                            }),
+                        ),
+                )
+            })
     }
 }
 

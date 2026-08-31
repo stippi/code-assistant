@@ -537,7 +537,7 @@ fn normalize_for_diff(text: &str) -> String {
     format!("{trimmed}\n")
 }
 
-fn render_unified_diff(
+pub(crate) fn render_unified_diff(
     old_text: &str,
     new_text: &str,
     theme: &gpui_component::theme::Theme,
@@ -878,7 +878,9 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
     .into()
 }
 
-fn deleted_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn deleted_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x80, 0x20, 0x20, 0x60)),
@@ -892,7 +894,9 @@ fn deleted_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsl
     }
 }
 
-fn added_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn added_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x20, 0x60, 0x20, 0x60)),
@@ -906,7 +910,9 @@ fn added_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>
     }
 }
 
-fn unchanged_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn unchanged_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (None, rgba_color(0xFF, 0xFF, 0xFF, 0x99))
     } else {
