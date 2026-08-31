@@ -138,18 +138,20 @@ impl Render for VertexProviderForm {
                 Input::new(&self.api_key_input).into_any_element(),
                 cx,
             ))
-            .child(self.form_row(
-                "Auth",
-                Checkbox::new("vertex-bearer-auth")
-                    .label("Send key as Authorization: Bearer header")
-                    .checked(self.bearer_auth)
-                    .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                        this.bearer_auth = *checked;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                cx,
-            ))
+            .child(
+                self.form_row(
+                    "Auth",
+                    Checkbox::new("vertex-bearer-auth")
+                        .label("Send key as Authorization: Bearer header")
+                        .checked(self.bearer_auth)
+                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                            this.bearer_auth = *checked;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    cx,
+                ),
+            )
             .when(self.is_editing, |el| {
                 el.child(
                     div()
