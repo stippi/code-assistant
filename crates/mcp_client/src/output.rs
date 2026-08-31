@@ -109,4 +109,15 @@ impl Render for McpToolOutput {
             })
             .collect()
     }
+
+    fn cap_images(&mut self, max_edge: u32) {
+        for image in &mut self.images {
+            if let Some((media_type, base64_data)) =
+                tools_core::cap_base64_image(&image.media_type, &image.base64_data, max_edge)
+            {
+                image.media_type = media_type;
+                image.base64_data = base64_data;
+            }
+        }
+    }
 }

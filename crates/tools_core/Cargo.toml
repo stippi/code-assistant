@@ -6,7 +6,9 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 command_executor = { path = "../command_executor" }
+image = "0.25"
 regex = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

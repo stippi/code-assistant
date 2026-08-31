@@ -105,11 +105,15 @@ where
         })?;
 
         // Execute the tool
-        let output = self.execute(context, &mut input).await?;
+        let mut output = self.execute(context, &mut input).await?;
 
         // Serialize the potentially updated input back to JSON
         *params = serde_json::to_value(input)
             .map_err(|e| anyhow::anyhow!("Failed to serialize updated input: {e}"))?;
+
+        // Cap oversized images once, here at creation, so the bounded version
+        // is what gets stored, rendered to the UI and re-sent on later turns.
+        Render::cap_images(&mut output, crate::MAX_IMAGE_EDGE);
 
         // Box the output as AnyOutput
         Ok(Box::new(output) as Box<dyn AnyOutput>)
@@ -117,7 +121,12 @@ where
 
     fn deserialize_output(&self, json: Value) -> Result<Box<dyn AnyOutput>> {
         // Use the tool's deserialize_output method
-        let output = Tool::deserialize_output(self, json)?;
+        let mut output = Tool::deserialize_output(self, json)?;
+
+        // Re-check dimensions on load: sessions persisted before image capping
+        // (or by an older version) may hold oversized images that a provider
+        // would reject, bricking session resumption. Correct them here.
+        Render::cap_images(&mut output, crate::MAX_IMAGE_EDGE);
 
         // Box the output as AnyOutput
         Ok(Box::new(output) as Box<dyn AnyOutput>)

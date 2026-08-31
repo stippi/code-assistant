@@ -24,7 +24,8 @@
 //! plus the page's url/title/text.
 
 use crate::tools::core::{
-    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, cap_base64_image,
+    capabilities,
 };
 use crate::tools::services::ToolServicesAccess;
 use anyhow::Result;
@@ -212,6 +213,15 @@ impl Render for BrowserOutput {
                 base64_data: data.clone(),
             })
             .collect()
+    }
+
+    fn cap_images(&mut self, max_edge: u32) {
+        if let Some(data) = self.screenshot_base64.take() {
+            let capped = cap_base64_image("image/png", &data, max_edge)
+                .map(|(_media_type, capped)| capped)
+                .unwrap_or(data);
+            self.screenshot_base64 = Some(capped);
+        }
     }
 }
 

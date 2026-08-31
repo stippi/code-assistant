@@ -1,6 +1,7 @@
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
-    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
+    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, cap_base64_image,
+    capabilities,
 };
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
@@ -135,6 +136,17 @@ impl Render for ViewImagesOutput {
                 base64_data: img.base64_data.clone(),
             })
             .collect()
+    }
+
+    fn cap_images(&mut self, max_edge: u32) {
+        for img in &mut self.loaded_images {
+            if let Some((media_type, base64_data)) =
+                cap_base64_image(&img.media_type, &img.base64_data, max_edge)
+            {
+                img.media_type = media_type;
+                img.base64_data = base64_data;
+            }
+        }
     }
 }
 
@@ -369,6 +381,84 @@ mod tests {
         let mut tracker = ResourcesTracker::new();
         let output = result.as_render().render(&mut tracker);
         assert!(output.contains("Failed to resolve path"));
+
+        Ok(())
+    }
+
+    /// Build a solid-colour PNG of the given size, base64-encoded.
+    fn oversized_png_base64(width: u32, height: u32) -> String {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            width,
+            height,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn png_dimensions(base64_data: &str) -> (u32, u32) {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64_data)
+            .unwrap();
+        image::ImageReader::new(std::io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_cap_images_shrinks_oversized_loaded_image() {
+        let mut output = ViewImagesOutput {
+            project: "test".to_string(),
+            loaded_images: vec![LoadedImage {
+                path: "big.png".to_string(),
+                media_type: "image/png".to_string(),
+                base64_data: oversized_png_base64(4000, 1000),
+                file_size: 42,
+            }],
+            failed_images: vec![],
+        };
+
+        Render::cap_images(&mut output, 1568);
+
+        let (w, h) = png_dimensions(&output.loaded_images[0].base64_data);
+        assert_eq!(w, 1568);
+        assert!(h <= 1568);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_output_caps_oversized_image() -> Result<()> {
+        // A session persisted before image capping holds an oversized image in
+        // the serialized tool result. Deserializing it (as happens on session
+        // load) must correct the dimensions so the provider accepts it.
+        let registry = crate::tools::test_registry();
+        let tool = registry
+            .get("view_images")
+            .expect("view_images tool should be registered");
+
+        let json = json!({
+            "project": "test",
+            "loaded_images": [{
+                "path": "big.png",
+                "media_type": "image/png",
+                "base64_data": oversized_png_base64(9000, 3000),
+                "file_size": 123
+            }],
+            "failed_images": []
+        });
+
+        let output = tool.deserialize_output(json)?;
+        let images = output.render_images();
+        assert_eq!(images.len(), 1);
+        let (w, h) = png_dimensions(&images[0].base64_data);
+        assert_eq!(w, 1568);
+        assert!(h <= 1568);
 
         Ok(())
     }
