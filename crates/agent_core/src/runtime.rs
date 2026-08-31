@@ -32,6 +32,10 @@ pub struct AgentRuntimeComponents {
     pub registry: Arc<ToolRegistry>,
     /// Capability tag selecting the tool set within the registry.
     pub tool_capability: String,
+    /// Capability tags whose tools are excluded for this run (e.g. the
+    /// `scope:mcp-<server>` tags of MCP servers the session deactivated).
+    /// A tool carrying any of these is neither offered nor dispatched.
+    pub excluded_tool_capabilities: Vec<String>,
     /// Which tool invocations the stream processors suppress in the UI.
     pub stream_hidden_tools: HiddenTools,
     pub command_executor: Arc<dyn CommandExecutor>,
@@ -66,6 +70,7 @@ pub struct AgentRuntime {
     dialect: Arc<dyn ToolDialect>,
     registry: Arc<ToolRegistry>,
     tool_capability: String,
+    excluded_tool_capabilities: Vec<String>,
     stream_hidden_tools: HiddenTools,
     command_executor: Arc<dyn CommandExecutor>,
     ui: Arc<dyn AgentUi>,
@@ -131,6 +136,7 @@ impl AgentRuntime {
             ui,
             registry,
             tool_capability,
+            excluded_tool_capabilities,
             stream_hidden_tools,
             command_executor,
             permission_handler,
@@ -148,6 +154,7 @@ impl AgentRuntime {
             dialect,
             registry,
             tool_capability,
+            excluded_tool_capabilities,
             stream_hidden_tools,
             command_executor,
             ui,
@@ -680,6 +687,7 @@ impl AgentRuntime {
                 let permissions = self.permissions.clone();
                 let services_provider = self.services_provider.clone();
                 let scope_tag = self.tool_capability.clone();
+                let excluded_capabilities = self.excluded_tool_capabilities.clone();
                 let session_id = self.session_id.clone();
 
                 async move {
@@ -694,6 +702,7 @@ impl AgentRuntime {
                         permissions,
                         services_provider,
                         scope_tag,
+                        excluded_capabilities,
                         session_id,
                     )
                     .await;
@@ -744,6 +753,7 @@ impl AgentRuntime {
         permissions: ToolPermissions,
         services_provider: Arc<dyn ToolServicesProvider>,
         scope_tag: String,
+        excluded_capabilities: Vec<String>,
         session_id: Option<String>,
     ) -> (bool, ToolExecution) {
         let is_hidden = registry.is_tool_hidden(&tool_request.name, &scope_tag);
@@ -766,7 +776,12 @@ impl AgentRuntime {
 
         let invoke_result = match registry.get(&tool_request.name) {
             None => Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
-            Some(_) if !registry.tool_has_capability(&tool_request.name, &scope_tag) => {
+            Some(_)
+                if !registry.tool_has_capability(&tool_request.name, &scope_tag)
+                    || excluded_capabilities
+                        .iter()
+                        .any(|cap| registry.tool_has_capability(&tool_request.name, cap)) =>
+            {
                 Err(anyhow::anyhow!(
                     "Tool '{}' is not available in the current scope",
                     tool_request.name
@@ -1023,7 +1038,10 @@ impl AgentRuntime {
                 Some(to_tool_definitions(
                     self.registry
                         .as_ref()
-                        .get_tool_definitions_with_capability(self.tool_capability.as_str()),
+                        .get_tool_definitions_with_capability_excluding(
+                            self.tool_capability.as_str(),
+                            &self.excluded_tool_capabilities,
+                        ),
                 ))
             } else {
                 None
@@ -1174,7 +1192,10 @@ impl AgentRuntime {
                 Some(to_tool_definitions(
                     self.registry
                         .as_ref()
-                        .get_tool_definitions_with_capability(self.tool_capability.as_str()),
+                        .get_tool_definitions_with_capability_excluding(
+                            self.tool_capability.as_str(),
+                            &self.excluded_tool_capabilities,
+                        ),
                 ))
             } else {
                 None
@@ -1872,6 +1893,11 @@ impl AgentRuntime {
             .registry
             .as_ref()
             .tool_has_capability(&tool_request.name, self.tool_capability.as_str())
+            || self.excluded_tool_capabilities.iter().any(|cap| {
+                self.registry
+                    .as_ref()
+                    .tool_has_capability(&tool_request.name, cap)
+            })
         {
             return Err(anyhow::anyhow!(
                 "Tool '{}' is not available in the current scope",

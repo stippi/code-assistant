@@ -11,7 +11,78 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
-use tools_core::permissions::{PermissionDecision, PermissionMediator, PermissionRequest};
+use tools_core::permissions::{
+    PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
+};
+
+/// One selectable answer to a permission request, in display order. The first
+/// option is the recommended/primary action. Frontends render these directly
+/// (label + description) and send back the chosen [`decision`], so they never
+/// hard-code the choices or branch on the request type themselves.
+///
+/// [`decision`]: PermissionOption::decision
+#[derive(Debug, Clone)]
+pub struct PermissionOption {
+    pub decision: PermissionDecision,
+    pub label: String,
+    pub description: String,
+}
+
+impl PermissionOption {
+    fn new(decision: PermissionDecision, label: &str, description: &str) -> Self {
+        Self {
+            decision,
+            label: label.to_string(),
+            description: description.to_string(),
+        }
+    }
+}
+
+/// The choices offered for a given permission request — the single source of
+/// truth shared by every frontend, so labels and semantics stay consistent.
+///
+/// The local-`.mcp.json` trust prompt is durable: its "always" persists the
+/// project across sessions ([`PermissionDecision::GrantedPersistent`]), unlike
+/// the per-session grant offered for ordinary tool prompts.
+pub fn permission_options_for(reason: &PermissionRequestReason<'_>) -> Vec<PermissionOption> {
+    match reason {
+        PermissionRequestReason::TrustLocalMcp { .. } => vec![
+            PermissionOption::new(
+                PermissionDecision::GrantedOnce,
+                "Load once",
+                "Load these servers now; ask again next time",
+            ),
+            PermissionOption::new(
+                PermissionDecision::GrantedPersistent,
+                "Always (this project)",
+                "Trust this project's .mcp.json across sessions",
+            ),
+            PermissionOption::new(
+                PermissionDecision::Denied,
+                "Deny",
+                "Skip these servers; the agent runs without them",
+            ),
+        ],
+        PermissionRequestReason::ExecuteCommand { .. }
+        | PermissionRequestReason::ToolInvocation { .. } => vec![
+            PermissionOption::new(
+                PermissionDecision::GrantedOnce,
+                "Allow once",
+                "Run this call; ask again next time",
+            ),
+            PermissionOption::new(
+                PermissionDecision::GrantedSession,
+                "Always (session)",
+                "Stop asking for this in this session",
+            ),
+            PermissionOption::new(
+                PermissionDecision::Denied,
+                "Deny",
+                "Reject the call; the agent is told not to retry",
+            ),
+        ],
+    }
+}
 
 /// A permission request as shown to frontends. Carried by
 /// [`UiEvent::RequestToolPermission`] and included in session snapshots so a
@@ -28,6 +99,8 @@ pub struct ToolPermissionRequestData {
     pub summary: String,
     /// Structured request details (tool parameters or command line).
     pub metadata: serde_json::Value,
+    /// The answers the user may choose from (see [`permission_options_for`]).
+    pub options: Vec<PermissionOption>,
 }
 
 /// Pending permission requests of one session, keyed by request id.
@@ -121,8 +194,6 @@ impl SessionPermissionMediator {
     }
 
     fn request_data(request: &PermissionRequest<'_>) -> ToolPermissionRequestData {
-        use tools_core::permissions::PermissionRequestReason;
-
         let (summary, metadata) = match &request.reason {
             PermissionRequestReason::ExecuteCommand {
                 command_line,
@@ -145,6 +216,25 @@ impl SessionPermissionMediator {
                     "params": params,
                 }),
             ),
+            PermissionRequestReason::TrustLocalMcp {
+                project_dir,
+                server_names,
+            } => (
+                format!(
+                    "Trust MCP servers from .mcp.json in {}? Launches: {}",
+                    project_dir.display(),
+                    if server_names.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        server_names.join(", ")
+                    }
+                ),
+                serde_json::json!({
+                    "type": "trust_local_mcp",
+                    "project_dir": project_dir.display().to_string(),
+                    "server_names": server_names,
+                }),
+            ),
         };
 
         ToolPermissionRequestData {
@@ -153,6 +243,7 @@ impl SessionPermissionMediator {
             tool_name: request.tool_name.to_string(),
             summary,
             metadata,
+            options: permission_options_for(&request.reason),
         }
     }
 }
@@ -209,6 +300,7 @@ mod tests {
             tool_name: "edit".to_string(),
             summary: "Run tool `edit`".to_string(),
             metadata: serde_json::json!({}),
+            options: Vec::new(),
         }
     }
 

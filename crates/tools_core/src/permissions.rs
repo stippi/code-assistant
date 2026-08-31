@@ -107,7 +107,7 @@ impl ToolPermissions {
             .await?;
         match decision {
             PermissionDecision::GrantedOnce => Ok(()),
-            PermissionDecision::GrantedSession => {
+            PermissionDecision::GrantedSession | PermissionDecision::GrantedPersistent => {
                 self.grant(&spec.name);
                 Ok(())
             }
@@ -129,6 +129,13 @@ pub enum PermissionRequestReason<'a> {
     },
     /// Tier-based gate before invoking a tool ([`PermissionTier`]).
     ToolInvocation { params: &'a serde_json::Value },
+    /// Approve loading a project's local `.mcp.json`, which launches the MCP
+    /// servers it defines — i.e. runs project-supplied commands. Not tied to a
+    /// tool invocation; raised before a project's registry is built.
+    TrustLocalMcp {
+        project_dir: &'a Path,
+        server_names: Vec<String>,
+    },
 }
 
 /// Request payload passed to a [`PermissionMediator`].
@@ -141,8 +148,16 @@ pub struct PermissionRequest<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {
+    /// Allow this single invocation; ask again next time.
     GrantedOnce,
+    /// Allow for the rest of this session (in-memory grant).
     GrantedSession,
+    /// Allow and remember durably — the embedder persists the approval so it
+    /// survives across sessions and restarts (e.g. trusting a project's local
+    /// `.mcp.json`). Ordinary tier-based tool prompts do not offer this; a
+    /// tool that receives it degrades to a session grant, since there is no
+    /// durable per-tool grant store.
+    GrantedPersistent,
     Denied,
 }
 

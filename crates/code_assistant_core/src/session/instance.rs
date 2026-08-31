@@ -525,6 +525,13 @@ impl SessionInstance {
             allowed_models: Vec::new(),
             sandbox_policy: self.session.config.sandbox_policy.clone(),
             permission_tier: self.session.config.permission_tier,
+            mcp_servers: crate::tools::mcp::session_mcp_servers(
+                self.session
+                    .config
+                    .effective_project_path()
+                    .map(|p| p.as_path()),
+                &self.session.config.disabled_mcp_servers,
+            ),
             pending_permission_requests: self.pending_permission_requests.snapshot(),
         })
     }

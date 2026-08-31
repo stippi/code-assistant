@@ -8,15 +8,33 @@ use crate::{ACPUserUI, ClientConn};
 use agent_client_protocol::schema as acp;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use code_assistant_core::session::permissions::permission_options_for;
 use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 
-const ALLOW_ALWAYS_OPTION_ID: &str = "allow-always";
-const ALLOW_OPTION_ID: &str = "allow-once";
-const DENY_OPTION_ID: &str = "deny-once";
+/// Stable option id for a decision, round-tripped through the ACP protocol.
+fn option_id(decision: PermissionDecision) -> &'static str {
+    match decision {
+        PermissionDecision::GrantedOnce => "granted-once",
+        PermissionDecision::GrantedSession => "granted-session",
+        PermissionDecision::GrantedPersistent => "granted-persistent",
+        PermissionDecision::Denied => "denied",
+    }
+}
+
+/// The ACP option kind that renders each decision appropriately.
+fn option_kind(decision: PermissionDecision) -> acp::PermissionOptionKind {
+    match decision {
+        PermissionDecision::GrantedOnce => acp::PermissionOptionKind::AllowOnce,
+        PermissionDecision::GrantedSession | PermissionDecision::GrantedPersistent => {
+            acp::PermissionOptionKind::AllowAlways
+        }
+        PermissionDecision::Denied => acp::PermissionOptionKind::RejectOnce,
+    }
+}
 
 pub struct AcpPermissionMediator {
     session_id: acp::SessionId,
@@ -81,6 +99,18 @@ impl AcpPermissionMediator {
                     serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string())
                 )
             }
+            PermissionRequestReason::TrustLocalMcp {
+                project_dir,
+                server_names,
+            } => format!(
+                "Trust MCP servers from .mcp.json in {}?\nLaunches: {}",
+                project_dir.display(),
+                if server_names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    server_names.join(", ")
+                }
+            ),
         }
     }
 
@@ -97,6 +127,14 @@ impl AcpPermissionMediator {
             PermissionRequestReason::ToolInvocation { params } => json!({
                 "type": "tool_invocation",
                 "params": params,
+            }),
+            PermissionRequestReason::TrustLocalMcp {
+                project_dir,
+                server_names,
+            } => json!({
+                "type": "trust_local_mcp",
+                "project_dir": project_dir.display().to_string(),
+                "server_names": server_names,
             }),
         }
     }
@@ -117,36 +155,18 @@ impl PermissionMediator for AcpPermissionMediator {
         }
 
         let tool_call = self.tool_call_update(&permission_request);
-        let (allow_always_label, allow_once_label) = match &permission_request.reason {
-            PermissionRequestReason::ExecuteCommand { .. } => (
-                "Always allow in this session".to_string(),
-                "Allow this command".to_string(),
-            ),
-            PermissionRequestReason::ToolInvocation { .. } => (
-                format!(
-                    "Always allow `{}` in this session",
-                    permission_request.tool_name
-                ),
-                "Allow once".to_string(),
-            ),
-        };
-        let options = vec![
-            acp::PermissionOption::new(
-                ALLOW_ALWAYS_OPTION_ID,
-                allow_always_label,
-                acp::PermissionOptionKind::AllowAlways,
-            ),
-            acp::PermissionOption::new(
-                ALLOW_OPTION_ID,
-                allow_once_label,
-                acp::PermissionOptionKind::AllowOnce,
-            ),
-            acp::PermissionOption::new(
-                DENY_OPTION_ID,
-                "Deny",
-                acp::PermissionOptionKind::RejectOnce,
-            ),
-        ];
+        // The choices are the shared source of truth; ACP just renders them
+        // and maps the selection back to a decision.
+        let options = permission_options_for(&permission_request.reason)
+            .into_iter()
+            .map(|option| {
+                acp::PermissionOption::new(
+                    option_id(option.decision),
+                    option.label,
+                    option_kind(option.decision),
+                )
+            })
+            .collect();
 
         let acp_request =
             acp::RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
@@ -162,37 +182,36 @@ impl PermissionMediator for AcpPermissionMediator {
 
         let decision = match response.outcome {
             acp::RequestPermissionOutcome::Cancelled => PermissionDecision::Denied,
-            acp::RequestPermissionOutcome::Selected(selected)
-                if selected.option_id == acp::PermissionOptionId::from(ALLOW_ALWAYS_OPTION_ID) =>
-            {
-                if matches!(
-                    permission_request.reason,
-                    PermissionRequestReason::ExecuteCommand { .. }
-                ) {
-                    self.allow_execute_command_always
-                        .store(true, Ordering::Relaxed);
-                }
-                PermissionDecision::GrantedSession
-            }
-            acp::RequestPermissionOutcome::Selected(selected)
-                if selected.option_id == acp::PermissionOptionId::from(ALLOW_OPTION_ID) =>
-            {
-                PermissionDecision::GrantedOnce
-            }
-            acp::RequestPermissionOutcome::Selected(selected)
-                if selected.option_id == acp::PermissionOptionId::from(DENY_OPTION_ID) =>
-            {
-                PermissionDecision::Denied
-            }
-            acp::RequestPermissionOutcome::Selected(selected) => {
-                return Err(anyhow!(
+            acp::RequestPermissionOutcome::Selected(selected) => [
+                PermissionDecision::GrantedOnce,
+                PermissionDecision::GrantedSession,
+                PermissionDecision::GrantedPersistent,
+                PermissionDecision::Denied,
+            ]
+            .into_iter()
+            .find(|decision| {
+                selected.option_id == acp::PermissionOptionId::from(option_id(*decision))
+            })
+            .ok_or_else(|| {
+                anyhow!(
                     "Unknown permission option selected: {}",
                     selected.option_id.0
-                ));
-            }
+                )
+            })?,
             // Non-exhaustive enum - handle future variants
             _ => return Err(anyhow!("Unknown permission outcome variant")),
         };
+
+        // Remember an "always allow" for command execution so we stop asking.
+        if decision == PermissionDecision::GrantedSession
+            && matches!(
+                permission_request.reason,
+                PermissionRequestReason::ExecuteCommand { .. }
+            )
+        {
+            self.allow_execute_command_always
+                .store(true, Ordering::Relaxed);
+        }
 
         Ok(decision)
     }

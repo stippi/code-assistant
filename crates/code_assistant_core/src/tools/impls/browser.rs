@@ -806,7 +806,9 @@ async fn login_handoff(
                 "User declined the login handoff.",
             ))
         }
-        PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession => {
+        PermissionDecision::GrantedOnce
+        | PermissionDecision::GrantedSession
+        | PermissionDecision::GrantedPersistent => {
             // Swap the visible login window for a headless browser on the same
             // profile, carrying the login across. The agent then browses in the
             // background, and the user can close the login window without killing

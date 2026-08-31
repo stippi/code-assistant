@@ -51,6 +51,9 @@ pub struct SessionSnapshot {
     pub allowed_models: Vec<String>,
     pub sandbox_policy: SandboxPolicy,
     pub permission_tier: PermissionTier,
+    /// MCP servers available to this session and whether each is enabled for
+    /// it (global `mcp-servers.json` plus the project's trusted `.mcp.json`).
+    pub mcp_servers: Vec<crate::ui::ui_events::McpServerToggle>,
     /// Permission requests still awaiting an answer; a connecting frontend
     /// should render prompts for them.
     pub pending_permission_requests: Vec<permissions::ToolPermissionRequestData>,
@@ -99,6 +102,9 @@ impl SessionSnapshot {
         events.push(UiEvent::UpdatePermissionTier {
             tier: self.permission_tier,
         });
+        events.push(UiEvent::UpdateMcpServers {
+            servers: self.mcp_servers.clone(),
+        });
         events.push(UiEvent::UpdateAllowedModels {
             models: self.allowed_models.clone(),
         });
@@ -133,6 +139,14 @@ pub struct SessionConfig {
     /// The git branch name associated with this session (e.g. `feature/login`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// MCP servers deactivated for this session (by config name). Their tools
+    /// are not offered to or callable by this session's agent, without
+    /// affecting other sessions. This filters the *tool set* only — the server
+    /// is still launched when the shared registry is built (registries span
+    /// sessions), so disabling here hides a server's tools rather than
+    /// preventing its process from starting. Empty by default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_mcp_servers: Vec<String>,
 }
 
 fn default_tool_syntax() -> ToolSyntax {
@@ -150,6 +164,7 @@ impl Default for SessionConfig {
             permission_tier: PermissionTier::default(),
             worktree_path: None,
             branch: None,
+            disabled_mcp_servers: Vec::new(),
         }
     }
 }

@@ -948,6 +948,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateCurrentModel { .. }
             | UiEvent::UpdateSandboxPolicy { .. }
             | UiEvent::UpdatePermissionTier { .. }
+            | UiEvent::UpdateMcpServers { .. }
             // Permission prompts reach ACP clients through the protocol's
             // requestPermission RPC (AcpPermissionMediator), not the stream.
             | UiEvent::RequestToolPermission { .. }

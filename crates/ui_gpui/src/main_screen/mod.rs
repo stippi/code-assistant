@@ -600,6 +600,14 @@ impl MainScreen {
                     gpui.cmd_change_permission_tier(session_id.clone(), *tier);
                 }
             }
+            InputAreaEvent::McpServerToggled { name, enabled } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    gpui.cmd_toggle_mcp_server(session_id.clone(), name.clone(), *enabled);
+                }
+            }
             InputAreaEvent::WorktreeSwitchedToLocal => {
                 if let Some(session_id) = &self.current_session_id {
                     let gpui = cx
@@ -972,7 +980,7 @@ impl MainScreen {
             }
         };
 
-        let button = |id: String, label: &'static str, emphasized: bool, cx: &mut Context<Self>| {
+        let button = |id: String, label: SharedString, emphasized: bool, cx: &mut Context<Self>| {
             div()
                 .id(SharedString::from(id))
                 .px_2()
@@ -1036,23 +1044,22 @@ impl MainScreen {
                                         .child(request.summary.clone()),
                                 ),
                         )
-                        .child(
-                            button(format!("perm-allow-{rid}"), "Allow once", true, cx).on_click(
-                                respond(&session_id, &rid, PermissionDecision::GrantedOnce),
-                            ),
-                        )
-                        .child(
-                            button(format!("perm-always-{rid}"), "Always (session)", false, cx)
-                                .on_click(respond(
-                                    &session_id,
-                                    &rid,
-                                    PermissionDecision::GrantedSession,
-                                )),
-                        )
-                        .child(
-                            button(format!("perm-deny-{rid}"), "Deny", false, cx)
-                                .on_click(respond(&session_id, &rid, PermissionDecision::Denied)),
-                        )
+                        // Render whatever choices the request carries; the
+                        // first is the primary action. Frontends don't decide
+                        // the options — the mediator does (permission_options_for).
+                        .children(request.options.iter().enumerate().map(|(i, option)| {
+                            button(
+                                format!("perm-{i}-{rid}"),
+                                option.label.clone().into(),
+                                i == 0,
+                                cx,
+                            )
+                            .on_click(respond(
+                                &session_id,
+                                &rid,
+                                option.decision,
+                            ))
+                        }))
                 }))
                 .into_any_element(),
         )
@@ -1183,6 +1190,7 @@ impl Render for MainScreen {
             current_worktree_data,
             current_last_usage,
             current_total_usage,
+            current_mcp_servers,
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
             (
                 gpui.get_chat_sessions(),
@@ -1195,6 +1203,7 @@ impl Render for MainScreen {
                 gpui.get_current_worktree_data(),
                 gpui.get_current_session_last_usage(),
                 gpui.get_current_session_total_usage(),
+                gpui.get_current_mcp_servers(),
             )
         } else {
             (
@@ -1208,6 +1217,7 @@ impl Render for MainScreen {
                 None,
                 None,
                 None,
+                Vec::new(),
             )
         };
 
@@ -1300,6 +1310,12 @@ impl Render for MainScreen {
                 input_area.set_current_permission_tier(tier, window, cx);
             });
         }
+
+        // Sync the MCP server list to the input-bar toggle menu (set_servers
+        // no-ops when unchanged).
+        self.input_area.update(cx, |input_area, cx| {
+            input_area.set_mcp_servers(current_mcp_servers, cx);
+        });
 
         // Sync worktree data to the WorktreeSelector (only when changed)
         if current_worktree_data != self.last_worktree_data {
