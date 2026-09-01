@@ -101,7 +101,8 @@ impl ConfigToolRegistry {
                 .map(|dir| dir.display().to_string())
                 .unwrap_or_else(|| "the global configuration".to_string())
         );
-        let registry = crate::tools::default_registry_with_mcp(local_mcp_dir.as_deref(), self).await;
+        let registry =
+            crate::tools::default_registry_with_mcp(local_mcp_dir.as_deref(), self).await;
         cached.insert(
             local_mcp_dir,
             Cached {
@@ -234,15 +235,32 @@ mod tests {
             [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
             async {
                 let provider = ConfigToolRegistry::new();
-                let a = provider.current_for(project_request(project_a.path())).await;
-                let b = provider.current_for(project_request(project_b.path())).await;
-                assert!(!Arc::ptr_eq(&a, &b), "distinct projects, distinct registries");
+                let a = provider
+                    .current_for(project_request(project_a.path()))
+                    .await;
+                let b = provider
+                    .current_for(project_request(project_b.path()))
+                    .await;
+                assert!(
+                    !Arc::ptr_eq(&a, &b),
+                    "distinct projects, distinct registries"
+                );
 
                 // Alternating requests hit both caches — no thrash.
-                let a2 = provider.current_for(project_request(project_a.path())).await;
-                let b2 = provider.current_for(project_request(project_b.path())).await;
-                assert!(Arc::ptr_eq(&a, &a2), "project A stays cached across B's build");
-                assert!(Arc::ptr_eq(&b, &b2), "project B stays cached across A's build");
+                let a2 = provider
+                    .current_for(project_request(project_a.path()))
+                    .await;
+                let b2 = provider
+                    .current_for(project_request(project_b.path()))
+                    .await;
+                assert!(
+                    Arc::ptr_eq(&a, &a2),
+                    "project A stays cached across B's build"
+                );
+                assert!(
+                    Arc::ptr_eq(&b, &b2),
+                    "project B stays cached across A's build"
+                );
             },
         )
         .await;
