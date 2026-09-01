@@ -75,4 +75,39 @@ impl GitBinary {
 
         Ok(stdout)
     }
+
+    /// Run a git command and return raw stdout bytes on success.
+    ///
+    /// Unlike [`run`](Self::run), this does not require the output to be valid
+    /// UTF-8 and does not strip any trailing newline. Use it for commands whose
+    /// output may be binary (e.g. `git show <rev>:<path>` on a binary blob).
+    pub async fn run_bytes<S: AsRef<OsStr>>(
+        &self,
+        working_dir: &Path,
+        args: &[S],
+    ) -> Result<Vec<u8>> {
+        let mut cmd = self.command(working_dir);
+        cmd.args(args);
+
+        let output = cmd
+            .output()
+            .await
+            .context("Failed to execute git command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let args_display: Vec<_> = args
+                .iter()
+                .map(|a| a.as_ref().to_string_lossy().to_string())
+                .collect();
+            bail!(
+                "git {} failed (exit {}): {}",
+                args_display.join(" "),
+                output.status.code().unwrap_or(-1),
+                stderr.trim()
+            );
+        }
+
+        Ok(output.stdout)
+    }
 }

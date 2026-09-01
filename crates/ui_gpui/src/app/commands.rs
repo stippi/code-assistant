@@ -615,6 +615,128 @@ impl Gpui {
     }
 
     // ========================================================================
+    // Review panel
+    // ========================================================================
+
+    /// Refresh the Review panel: discover repos immediately (showing cached
+    /// results where available), then scan them one at a time in the
+    /// background, streaming a listing update after every state change.
+    pub(crate) fn cmd_list_review_files(
+        &self,
+        session_id: String,
+        mode: code_assistant_core::session::ReviewMode,
+        base_overrides: std::collections::HashMap<PathBuf, String>,
+    ) {
+        use code_assistant_core::session::{RepoReview, ReviewScanState};
+        use std::sync::atomic::Ordering;
+
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        // Supersede any scan still streaming for an older request.
+        let epoch = self.review_scan_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+
+        self.dispatch(async move {
+            let push = |repos: &[RepoReview], is_git_repo: bool| {
+                if gpui.review_scan_epoch.load(Ordering::SeqCst) == epoch
+                    && gpui.is_current_session(&session_id)
+                {
+                    gpui.push_event(UiEvent::UpdateReviewFiles {
+                        repos: repos.to_vec(),
+                        is_git_repo,
+                        mode,
+                    });
+                }
+            };
+
+            // Phase 1: fast discovery — show every repo right away, seeded
+            // from the on-disk cache where a previous scan exists.
+            let discovered = match service.list_review_repos(session_id.clone()).await {
+                Ok(d) => d,
+                Err(e) => {
+                    debug!("Failed to discover review repos: {e:#}");
+                    return;
+                }
+            };
+            let is_git_repo = !discovered.is_empty();
+            let mut repos: Vec<RepoReview> = discovered
+                .into_iter()
+                .map(|(root, label)| {
+                    crate::shared::review_cache::load(&root, &label, mode)
+                        .unwrap_or_else(|| RepoReview::pending(root, label))
+                })
+                .collect();
+            push(&repos, is_git_repo);
+
+            // Phase 2: scan repo by repo, streaming each result.
+            for ix in 0..repos.len() {
+                if gpui.review_scan_epoch.load(Ordering::SeqCst) != epoch {
+                    return;
+                }
+                repos[ix].scan_state = ReviewScanState::Scanning;
+                push(&repos, is_git_repo);
+
+                let root = repos[ix].repo_root.clone();
+                let label = repos[ix].label.clone();
+                let base_override = base_overrides.get(&root).cloned();
+                match service
+                    .scan_review_repo(root, label, mode, base_override)
+                    .await
+                {
+                    Ok(review) => {
+                        crate::shared::review_cache::store(&review, mode);
+                        repos[ix] = review;
+                    }
+                    Err(e) => {
+                        debug!(
+                            "Failed to scan review repo {}: {e:#}",
+                            repos[ix].repo_root.display()
+                        );
+                        // Keep the cached/empty data; just stop indicating.
+                        repos[ix].scan_state = ReviewScanState::Done;
+                    }
+                }
+                push(&repos, is_git_repo);
+            }
+        });
+    }
+
+    /// Fetch the diff for a single file selected in the Review panel.
+    pub(crate) fn cmd_get_review_file_diff(
+        &self,
+        session_id: String,
+        repo_root: PathBuf,
+        mode: code_assistant_core::session::ReviewMode,
+        base: Option<String>,
+        file: git::ChangedFile,
+    ) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        let path = file.path.clone();
+        let event_repo_root = repo_root.clone();
+        self.dispatch(async move {
+            match service
+                .get_review_file_diff(session_id.clone(), repo_root, mode, base, file)
+                .await
+            {
+                Ok(diff) => {
+                    if gpui.is_current_session(&session_id) {
+                        gpui.push_event(UiEvent::UpdateReviewDiff {
+                            repo_root: event_repo_root,
+                            path,
+                            diff,
+                        });
+                    }
+                }
+                Err(e) => gpui.display_error(format!("Failed to load diff: {e:#}")),
+            }
+        });
+    }
+
+    // ========================================================================
     // Projects
     // ========================================================================
 

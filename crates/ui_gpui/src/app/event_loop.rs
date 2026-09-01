@@ -842,6 +842,51 @@ impl Gpui {
                 cx.refresh();
             }
 
+            UiEvent::UpdateReviewFiles {
+                repos,
+                is_git_repo,
+                mode,
+            } => {
+                debug!(
+                    "UI: UpdateReviewFiles event — {} repos, is_git_repo={}",
+                    repos.len(),
+                    is_git_repo
+                );
+                let repos = repos
+                    .into_iter()
+                    .map(|r| RepoReviewData {
+                        repo_root: r.repo_root,
+                        label: r.label,
+                        current_branch: r.current_branch,
+                        base_candidates: r.base_candidates,
+                        base: r.base,
+                        files: r.files,
+                        stats: r.stats,
+                        scan_state: r.scan_state,
+                    })
+                    .collect();
+                self.set_current_review_listing(Some(ReviewData {
+                    repos,
+                    is_git_repo,
+                    mode,
+                }));
+                cx.refresh();
+            }
+
+            UiEvent::UpdateReviewDiff {
+                repo_root,
+                path,
+                diff,
+            } => {
+                debug!("UI: UpdateReviewDiff event — path={path}");
+                self.set_current_review_diff(Some(ReviewDiff {
+                    repo_root,
+                    path,
+                    diff,
+                }));
+                cx.refresh();
+            }
+
             UiEvent::RefreshCurrentSession { session_id } => {
                 // Another process modified the session file on disk.
                 // Use incremental refresh which diffs the active path and only

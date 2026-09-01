@@ -188,6 +188,44 @@ impl FileIcons {
         }
     }
 
+    /// Get an icon for a file given its name (or path).
+    ///
+    /// Resolution order mirrors editor conventions: an exact stem match
+    /// (e.g. `Cargo.toml`, `Dockerfile`) wins, then the longest matching
+    /// suffix (e.g. `rs`, `tar.gz`), then a generic file icon fallback.
+    pub fn get_icon_for_filename(&self, name: &str) -> Option<SharedString> {
+        // Use just the final path component for matching.
+        let file_name = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .to_lowercase();
+
+        // 1) Exact stem (full filename) match.
+        if let Some(typ) = self.config.stems.get(&file_name)
+            && let Some(icon) = self.get_type_icon(typ)
+        {
+            return Some(icon);
+        }
+
+        // 2) Suffix match. Try progressively shorter suffixes so multi-part
+        //    extensions (`tar.gz`) are preferred over their tail (`gz`).
+        let parts: Vec<&str> = file_name.split('.').collect();
+        if parts.len() > 1 {
+            for start in 1..parts.len() {
+                let suffix = parts[start..].join(".");
+                if let Some(typ) = self.config.suffixes.get(&suffix)
+                    && let Some(icon) = self.get_type_icon(typ)
+                {
+                    return Some(icon);
+                }
+            }
+        }
+
+        // 3) Generic fallback.
+        self.get_type_icon(TOOL_GENERIC)
+    }
+
     /// Get tool-specific icon based on tool name
     pub fn get_tool_icon(&self, tool_name: &str) -> Option<SharedString> {
         // MCP server tools (`mcp__<server>__<tool>`) share one generic icon;

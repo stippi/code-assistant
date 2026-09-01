@@ -46,6 +46,42 @@ pub struct UiSettingsGlobal(pub shared::settings::UiSettings);
 
 impl Global for UiSettingsGlobal {}
 
+/// Delay after the last [`update_ui_settings`] call before writing to disk.
+const UI_SETTINGS_SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Pending debounced settings-save task. Replacing it drops (and thereby
+/// cancels) the previous timer, so rapid updates coalesce into a single write.
+struct UiSettingsSaveTask(#[allow(dead_code)] gpui::Task<()>);
+
+impl Global for UiSettingsSaveTask {}
+
+/// Mutate the global [`UiSettings`] and persist to disk, debounced.
+///
+/// The disk snapshot is taken when the debounce timer fires — not at call time
+/// — so concurrent writes cannot land out of order and clobber a newer state.
+/// A quit within the debounce window is covered by the `on_app_quit` flush.
+///
+/// Callable anywhere with access to `&mut App` (including via `Context` deref),
+/// so both `MainScreen` handlers and `ReviewView` resize callbacks can use it.
+pub fn update_ui_settings(cx: &mut App, f: impl FnOnce(&mut shared::settings::UiSettings)) {
+    if !cx.has_global::<UiSettingsGlobal>() {
+        return;
+    }
+    f(&mut cx.global_mut::<UiSettingsGlobal>().0);
+
+    let task = cx.spawn(async move |cx: &mut AsyncApp| {
+        cx.background_executor()
+            .timer(UI_SETTINGS_SAVE_DEBOUNCE)
+            .await;
+        let settings = cx.update(|cx| cx.global::<UiSettingsGlobal>().0.clone());
+        cx.background_spawn(async move {
+            settings.save();
+        })
+        .await;
+    });
+    cx.set_global(UiSettingsSaveTask(task));
+}
+
 /// Snapshot of worktree/branch data for the active session, kept in `Gpui`
 /// so that `RootView::render()` can push it into the `WorktreeSelector`.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +89,38 @@ pub struct WorktreeData {
     pub worktrees: Vec<git::Worktree>,
     pub current_worktree_path: Option<std::path::PathBuf>,
     pub is_git_repo: bool,
+}
+
+/// Latest changed-files listing for the Review panel, mirrored from the
+/// backend into a global the `ReviewView` reads during render.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewData {
+    pub repos: Vec<RepoReviewData>,
+    pub is_git_repo: bool,
+    pub mode: code_assistant_core::session::ReviewMode,
+}
+
+/// Per-repo changed-files data within a [`ReviewData`] listing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoReviewData {
+    pub repo_root: std::path::PathBuf,
+    pub label: String,
+    pub current_branch: Option<String>,
+    pub base_candidates: Vec<String>,
+    pub base: Option<String>,
+    pub files: Vec<git::ChangedFile>,
+    /// Aggregate added/deleted line counts (untracked files not included).
+    pub stats: git::DiffStats,
+    /// Background-scan progress for this repo (drives the activity indicator).
+    pub scan_state: code_assistant_core::session::ReviewScanState,
+}
+
+/// Latest loaded diff for a single file in the Review panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewDiff {
+    pub repo_root: std::path::PathBuf,
+    pub path: String,
+    pub diff: git::FileDiffContent,
 }
 
 // Our main UI struct that implements the UserInterface trait
@@ -111,6 +179,18 @@ pub struct Gpui {
 
     // Current worktree state (branches + worktrees listing from backend)
     current_worktree_data: Arc<Mutex<Option<WorktreeData>>>,
+
+    // Review panel state (changed-files listing + selected-file diff) mirrored
+    // from the backend for the ReviewView to read during render. The u64 is a
+    // generation counter bumped on every write so the view can detect changes
+    // with a plain integer compare instead of deep-cloning per frame.
+    current_review_listing: Arc<Mutex<(u64, Option<ReviewData>)>>,
+    current_review_diff: Arc<Mutex<(u64, Option<ReviewDiff>)>>,
+
+    // Monotonic id of the latest review-scan request. A streaming scan task
+    // compares its captured epoch against this and stops when superseded, so
+    // stale scans never overwrite fresher listings.
+    review_scan_epoch: Arc<std::sync::atomic::AtomicU64>,
 
     // Last usage from the active session's most recent assistant message.
     // Stored separately from chat_sessions so it cannot be overwritten by
@@ -340,6 +420,8 @@ impl Gpui {
         self.current_mcp_servers.lock().unwrap().clear();
         self.pending_permission_requests.lock().unwrap().clear();
         *self.current_worktree_data.lock().unwrap() = None;
+        self.set_current_review_listing(None);
+        self.set_current_review_diff(None);
         *self.current_session_last_usage.lock().unwrap() = None;
         *self.current_session_total_usage.lock().unwrap() = None;
     }
@@ -439,6 +521,9 @@ impl Gpui {
 
             // Current worktree state
             current_worktree_data: Arc::new(Mutex::new(None)),
+            current_review_listing: Arc::new(Mutex::new((0, None))),
+            current_review_diff: Arc::new(Mutex::new((0, None))),
+            review_scan_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
 
             // Current session last usage
             current_session_last_usage: Arc::new(Mutex::new(None)),
@@ -525,6 +610,25 @@ impl Gpui {
 
             // Store settings as a GPUI global so entities can access/update them
             cx.set_global(UiSettingsGlobal(ui_settings.clone()));
+
+            // Flush pending debounced writes (UI settings + per-session UI
+            // state) before the process exits, closing the debounce window.
+            cx.on_app_quit(|cx| {
+                let settings = cx
+                    .try_global::<UiSettingsGlobal>()
+                    .map(|global| global.0.clone());
+                let files = shared::ui_state::UiStateStore::try_global()
+                    .and_then(|store| store.lock().ok())
+                    .map(|mut store| store.take_dirty())
+                    .unwrap_or_default();
+                async move {
+                    if let Some(settings) = settings {
+                        settings.save();
+                    }
+                    shared::ui_state::write_ui_state_files(files);
+                }
+            })
+            .detach();
 
             init(cx);
 
@@ -743,6 +847,32 @@ impl Gpui {
 
     pub fn get_current_worktree_data(&self) -> Option<WorktreeData> {
         self.current_worktree_data.lock().unwrap().clone()
+    }
+
+    /// Return the review listing and its generation, but only if it changed
+    /// since `seen`. The unchanged case — the per-frame hot path — costs a
+    /// mutex lock and an integer compare; the data is only cloned on change.
+    pub fn review_listing_if_newer(&self, seen: u64) -> Option<(u64, Option<ReviewData>)> {
+        let slot = self.current_review_listing.lock().unwrap();
+        (slot.0 != seen).then(|| (slot.0, slot.1.clone()))
+    }
+
+    pub fn set_current_review_listing(&self, data: Option<ReviewData>) {
+        let mut slot = self.current_review_listing.lock().unwrap();
+        slot.0 = slot.0.wrapping_add(1);
+        slot.1 = data;
+    }
+
+    /// Generation-gated access to the review diff; see [`Self::review_listing_if_newer`].
+    pub fn review_diff_if_newer(&self, seen: u64) -> Option<(u64, Option<ReviewDiff>)> {
+        let slot = self.current_review_diff.lock().unwrap();
+        (slot.0 != seen).then(|| (slot.0, slot.1.clone()))
+    }
+
+    pub fn set_current_review_diff(&self, diff: Option<ReviewDiff>) {
+        let mut slot = self.current_review_diff.lock().unwrap();
+        slot.0 = slot.0.wrapping_add(1);
+        slot.1 = diff;
     }
 
     pub fn get_current_session_last_usage(&self) -> Option<llm::Usage> {

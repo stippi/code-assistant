@@ -537,13 +537,18 @@ fn normalize_for_diff(text: &str) -> String {
     format!("{trimmed}\n")
 }
 
-fn render_unified_diff(
-    old_text: &str,
-    new_text: &str,
-    theme: &gpui_component::theme::Theme,
-    start_line: Option<usize>,
-    rem_size: gpui::Pixels,
-) -> gpui::AnyElement {
+/// One line of a computed unified diff. `text` is a [`SharedString`] so cached
+/// diffs can be re-rendered every frame with cheap clones.
+pub(crate) struct DiffLine {
+    pub tag: ChangeTag,
+    pub text: SharedString,
+}
+
+/// Run the line diff (the expensive part: normalization + Myers diff + per-line
+/// allocations). Callers that render on every frame — like the Review panel —
+/// should call this once per content change, cache the result, and feed it to
+/// [`render_diff_lines`] per frame.
+pub(crate) fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
     let old_norm = normalize_for_diff(old_text);
     let new_norm = normalize_for_diff(new_text);
 
@@ -551,19 +556,39 @@ fn render_unified_diff(
         .newline_terminated(true)
         .diff_lines(&old_norm, &new_norm);
 
-    // Collect individual lines with their tags for line-number rendering
-    struct DiffLine {
-        tag: ChangeTag,
-        text: String,
-    }
-    let mut diff_lines: Vec<DiffLine> = Vec::new();
-    for change in diff.iter_all_changes() {
-        diff_lines.push(DiffLine {
+    diff.iter_all_changes()
+        .map(|change| DiffLine {
             tag: change.tag(),
-            text: change.value().trim_end().to_string(),
-        });
-    }
+            text: change.value().trim_end().to_string().into(),
+        })
+        .collect()
+}
 
+/// Compute and render a unified diff in one go. For per-frame rendering of
+/// unchanged content, prefer caching [`compute_diff_lines`]'s result and
+/// calling [`render_diff_lines`] instead.
+pub(crate) fn render_unified_diff(
+    old_text: &str,
+    new_text: &str,
+    theme: &gpui_component::theme::Theme,
+    start_line: Option<usize>,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
+    render_diff_lines(
+        &compute_diff_lines(old_text, new_text),
+        theme,
+        start_line,
+        rem_size,
+    )
+}
+
+/// Build the element tree for already-computed diff lines.
+pub(crate) fn render_diff_lines(
+    diff_lines: &[DiffLine],
+    theme: &gpui_component::theme::Theme,
+    start_line: Option<usize>,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
     // Compute the gutter width (number of digits) based on new-file line numbers
     let gutter_width = if let Some(start) = start_line {
         let new_count = diff_lines
@@ -589,7 +614,7 @@ fn render_unified_diff(
     div()
         .flex()
         .flex_col()
-        .children(diff_lines.into_iter().map(|dl| {
+        .children(diff_lines.iter().map(|dl| {
             let (row_bg, text_color) = match dl.tag {
                 ChangeTag::Equal => unchanged_row_colors(theme),
                 ChangeTag::Delete => deleted_row_colors(theme),
@@ -645,7 +670,7 @@ fn render_unified_diff(
                     .when(start_line.is_none(), |d| d.px_3())
                     .when(start_line.is_some(), |d| d.pl_1().pr_3())
                     .text_color(text_color)
-                    .child(dl.text),
+                    .child(dl.text.clone()),
             );
 
             row.into_any()
@@ -878,7 +903,9 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
     .into()
 }
 
-fn deleted_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn deleted_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x80, 0x20, 0x20, 0x60)),
@@ -892,7 +919,9 @@ fn deleted_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsl
     }
 }
 
-fn added_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn added_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x20, 0x60, 0x20, 0x60)),
@@ -906,7 +935,9 @@ fn added_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>
     }
 }
 
-fn unchanged_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn unchanged_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (None, rgba_color(0xFF, 0xFF, 0xFF, 0x99))
     } else {
