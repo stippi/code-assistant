@@ -273,13 +273,10 @@ impl Render for ChangedFilesTree {
         let accent = cx.theme().accent;
         let selected = self.selected.clone();
 
+        // An empty tree renders nothing — callers hide the tree for clean
+        // repos, and a repo's missing +/− badge already communicates "clean".
         if rows.is_empty() {
-            return div()
-                .p_3()
-                .text_sm()
-                .text_color(muted)
-                .child("No changes")
-                .into_any_element();
+            return div().into_any_element();
         }
 
         div()

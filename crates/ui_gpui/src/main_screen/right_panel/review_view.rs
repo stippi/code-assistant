@@ -17,15 +17,14 @@ use crate::tool_cards::diff_card::{
 use crate::{Gpui, ReviewData};
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use gpui::{
-    Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Render, ScrollHandle,
-    Subscription, Window, div, prelude::*, px, rems,
+    AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Render,
+    ScrollHandle, Subscription, Window, div, prelude::*, px, rems,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable, Size,
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
-    spinner::Spinner,
     v_flex,
 };
 use std::collections::HashMap;
@@ -635,6 +634,23 @@ impl ReviewView {
             .into_any_element()
     }
 
+    /// The rotating double-arrow used on active sessions, in grey — shown on
+    /// the repo whose scan is currently running. `id` keys the animation.
+    fn scan_spinner(id: impl std::fmt::Display, muted: gpui::Hsla) -> gpui::AnyElement {
+        gpui::svg()
+            .size(px(12.))
+            .path("icons/arrow_circle.svg")
+            .text_color(muted)
+            .with_animation(
+                gpui::SharedString::from(format!("review-scan-spin-{id}")),
+                gpui::Animation::new(std::time::Duration::from_secs(2)).repeat(),
+                |svg, delta| {
+                    svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(delta)))
+                },
+            )
+            .into_any_element()
+    }
+
     /// The header's right-hand slot: a spinner while a repo is being scanned,
     /// a muted dash while it waits its turn, and a `+adds −dels` summary once
     /// its (possibly cached) result is in.
@@ -643,10 +659,7 @@ impl ReviewView {
         let muted = theme.muted_foreground;
 
         if matches!(section.scan_state, ReviewScanState::Scanning) {
-            return Spinner::new()
-                .with_size(Size::XSmall)
-                .color(muted)
-                .into_any_element();
+            return Self::scan_spinner(section.repo_root.display(), muted);
         }
 
         let pending = matches!(section.scan_state, ReviewScanState::Pending);
@@ -751,12 +764,9 @@ impl ReviewView {
                         ),
                     );
                 }
-                // While a repo waits for its first-ever scan there is nothing
-                // meaningful to show — suppress the tree so it can't claim
-                // "No changes" prematurely.
-                let awaiting_first_data =
-                    !section.has_files && !matches!(section.scan_state, ReviewScanState::Done);
-                if !awaiting_first_data {
+                // A repo without changes shows just its header — the missing
+                // +/− badge already says "clean", so no placeholder text.
+                if section.has_files {
                     section_el = section_el.child(section.tree.clone());
                 }
             }
@@ -795,7 +805,7 @@ impl Render for ReviewView {
                 .p_4()
                 .text_sm()
                 .text_color(muted)
-                .child(Spinner::new().with_size(Size::Small).color(muted))
+                .child(Self::scan_spinner("discovery", muted))
                 .child("Looking for repositories…")
                 .into_any_element();
         }
