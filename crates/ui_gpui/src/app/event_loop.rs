@@ -855,11 +855,11 @@ impl Gpui {
                         files: r.files,
                     })
                     .collect();
-                *self.current_review_listing.lock().unwrap() = Some(ReviewData {
+                self.set_current_review_listing(Some(ReviewData {
                     repos,
                     is_git_repo,
                     mode,
-                });
+                }));
                 cx.refresh();
             }
 
@@ -869,11 +869,11 @@ impl Gpui {
                 diff,
             } => {
                 debug!("UI: UpdateReviewDiff event — path={path}");
-                *self.current_review_diff.lock().unwrap() = Some(ReviewDiff {
+                self.set_current_review_diff(Some(ReviewDiff {
                     repo_root,
                     path,
                     diff,
-                });
+                }));
                 cx.refresh();
             }
 

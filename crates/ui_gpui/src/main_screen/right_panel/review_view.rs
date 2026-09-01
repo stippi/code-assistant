@@ -5,11 +5,13 @@
 //! draggable divider (`h_resizable`).
 //!
 //! Backend data arrives through the `current_review_listing` / `current_review_diff`
-//! globals on [`Gpui`]; this view consumes them in `render` by diffing against
-//! cached copies (the same "sync-in-render" technique the worktree selector uses).
+//! globals on [`Gpui`]; this view consumes them in `render` (the "sync-in-render"
+//! technique the worktree selector uses). Change detection is generation-based:
+//! the per-frame unchanged case costs an integer compare, and the expensive
+//! line diff is computed once per content change, never during render.
 
 use crate::shared::file_tree::{ChangedFilesTree, ChangedFilesTreeEvent};
-use crate::tool_cards::diff_card::render_unified_diff;
+use crate::tool_cards::diff_card::{DiffLine, compute_diff_lines, render_diff_lines};
 use crate::{Gpui, ReviewData};
 use code_assistant_core::session::ReviewMode;
 use gpui::{
@@ -109,6 +111,20 @@ struct RepoSection {
 // ReviewView
 // ---------------------------------------------------------------------------
 
+/// A diff prepared for per-frame rendering: the expensive line diff is
+/// computed once when the backend data changes, never during render.
+struct PreparedDiff {
+    repo_root: PathBuf,
+    path: String,
+    is_binary: bool,
+    too_large: bool,
+    lines: Vec<DiffLine>,
+}
+
+/// Sentinel for "never synced": guarantees the first generation compare
+/// mismatches, whatever the global's current generation is.
+const GENERATION_UNSEEN: u64 = u64::MAX;
+
 pub struct ReviewView {
     session_id: Option<String>,
     mode_state: Entity<SelectState<Vec<ModeOption>>>,
@@ -133,8 +149,16 @@ pub struct ReviewView {
     /// Scroll position of the diff pane.
     diff_scroll: ScrollHandle,
 
-    /// Last listing consumed from the global (change detection).
+    /// Last listing consumed from the global; needed to resolve file lookups.
     last_listing: Option<ReviewData>,
+    /// Generation of `last_listing`. Change detection per frame is a plain
+    /// integer compare against the global's generation — no clones.
+    listing_generation: u64,
+
+    /// The selected file's diff, with its line diff computed once on arrival.
+    prepared_diff: Option<PreparedDiff>,
+    /// Generation of `prepared_diff` (see `listing_generation`).
+    diff_generation: u64,
 
     focus_handle: FocusHandle,
     _mode_sub: Subscription,
@@ -177,6 +201,9 @@ impl ReviewView {
             tree_width,
             diff_scroll: ScrollHandle::new(),
             last_listing: None,
+            listing_generation: GENERATION_UNSEEN,
+            prepared_diff: None,
+            diff_generation: GENERATION_UNSEEN,
             focus_handle: cx.focus_handle(),
             _mode_sub: mode_sub,
         }
@@ -188,6 +215,9 @@ impl ReviewView {
         // Reset per-session state; fresh data will arrive via the global.
         self.selected = None;
         self.last_listing = None;
+        self.listing_generation = GENERATION_UNSEEN;
+        self.prepared_diff = None;
+        self.diff_generation = GENERATION_UNSEEN;
         self.repos.clear();
         self.base_overrides.clear();
 
@@ -303,15 +333,16 @@ impl ReviewView {
         }
     }
 
-    /// Consume the latest listing from the global if it changed.
+    /// Consume the latest listing from the global if it changed. The per-frame
+    /// unchanged case is a generation compare — no clone, no deep equality.
     fn sync_listing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let listing = cx
+        let Some((generation, listing)) = cx
             .try_global::<Gpui>()
-            .and_then(|g| g.get_current_review_listing());
-
-        if listing == self.last_listing {
+            .and_then(|g| g.review_listing_if_newer(self.listing_generation))
+        else {
             return;
-        }
+        };
+        self.listing_generation = generation;
         self.last_listing = listing.clone();
 
         let Some(listing) = listing else {
@@ -488,6 +519,38 @@ impl ReviewView {
         data.base.clone()
     }
 
+    /// Consume the latest diff from the global if it changed, computing the
+    /// line diff exactly once. Rendering then reuses the prepared lines.
+    fn sync_diff(&mut self, cx: &mut Context<Self>) {
+        let Some((generation, diff)) = cx
+            .try_global::<Gpui>()
+            .and_then(|g| g.review_diff_if_newer(self.diff_generation))
+        else {
+            return;
+        };
+        self.diff_generation = generation;
+        self.prepared_diff = diff.map(|d| {
+            let lines = if d.diff.is_binary || d.diff.too_large {
+                Vec::new()
+            } else {
+                let old = d.diff.old_text.as_deref().unwrap_or_default();
+                let new = d.diff.new_text.as_deref().unwrap_or_default();
+                if old.is_empty() && new.is_empty() {
+                    Vec::new()
+                } else {
+                    compute_diff_lines(old, new)
+                }
+            };
+            PreparedDiff {
+                repo_root: d.repo_root,
+                path: d.path,
+                is_binary: d.diff.is_binary,
+                too_large: d.diff.too_large,
+                lines,
+            }
+        });
+    }
+
     fn render_diff_pane(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
 
@@ -504,28 +567,25 @@ impl ReviewView {
                 .into_any_element()
         };
 
-        let Some((sel_root, sel_path)) = self.selected.clone() else {
+        let Some((sel_root, sel_path)) = self.selected.as_ref() else {
             return placeholder("Select a file to view its diff");
         };
 
-        let diff = cx
-            .try_global::<Gpui>()
-            .and_then(|g| g.get_current_review_diff());
-
-        let Some(diff) = diff.filter(|d| d.repo_root == sel_root && d.path == sel_path) else {
+        let Some(prepared) = self
+            .prepared_diff
+            .as_ref()
+            .filter(|p| &p.repo_root == sel_root && &p.path == sel_path)
+        else {
             return placeholder("Loading diff…");
         };
 
-        if diff.diff.is_binary {
+        if prepared.is_binary {
             return placeholder("Binary file — no text diff");
         }
-        if diff.diff.too_large {
+        if prepared.too_large {
             return placeholder("File too large to display");
         }
-
-        let old = diff.diff.old_text.clone().unwrap_or_default();
-        let new = diff.diff.new_text.clone().unwrap_or_default();
-        if old.is_empty() && new.is_empty() {
+        if prepared.lines.is_empty() {
             return placeholder("No changes to display");
         }
 
@@ -540,7 +600,7 @@ impl ReviewView {
             gpui::hsla(0.0, 0.0, 0.97, 1.0)
         };
         let line_height_px = rems(1.25).to_pixels(rem_size).round();
-        let diff = render_unified_diff(&old, &new, theme, Some(1), rem_size);
+        let diff = render_diff_lines(&prepared.lines, theme, Some(1), rem_size);
 
         div()
             .id("review-diff-scroll")
@@ -652,8 +712,10 @@ impl Focusable for ReviewView {
 
 impl Render for ReviewView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Pull fresh backend data before laying out.
+        // Pull fresh backend data before laying out. Both syncs are a cheap
+        // generation compare when nothing changed.
         self.sync_listing(window, cx);
+        self.sync_diff(cx);
 
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;

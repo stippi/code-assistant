@@ -173,9 +173,11 @@ pub struct Gpui {
     current_worktree_data: Arc<Mutex<Option<WorktreeData>>>,
 
     // Review panel state (changed-files listing + selected-file diff) mirrored
-    // from the backend for the ReviewView to read during render.
-    current_review_listing: Arc<Mutex<Option<ReviewData>>>,
-    current_review_diff: Arc<Mutex<Option<ReviewDiff>>>,
+    // from the backend for the ReviewView to read during render. The u64 is a
+    // generation counter bumped on every write so the view can detect changes
+    // with a plain integer compare instead of deep-cloning per frame.
+    current_review_listing: Arc<Mutex<(u64, Option<ReviewData>)>>,
+    current_review_diff: Arc<Mutex<(u64, Option<ReviewDiff>)>>,
 
     // Last usage from the active session's most recent assistant message.
     // Stored separately from chat_sessions so it cannot be overwritten by
@@ -404,8 +406,8 @@ impl Gpui {
         *self.current_permission_tier.lock().unwrap() = None;
         self.pending_permission_requests.lock().unwrap().clear();
         *self.current_worktree_data.lock().unwrap() = None;
-        *self.current_review_listing.lock().unwrap() = None;
-        *self.current_review_diff.lock().unwrap() = None;
+        self.set_current_review_listing(None);
+        self.set_current_review_diff(None);
         *self.current_session_last_usage.lock().unwrap() = None;
         *self.current_session_total_usage.lock().unwrap() = None;
     }
@@ -504,8 +506,8 @@ impl Gpui {
 
             // Current worktree state
             current_worktree_data: Arc::new(Mutex::new(None)),
-            current_review_listing: Arc::new(Mutex::new(None)),
-            current_review_diff: Arc::new(Mutex::new(None)),
+            current_review_listing: Arc::new(Mutex::new((0, None))),
+            current_review_diff: Arc::new(Mutex::new((0, None))),
 
             // Current session last usage
             current_session_last_usage: Arc::new(Mutex::new(None)),
@@ -825,20 +827,30 @@ impl Gpui {
         self.current_worktree_data.lock().unwrap().clone()
     }
 
-    pub fn get_current_review_listing(&self) -> Option<ReviewData> {
-        self.current_review_listing.lock().unwrap().clone()
+    /// Return the review listing and its generation, but only if it changed
+    /// since `seen`. The unchanged case — the per-frame hot path — costs a
+    /// mutex lock and an integer compare; the data is only cloned on change.
+    pub fn review_listing_if_newer(&self, seen: u64) -> Option<(u64, Option<ReviewData>)> {
+        let slot = self.current_review_listing.lock().unwrap();
+        (slot.0 != seen).then(|| (slot.0, slot.1.clone()))
     }
 
     pub fn set_current_review_listing(&self, data: Option<ReviewData>) {
-        *self.current_review_listing.lock().unwrap() = data;
+        let mut slot = self.current_review_listing.lock().unwrap();
+        slot.0 = slot.0.wrapping_add(1);
+        slot.1 = data;
     }
 
-    pub fn get_current_review_diff(&self) -> Option<ReviewDiff> {
-        self.current_review_diff.lock().unwrap().clone()
+    /// Generation-gated access to the review diff; see [`Self::review_listing_if_newer`].
+    pub fn review_diff_if_newer(&self, seen: u64) -> Option<(u64, Option<ReviewDiff>)> {
+        let slot = self.current_review_diff.lock().unwrap();
+        (slot.0 != seen).then(|| (slot.0, slot.1.clone()))
     }
 
     pub fn set_current_review_diff(&self, diff: Option<ReviewDiff>) {
-        *self.current_review_diff.lock().unwrap() = diff;
+        let mut slot = self.current_review_diff.lock().unwrap();
+        slot.0 = slot.0.wrapping_add(1);
+        slot.1 = diff;
     }
 
     pub fn get_current_session_last_usage(&self) -> Option<llm::Usage> {
