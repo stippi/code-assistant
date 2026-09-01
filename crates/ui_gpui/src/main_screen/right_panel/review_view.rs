@@ -651,9 +651,19 @@ impl ReviewView {
             .into_any_element()
     }
 
+    /// The same double-arrow, static and faded — marks a repo that is queued
+    /// for scanning but not yet running.
+    fn pending_marker(muted: gpui::Hsla) -> gpui::AnyElement {
+        gpui::svg()
+            .size(px(12.))
+            .path("icons/arrow_circle.svg")
+            .text_color(muted.opacity(0.4))
+            .into_any_element()
+    }
+
     /// The header's right-hand slot: a spinner while a repo is being scanned,
-    /// a muted dash while it waits its turn, and a `+adds −dels` summary once
-    /// its (possibly cached) result is in.
+    /// a faded static one while it waits its turn, and a `+adds −dels`
+    /// summary once its (possibly cached) result is in.
     fn render_scan_indicator(&self, section: &RepoSection, cx: &Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -668,7 +678,7 @@ impl ReviewView {
             // Nothing (yet) to summarize: a queued repo shows a wait marker,
             // a scanned clean repo shows no indicator at all.
             return if pending {
-                div().text_color(muted).child("⋯").into_any_element()
+                Self::pending_marker(muted)
             } else {
                 div().into_any_element()
             };
@@ -691,7 +701,7 @@ impl ReviewView {
                     .text_color(deleted_row_colors(theme).1)
                     .child(format!("−{}", section.stats.deletions)),
             )
-            .when(pending, |el| el.child(div().text_color(muted).child("⋯")))
+            .when(pending, |el| el.child(Self::pending_marker(muted)))
             .into_any_element()
     }
 
