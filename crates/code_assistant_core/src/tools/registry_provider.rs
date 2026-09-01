@@ -4,21 +4,26 @@
 //!
 //! The session manager consults this at the start of every agent run, so
 //! configuration edits — e.g. adding an MCP server via the settings page —
-//! take effect on the next run without restarting the process. A fingerprint
-//! cache keeps rebuilding off the common path where nothing changed: an
-//! unchanged request returns the same `Arc`.
+//! take effect on the next run without restarting the process. Registries are
+//! cached **per project** (keyed by the directory whose `.mcp.json` is
+//! included; `None` for the global-only registry), so sessions running in
+//! different projects at the same time each keep their own registry: starting
+//! a run in one project does not invalidate — or relaunch the servers of —
+//! another.
 //!
-//! MCP connections are pooled separately from the registry cache. The pool is
-//! keyed by server identity (name + transport), so rebuilding the registry for
-//! a different project reuses the still-open global servers instead of
-//! relaunching them — only that project's own `.mcp.json` servers connect anew.
-//! After each rebuild, pooled connections the new build no longer references
-//! (e.g. the previous project's local servers, or a server removed from the
-//! config) are evicted and their child processes shut down, so switching
-//! projects does not leak processes.
+//! Lifetimes are ownership-driven, not managed by explicit eviction. The
+//! cache holds only `Weak` references: a registry stays alive exactly as long
+//! as something uses it (a session instance between runs, an in-flight run),
+//! and each registry holds its MCP connections via `Arc` inside its tools.
+//! The connection pool is likewise `Weak`-keyed by server identity (name +
+//! transport), so servers shared between builds — typically the global set —
+//! are reused while any registry references them, and a server's child
+//! process terminates (connection drop) once the last registry using it is
+//! gone. No connection a live run holds is ever shut down under it.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 
 use crate::session::manager::{RegistryRequest, ToolRegistryProvider};
@@ -28,33 +33,34 @@ use anyhow::Result;
 use async_trait::async_trait;
 use mcp_client::{ConnectionProvider, McpServerConfig, McpServerConnection};
 
+/// Cache key: the directory whose `.mcp.json` the registry includes, `None`
+/// for the global-only registry. Requests without (trusted) local MCP
+/// normalize to `None`, so all such sessions share one registry regardless of
+/// their project.
+type CacheKey = Option<PathBuf>;
+
 struct Cached {
     fingerprint: String,
-    registry: Arc<ToolRegistry>,
+    /// Weak: the cache never keeps a registry (or its MCP connections) alive
+    /// on its own — sessions and in-flight runs do, via their `Arc`s.
+    registry: Weak<ToolRegistry>,
 }
 
-/// Rebuilds the tool registry from disk on demand, caching by a fingerprint of
-/// the tool-relevant configuration files and the requested project, and
-/// pooling MCP connections across rebuilds.
+/// Rebuilds the tool registry from disk on demand, caching per project by a
+/// fingerprint of the tool-relevant configuration files, and pooling MCP
+/// connections across builds.
 pub struct ConfigToolRegistry {
-    cached: Mutex<Option<Cached>>,
+    cached: Mutex<HashMap<CacheKey, Cached>>,
     /// Live MCP connections keyed by [`connection_key`], reused across
-    /// rebuilds so shared servers are not relaunched on a project switch.
-    connections: Mutex<HashMap<String, Arc<McpServerConnection>>>,
-    /// Connection keys requested during the in-progress rebuild, used by
-    /// [`Self::evict_unreferenced`] to drop pooled connections the new build no
-    /// longer uses. Only meaningful while a rebuild holds the `cached` lock
-    /// (rebuilds are serialized by it, and `get_or_connect` runs only within
-    /// one), so it is cleared at the start of every rebuild.
-    building_keys: Mutex<HashSet<String>>,
+    /// builds so servers shared between registries are not relaunched.
+    connections: Mutex<HashMap<String, Weak<McpServerConnection>>>,
 }
 
 impl ConfigToolRegistry {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            cached: Mutex::new(None),
+            cached: Mutex::new(HashMap::new()),
             connections: Mutex::new(HashMap::new()),
-            building_keys: Mutex::new(HashSet::new()),
         })
     }
 
@@ -65,70 +71,45 @@ impl ConfigToolRegistry {
         self.current_for(RegistryRequest::default()).await
     }
 
-    /// The registry matching `req` — the cached one, or a freshly built one
-    /// when `tools.json`, `mcp-servers.json`, the project, or its `.mcp.json`
-    /// changed since the last call. Shared MCP servers are reused from the
-    /// connection pool.
+    /// The registry matching `req` — the cached one for its project, or a
+    /// freshly built one when `tools.json`, `mcp-servers.json`, or the
+    /// project's `.mcp.json` changed since that project's last build (or when
+    /// nothing holds the cached registry any more). Shared MCP servers are
+    /// reused from the connection pool.
     pub async fn current_for(&self, req: RegistryRequest) -> Arc<ToolRegistry> {
-        let fingerprint = self.fingerprint(&req);
-        // The lock is held across the (occasional) rebuild so concurrent
-        // callers never build twice; in practice agent runs are serialized by
-        // the session manager, so there is no contention on the common path.
-        let mut cached = self.cached.lock().await;
-        if let Some(entry) = cached.as_ref() {
-            if entry.fingerprint == fingerprint {
-                return entry.registry.clone();
-            }
-            tracing::info!("Tool configuration changed; rebuilding the tool registry");
-        }
-        // Record which connections this build touches so we can shut down the
-        // ones it no longer uses. Safe to reset here: the `cached` lock we hold
-        // serializes rebuilds, and `get_or_connect` only runs during one.
-        self.building_keys.lock().await.clear();
-        let registry = crate::tools::default_registry_with_mcp(
-            req.project_dir.as_deref(),
-            req.include_local_mcp,
-            self,
-        )
-        .await;
-        self.evict_unreferenced().await;
-        *cached = Some(Cached {
-            fingerprint,
-            registry: registry.clone(),
-        });
-        registry
-    }
-
-    /// Shut down and drop pooled connections that the just-finished rebuild did
-    /// not request (see [`Self::building_keys`]). A connection an in-flight run
-    /// still holds (its registry `Arc` outlives this rebuild) is only removed
-    /// from the pool here — its last owner terminates the child on drop — so we
-    /// never kill a server a running agent is using.
-    async fn evict_unreferenced(&self) {
-        let live = self.building_keys.lock().await.clone();
-        let stale: Vec<(String, Arc<McpServerConnection>)> = {
-            let mut connections = self.connections.lock().await;
-            let keys: Vec<String> = connections
-                .keys()
-                .filter(|key| !live.contains(*key))
-                .cloned()
-                .collect();
-            keys.into_iter()
-                .filter_map(|key| connections.remove(&key).map(|conn| (key, conn)))
-                .collect()
+        let local_mcp_dir: CacheKey = if req.include_local_mcp {
+            req.project_dir
+        } else {
+            None
         };
-        for (_key, conn) in stale {
-            // Sole owner: terminate the child process explicitly. If still
-            // referenced by a live registry, dropping our pool ref is enough —
-            // the last owner shuts it down when that run ends.
-            if let Ok(conn) = Arc::try_unwrap(conn) {
-                tokio::spawn(async move {
-                    if let Err(error) = conn.shutdown().await {
-                        tracing::warn!("Failed to shut down pooled MCP connection: {error:#}");
-                    }
-                });
-            }
+        let fingerprint = Self::fingerprint(local_mcp_dir.as_deref());
+        // The lock is held across the (occasional) rebuild so concurrent
+        // callers never build the same registry twice; in practice agent runs
+        // are serialized by the session manager, so there is no contention on
+        // the common path.
+        let mut cached = self.cached.lock().await;
+        if let Some(entry) = cached.get(&local_mcp_dir)
+            && entry.fingerprint == fingerprint
+            && let Some(registry) = entry.registry.upgrade()
+        {
+            return registry;
         }
+        tracing::info!(
+            "Building the tool registry for {}",
+            local_mcp_dir
+                .as_deref()
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_else(|| "the global configuration".to_string())
+        );
+        let registry = crate::tools::default_registry_with_mcp(local_mcp_dir.as_deref(), self).await;
+        cached.insert(
+            local_mcp_dir,
+            Cached {
+                fingerprint,
+                registry: Arc::downgrade(&registry),
+            },
+        );
+        registry
     }
 
     /// The provider closure for
@@ -141,32 +122,19 @@ impl ConfigToolRegistry {
         })
     }
 
-    /// Fingerprint of the registry inputs for `req`: the tool-relevant config
-    /// files (read raw, so a changed *environment* alone does not trigger a
-    /// rebuild — matching process-startup semantics), the requested project,
-    /// and, when local MCP is included, the project's `.mcp.json` contents (so
-    /// editing it re-prompts and rebuilds).
-    fn fingerprint(&self, req: &RegistryRequest) -> String {
+    /// Fingerprint of the registry inputs: the tool-relevant config files
+    /// (read raw, so a changed *environment* alone does not trigger a rebuild
+    /// — matching process-startup semantics) and, when a local MCP dir is
+    /// included, that directory and its `.mcp.json` contents (so editing it
+    /// re-prompts and rebuilds).
+    fn fingerprint(local_mcp_dir: Option<&Path>) -> String {
         let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap_or_default();
         let tools = ToolsConfig::config_path().map(read).unwrap_or_default();
         let mcp = read(crate::tools::mcp::mcp_servers_config_path());
-        let project = req
-            .project_dir
-            .as_ref()
-            .map(|p| p.display().to_string())
+        let (dir, local) = local_mcp_dir
+            .map(|dir| (dir.display().to_string(), read(dir.join(".mcp.json"))))
             .unwrap_or_default();
-        let local = if req.include_local_mcp {
-            req.project_dir
-                .as_ref()
-                .map(|dir| read(dir.join(".mcp.json")))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        format!(
-            "{tools}\u{0}{mcp}\u{0}{project}\u{0}{}\u{0}{local}",
-            req.include_local_mcp
-        )
+        format!("{tools}\u{0}{mcp}\u{0}{dir}\u{0}{local}")
     }
 }
 
@@ -186,24 +154,24 @@ impl ConnectionProvider for ConfigToolRegistry {
         config: &McpServerConfig,
     ) -> Result<Arc<McpServerConnection>> {
         let key = connection_key(name, config);
-        // Mark this server as referenced by the in-progress build so it is not
-        // evicted afterwards.
-        self.building_keys.lock().await.insert(key.clone());
-        if let Some(existing) = self.connections.lock().await.get(&key).cloned() {
-            return Ok(existing);
+        {
+            let mut connections = self.connections.lock().await;
+            // Prune entries whose connection has died with its last registry.
+            connections.retain(|_, weak| weak.strong_count() > 0);
+            if let Some(existing) = connections.get(&key).and_then(Weak::upgrade) {
+                return Ok(existing);
+            }
         }
         // Connect outside the lock (slow: process launch / HTTP handshake).
         let connection = Arc::new(McpServerConnection::connect(name, config).await?);
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).
-        let stored = self
-            .connections
-            .lock()
-            .await
-            .entry(key)
-            .or_insert_with(|| connection.clone())
-            .clone();
-        Ok(stored)
+        let mut connections = self.connections.lock().await;
+        if let Some(existing) = connections.get(&key).and_then(Weak::upgrade) {
+            return Ok(existing);
+        }
+        connections.insert(key, Arc::downgrade(&connection));
+        Ok(connection)
     }
 }
 
@@ -242,5 +210,108 @@ mod tests {
             connection_key("other", &stdio),
             "the server name distinguishes connections"
         );
+    }
+
+    fn project_request(dir: &Path) -> RegistryRequest {
+        RegistryRequest {
+            project_dir: Some(dir.to_path_buf()),
+            include_local_mcp: true,
+        }
+    }
+
+    /// Two projects' registries are cached independently and stay valid at
+    /// the same time — a run in one project must not invalidate the other's
+    /// registry (the single-slot regression this module used to have).
+    #[tokio::test]
+    async fn distinct_projects_cache_independently() {
+        let config = tempfile::tempdir().unwrap();
+        let project_a = tempfile::tempdir().unwrap();
+        let project_b = tempfile::tempdir().unwrap();
+        std::fs::write(project_a.path().join(".mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        std::fs::write(project_b.path().join(".mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let a = provider.current_for(project_request(project_a.path())).await;
+                let b = provider.current_for(project_request(project_b.path())).await;
+                assert!(!Arc::ptr_eq(&a, &b), "distinct projects, distinct registries");
+
+                // Alternating requests hit both caches — no thrash.
+                let a2 = provider.current_for(project_request(project_a.path())).await;
+                let b2 = provider.current_for(project_request(project_b.path())).await;
+                assert!(Arc::ptr_eq(&a, &a2), "project A stays cached across B's build");
+                assert!(Arc::ptr_eq(&b, &b2), "project B stays cached across A's build");
+            },
+        )
+        .await;
+    }
+
+    /// A request without (trusted) local MCP shares the global-only registry,
+    /// whatever its project directory is.
+    #[tokio::test]
+    async fn without_local_mcp_all_projects_share_the_global_registry() {
+        let config = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let global = provider.current().await;
+                let projected = provider
+                    .current_for(RegistryRequest {
+                        project_dir: Some(project.path().to_path_buf()),
+                        include_local_mcp: false,
+                    })
+                    .await;
+                assert!(Arc::ptr_eq(&global, &projected));
+            },
+        )
+        .await;
+    }
+
+    /// Editing a project's `.mcp.json` rebuilds that project's registry.
+    #[tokio::test]
+    async fn local_mcp_json_edit_rebuilds() {
+        let config = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join(".mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let before = provider.current_for(project_request(project.path())).await;
+                std::fs::write(project.path().join(".mcp.json"), r#"{ "mcpServers": {} }"#)
+                    .unwrap();
+                let after = provider.current_for(project_request(project.path())).await;
+                assert!(!Arc::ptr_eq(&before, &after), "changed .mcp.json rebuilds");
+            },
+        )
+        .await;
+    }
+
+    /// The cache holds only weak references: once nothing uses a registry any
+    /// more, it is gone (with its MCP connections) and a later request builds
+    /// afresh instead of resurrecting stale state.
+    #[tokio::test]
+    async fn cache_does_not_keep_registries_alive() {
+        let config = tempfile::tempdir().unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let registry = provider.current().await;
+                let weak = Arc::downgrade(&registry);
+                drop(registry);
+                assert!(
+                    weak.upgrade().is_none(),
+                    "the cache must not hold a strong reference"
+                );
+                // A later request simply rebuilds.
+                let _rebuilt = provider.current().await;
+            },
+        )
+        .await;
     }
 }

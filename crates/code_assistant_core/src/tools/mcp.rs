@@ -249,7 +249,7 @@ mod tests {
         let pool = crate::tools::ConfigToolRegistry::new();
         let registry = temp_env::async_with_vars(
             [("CODE_ASSISTANT_CONFIG_DIR", Some(dir.path()))],
-            crate::tools::default_registry_with_mcp(None, false, pool.as_ref()),
+            crate::tools::default_registry_with_mcp(None, pool.as_ref()),
         )
         .await;
 
