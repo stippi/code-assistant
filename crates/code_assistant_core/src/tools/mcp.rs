@@ -69,6 +69,35 @@ pub fn save_mcp_servers_config_to(path: &Path, config: &McpServersConfig) -> Res
         .with_context(|| format!("Failed to write MCP config: {}", path.display()))
 }
 
+/// Whether [`deserialize_tool_execution`] can resolve this recorded
+/// execution. MCP executions and parse errors always can; a native tool must
+/// still be present in `registry`.
+pub fn execution_renderable(
+    se: &agent_core::SerializedToolExecution,
+    registry: &ToolRegistry,
+) -> bool {
+    mcp_client::is_mcp_tool_name(&se.tool_name) || se.tool_available(registry)
+}
+
+/// Deserialize a recorded tool execution for rendering or session state. MCP
+/// executions (`mcp__…` names) deserialize from their self-describing JSON,
+/// deliberately independent of which servers `registry` has connected: a
+/// session must render identically wherever it is viewed — under another
+/// project's registry, or in an instance that never launched (or never
+/// trusted) the producing server.
+pub fn deserialize_tool_execution(
+    se: &agent_core::SerializedToolExecution,
+    registry: &ToolRegistry,
+) -> Result<agent_core::ToolExecution> {
+    if mcp_client::is_mcp_tool_name(&se.tool_name) {
+        return Ok(agent_core::ToolExecution {
+            tool_request: se.tool_request.clone(),
+            result: mcp_client::deserialize_mcp_output(se.result_json.clone())?,
+        });
+    }
+    se.deserialize(registry)
+}
+
 /// Load a project-local `.mcp.json` from `dir`, if present. Returns `None`
 /// when the file does not exist; logs a warning on parse errors rather than
 /// propagating them, so a malformed local file degrades gracefully.
@@ -356,6 +385,47 @@ mod tests {
         )
         .unwrap();
         assert!(load_mcp_servers_config_from(&path).is_err());
+    }
+
+    #[test]
+    fn mcp_execution_renders_without_the_server_registered() {
+        // A session may be viewed by an instance that never connected (or
+        // never trusted) the producing server — the recorded execution must
+        // still deserialize, from its self-describing JSON alone.
+        let se = agent_core::SerializedToolExecution {
+            tool_request: agent_core::ToolRequest {
+                id: "1".into(),
+                name: "mcp__jira__search".into(),
+                input: serde_json::Value::Null,
+                start_offset: None,
+                end_offset: None,
+            },
+            result_json: serde_json::json!({ "text": "3 issues", "is_error": false }),
+            tool_name: "mcp__jira__search".into(),
+        };
+        let empty = ToolRegistry::new();
+        assert!(execution_renderable(&se, &empty));
+        let execution = deserialize_tool_execution(&se, &empty).unwrap();
+        assert!(execution.result.is_success());
+        assert_eq!(execution.result.as_render().status(), "3 issues");
+    }
+
+    #[test]
+    fn native_execution_still_requires_its_tool() {
+        let se = agent_core::SerializedToolExecution {
+            tool_request: agent_core::ToolRequest {
+                id: "1".into(),
+                name: "vanished_tool".into(),
+                input: serde_json::Value::Null,
+                start_offset: None,
+                end_offset: None,
+            },
+            result_json: serde_json::json!({}),
+            tool_name: "vanished_tool".into(),
+        };
+        let empty = ToolRegistry::new();
+        assert!(!execution_renderable(&se, &empty));
+        assert!(deserialize_tool_execution(&se, &empty).is_err());
     }
 
     #[test]

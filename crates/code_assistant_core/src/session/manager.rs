@@ -887,7 +887,10 @@ impl SessionManager {
                     // MCP server) must not brick the session: skip its
                     // records, the conversation itself lives in the messages.
                     .filter(|se| {
-                        let available = se.tool_available(self.tool_registry.as_ref());
+                        let available = crate::tools::mcp::execution_renderable(
+                            se,
+                            self.tool_registry.as_ref(),
+                        );
                         if !available {
                             warn!(
                                 "Skipping recorded execution of unavailable tool '{}'",
@@ -896,7 +899,12 @@ impl SessionManager {
                         }
                         available
                     })
-                    .map(|se| se.deserialize(self.tool_registry.as_ref()))
+                    .map(|se| {
+                        crate::tools::mcp::deserialize_tool_execution(
+                            se,
+                            self.tool_registry.as_ref(),
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?,
 
                 plan: session_instance.session.plan.clone(),

@@ -805,7 +805,10 @@ impl SessionInstance {
         for serialized_execution in &self.session.tool_executions {
             // A tool that has since disappeared (e.g. a reconfigured MCP
             // server) must not break rendering the session: skip its records.
-            if !serialized_execution.tool_available(self.tool_registry.as_ref()) {
+            if !crate::tools::mcp::execution_renderable(
+                serialized_execution,
+                self.tool_registry.as_ref(),
+            ) {
                 tracing::warn!(
                     "Skipping recorded execution of unavailable tool '{}'",
                     serialized_execution.tool_name
@@ -814,7 +817,10 @@ impl SessionInstance {
             }
 
             // Deserialize the tool execution
-            let execution = serialized_execution.deserialize(self.tool_registry.as_ref())?;
+            let execution = crate::tools::mcp::deserialize_tool_execution(
+                serialized_execution,
+                self.tool_registry.as_ref(),
+            )?;
 
             // Generate status and output from result
             let success = execution.result.is_success();
