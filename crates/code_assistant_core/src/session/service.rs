@@ -30,7 +30,6 @@ use command_executor::CommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 use sandbox::SandboxPolicy;
-use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -137,12 +136,24 @@ pub struct WorktreeListing {
 }
 
 /// Which changes the Review panel should compare.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ReviewMode {
     /// Local working-tree changes (staged, unstaged, untracked) vs `HEAD`.
     WorkingTree,
     /// The current branch vs a base branch, using merge-base (PR) semantics.
     BranchVsBase,
+}
+
+/// Progress of one repo's background review scan, carried alongside the data
+/// so the UI can render an activity indicator per repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewScanState {
+    /// Not scanned yet in this round (data, if any, is from the cache).
+    Pending,
+    /// Currently being scanned in the background.
+    Scanning,
+    /// Scan finished; data is fresh.
+    Done,
 }
 
 /// Changed files for a single git repository within the reviewed project,
@@ -160,19 +171,26 @@ pub struct RepoReview {
     /// defaulted from `None`).
     pub base: Option<String>,
     pub files: Vec<git::ChangedFile>,
+    /// Aggregate added/deleted line counts (untracked files not included).
+    pub stats: git::DiffStats,
+    /// Scan progress for this repo in the current listing round.
+    pub scan_state: ReviewScanState,
 }
 
-/// Listing of changed files for the Review panel across one or more
-/// repositories discovered under the project root.
-#[derive(Debug, Clone)]
-pub struct ReviewListing {
-    /// One entry per discovered git repository (0 when the project is not,
-    /// and contains no, git repos).
-    pub repos: Vec<RepoReview>,
-    /// `true` when at least one git repository was found.
-    pub is_git_repo: bool,
-    /// The mode this listing was produced for (echoed back for the UI).
-    pub mode: ReviewMode,
+impl RepoReview {
+    /// An entry for a discovered-but-not-yet-scanned repo.
+    pub fn pending(repo_root: PathBuf, label: String) -> Self {
+        Self {
+            repo_root,
+            label,
+            current_branch: None,
+            base_candidates: Vec::new(),
+            base: None,
+            files: Vec::new(),
+            stats: git::DiffStats::default(),
+            scan_state: ReviewScanState::Pending,
+        }
+    }
 }
 
 /// A git worktree the session was switched to.
@@ -1048,84 +1066,74 @@ impl SessionService {
         .await
     }
 
-    /// List changed files for the Review panel in the requested `mode`.
+    /// Discover the git repositories to review for a session — fast, no
+    /// per-repo scanning. Returns `(repo workdir, display label)` pairs.
     ///
     /// Resolves the session's on-disk directory with `effective_project_path`
-    /// (worktree-aware). Returns `is_git_repo: false` early for non-git dirs.
-    /// In `BranchVsBase` mode a repo without an override in `base_overrides`
-    /// defaults to the current branch's upstream, else the first remote
-    /// candidate.
-    pub async fn list_review_files(
-        &self,
-        session_id: String,
-        mode: ReviewMode,
-        base_overrides: HashMap<PathBuf, String>,
-    ) -> Result<ReviewListing> {
+    /// (worktree-aware). An empty result means "not a git project".
+    pub async fn list_review_repos(&self, session_id: String) -> Result<Vec<(PathBuf, String)>> {
         self.call(move |ctx| async move {
             let project_root = {
                 let manager = ctx.manager.lock().await;
                 session_effective_path(&manager, &session_id)?
             };
+            Ok(discover_review_repos(&project_root))
+        })
+        .await
+    }
 
-            let discovered = discover_review_repos(&project_root);
-            if discovered.is_empty() {
-                return Ok(ReviewListing {
-                    repos: Vec::new(),
-                    is_git_repo: false,
-                    mode,
-                });
-            }
+    /// Scan a single repo for the Review panel: changed files, diff stats, and
+    /// the selector metadata. In `BranchVsBase` mode a `None` `base_override`
+    /// defaults to the current branch's upstream, else the first remote
+    /// candidate.
+    pub async fn scan_review_repo(
+        &self,
+        repo_root: PathBuf,
+        label: String,
+        mode: ReviewMode,
+        base_override: Option<String>,
+    ) -> Result<RepoReview> {
+        self.call(move |_ctx| async move {
+            let repo =
+                git::GitRepository::open(&repo_root).context("Failed to open git repository")?;
+            let current_branch = repo.current_branch();
+            let base_candidates = repo.list_base_candidates().unwrap_or_default();
 
-            let mut repos = Vec::with_capacity(discovered.len());
-            for (repo_root, label) in discovered {
-                let repo = match git::GitRepository::open(&repo_root) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!("Skipping repo {}: {e:#}", repo_root.display());
-                        continue;
-                    }
-                };
-                let current_branch = repo.current_branch();
-                let base_candidates = repo.list_base_candidates().unwrap_or_default();
-                let override_base = base_overrides.get(&repo_root).cloned();
-
-                let (files, resolved_base) = match mode {
-                    ReviewMode::WorkingTree => {
-                        let files = repo
-                            .changed_files_working_tree()
-                            .await
-                            .context("Failed to list working-tree changes")?;
-                        (files, None)
-                    }
-                    ReviewMode::BranchVsBase => {
-                        let resolved = resolve_review_base(&repo, override_base, &base_candidates);
-                        match &resolved {
-                            Some(b) => {
-                                let files = repo
-                                    .changed_files_vs_base(b)
-                                    .await
-                                    .with_context(|| format!("Failed to diff against {b}"))?;
-                                (files, resolved)
-                            }
-                            None => (Vec::new(), None),
+            let (files, stats, resolved_base) = match mode {
+                ReviewMode::WorkingTree => {
+                    let files = repo
+                        .changed_files_working_tree()
+                        .await
+                        .context("Failed to list working-tree changes")?;
+                    // Stats are best-effort (e.g. unborn HEAD has no diff base).
+                    let stats = repo.diff_stats_working_tree().await.unwrap_or_default();
+                    (files, stats, None)
+                }
+                ReviewMode::BranchVsBase => {
+                    let resolved = resolve_review_base(&repo, base_override, &base_candidates);
+                    match &resolved {
+                        Some(b) => {
+                            let files = repo
+                                .changed_files_vs_base(b)
+                                .await
+                                .with_context(|| format!("Failed to diff against {b}"))?;
+                            let stats = repo.diff_stats_vs_base(b).await.unwrap_or_default();
+                            (files, stats, resolved)
                         }
+                        None => (Vec::new(), git::DiffStats::default(), None),
                     }
-                };
+                }
+            };
 
-                repos.push(RepoReview {
-                    repo_root,
-                    label,
-                    current_branch,
-                    base_candidates,
-                    base: resolved_base,
-                    files,
-                });
-            }
-
-            Ok(ReviewListing {
-                is_git_repo: !repos.is_empty(),
-                repos,
-                mode,
+            Ok(RepoReview {
+                repo_root,
+                label,
+                current_branch,
+                base_candidates,
+                base: resolved_base,
+                files,
+                stats,
+                scan_state: ReviewScanState::Done,
             })
         })
         .await

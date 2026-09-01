@@ -109,6 +109,10 @@ pub struct RepoReviewData {
     pub base_candidates: Vec<String>,
     pub base: Option<String>,
     pub files: Vec<git::ChangedFile>,
+    /// Aggregate added/deleted line counts (untracked files not included).
+    pub stats: git::DiffStats,
+    /// Background-scan progress for this repo (drives the activity indicator).
+    pub scan_state: code_assistant_core::session::ReviewScanState,
 }
 
 /// Latest loaded diff for a single file in the Review panel.
@@ -178,6 +182,11 @@ pub struct Gpui {
     // with a plain integer compare instead of deep-cloning per frame.
     current_review_listing: Arc<Mutex<(u64, Option<ReviewData>)>>,
     current_review_diff: Arc<Mutex<(u64, Option<ReviewDiff>)>>,
+
+    // Monotonic id of the latest review-scan request. A streaming scan task
+    // compares its captured epoch against this and stops when superseded, so
+    // stale scans never overwrite fresher listings.
+    review_scan_epoch: Arc<std::sync::atomic::AtomicU64>,
 
     // Last usage from the active session's most recent assistant message.
     // Stored separately from chat_sessions so it cannot be overwritten by
@@ -508,6 +517,7 @@ impl Gpui {
             current_worktree_data: Arc::new(Mutex::new(None)),
             current_review_listing: Arc::new(Mutex::new((0, None))),
             current_review_diff: Arc::new(Mutex::new((0, None))),
+            review_scan_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
 
             // Current session last usage
             current_session_last_usage: Arc::new(Mutex::new(None)),

@@ -31,6 +31,16 @@ pub struct ChangedFile {
     pub status: ChangeStatus,
 }
 
+/// Aggregate line-change counts for a review listing (à la `git diff --stat`).
+///
+/// Untracked files are not included — `git diff --numstat` only covers
+/// tracked content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DiffStats {
+    pub additions: usize,
+    pub deletions: usize,
+}
+
 /// The two whole-file sides of a diff, ready to be fed to the UI's unified
 /// diff renderer. Either side may be `None` (pure add or delete). When
 /// `is_binary` or `too_large` is set, the text sides are omitted and the UI
@@ -177,6 +187,27 @@ impl GitRepository {
         Ok(build_diff_content(old, new))
     }
 
+    /// Aggregate added/deleted line counts of the working tree (staged +
+    /// unstaged) vs `HEAD`. Untracked files are not counted.
+    pub async fn diff_stats_working_tree(&self) -> Result<DiffStats> {
+        let out = self
+            .git
+            .run_bytes(self.workdir(), &["diff", "--numstat", "-M", "HEAD"])
+            .await?;
+        Ok(parse_numstat(&out))
+    }
+
+    /// Aggregate added/deleted line counts of `base...HEAD` (merge-base
+    /// semantics, matching [`Self::changed_files_vs_base`]).
+    pub async fn diff_stats_vs_base(&self, base: &str) -> Result<DiffStats> {
+        let range = format!("{base}...HEAD");
+        let out = self
+            .git
+            .run_bytes(self.workdir(), &["diff", "--numstat", "-M", &range])
+            .await?;
+        Ok(parse_numstat(&out))
+    }
+
     /// Candidate base refs for branch-vs-base comparison: local branches plus
     /// remote-tracking branches (excluding `*/HEAD`), sorted and de-duplicated.
     pub fn list_base_candidates(&self) -> Result<Vec<String>> {
@@ -316,6 +347,26 @@ fn parse_diff_name_status_z(bytes: &[u8]) -> Vec<ChangedFile> {
     files
 }
 
+/// Parse `git diff --numstat` output and sum the per-file counts.
+///
+/// Each line is `ADDED<TAB>DELETED<TAB>PATH`; binary files report `-` in the
+/// numeric columns and are skipped.
+fn parse_numstat(bytes: &[u8]) -> DiffStats {
+    let mut stats = DiffStats::default();
+    for line in bytes.split(|&b| b == b'\n') {
+        let mut fields = line.split(|&b| b == b'\t');
+        let (Some(add), Some(del)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let parse = |f: &[u8]| std::str::from_utf8(f).ok()?.parse::<usize>().ok();
+        if let (Some(add), Some(del)) = (parse(add), parse(del)) {
+            stats.additions += add;
+            stats.deletions += del;
+        }
+    }
+    stats
+}
+
 /// Decode both raw sides into a [`FileDiffContent`], flagging binary and
 /// oversized content.
 fn build_diff_content(old: Side, new: Side) -> FileDiffContent {
@@ -419,6 +470,43 @@ mod tests {
         assert_eq!(files[1].path, "new.txt");
         assert_eq!(files[2].status, ChangeStatus::Added);
         assert_eq!(files[2].path, "added.txt");
+    }
+
+    #[test]
+    fn parse_numstat_sums_and_skips_binary() {
+        let raw = b"3\t1\tsrc/a.rs\n-\t-\tblob.bin\n10\t0\tnew.txt\n";
+        let stats = parse_numstat(raw);
+        assert_eq!(
+            stats,
+            DiffStats {
+                additions: 13,
+                deletions: 1
+            }
+        );
+        assert_eq!(parse_numstat(b""), DiffStats::default());
+    }
+
+    #[tokio::test]
+    async fn diff_stats_working_tree_counts_lines() {
+        let dir = TempDir::new().unwrap();
+        init_repo_with_commit(dir.path());
+
+        write(dir.path(), "a.txt", b"one\ntwo\nthree\n");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "seed"]);
+
+        // Replace one line and add one (net: +2 -1).
+        write(dir.path(), "a.txt", b"one\nTWO\nthree\nfour\n");
+
+        let repo = GitRepository::open(dir.path()).unwrap();
+        let stats = repo.diff_stats_working_tree().await.unwrap();
+        assert_eq!(
+            stats,
+            DiffStats {
+                additions: 2,
+                deletions: 1
+            }
+        );
     }
 
     #[tokio::test]

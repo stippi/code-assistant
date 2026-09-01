@@ -11,9 +11,11 @@
 //! line diff is computed once per content change, never during render.
 
 use crate::shared::file_tree::{ChangedFilesTree, ChangedFilesTreeEvent};
-use crate::tool_cards::diff_card::{DiffLine, compute_diff_lines, render_diff_lines};
+use crate::tool_cards::diff_card::{
+    DiffLine, added_row_colors, compute_diff_lines, deleted_row_colors, render_diff_lines,
+};
 use crate::{Gpui, ReviewData};
-use code_assistant_core::session::ReviewMode;
+use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Render, ScrollHandle,
     Subscription, Window, div, prelude::*, px, rems,
@@ -23,6 +25,7 @@ use gpui_component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
+    spinner::Spinner,
     v_flex,
 };
 use std::collections::HashMap;
@@ -102,6 +105,9 @@ struct RepoSection {
     base_state: Entity<SelectState<Vec<BaseOption>>>,
     base_candidates: Vec<String>,
     base: Option<String>,
+    has_files: bool,
+    stats: git::DiffStats,
+    scan_state: ReviewScanState,
     collapsed: bool,
     _tree_sub: Subscription,
     _base_sub: Subscription,
@@ -468,6 +474,9 @@ impl ReviewView {
             base_state,
             base_candidates: data.base_candidates.clone(),
             base: effective_base,
+            has_files: !data.files.is_empty(),
+            stats: data.stats,
+            scan_state: data.scan_state,
             collapsed: false,
             _tree_sub: tree_sub,
             _base_sub: base_sub,
@@ -482,6 +491,9 @@ impl ReviewView {
         cx: &mut Context<Self>,
     ) {
         section.label = data.label.clone();
+        section.has_files = !data.files.is_empty();
+        section.stats = data.stats;
+        section.scan_state = data.scan_state;
         section
             .tree
             .update(cx, |t, cx| t.set_files(&data.files, cx));
@@ -623,15 +635,59 @@ impl ReviewView {
             .into_any_element()
     }
 
+    /// The header's right-hand slot: a spinner while a repo is being scanned,
+    /// a muted dash while it waits its turn, and a `+adds −dels` summary once
+    /// its (possibly cached) result is in.
+    fn render_scan_indicator(&self, section: &RepoSection, cx: &Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+
+        if matches!(section.scan_state, ReviewScanState::Scanning) {
+            return Spinner::new()
+                .with_size(Size::XSmall)
+                .color(muted)
+                .into_any_element();
+        }
+
+        let pending = matches!(section.scan_state, ReviewScanState::Pending);
+        let has_data = section.has_files || section.stats != git::DiffStats::default();
+        if !has_data {
+            // Nothing (yet) to summarize: a queued repo shows a wait marker,
+            // a scanned clean repo shows no indicator at all.
+            return if pending {
+                div().text_color(muted).child("⋯").into_any_element()
+            } else {
+                div().into_any_element()
+            };
+        }
+
+        // Stats badge; a trailing wait marker means "cached, refresh queued".
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .text_xs()
+            .child(
+                div()
+                    .text_color(added_row_colors(theme).1)
+                    .child(format!("+{}", section.stats.additions)),
+            )
+            .child(
+                div()
+                    .text_color(deleted_row_colors(theme).1)
+                    .child(format!("−{}", section.stats.deletions)),
+            )
+            .when(pending, |el| el.child(div().text_color(muted).child("⋯")))
+            .into_any_element()
+    }
+
     /// Render the right column: a scrollable stack of per-repo sections.
     fn render_tree_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
         let fg = cx.theme().foreground;
         let border = cx.theme().border;
         let branch_mode = matches!(self.mode, ReviewMode::BranchVsBase);
-        // A single repo whose label matches the project needn't show its header
-        // chrome; but keeping it uniform is simpler and clarifies multi-repo.
-        let show_headers = self.repos.len() > 1 || branch_mode;
 
         let mut column = v_flex().size_full().overflow_y_scrollbar();
 
@@ -639,43 +695,44 @@ impl ReviewView {
             let repo_root = section.repo_root.clone();
             let collapsed = section.collapsed;
 
-            let mut section_el = v_flex().w_full();
+            // Sections are separated by a line ABOVE each section (not by a
+            // line between a section's header and its content).
+            let mut section_el = v_flex()
+                .w_full()
+                .when(ix > 0, |s| s.border_t_1().border_color(border));
 
-            if show_headers {
-                let chevron = if collapsed {
-                    "icons/chevron_right.svg"
-                } else {
-                    "icons/chevron_down.svg"
-                };
-                let header = div()
-                    .id(gpui::SharedString::from(format!("repo-header-{ix}")))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1p5()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(border)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(cx.theme().muted))
-                    .child(gpui::svg().size(px(12.)).path(chevron).text_color(muted))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(fg)
-                            .child(section.label.clone()),
-                    )
-                    .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        if let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == repo_root) {
-                            s.collapsed = !s.collapsed;
-                            cx.notify();
-                        }
-                    }));
-                section_el = section_el.child(header);
-            }
+            let chevron = if collapsed {
+                "icons/chevron_right.svg"
+            } else {
+                "icons/chevron_down.svg"
+            };
+            let header = div()
+                .id(gpui::SharedString::from(format!("repo-header-{ix}")))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .px_2()
+                .py_1()
+                .cursor_pointer()
+                .hover(|s| s.bg(cx.theme().muted))
+                .child(gpui::svg().size(px(12.)).path(chevron).text_color(muted))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(fg)
+                        .child(section.label.clone()),
+                )
+                .child(self.render_scan_indicator(section, cx))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    if let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == repo_root) {
+                        s.collapsed = !s.collapsed;
+                        cx.notify();
+                    }
+                }));
+            section_el = section_el.child(header);
 
             if !collapsed {
                 if branch_mode {
@@ -694,7 +751,14 @@ impl ReviewView {
                         ),
                     );
                 }
-                section_el = section_el.child(section.tree.clone());
+                // While a repo waits for its first-ever scan there is nothing
+                // meaningful to show — suppress the tree so it can't claim
+                // "No changes" prematurely.
+                let awaiting_first_data =
+                    !section.has_files && !matches!(section.scan_state, ReviewScanState::Done);
+                if !awaiting_first_data {
+                    section_el = section_el.child(section.tree.clone());
+                }
             }
 
             column = column.child(section_el);
@@ -720,7 +784,23 @@ impl Render for ReviewView {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
 
-        if !self.is_git_repo && self.last_listing.is_some() {
+        // Before the first (fast) discovery response there is nothing to lay
+        // out yet — show explicit activity instead of an empty panel.
+        if self.last_listing.is_none() {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .p_4()
+                .text_sm()
+                .text_color(muted)
+                .child(Spinner::new().with_size(Size::Small).color(muted))
+                .child("Looking for repositories…")
+                .into_any_element();
+        }
+
+        if !self.is_git_repo {
             return v_flex()
                 .size_full()
                 .items_center()

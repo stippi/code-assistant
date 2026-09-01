@@ -853,6 +853,8 @@ impl Gpui {
                         base_candidates: r.base_candidates,
                         base: r.base,
                         files: r.files,
+                        stats: r.stats,
+                        scan_state: r.scan_state,
                     })
                     .collect();
                 self.set_current_review_listing(Some(ReviewData {
