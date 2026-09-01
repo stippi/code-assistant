@@ -101,9 +101,6 @@ impl DynTool for McpTool {
     }
 
     fn deserialize_output(&self, json: Value) -> Result<Box<dyn AnyOutput>> {
-        let mut output: McpToolOutput = serde_json::from_value(json)?;
-        // Re-check dimensions on load for sessions persisted before capping.
-        tools_core::render::Render::cap_images(&mut output, tools_core::MAX_IMAGE_EDGE);
-        Ok(Box::new(output))
+        crate::output::deserialize_mcp_output(json)
     }
 }
