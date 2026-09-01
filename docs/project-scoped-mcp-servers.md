@@ -33,9 +33,12 @@ committed file serves both tools.
   implies HTTP and a `command` implies stdio. An explicit `"type": "stdio"`
   with a stray `url` is an error (missing `command`), not silently HTTP.
 - `${VAR}` references in `env` and `headers` values are substituted from the
-  environment at load time, so the committed file never carries secrets.
-  Note: substitution is currently all-or-nothing — one unresolvable variable
-  drops the whole file (with a log warning), not just the affected server.
+  environment at load time, so the committed file never carries secrets. A
+  server whose variables cannot be resolved is skipped with a log warning
+  (it could not connect anyway); the other servers still load. Note that
+  config fingerprints read the files raw, so exporting a previously missing
+  variable takes effect on the next rebuild (a config edit or restart), not
+  by itself.
 - Project entries carry no `enabled`/`enabled_tools`/`disabled_tools`
   metadata; every listed server is on (per-session toggles below).
 
@@ -117,9 +120,6 @@ native tools still require a registry entry to render.
 ## Known limitations
 
 - No UI to revoke a persisted trust (edit `mcp-trust.json` by hand).
-- `${VAR}` substitution failure drops the whole `.mcp.json`, not just the
-  affected server; the per-session toggle menu (which reads the file raw)
-  still lists the servers.
 - Per-session deactivation hides a server's tools but does not prevent its
   process from launching.
 - The settings page edits the global config only; project files are edited

@@ -24,26 +24,49 @@ impl McpServersConfig {
         self.servers.iter().filter(|(_, server)| server.enabled)
     }
 
-    /// Substitute `${VAR}` patterns in every server's secret-carrying values,
-    /// so config files can reference secrets instead of baking them in. That
-    /// means stdio env values and HTTP header values. `lookup` resolves a
-    /// variable name (typically `|name| std::env::var(name).ok()`); an
-    /// unresolvable variable or an unclosed `${` is an error naming the
-    /// offending server.
-    pub fn substitute_env_values(&mut self, lookup: impl Fn(&str) -> Option<String>) -> Result<()> {
-        for (name, server) in self.servers.iter_mut() {
-            match &mut server.transport {
-                McpTransport::Stdio { env, .. } => {
-                    for value in env.values_mut() {
-                        *value = substitute_variables(value, &lookup)
-                            .with_context(|| format!("in env of MCP server '{name}'"))?;
-                    }
+    /// Substitute `${VAR}` patterns in every server's secret-carrying values
+    /// — stdio env values and HTTP header values — so config files can
+    /// reference secrets instead of baking them in. `lookup` resolves a
+    /// variable name (typically `|name| std::env::var(name).ok()`). A server
+    /// with an unresolvable variable (or an unclosed `${`) is **dropped**
+    /// rather than failing the whole configuration: missing its secret it
+    /// could not connect anyway, but it must not take the other servers down
+    /// with it. The dropped servers are returned as `(name, error)` for the
+    /// caller to log.
+    pub fn substitute_env_values(
+        &mut self,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Vec<(String, anyhow::Error)> {
+        let mut dropped = Vec::new();
+        self.servers
+            .retain(|name, server| match server.substitute_env_values(&lookup) {
+                Ok(()) => true,
+                Err(error) => {
+                    dropped.push((name.clone(), error));
+                    false
                 }
-                McpTransport::Http { headers, .. } => {
-                    for value in headers.values_mut() {
-                        *value = substitute_variables(value, &lookup)
-                            .with_context(|| format!("in headers of MCP server '{name}'"))?;
-                    }
+            });
+        dropped
+    }
+}
+
+impl McpServerConfig {
+    /// Substitute `${VAR}` in this server's stdio `env` / HTTP `headers`
+    /// values (both carry secrets), erroring on the first unresolvable
+    /// variable.
+    pub fn substitute_env_values(
+        &mut self,
+        lookup: &impl Fn(&str) -> Option<String>,
+    ) -> Result<()> {
+        match &mut self.transport {
+            McpTransport::Stdio { env, .. } => {
+                for value in env.values_mut() {
+                    *value = substitute_variables(value, lookup).context("in env")?;
+                }
+            }
+            McpTransport::Http { headers, .. } => {
+                for value in headers.values_mut() {
+                    *value = substitute_variables(value, lookup).context("in headers")?;
                 }
             }
         }
@@ -328,9 +351,9 @@ mod tests {
             } } }"#,
         )
         .unwrap();
-        config
-            .substitute_env_values(|name| (name == "JIRA_TOKEN").then(|| "s3cret".to_string()))
-            .unwrap();
+        let dropped = config
+            .substitute_env_values(|name| (name == "JIRA_TOKEN").then(|| "s3cret".to_string()));
+        assert!(dropped.is_empty());
         let McpTransport::Stdio { env, .. } = &config.servers["jira"].transport else {
             panic!("expected stdio transport");
         };
@@ -347,9 +370,9 @@ mod tests {
             } } }"#,
         )
         .unwrap();
-        config
-            .substitute_env_values(|name| (name == "API_TOKEN").then(|| "s3cret".to_string()))
-            .unwrap();
+        let dropped = config
+            .substitute_env_values(|name| (name == "API_TOKEN").then(|| "s3cret".to_string()));
+        assert!(dropped.is_empty());
         let McpTransport::Http { url, headers } = &config.servers["remote"].transport else {
             panic!("expected http transport");
         };
@@ -380,27 +403,41 @@ mod tests {
     }
 
     #[test]
-    fn unresolvable_variable_errors_with_server_name() {
+    fn unresolvable_variable_drops_only_that_server() {
+        // A server missing its secret cannot connect anyway; it must not
+        // take the other servers down with it.
         let mut config: McpServersConfig = serde_json::from_str(
-            r#"{ "servers": { "jira": { "command": "npx", "env": { "T": "${MISSING}" } } } }"#,
+            r#"{ "servers": {
+                "jira": { "command": "npx", "env": { "T": "${MISSING}" } },
+                "docs": { "command": "npx", "env": { "T": "${SET}" } }
+            } }"#,
         )
         .unwrap();
-        let error = format!("{:#}", config.substitute_env_values(|_| None).unwrap_err());
+        let dropped =
+            config.substitute_env_values(|name| (name == "SET").then(|| "ok".to_string()));
+
+        assert_eq!(dropped.len(), 1);
+        let (name, error) = &dropped[0];
+        assert_eq!(name, "jira");
+        let error = format!("{error:#}");
         assert!(error.contains("MISSING"), "names the variable: {error}");
-        assert!(error.contains("jira"), "names the server: {error}");
+
+        assert!(!config.servers.contains_key("jira"), "failing server gone");
+        let McpTransport::Stdio { env, .. } = &config.servers["docs"].transport else {
+            panic!("expected stdio transport");
+        };
+        assert_eq!(env["T"], "ok", "the other server is kept and substituted");
     }
 
     #[test]
-    fn unclosed_substitution_errors() {
+    fn unclosed_substitution_drops_the_server() {
         let mut config: McpServersConfig = serde_json::from_str(
             r#"{ "servers": { "jira": { "command": "npx", "env": { "T": "${OOPS" } } } }"#,
         )
         .unwrap();
-        assert!(
-            config
-                .substitute_env_values(|_| Some("x".to_string()))
-                .is_err()
-        );
+        let dropped = config.substitute_env_values(|_| Some("x".to_string()));
+        assert_eq!(dropped.len(), 1);
+        assert!(config.servers.is_empty());
     }
 
     #[test]
@@ -412,7 +449,7 @@ mod tests {
             r#"{ "servers": { "jira": { "command": "${CMD}", "args": ["${ARG}"] } } }"#,
         )
         .unwrap();
-        config.substitute_env_values(|_| None).unwrap();
+        assert!(config.substitute_env_values(|_| None).is_empty());
         assert_eq!(
             config.servers["jira"].transport,
             McpTransport::Stdio {

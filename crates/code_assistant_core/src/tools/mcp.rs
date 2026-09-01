@@ -25,8 +25,9 @@ pub fn mcp_servers_config_path() -> PathBuf {
 }
 
 /// Load the MCP servers configuration, substituting `${ENV_VAR}` patterns in
-/// server environment values. A missing file yields the default (empty)
-/// configuration.
+/// server environment values. A server whose variables cannot be resolved is
+/// skipped with a log warning (it could not connect anyway); a missing file
+/// yields the default (empty) configuration.
 pub fn load_mcp_servers_config() -> Result<McpServersConfig> {
     load_mcp_servers_config_from(&mcp_servers_config_path())
 }
@@ -40,7 +41,12 @@ pub fn load_mcp_servers_config_from(path: &Path) -> Result<McpServersConfig> {
         .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
     let mut config: McpServersConfig = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse MCP config: {}", path.display()))?;
-    config.substitute_env_values(|name| std::env::var(name).ok())?;
+    for (name, error) in config.substitute_env_values(|name| std::env::var(name).ok()) {
+        tracing::warn!(
+            "Skipping MCP server '{name}' from {}: {error:#}",
+            path.display()
+        );
+    }
     Ok(config)
 }
 
@@ -100,7 +106,9 @@ pub fn deserialize_tool_execution(
 
 /// Load a project-local `.mcp.json` from `dir`, if present. Returns `None`
 /// when the file does not exist; logs a warning on parse errors rather than
-/// propagating them, so a malformed local file degrades gracefully.
+/// propagating them, so a malformed local file degrades gracefully. A server
+/// whose `${VAR}` references cannot be resolved is skipped with a log
+/// warning — the other servers still load.
 pub fn load_local_mcp_json(dir: &Path) -> Option<McpServersConfig> {
     let path = dir.join(".mcp.json");
     if !path.exists() {
@@ -115,9 +123,11 @@ pub fn load_local_mcp_json(dir: &Path) -> Option<McpServersConfig> {
     };
     match parse_local_mcp_json(&content) {
         Ok(mut config) => {
-            if let Err(e) = config.substitute_env_values(|name| std::env::var(name).ok()) {
-                tracing::warn!("Variable substitution failed in .mcp.json: {e:#}");
-                return None;
+            for (name, error) in config.substitute_env_values(|name| std::env::var(name).ok()) {
+                tracing::warn!(
+                    "Skipping MCP server '{name}' from {}: {error:#}",
+                    path.display()
+                );
             }
             Some(config)
         }
@@ -373,18 +383,29 @@ mod tests {
     }
 
     #[test]
-    fn unknown_env_var_is_an_error() {
+    fn unknown_env_var_drops_only_that_server() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp-servers.json");
         std::fs::write(
             &path,
-            r#"{ "servers": { "jira": {
-                "command": "npx",
-                "env": { "API_TOKEN": "${MCP_TEST_SURELY_UNSET}" }
-            } } }"#,
+            r#"{ "servers": {
+                "jira": {
+                    "command": "npx",
+                    "env": { "API_TOKEN": "${MCP_TEST_SURELY_UNSET}" }
+                },
+                "docs": { "command": "npx" }
+            } }"#,
         )
         .unwrap();
-        assert!(load_mcp_servers_config_from(&path).is_err());
+        let config = load_mcp_servers_config_from(&path).unwrap();
+        assert!(
+            !config.servers.contains_key("jira"),
+            "server with unresolvable variable is dropped"
+        );
+        assert!(
+            config.servers.contains_key("docs"),
+            "the other server survives"
+        );
     }
 
     #[test]
@@ -453,6 +474,32 @@ mod tests {
             };
             assert_eq!(env["TOKEN"], "tok-xyz");
         });
+    }
+
+    #[test]
+    fn load_local_mcp_json_drops_only_the_failing_server() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{ "mcpServers": {
+                "broken": {
+                    "type": "stdio",
+                    "command": "uv",
+                    "env": { "TOKEN": "${MCP_TEST_SURELY_UNSET}" }
+                },
+                "fine": { "type": "stdio", "command": "uv" }
+            } }"#,
+        )
+        .unwrap();
+        let config = load_local_mcp_json(dir.path()).unwrap();
+        assert!(
+            !config.servers.contains_key("broken"),
+            "server with unresolvable variable is dropped"
+        );
+        assert!(
+            config.servers.contains_key("fine"),
+            "the other server survives"
+        );
     }
 
     #[test]
