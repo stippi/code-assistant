@@ -83,6 +83,9 @@ headless binary without gpui.
   `command`/`args`/`env`, an HTTP server has `url`/`headers`; `${ENV_VAR}`
   substitution in `env`/`headers` values) or programmatically via
   `mcp_client::register_mcp_tools`
+- Projects can ship additional servers in a `.mcp.json` at the project root
+  (Claude Code's format), merged over the global set per project and gated
+  by a trust prompt — see `docs/project-scoped-mcp-servers.md`
 - The tool registry is rebuilt from the current config at the start of
   every agent run via the `ToolRegistryProvider` seam
   (`tools::ConfigToolRegistry`, a fingerprint cache over `tools.json` +

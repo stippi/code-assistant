@@ -244,21 +244,30 @@ impl SessionManager {
         &self.tool_registry
     }
 
-    /// Pull the registry for `req` from the provider (no-op without one).
-    /// Session instances follow the swap so their UI rebuilds resolve tool
-    /// executions against the same registry the next run uses.
-    async fn refresh_tool_registry(&mut self, req: RegistryRequest) {
+    /// Pull the registry for `req` from the provider (no-op without one) and
+    /// assign it to `session_id`'s instance — and only that one. Sessions in
+    /// other projects keep the registry of their own last run; MCP tool
+    /// executions render independently of any registry (see
+    /// [`crate::tools::mcp::deserialize_tool_execution`]), so no session
+    /// depends on following a foreign run's swap. The manager-level registry
+    /// follows too: it is this run's working registry and the default for
+    /// instances that have not run yet.
+    async fn refresh_tool_registry(&mut self, session_id: &str, req: RegistryRequest) {
         let Some(provider) = &self.tool_registry_provider else {
             return;
         };
         let fresh = provider(req).await;
-        if Arc::ptr_eq(&fresh, &self.tool_registry) {
-            return;
+        if !Arc::ptr_eq(&fresh, &self.tool_registry) {
+            info!("Tool registry refreshed for the next agent run");
+            self.tool_registry = fresh.clone();
         }
-        info!("Tool registry refreshed for the next agent run");
-        self.tool_registry = fresh.clone();
-        for instance in self.active_sessions.values_mut() {
-            instance.tool_registry = fresh.clone();
+        // Assign even when the manager already held it: a second session in
+        // the same project gets the same `Arc` from the provider's cache, but
+        // its instance may still hold an older registry.
+        if let Some(instance) = self.active_sessions.get_mut(session_id)
+            && !Arc::ptr_eq(&instance.tool_registry, &fresh)
+        {
+            instance.tool_registry = fresh;
         }
     }
 
@@ -827,7 +836,8 @@ impl SessionManager {
         // before anything below binds to it. Trust is resolved by the caller —
         // not here — because prompting must happen without the manager lock
         // that wraps this call, or the response could never be delivered.
-        self.refresh_tool_registry(registry_request).await;
+        self.refresh_tool_registry(session_id, registry_request)
+            .await;
 
         // Acquire exclusive cross-process agent lock.
         // This prevents another code-assistant instance from running an agent
@@ -887,7 +897,10 @@ impl SessionManager {
                     // MCP server) must not brick the session: skip its
                     // records, the conversation itself lives in the messages.
                     .filter(|se| {
-                        let available = se.tool_available(self.tool_registry.as_ref());
+                        let available = crate::tools::mcp::execution_renderable(
+                            se,
+                            self.tool_registry.as_ref(),
+                        );
                         if !available {
                             warn!(
                                 "Skipping recorded execution of unavailable tool '{}'",
@@ -896,7 +909,12 @@ impl SessionManager {
                         }
                         available
                     })
-                    .map(|se| se.deserialize(self.tool_registry.as_ref()))
+                    .map(|se| {
+                        crate::tools::mcp::deserialize_tool_execution(
+                            se,
+                            self.tool_registry.as_ref(),
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?,
 
                 plan: session_instance.session.plan.clone(),
@@ -2257,30 +2275,45 @@ mod tests {
     }
 
     /// The provider seam: refreshing swaps the manager's registry and the
-    /// registries of the active session instances (their UI rebuilds must
-    /// resolve tools against what the next run uses); an unchanged provider
-    /// result (same `Arc`) is a no-op.
+    /// registry of the session the refresh is for — and only that session's.
+    /// Other sessions may be running in other projects with other registries;
+    /// their rendering must not follow a foreign run's swap. An unchanged
+    /// provider result (same `Arc`) is a no-op.
     #[tokio::test]
-    async fn refresh_swaps_manager_and_instance_registries() {
+    async fn refresh_swaps_only_the_requesting_sessions_registry() {
         let (mut manager, _dir) = build_manager(false);
         let initial = manager.tool_registry().clone();
         let session_id = manager.create_session(None).expect("create session");
+        let other_id = manager.create_session(None).expect("create session");
 
         // Without a provider, refreshing changes nothing.
         manager
-            .refresh_tool_registry(RegistryRequest::default())
+            .refresh_tool_registry(&session_id, RegistryRequest::default())
             .await;
         assert!(Arc::ptr_eq(manager.tool_registry(), &initial));
 
         let fresh = crate::tools::test_registry();
         manager.set_tool_registry_provider(fixed_registry_provider(fresh.clone()));
         manager
-            .refresh_tool_registry(RegistryRequest::default())
+            .refresh_tool_registry(&session_id, RegistryRequest::default())
             .await;
 
         assert!(Arc::ptr_eq(manager.tool_registry(), &fresh));
         let instance = manager.get_session(&session_id).expect("instance");
         assert!(Arc::ptr_eq(&instance.tool_registry, &fresh));
+        let other = manager.get_session(&other_id).expect("instance");
+        assert!(
+            Arc::ptr_eq(&other.tool_registry, &initial),
+            "a refresh for one session must not swap another session's registry"
+        );
+
+        // A later refresh *for* the other session catches its instance up,
+        // even though the manager-level registry is already the same Arc.
+        manager
+            .refresh_tool_registry(&other_id, RegistryRequest::default())
+            .await;
+        let other = manager.get_session(&other_id).expect("instance");
+        assert!(Arc::ptr_eq(&other.tool_registry, &fresh));
     }
 
     /// Starting an agent run is the point where the provider is consulted:

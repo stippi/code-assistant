@@ -69,6 +69,22 @@ impl McpToolOutput {
     }
 }
 
+/// Deserialize a persisted MCP tool output without a live server or registry
+/// entry. `McpToolOutput` is self-describing, so a recorded MCP execution
+/// renders identically in any instance — including one that never connected
+/// (or never trusted) the server that produced it.
+/// [`McpTool::deserialize_output`] delegates here so there is one code path.
+///
+/// [`McpTool::deserialize_output`]: crate::tool::McpTool
+pub fn deserialize_mcp_output(
+    json: serde_json::Value,
+) -> anyhow::Result<Box<dyn tools_core::dyn_tool::AnyOutput>> {
+    let mut output: McpToolOutput = serde_json::from_value(json)?;
+    // Re-check dimensions on load for sessions persisted before capping.
+    output.cap_images(tools_core::MAX_IMAGE_EDGE);
+    Ok(Box::new(output))
+}
+
 impl ToolResult for McpToolOutput {
     fn is_success(&self) -> bool {
         !self.is_error
@@ -119,5 +135,26 @@ impl Render for McpToolOutput {
                 image.base64_data = base64_data;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_mcp_output_needs_no_live_tool() {
+        let json = serde_json::json!({ "text": "42 issues found", "is_error": false });
+        let output = deserialize_mcp_output(json).unwrap();
+        assert!(output.is_success());
+        assert_eq!(output.as_render().status(), "42 issues found");
+    }
+
+    #[test]
+    fn deserialize_mcp_output_preserves_error_flag() {
+        let json = serde_json::json!({ "text": "boom", "is_error": true });
+        let output = deserialize_mcp_output(json).unwrap();
+        assert!(!output.is_success());
+        assert_eq!(output.as_render().status(), "Failed: boom");
     }
 }

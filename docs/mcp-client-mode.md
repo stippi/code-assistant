@@ -152,10 +152,12 @@ shows and preserves.
   `<config_dir>/mcp-servers.json` with `${ENV_VAR}` substitution in `env`
   values; `tools::default_registry_with_mcp()` builds the registry. The
   wiring layers install `tools::ConfigToolRegistry` as the session
-  manager's `ToolRegistryProvider`, which rebuilds the registry (behind a
-  fingerprint cache) at the start of every agent run — so config changes
-  apply on the next run, not only on restart. A running agent keeps the
-  registry it started with.
+  manager's `ToolRegistryProvider`, which rebuilds registries (cached per
+  project behind a fingerprint) at the start of every agent run — so config
+  changes apply on the next run, not only on restart. A running agent keeps
+  the registry it started with. Projects can additionally ship servers in a
+  `.mcp.json` at the project root, gated by a trust prompt — see
+  [project-scoped-mcp-servers.md](project-scoped-mcp-servers.md).
 - **gpui settings page** ("MCP Servers"): expandable card per server with
   enable switch, add/edit/delete (including a transport selector for
   stdio command/args/env vs HTTP url/headers), live tool discovery and

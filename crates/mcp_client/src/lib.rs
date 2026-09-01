@@ -20,6 +20,8 @@ pub use client::McpServerConnection;
 pub use config::{
     McpServerConfig, McpServersConfig, McpTransport, parse_local_mcp_json, substitute_variables,
 };
+pub use naming::is_mcp_tool_name;
+pub use output::deserialize_mcp_output;
 pub use registry::{
     ConnectionProvider, DiscoveredTool, MCP_CAPABILITY, McpServerStatus, discover_tools,
     register_connection_tools, register_mcp_tools, register_mcp_tools_pooled,
