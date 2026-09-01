@@ -46,20 +46,40 @@ pub struct UiSettingsGlobal(pub shared::settings::UiSettings);
 
 impl Global for UiSettingsGlobal {}
 
-/// Mutate the global [`UiSettings`] and persist to disk on a background thread.
+/// Delay after the last [`update_ui_settings`] call before writing to disk.
+const UI_SETTINGS_SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Pending debounced settings-save task. Replacing it drops (and thereby
+/// cancels) the previous timer, so rapid updates coalesce into a single write.
+struct UiSettingsSaveTask(#[allow(dead_code)] gpui::Task<()>);
+
+impl Global for UiSettingsSaveTask {}
+
+/// Mutate the global [`UiSettings`] and persist to disk, debounced.
+///
+/// The disk snapshot is taken when the debounce timer fires — not at call time
+/// — so concurrent writes cannot land out of order and clobber a newer state.
+/// A quit within the debounce window is covered by the `on_app_quit` flush.
 ///
 /// Callable anywhere with access to `&mut App` (including via `Context` deref),
 /// so both `MainScreen` handlers and `ReviewView` resize callbacks can use it.
 pub fn update_ui_settings(cx: &mut App, f: impl FnOnce(&mut shared::settings::UiSettings)) {
-    if cx.has_global::<UiSettingsGlobal>() {
-        let global = cx.global_mut::<UiSettingsGlobal>();
-        f(&mut global.0);
-        let settings = global.0.clone();
+    if !cx.has_global::<UiSettingsGlobal>() {
+        return;
+    }
+    f(&mut cx.global_mut::<UiSettingsGlobal>().0);
+
+    let task = cx.spawn(async move |cx: &mut AsyncApp| {
+        cx.background_executor()
+            .timer(UI_SETTINGS_SAVE_DEBOUNCE)
+            .await;
+        let settings = cx.update(|cx| cx.global::<UiSettingsGlobal>().0.clone());
         cx.background_spawn(async move {
             settings.save();
         })
-        .detach();
-    }
+        .await;
+    });
+    cx.set_global(UiSettingsSaveTask(task));
 }
 
 /// Snapshot of worktree/branch data for the active session, kept in `Gpui`
@@ -572,6 +592,25 @@ impl Gpui {
 
             // Store settings as a GPUI global so entities can access/update them
             cx.set_global(UiSettingsGlobal(ui_settings.clone()));
+
+            // Flush pending debounced writes (UI settings + per-session UI
+            // state) before the process exits, closing the debounce window.
+            cx.on_app_quit(|cx| {
+                let settings = cx
+                    .try_global::<UiSettingsGlobal>()
+                    .map(|global| global.0.clone());
+                let files = shared::ui_state::UiStateStore::try_global()
+                    .and_then(|store| store.lock().ok())
+                    .map(|mut store| store.take_dirty())
+                    .unwrap_or_default();
+                async move {
+                    if let Some(settings) = settings {
+                        settings.save();
+                    }
+                    shared::ui_state::write_ui_state_files(files);
+                }
+            })
+            .detach();
 
             init(cx);
 

@@ -197,7 +197,7 @@ impl ReviewView {
             if let Some(store) = crate::shared::ui_state::UiStateStore::try_global()
                 && let Ok(mut store) = store.lock()
             {
-                let (mode, _base) = store.get_review_settings(id);
+                let mode = store.get_review_compare_mode(id);
                 self.mode = match mode.as_deref() {
                     Some("branch_vs_base") => ReviewMode::BranchVsBase,
                     _ => ReviewMode::WorkingTree,
@@ -220,7 +220,7 @@ impl ReviewView {
             ReviewMode::BranchVsBase => "branch_vs_base",
         };
         if let Ok(mut store) = crate::shared::ui_state::UiStateStore::global().lock() {
-            store.set_review_settings(session_id, Some(mode.to_string()), None);
+            store.set_review_compare_mode(session_id, mode.to_string());
         }
         if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
             let _ = sender

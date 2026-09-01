@@ -84,10 +84,6 @@ pub struct UiSessionState {
     /// Last review compare mode ("working_tree" or "branch_vs_base").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_compare_mode: Option<String>,
-
-    /// Last review base branch (only meaningful in branch-vs-base mode).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_base_branch: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,25 +222,18 @@ impl UiStateStore {
         self.dirty.insert(session_id.to_owned());
     }
 
-    /// Return the persisted review compare mode / base branch for a session.
-    pub fn get_review_settings(&mut self, session_id: &str) -> (Option<String>, Option<String>) {
-        let state = self.get(session_id);
-        (state.review_compare_mode, state.review_base_branch)
+    /// Return the persisted review compare mode for a session.
+    pub fn get_review_compare_mode(&mut self, session_id: &str) -> Option<String> {
+        self.get(session_id).review_compare_mode
     }
 
-    /// Persist the review compare mode / base branch for a session.
-    pub fn set_review_settings(
-        &mut self,
-        session_id: &str,
-        mode: Option<String>,
-        base: Option<String>,
-    ) {
+    /// Persist the review compare mode for a session.
+    pub fn set_review_compare_mode(&mut self, session_id: &str, mode: String) {
         let state = self.states.entry(session_id.to_owned()).or_default();
-        if state.review_compare_mode == mode && state.review_base_branch == base {
+        if state.review_compare_mode.as_deref() == Some(mode.as_str()) {
             return;
         }
-        state.review_compare_mode = mode;
-        state.review_base_branch = base;
+        state.review_compare_mode = Some(mode);
         self.dirty.insert(session_id.to_owned());
     }
 
@@ -468,6 +457,24 @@ mod tests {
         let parsed: UiSessionState = serde_json::from_str(json).unwrap();
         assert!(parsed.plan_collapsed);
         assert_eq!(parsed.tool_collapse_overrides.get("t1"), Some(&true));
+    }
+
+    #[test]
+    fn test_set_review_compare_mode_roundtrip_and_dirty() {
+        let (mut store, _dir) = test_store();
+        assert_eq!(store.get_review_compare_mode("s1"), None);
+
+        store.set_review_compare_mode("s1", "branch_vs_base".to_owned());
+        assert!(store.dirty.contains("s1"));
+        assert_eq!(
+            store.get_review_compare_mode("s1").as_deref(),
+            Some("branch_vs_base")
+        );
+
+        // Setting the identical value must not re-dirty the session.
+        store.dirty.clear();
+        store.set_review_compare_mode("s1", "branch_vs_base".to_owned());
+        assert!(!store.dirty.contains("s1"));
     }
 
     #[test]
