@@ -14,45 +14,37 @@ use crate::slash_popup::{PopupAction, PopupRow, SlashPopup};
 use code_assistant_core::session::permissions::ToolPermissionRequestData;
 use tools_core::PermissionDecision;
 
-const DECISIONS: &[(PermissionDecision, &str, &str)] = &[
-    (
-        PermissionDecision::GrantedOnce,
-        "Allow once",
-        "Run this tool call, ask again next time",
-    ),
-    (
-        PermissionDecision::GrantedSession,
-        "Always allow (session)",
-        "Run and stop asking for this tool in this session",
-    ),
-    (
-        PermissionDecision::Denied,
-        "Deny",
-        "Reject the call; the agent is told not to retry",
-    ),
-];
-
 pub struct PermissionPromptPopup {
     request_id: String,
     title: String,
     rows: Vec<PopupRow>,
+    /// Decision per row, parallel to `rows` — taken straight from the
+    /// request's options so this popup never decides the choices itself.
+    decisions: Vec<PermissionDecision>,
     selected: usize,
 }
 
 impl PermissionPromptPopup {
     pub fn for_request(request: &ToolPermissionRequestData) -> Self {
-        let rows = DECISIONS
+        let rows = request
+            .options
             .iter()
-            .map(|(_, label, description)| PopupRow {
-                label: (*label).to_string(),
-                description: (*description).to_string(),
+            .map(|option| PopupRow {
+                label: option.label.clone(),
+                description: option.description.clone(),
                 has_submenu: false,
             })
+            .collect();
+        let decisions = request
+            .options
+            .iter()
+            .map(|option| option.decision)
             .collect();
         Self {
             request_id: request.request_id.clone(),
             title: format!("Permission required: {}", request.summary),
             rows,
+            decisions,
             selected: 0,
         }
     }
@@ -82,10 +74,9 @@ impl SlashPopup for PermissionPromptPopup {
     }
 
     fn activate(&self) -> PopupAction {
-        let (decision, ..) = DECISIONS[self.selected];
         PopupAction::Commit(CommandResult::RespondPermission {
             request_id: Some(self.request_id.clone()),
-            decision,
+            decision: self.decisions[self.selected],
         })
     }
 
@@ -98,7 +89,16 @@ impl SlashPopup for PermissionPromptPopup {
 mod tests {
     use super::*;
     use crate::slash_popup::PopupStack;
+    use code_assistant_core::session::permissions::PermissionOption;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn option(decision: PermissionDecision, label: &str) -> PermissionOption {
+        PermissionOption {
+            decision,
+            label: label.to_string(),
+            description: String::new(),
+        }
+    }
 
     fn request(id: &str) -> ToolPermissionRequestData {
         ToolPermissionRequestData {
@@ -107,6 +107,11 @@ mod tests {
             tool_name: "delete_files".to_string(),
             summary: "Run tool `delete_files`".to_string(),
             metadata: serde_json::json!({}),
+            options: vec![
+                option(PermissionDecision::GrantedOnce, "Allow once"),
+                option(PermissionDecision::GrantedSession, "Always (session)"),
+                option(PermissionDecision::Denied, "Deny"),
+            ],
         }
     }
 

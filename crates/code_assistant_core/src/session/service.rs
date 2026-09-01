@@ -825,6 +825,26 @@ impl SessionService {
         .await
     }
 
+    /// Set the MCP servers deactivated for a session (by config name) and fan
+    /// out the refreshed list. Mirrors [`change_permission_tier`].
+    ///
+    /// [`change_permission_tier`]: Self::change_permission_tier
+    pub async fn set_disabled_mcp_servers(
+        &self,
+        session_id: String,
+        disabled: Vec<String>,
+    ) -> Result<()> {
+        self.call(move |ctx| async move {
+            let servers = {
+                let mut manager = ctx.manager.lock().await;
+                manager.set_session_disabled_mcp_servers(&session_id, disabled)?
+            };
+            ctx.notify_session(&session_id, UiEvent::UpdateMcpServers { servers });
+            Ok(())
+        })
+        .await
+    }
+
     /// Answer a pending tool permission request
     /// ([`UiEvent::RequestToolPermission`]). Unknown request ids are ignored
     /// (the request may have been settled by another view or a stop).
@@ -1453,27 +1473,93 @@ async fn start_agent_impl(
     let project_manager = (ctx.runtime.project_manager_factory)();
     let command_executor = (ctx.runtime.command_executor_factory)(session_id);
 
-    let mut manager = ctx.manager.lock().await;
-    manager
-        .set_session_model_config(session_id, Some(session_config))
-        .context("Failed to persist model config")?;
-    // Permission prompts travel over the event stream to whatever frontend
-    // views this session; the tier decides whether the agent ever asks.
-    let permission_handler = manager.permission_mediator(session_id).ok();
-    manager
-        .start_agent_for_session(
-            session_id,
-            llm_client,
-            project_manager,
-            command_executor,
-            permission_handler,
-            tool_scope_override,
-            turn_recorder,
+    // Resolve local-`.mcp.json` trust, then start the run. The trust prompt is
+    // answered via `respond_permission` — another command on this service's
+    // single-threaded worker — so when a prompt is actually needed we must not
+    // block the worker awaiting it (that would starve the response and hang the
+    // prompt forever). In that case the whole resolve+start runs on a detached
+    // task; the common no-prompt case stays inline and synchronous.
+    let (project_dir, disabled_mcp_servers, permission_handler) = {
+        let manager = ctx.manager.lock().await;
+        let (project_dir, disabled) = manager
+            .get_session(session_id)
+            .map(|instance| {
+                (
+                    instance.session.config.effective_project_path().cloned(),
+                    instance.session.config.disabled_mcp_servers.clone(),
+                )
+            })
+            .unwrap_or((None, Vec::new()));
+        (
+            project_dir,
+            disabled,
+            manager.permission_mediator(session_id).ok(),
         )
-        .await
-        .context("Failed to start agent")?;
-    debug!("Agent started for session {}", session_id);
-    Ok(())
+    };
+    let needs_prompt = project_dir
+        .as_deref()
+        .is_some_and(crate::tools::mcp_trust::needs_prompt);
+
+    let events = ctx.events.clone();
+    let ctx = ctx.clone();
+    let session_id = session_id.to_string();
+    let err_session_id = session_id.clone();
+    let run = async move {
+        let include_local_mcp = SessionManager::resolve_local_mcp_trust(
+            project_dir.as_deref(),
+            permission_handler.as_deref(),
+        )
+        .await;
+        // Trust for this project is now resolved; refresh the input-bar MCP
+        // list so a project's `.mcp.json` servers appear once trusted (the
+        // session snapshot was computed before the trust prompt).
+        ctx.notify_session(
+            &session_id,
+            UiEvent::UpdateMcpServers {
+                servers: crate::tools::mcp::session_mcp_servers(
+                    project_dir.as_deref(),
+                    &disabled_mcp_servers,
+                ),
+            },
+        );
+        let registry_request = crate::session::manager::RegistryRequest {
+            project_dir,
+            include_local_mcp,
+        };
+        let mut manager = ctx.manager.lock().await;
+        manager
+            .set_session_model_config(&session_id, Some(session_config))
+            .context("Failed to persist model config")?;
+        manager
+            .start_agent_for_session(
+                &session_id,
+                llm_client,
+                project_manager,
+                command_executor,
+                permission_handler,
+                tool_scope_override,
+                turn_recorder,
+                registry_request,
+            )
+            .await
+            .context("Failed to start agent")?;
+        debug!("Agent started for session {}", session_id);
+        Ok(())
+    };
+
+    if needs_prompt {
+        // Detach so the worker is free to process the prompt's response.
+        tokio::spawn(async move {
+            if let Err(error) = run.await {
+                let message = format!("Failed to start agent: {error:#}");
+                error!("{message}");
+                events.publish_ui(&err_session_id, UiEvent::DisplayError { message });
+            }
+        });
+        Ok(())
+    } else {
+        run.await
+    }
 }
 
 #[cfg(test)]

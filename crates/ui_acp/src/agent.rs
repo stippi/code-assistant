@@ -1057,6 +1057,24 @@ impl AgentState {
 
         // Start agent
         if let Err(e) = async {
+            // Resolve local-`.mcp.json` trust before locking the manager for
+            // the run (the trust prompt is awaited without the lock held).
+            let project_dir = {
+                let manager = self.session_manager.lock().await;
+                manager
+                    .get_session(&arguments.session_id.0)
+                    .and_then(|instance| instance.session.config.effective_project_path().cloned())
+            };
+            let include_local_mcp = SessionManager::resolve_local_mcp_trust(
+                project_dir.as_deref(),
+                permission_handler.as_deref(),
+            )
+            .await;
+            let registry_request = code_assistant_core::session::manager::RegistryRequest {
+                project_dir,
+                include_local_mcp,
+            };
+
             let mut manager = self.session_manager.lock().await;
             manager.set_session_model_config(
                 &arguments.session_id.0,
@@ -1072,6 +1090,7 @@ impl AgentState {
                     project_manager,
                     command_executor,
                     permission_handler,
+                    registry_request,
                 )
                 .await
         }

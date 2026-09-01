@@ -80,10 +80,116 @@ impl ToolRegistry {
             })
             .collect()
     }
+
+    /// Like [`Self::get_tool_definitions_with_capability`], but omits tools
+    /// that also carry any capability tag in `excluded`. Used to hide specific
+    /// MCP servers (each tool tagged `scope:mcp-<server>`) from a session
+    /// without mutating the shared registry.
+    pub fn get_tool_definitions_with_capability_excluding(
+        &self,
+        capability: &str,
+        excluded: &[String],
+    ) -> Vec<AnnotatedToolDefinition> {
+        self.tools
+            .values()
+            .filter(|tool| tool.spec().has_capability(capability))
+            .filter(|tool| !excluded.iter().any(|cap| tool.spec().has_capability(cap)))
+            .map(|tool| {
+                let spec = tool.spec();
+                AnnotatedToolDefinition {
+                    name: spec.name.to_string(),
+                    description: spec.description.to_string(),
+                    parameters: spec.parameters_schema.clone(),
+                    annotations: spec.annotations.clone(),
+                }
+            })
+            .collect()
+    }
 }
 
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dyn_tool::{AnyOutput, DynTool};
+    use crate::spec::ToolSpec;
+    use crate::tool::ToolContext;
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    struct FakeTool {
+        name: &'static str,
+        tags: &'static [&'static str],
+    }
+
+    #[async_trait]
+    impl DynTool for FakeTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.name.into(),
+                description: "test".into(),
+                parameters_schema: serde_json::json!({"type": "object"}),
+                annotations: None,
+                capabilities: ToolSpec::capabilities(self.tags),
+                multiline_params: &[],
+                hidden: false,
+                title_template: None,
+            }
+        }
+        async fn invoke<'a>(
+            &self,
+            _: &mut ToolContext<'a>,
+            _: &mut Value,
+        ) -> anyhow::Result<Box<dyn AnyOutput>> {
+            unreachable!("not exercised in these tests")
+        }
+        fn deserialize_output(&self, _: Value) -> anyhow::Result<Box<dyn AnyOutput>> {
+            unreachable!("not exercised in these tests")
+        }
+    }
+
+    fn tool(name: &'static str, tags: &'static [&'static str]) -> Box<dyn DynTool> {
+        Box::new(FakeTool { name, tags })
+    }
+
+    #[test]
+    fn excluding_drops_tools_carrying_an_excluded_tag() {
+        let mut registry = ToolRegistry::new();
+        registry.register(tool("mcp__a__x", &["scope:agent", "scope:mcp-a"]));
+        registry.register(tool("mcp__b__y", &["scope:agent", "scope:mcp-b"]));
+        registry.register(tool("edit", &["scope:agent"]));
+
+        assert_eq!(
+            registry
+                .get_tool_definitions_with_capability("scope:agent")
+                .len(),
+            3
+        );
+
+        let filtered = registry
+            .get_tool_definitions_with_capability_excluding("scope:agent", &["scope:mcp-a".into()]);
+        let names: Vec<&str> = filtered.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"mcp__b__y"));
+        assert!(names.contains(&"edit"));
+        assert!(
+            !names.contains(&"mcp__a__x"),
+            "the excluded server's tool must be dropped"
+        );
+    }
+
+    #[test]
+    fn excluding_empty_matches_plain_and_respects_capability() {
+        let mut registry = ToolRegistry::new();
+        registry.register(tool("edit", &["scope:agent"]));
+        registry.register(tool("peek", &["scope:subagent"]));
+
+        let filtered = registry.get_tool_definitions_with_capability_excluding("scope:agent", &[]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "edit");
     }
 }

@@ -304,7 +304,9 @@ impl Tool for ExecuteCommandTool {
                         "Command execution cancelled: user denied permission"
                     ));
                 }
-                PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession => {
+                PermissionDecision::GrantedOnce
+                | PermissionDecision::GrantedSession
+                | PermissionDecision::GrantedPersistent => {
                     bypass_sandbox = true;
                 }
             }

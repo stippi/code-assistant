@@ -10,6 +10,9 @@ pub mod config;
 // MCP client mode: mcp-servers.json + registration of MCP server tools
 pub mod mcp;
 
+// Persistent per-project trust for project-local `.mcp.json` files
+pub mod mcp_trust;
+
 // New trait-based tools implementation
 pub mod core;
 pub mod impls;
@@ -50,15 +53,23 @@ pub fn default_registry() -> Arc<ToolRegistry> {
     Arc::new(registry)
 }
 
-/// [`default_registry`] plus the tools of all MCP servers configured in
-/// `mcp-servers.json`. Connecting to the servers is asynchronous (child
-/// processes, initialize handshake), hence the async variant; wiring layers
-/// without a config or without enabled servers pay nothing.
-pub async fn default_registry_with_mcp() -> Arc<ToolRegistry> {
+/// [`default_registry`] plus the tools of the configured MCP servers: the
+/// global `mcp-servers.json` set, and — when `include_local_mcp` is set — the
+/// project-local `.mcp.json` in `project_dir`. Connections are drawn from
+/// `pool` so servers shared with a previous build stay connected rather than
+/// being relaunched. Connecting is asynchronous (child processes, initialize
+/// handshake), hence the async variant; wiring layers without a config or
+/// without enabled servers pay nothing.
+pub async fn default_registry_with_mcp(
+    project_dir: Option<&std::path::Path>,
+    include_local_mcp: bool,
+    pool: &dyn mcp_client::ConnectionProvider,
+) -> Arc<ToolRegistry> {
     let config = ToolsConfig::load().unwrap_or_default();
     let mut registry = ToolRegistry::new();
     register_default_tools(&mut registry, &config);
-    mcp::register_configured_mcp_tools(&mut registry).await;
+    let local_dir = if include_local_mcp { project_dir } else { None };
+    mcp::register_configured_mcp_tools_in(&mut registry, local_dir, pool).await;
     Arc::new(registry)
 }
 

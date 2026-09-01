@@ -96,6 +96,13 @@ impl Agent {
 
         let app_state = AgentAppState::new(session_config.clone());
         let tool_capability = app_state.tool_scope.tag().to_string();
+        // MCP servers the session deactivated → their per-server scope tags,
+        // which the runtime excludes from the offered/dispatchable tool set.
+        let excluded_tool_capabilities: Vec<String> = session_config
+            .disabled_mcp_servers
+            .iter()
+            .map(|server| mcp_client::server_scope_capability(server))
+            .collect();
 
         let ui_adapter = Arc::new(AgentUiAdapter::new(ui.clone()));
         // Cloned out before the handle moves into the services provider, so the
@@ -120,6 +127,7 @@ impl Agent {
             stream_hidden_tools: tool_registry.hidden_tools(ToolScope::Agent.tag()),
             registry: tool_registry,
             tool_capability,
+            excluded_tool_capabilities,
             command_executor,
             permission_handler,
             permissions,
