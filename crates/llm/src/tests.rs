@@ -37,6 +37,7 @@ impl TestCase {
             expected_response: LLMResponse {
                 content: vec![ContentBlock::Text {
                     text: "Hi! How can I help you today?".to_string(),
+                    phase: None,
                     start_time: None,
                     end_time: None,
                 }],

@@ -1086,6 +1086,7 @@ impl VertexClient {
                                     }
                                 } else {
                                     ContentBlock::Text {
+                                        phase: None,
                                         text,
                                         start_time: None,
                                         end_time: None,
@@ -1095,6 +1096,7 @@ impl VertexClient {
                                 // Fallback if neither function_call nor text is present
                                 ContentBlock::Text {
                                     text: "Empty response part".to_string(),
+                                    phase: None,
                                     start_time: None,
                                     end_time: None,
                                 }
@@ -1255,6 +1257,7 @@ impl VertexClient {
                                             // Create new text block
                                             state.content_blocks.push(ContentBlock::Text {
                                                 text: text.clone(),
+                                                phase: None,
                                                 start_time: Some(SystemTime::now()),
                                                 end_time: None,
                                             });

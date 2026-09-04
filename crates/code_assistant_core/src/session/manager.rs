@@ -1780,6 +1780,7 @@ impl SessionManager {
             session_id,
             vec![ContentBlock::Text {
                 text: message,
+                phase: None,
                 start_time: None,
                 end_time: None,
             }],

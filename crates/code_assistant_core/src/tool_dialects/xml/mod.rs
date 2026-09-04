@@ -50,6 +50,7 @@ fn parse_and_truncate_xml_response(
             if !block_tool_requests.is_empty() {
                 truncated_content.push(ContentBlock::Text {
                     text: truncated_text,
+                    phase: block.phase(),
                     start_time: None,
                     end_time: None,
                 });
