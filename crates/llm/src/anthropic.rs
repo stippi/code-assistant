@@ -1047,6 +1047,7 @@ impl AnthropicClient {
                                     }
                                     ContentBlock::Text {
                                         text: current_content.clone(),
+                                        phase: None,
                                         start_time: Some(SystemTime::now()),
                                         end_time: None,
                                     }
@@ -1078,6 +1079,7 @@ impl AnthropicClient {
                                 }
                                 _ => ContentBlock::Text {
                                     text: String::new(),
+                                    phase: None,
                                     start_time: Some(SystemTime::now()),
                                     end_time: None,
                                 },

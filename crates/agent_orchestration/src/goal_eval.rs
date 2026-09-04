@@ -329,6 +329,7 @@ mod tests {
             Ok(llm::LLMResponse {
                 content: vec![llm::ContentBlock::Text {
                     text: self.reply.to_string(),
+                    phase: None,
                     start_time: None,
                     end_time: None,
                 }],

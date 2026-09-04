@@ -9,6 +9,31 @@ pub enum ReasoningSummaryItem {
     SummaryText { text: String },
 }
 
+/// Phase label of an assistant text block, as defined by the OpenAI
+/// Responses API: `commentary` is mid-turn narration (a preamble before a
+/// tool call, a progress note), `final_answer` is the text that ends the
+/// turn. Models from `gpt-5.3-codex` on rely on this label when the
+/// conversation is replayed — without it the model cannot tell a preamble it
+/// already delivered from an answer it still owes, and tends to say the
+/// preamble again. Providers that emit the label set it on the block; it is
+/// round-tripped verbatim on the next request. `None` means the provider did
+/// not say (older models, other vendors).
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePhase {
+    Commentary,
+    FinalAnswer,
+}
+
+impl MessagePhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessagePhase::Commentary => "commentary",
+            MessagePhase::FinalAnswer => "final_answer",
+        }
+    }
+}
+
 /// Tracks token usage for a request/response pair
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
 pub struct Usage {
@@ -325,6 +350,9 @@ pub enum ContentBlock {
     #[serde(rename = "text")]
     Text {
         text: String,
+        /// Responses API phase label of this text (see [`MessagePhase`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<MessagePhase>,
         #[serde(skip_serializing_if = "Option::is_none")]
         start_time: Option<SystemTime>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -574,9 +602,28 @@ impl ContentBlock {
     pub fn new_text(text: impl Into<String>) -> Self {
         ContentBlock::Text {
             text: text.into(),
+            phase: None,
             start_time: None,
             end_time: None,
         }
+    }
+
+    /// The Responses API phase label of a text block (`None` for other
+    /// block kinds and for text without a label).
+    pub fn phase(&self) -> Option<MessagePhase> {
+        match self {
+            ContentBlock::Text { phase, .. } => *phase,
+            _ => None,
+        }
+    }
+
+    /// Set the phase label on a text block; other block kinds are returned
+    /// unchanged.
+    pub fn with_phase(mut self, new_phase: Option<MessagePhase>) -> Self {
+        if let ContentBlock::Text { phase, .. } = &mut self {
+            *phase = new_phase;
+        }
+        self
     }
 
     /// Create an image content block from raw image data

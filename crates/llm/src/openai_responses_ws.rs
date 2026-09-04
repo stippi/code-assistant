@@ -39,6 +39,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tokio_tungstenite::{
@@ -122,6 +123,11 @@ enum WsInputItem {
     Message {
         role: String,
         content: Vec<WsContentItem>,
+        /// Phase label of an assistant message (`commentary` / `final_answer`),
+        /// resent verbatim so the model can tell delivered preambles from the
+        /// answer it still owes. Never set on user messages.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<MessagePhase>,
     },
     FunctionCall {
         call_id: String,
@@ -155,8 +161,6 @@ enum WsContentItem {
     },
     OutputText {
         text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        phase: Option<String>,
     },
 }
 
@@ -260,6 +264,10 @@ enum WsResponseOutputItem {
         #[allow(dead_code)]
         role: String,
         content: Vec<WsResponseOutputContent>,
+        /// Phase label the model attached to this message; carried on the
+        /// resulting text blocks and resent with them.
+        #[serde(default)]
+        phase: Option<MessagePhase>,
     },
     Reasoning {
         #[allow(dead_code)]
@@ -428,6 +436,37 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
+/// Borrowed streaming callback, so a wrapper closure can stand in for the
+/// caller's boxed callback without needing a `'static` box of its own.
+type CallbackRef<'a> = &'a (dyn Fn(&StreamingChunk) -> Result<()> + Send + Sync);
+
+/// Chunks that carry model output the caller may already have acted on
+/// (as opposed to rate-limit notices and lifecycle markers).
+fn is_model_output(chunk: &StreamingChunk) -> bool {
+    matches!(
+        chunk,
+        StreamingChunk::Text(_)
+            | StreamingChunk::Thinking(_)
+            | StreamingChunk::InputJson { .. }
+            | StreamingChunk::ReasoningSummaryDelta(_)
+    )
+}
+
+/// Whether a failed attempt gets another one: only connection errors, only
+/// within the budget, and — unless the client allows re-streaming — only if
+/// the attempt had not yet delivered any model output.
+fn should_retry(
+    is_connection_error: bool,
+    attempts: u32,
+    max_retries: u32,
+    streamed_output: bool,
+    retry_after_partial_output: bool,
+) -> bool {
+    is_connection_error
+        && attempts < max_retries
+        && (retry_after_partial_output || !streamed_output)
+}
+
 /// Frame forwarded from the background reader to the foreground consumer.
 /// Ping/Pong are handled internally by the reader task and never forwarded.
 enum ReaderFrame {
@@ -536,6 +575,13 @@ pub struct OpenAIResponsesWsClient {
     /// (e.g. the ChatGPT/Codex backend) reject `prompt_cache_breakpoint`
     /// even for models that support it on the OpenAI API.
     explicit_cache_enabled: bool,
+    /// Whether a request whose response was already partially streamed to
+    /// the callback may be retried after a connection error. A retry
+    /// streams a fresh generation from the start, so a consumer that acts on
+    /// deltas as they arrive (spoken output, say) would deliver the
+    /// beginning twice. Defaults to `true`; such consumers turn it off and
+    /// get the connection error instead.
+    retry_after_partial_output: bool,
 }
 
 impl OpenAIResponsesWsClient {
@@ -556,6 +602,7 @@ impl OpenAIResponsesWsClient {
             last_input_items: Vec::new(),
             idle_timeout: Duration::from_secs(600), // 10 min default
             explicit_cache_enabled: true,
+            retry_after_partial_output: true,
         }
     }
 
@@ -577,6 +624,7 @@ impl OpenAIResponsesWsClient {
             last_input_items: Vec::new(),
             idle_timeout: Duration::from_secs(600),
             explicit_cache_enabled: true,
+            retry_after_partial_output: true,
         }
     }
 
@@ -591,6 +639,15 @@ impl OpenAIResponsesWsClient {
     /// reject the field regardless of model (e.g. the ChatGPT/Codex backend).
     pub fn with_explicit_cache_breakpoints(mut self, enabled: bool) -> Self {
         self.explicit_cache_enabled = enabled;
+        self
+    }
+
+    /// Allow or forbid retrying a request after part of its response was
+    /// already streamed to the callback (see `retry_after_partial_output`).
+    /// With `false`, a connection error mid-response surfaces as an error;
+    /// requests that had not produced any output are still retried.
+    pub fn with_retry_after_partial_output(mut self, enabled: bool) -> Self {
+        self.retry_after_partial_output = enabled;
         self
     }
 
@@ -719,30 +776,27 @@ impl OpenAIResponsesWsClient {
         let mut items_after_message = Vec::with_capacity(messages.len());
 
         for message in messages {
-            match &message.content {
+            match message.content {
                 MessageContent::Text(text) => {
-                    let role = match message.role {
-                        MessageRole::User => "user",
-                        MessageRole::Assistant => "assistant",
-                    };
                     // Assistant text must use OutputText; InputText is only
-                    // valid for user-role messages. Simple text messages have
-                    // no tool use, so they always get phase = "final_answer".
-                    let content_item = if message.role == MessageRole::Assistant {
-                        WsContentItem::OutputText {
-                            text: text.clone(),
-                            phase: Some("final_answer".to_string()),
-                        }
-                    } else {
-                        WsContentItem::input_text(text.clone())
+                    // valid for user-role messages. A plain text message has
+                    // no tool use, so assistant text is the final answer.
+                    let (role, content_item, phase) = match message.role {
+                        MessageRole::User => ("user", WsContentItem::input_text(text), None),
+                        MessageRole::Assistant => (
+                            "assistant",
+                            WsContentItem::OutputText { text },
+                            Some(MessagePhase::FinalAnswer),
+                        ),
                     };
                     items.push(WsInputItem::Message {
                         role: role.to_string(),
                         content: vec![content_item],
+                        phase,
                     });
                 }
                 MessageContent::Structured(blocks) => {
-                    self.convert_structured_message(&message.role, blocks, &mut items);
+                    convert_structured_message(&message.role, &blocks, &mut items);
                 }
             }
             items_after_message.push(items.len());
@@ -755,254 +809,14 @@ impl OpenAIResponsesWsClient {
         items
     }
 
-    fn convert_structured_message(
-        &self,
-        role: &MessageRole,
-        blocks: &[ContentBlock],
-        items: &mut Vec<WsInputItem>,
-    ) {
-        let role_str = match role {
-            MessageRole::User => "user",
-            MessageRole::Assistant => "assistant",
-        };
-
-        // Pre-scan: determine the phase for OutputText items in this message.
-        let has_tool_use = *role == MessageRole::Assistant
-            && blocks
-                .iter()
-                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let phase: Option<String> = if *role == MessageRole::Assistant {
-            Some(if has_tool_use {
-                "commentary".to_string()
-            } else {
-                "final_answer".to_string()
-            })
-        } else {
-            None
-        };
-
-        let mut current_content: Vec<WsContentItem> = Vec::new();
-
-        for block in blocks {
-            match block {
-                ContentBlock::Text { text, .. } => {
-                    let item = if *role == MessageRole::User {
-                        WsContentItem::input_text(text.clone())
-                    } else {
-                        WsContentItem::OutputText {
-                            text: text.clone(),
-                            phase: phase.clone(),
-                        }
-                    };
-                    current_content.push(item);
-                }
-                ContentBlock::Image { data, .. } => {
-                    current_content.push(WsContentItem::input_image(format!(
-                        "data:image/png;base64,{}",
-                        data
-                    )));
-                }
-                ContentBlock::Thinking {
-                    thinking,
-                    signature,
-                    ..
-                } => {
-                    // Flush any accumulated content
-                    if !current_content.is_empty() {
-                        items.push(WsInputItem::Message {
-                            role: role_str.to_string(),
-                            content: std::mem::take(&mut current_content),
-                        });
-                    }
-                    // Thinking blocks don't have a direct input representation;
-                    // the important part is RedactedThinking with encrypted_content
-                    let _ = (thinking, signature);
-                }
-                ContentBlock::RedactedThinking {
-                    id, summary, data, ..
-                } => {
-                    // Flush
-                    if !current_content.is_empty() {
-                        items.push(WsInputItem::Message {
-                            role: role_str.to_string(),
-                            content: std::mem::take(&mut current_content),
-                        });
-                    }
-                    if !data.is_empty() {
-                        let summary_json: Vec<serde_json::Value> = summary
-                            .iter()
-                            .map(|s| match s {
-                                ReasoningSummaryItem::SummaryText { text } => {
-                                    serde_json::json!({"type": "summary_text", "text": text})
-                                }
-                            })
-                            .collect();
-                        items.push(WsInputItem::Reasoning {
-                            id: id.clone(),
-                            summary: summary_json,
-                            encrypted_content: data.clone(),
-                        });
-                    }
-                }
-                ContentBlock::ToolUse {
-                    id: tool_id,
-                    name,
-                    input,
-                    ..
-                } => {
-                    // Flush
-                    if !current_content.is_empty() {
-                        items.push(WsInputItem::Message {
-                            role: role_str.to_string(),
-                            content: std::mem::take(&mut current_content),
-                        });
-                    }
-                    items.push(WsInputItem::FunctionCall {
-                        call_id: tool_id.clone(),
-                        name: name.clone(),
-                        arguments: input.to_string(),
-                    });
-                }
-
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    ..
-                } => {
-                    // Flush
-                    if !current_content.is_empty() {
-                        items.push(WsInputItem::Message {
-                            role: role_str.to_string(),
-                            content: std::mem::take(&mut current_content),
-                        });
-                    }
-                    items.push(WsInputItem::FunctionCallOutput {
-                        call_id: tool_use_id.clone(),
-                        output: content.text_content().to_string(),
-                    });
-                }
-            }
-        }
-
-        // Flush remaining
-        if !current_content.is_empty() {
-            items.push(WsInputItem::Message {
-                role: role_str.to_string(),
-                content: current_content,
-            });
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Response ContentBlocks → WsInputItems (for tracking server-known state)
-    // -----------------------------------------------------------------------
-
     /// Convert response ContentBlocks back into WsInputItems so they can be
     /// appended to `last_input_items`. This lets the delta computation know
     /// which items the server already has (from its own response output).
+    /// Uses the same conversion as history so that the next request's
+    /// rendering of this response compares equal to what was recorded.
     fn response_blocks_to_input_items(blocks: &[ContentBlock]) -> Vec<WsInputItem> {
         let mut items = Vec::new();
-        let mut current_text_parts: Vec<WsContentItem> = Vec::new();
-
-        // Pre-scan to determine the phase for OutputText items. The response
-        // blocks from a single assistant turn share the same phase.
-        let has_tool_use = blocks
-            .iter()
-            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let phase: Option<String> = Some(if has_tool_use {
-            "commentary".to_string()
-        } else {
-            "final_answer".to_string()
-        });
-
-        for block in blocks {
-            match block {
-                ContentBlock::Text { text, .. } => {
-                    current_text_parts.push(WsContentItem::OutputText {
-                        text: text.clone(),
-                        phase: phase.clone(),
-                    });
-                }
-                ContentBlock::Thinking { .. } => {
-                    // Visible thinking — no standard input representation, skip
-                }
-                ContentBlock::RedactedThinking {
-                    id, summary, data, ..
-                } => {
-                    // Flush any accumulated text as an assistant message first
-                    if !current_text_parts.is_empty() {
-                        items.push(WsInputItem::Message {
-                            role: "assistant".to_string(),
-                            content: std::mem::take(&mut current_text_parts),
-                        });
-                    }
-                    if !data.is_empty() {
-                        let summary_json: Vec<serde_json::Value> = summary
-                            .iter()
-                            .map(|s| match s {
-                                ReasoningSummaryItem::SummaryText { text } => {
-                                    serde_json::json!({"type": "summary_text", "text": text})
-                                }
-                            })
-                            .collect();
-                        items.push(WsInputItem::Reasoning {
-                            id: id.clone(),
-                            summary: summary_json,
-                            encrypted_content: data.clone(),
-                        });
-                    }
-                }
-                ContentBlock::ToolUse {
-                    id: call_id,
-                    name,
-                    input,
-                    ..
-                } => {
-                    // Flush text
-                    if !current_text_parts.is_empty() {
-                        items.push(WsInputItem::Message {
-                            role: "assistant".to_string(),
-                            content: std::mem::take(&mut current_text_parts),
-                        });
-                    }
-                    items.push(WsInputItem::FunctionCall {
-                        call_id: call_id.clone(),
-                        name: name.clone(),
-                        arguments: input.to_string(),
-                    });
-                }
-
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    ..
-                } => {
-                    // Flush text
-                    if !current_text_parts.is_empty() {
-                        items.push(WsInputItem::Message {
-                            role: "assistant".to_string(),
-                            content: std::mem::take(&mut current_text_parts),
-                        });
-                    }
-                    items.push(WsInputItem::FunctionCallOutput {
-                        call_id: tool_use_id.clone(),
-                        output: content.text_content().to_string(),
-                    });
-                }
-                ContentBlock::Image { .. } => {
-                    // Images in responses are not round-tripped
-                }
-            }
-        }
-
-        // Flush remaining text
-        if !current_text_parts.is_empty() {
-            items.push(WsInputItem::Message {
-                role: "assistant".to_string(),
-                content: current_text_parts,
-            });
-        }
-
+        convert_structured_message(&MessageRole::Assistant, blocks, &mut items);
         items
     }
 
@@ -1040,7 +854,7 @@ impl OpenAIResponsesWsClient {
     async fn send_ws_request(
         &mut self,
         request: LLMRequest,
-        streaming_callback: Option<&StreamingCallback>,
+        streaming_callback: Option<CallbackRef<'_>>,
     ) -> Result<LLMResponse> {
         let capabilities = ModelCapabilities::for_model(&self.model);
 
@@ -1204,7 +1018,7 @@ impl OpenAIResponsesWsClient {
     /// `response.completed` or error. Returns (LLMResponse, Option<response_id>).
     async fn process_ws_stream(
         &mut self,
-        streaming_callback: Option<&StreamingCallback>,
+        streaming_callback: Option<CallbackRef<'_>>,
     ) -> Result<(LLMResponse, Option<String>)> {
         let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut usage = Usage::zero();
@@ -1534,6 +1348,162 @@ impl OpenAIResponsesWsClient {
 }
 
 // ============================================================================
+// Free functions: message conversion
+// ============================================================================
+
+/// Message content collected for one `message` input item. Assistant text
+/// carries its phase label at item level, so a run of text is cut into a new
+/// item wherever the label changes.
+struct PendingMessage {
+    role: &'static str,
+    content: Vec<WsContentItem>,
+    phase: Option<MessagePhase>,
+}
+
+impl PendingMessage {
+    fn new(role: &'static str) -> Self {
+        Self {
+            role,
+            content: Vec::new(),
+            phase: None,
+        }
+    }
+
+    fn push(
+        &mut self,
+        item: WsContentItem,
+        phase: Option<MessagePhase>,
+        items: &mut Vec<WsInputItem>,
+    ) {
+        if !self.content.is_empty() && self.phase != phase {
+            self.flush(items);
+        }
+        self.phase = phase;
+        self.content.push(item);
+    }
+
+    fn flush(&mut self, items: &mut Vec<WsInputItem>) {
+        if self.content.is_empty() {
+            return;
+        }
+        items.push(WsInputItem::Message {
+            role: self.role.to_string(),
+            content: std::mem::take(&mut self.content),
+            phase: self.phase.take(),
+        });
+    }
+}
+
+/// Convert one structured message into input items: text (and user images)
+/// gather into `message` items, reasoning, tool calls and tool results become
+/// items of their own. Shared by history conversion and by the bookkeeping of
+/// what the server already holds, so both render a response identically.
+fn convert_structured_message(
+    role: &MessageRole,
+    blocks: &[ContentBlock],
+    items: &mut Vec<WsInputItem>,
+) {
+    let is_assistant = *role == MessageRole::Assistant;
+    let role_str = if is_assistant { "assistant" } else { "user" };
+
+    // Text the provider did not label (older models, other vendors, text
+    // rewritten by the client) falls back to the structural reading: text
+    // next to a tool call is a preamble, text on its own is the answer.
+    let has_tool_use = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+    let fallback_phase = if is_assistant {
+        Some(if has_tool_use {
+            MessagePhase::Commentary
+        } else {
+            MessagePhase::FinalAnswer
+        })
+    } else {
+        None
+    };
+
+    let mut pending = PendingMessage::new(role_str);
+
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text, phase, .. } => {
+                if is_assistant {
+                    pending.push(
+                        WsContentItem::OutputText { text: text.clone() },
+                        phase.or(fallback_phase),
+                        items,
+                    );
+                } else {
+                    pending.push(WsContentItem::input_text(text.clone()), None, items);
+                }
+            }
+            ContentBlock::Image { data, .. } => {
+                // `input_image` is user content; assistant images (none of
+                // the Responses providers produce any) are not round-tripped.
+                if !is_assistant {
+                    pending.push(
+                        WsContentItem::input_image(format!("data:image/png;base64,{}", data)),
+                        None,
+                        items,
+                    );
+                }
+            }
+            ContentBlock::Thinking { .. } => {
+                // Visible thinking has no input representation; the
+                // important part is RedactedThinking with encrypted_content.
+                pending.flush(items);
+            }
+            ContentBlock::RedactedThinking {
+                id, summary, data, ..
+            } => {
+                pending.flush(items);
+                if !data.is_empty() {
+                    let summary_json: Vec<serde_json::Value> = summary
+                        .iter()
+                        .map(|s| match s {
+                            ReasoningSummaryItem::SummaryText { text } => {
+                                serde_json::json!({"type": "summary_text", "text": text})
+                            }
+                        })
+                        .collect();
+                    items.push(WsInputItem::Reasoning {
+                        id: id.clone(),
+                        summary: summary_json,
+                        encrypted_content: data.clone(),
+                    });
+                }
+            }
+            ContentBlock::ToolUse {
+                id: tool_id,
+                name,
+                input,
+                ..
+            } => {
+                pending.flush(items);
+                items.push(WsInputItem::FunctionCall {
+                    call_id: tool_id.clone(),
+                    name: name.clone(),
+                    arguments: input.to_string(),
+                });
+            }
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                pending.flush(items);
+                items.push(WsInputItem::FunctionCallOutput {
+                    call_id: tool_use_id.clone(),
+                    output: content.text_content().to_string(),
+                });
+            }
+        }
+    }
+
+    pending.flush(items);
+}
+
+// ============================================================================
 // Free function: output conversion (avoids borrow conflicts in process_ws_stream)
 // ============================================================================
 
@@ -1542,12 +1512,13 @@ fn convert_output_items(output: Vec<WsResponseOutputItem>) -> Vec<ContentBlock> 
     let mut blocks = Vec::new();
     for item in output {
         match item {
-            WsResponseOutputItem::Message { content, .. } => {
+            WsResponseOutputItem::Message { content, phase, .. } => {
                 for c in content {
                     match c {
                         WsResponseOutputContent::OutputText { text } => {
                             blocks.push(ContentBlock::Text {
                                 text,
+                                phase,
                                 start_time: None,
                                 end_time: None,
                             });
@@ -1634,11 +1605,25 @@ impl LLMProvider for OpenAIResponsesWsClient {
         let max_retries = 3u32;
         let mut attempts = 0u32;
 
+        // Whether the current attempt already forwarded model output to the
+        // callback; decides with `retry_after_partial_output` whether a
+        // connection error may be retried.
+        let streamed_output = Arc::new(AtomicBool::new(false));
+        let tracking_callback = streaming_callback.map(|cb| {
+            let streamed_output = Arc::clone(&streamed_output);
+            move |chunk: &StreamingChunk| {
+                if is_model_output(chunk) {
+                    streamed_output.store(true, Ordering::Relaxed);
+                }
+                cb(chunk)
+            }
+        });
+        let callback_ref: Option<CallbackRef<'_>> =
+            tracking_callback.as_ref().map(|cb| cb as CallbackRef<'_>);
+
         loop {
-            match self
-                .send_ws_request(request.clone(), streaming_callback)
-                .await
-            {
+            streamed_output.store(false, Ordering::Relaxed);
+            match self.send_ws_request(request.clone(), callback_ref).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
                     attempts += 1;
@@ -1650,7 +1635,13 @@ impl LLMProvider for OpenAIResponsesWsClient {
                         || err_msg.contains("reader task ended")
                         || err_msg.contains("Failed to send WebSocket");
 
-                    if is_connection_error && attempts < max_retries {
+                    if should_retry(
+                        is_connection_error,
+                        attempts,
+                        max_retries,
+                        streamed_output.load(Ordering::Relaxed),
+                        self.retry_after_partial_output,
+                    ) {
                         warn!(
                             "WebSocket error (attempt {}/{}), reconnecting: {}",
                             attempts, max_retries, e
@@ -1775,6 +1766,7 @@ mod tests {
             instructions: Some("You are helpful.".to_string()),
             previous_response_id: None,
             input: vec![WsInputItem::Message {
+                phase: None,
                 role: "user".to_string(),
                 content: vec![WsContentItem::input_text("Hello".to_string())],
             }],
@@ -1804,6 +1796,7 @@ mod tests {
             instructions: None,
             previous_response_id: Some("resp_abc123".to_string()),
             input: vec![WsInputItem::Message {
+                phase: None,
                 role: "user".to_string(),
                 content: vec![WsContentItem::input_text("Follow-up".to_string())],
             }],
@@ -1848,6 +1841,7 @@ mod tests {
 
         // No previous state => no delta
         let input = vec![WsInputItem::Message {
+            phase: None,
             role: "user".to_string(),
             content: vec![WsContentItem::input_text("Hello".to_string())],
         }];
@@ -1863,12 +1857,13 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![WsContentItem::OutputText {
                 text: "Hi!".to_string(),
-                phase: Some("final_answer".to_string()),
             }],
+            phase: Some(MessagePhase::FinalAnswer),
         });
         extended.push(WsInputItem::Message {
             role: "user".to_string(),
             content: vec![WsContentItem::input_text("How are you?".to_string())],
+            phase: None,
         });
 
         let result = client.compute_delta(&extended);
@@ -1925,6 +1920,7 @@ mod tests {
     fn test_output_conversion() {
         let output = vec![
             WsResponseOutputItem::Message {
+                phase: None,
                 id: Some("msg_1".to_string()),
                 role: "assistant".to_string(),
                 content: vec![WsResponseOutputContent::OutputText {
@@ -1957,118 +1953,154 @@ mod tests {
     // phase field tests (WebSocket)
     // -------------------------------------------------------------------------
 
-    /// A pure-text assistant message (no tool use) should produce an OutputText
-    /// content item with `phase = "final_answer"`.
-    #[test]
-    fn test_ws_output_text_phase_final_answer_for_text_only_message() {
-        let client = OpenAIResponsesWsClient::new(
-            "sk-test".to_string(),
+    fn ws_client() -> OpenAIResponsesWsClient {
+        OpenAIResponsesWsClient::new(
+            "test_key".to_string(),
             "gpt-5".to_string(),
             "https://api.openai.com/v1".to_string(),
-        );
+        )
+    }
 
-        let messages = vec![Message::new_assistant("Hello from assistant")];
-        let converted = client.convert_messages_with_cache(messages, false);
-        assert_eq!(converted.len(), 1);
-
-        match &converted[0] {
-            WsInputItem::Message { role, content } => {
-                assert_eq!(role, "assistant");
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    WsContentItem::OutputText { text, phase } => {
-                        assert_eq!(text, "Hello from assistant");
-                        assert_eq!(phase.as_deref(), Some("final_answer"));
-                    }
-                    _ => panic!("Expected OutputText"),
-                }
-            }
-            _ => panic!("Expected Message"),
+    fn ws_message_phase(item: &WsInputItem) -> Option<MessagePhase> {
+        match item {
+            WsInputItem::Message { phase, .. } => *phase,
+            other => panic!("expected a message item, got {other:?}"),
         }
     }
 
-    /// An assistant message that also contains a ToolUse block should produce
-    /// OutputText items with `phase = "commentary"`.
+    /// A pure-text assistant message (no tool use) is a final answer.
     #[test]
-    fn test_ws_output_text_phase_commentary_when_tool_use_present() {
-        let client = OpenAIResponsesWsClient::new(
-            "sk-test".to_string(),
-            "gpt-5".to_string(),
-            "https://api.openai.com/v1".to_string(),
+    fn test_ws_unlabeled_text_only_message_is_final_answer() {
+        let messages = vec![Message::new_assistant("Hello from assistant")];
+        let converted = ws_client().convert_messages_with_cache(messages, false);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            ws_message_phase(&converted[0]),
+            Some(MessagePhase::FinalAnswer)
         );
+    }
 
+    /// Unlabeled assistant text next to a tool call is a preamble.
+    #[test]
+    fn test_ws_unlabeled_text_next_to_tool_use_is_commentary() {
         let messages = vec![Message::new_assistant_content(vec![
             ContentBlock::new_text("Let me look that up."),
             ContentBlock::new_tool_use("call_1", "search", serde_json::json!({"query": "weather"})),
         ])];
-
-        let converted = client.convert_messages_with_cache(messages, false);
-        // Should produce: Message(OutputText), FunctionCall
+        let converted = ws_client().convert_messages_with_cache(messages, false);
         assert_eq!(converted.len(), 2);
-
-        match &converted[0] {
-            WsInputItem::Message { role, content } => {
-                assert_eq!(role, "assistant");
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    WsContentItem::OutputText { text, phase } => {
-                        assert_eq!(text, "Let me look that up.");
-                        assert_eq!(phase.as_deref(), Some("commentary"));
-                    }
-                    _ => panic!("Expected OutputText"),
-                }
-            }
-            _ => panic!("Expected Message"),
-        }
-    }
-
-    /// User messages must never get a `phase` field (it only applies to
-    /// assistant OutputText items).
-    #[test]
-    fn test_ws_output_text_phase_not_set_on_user_messages() {
-        let client = OpenAIResponsesWsClient::new(
-            "sk-test".to_string(),
-            "gpt-5".to_string(),
-            "https://api.openai.com/v1".to_string(),
+        assert_eq!(
+            ws_message_phase(&converted[0]),
+            Some(MessagePhase::Commentary)
         );
-
-        let messages = vec![Message::new_user("Hello")];
-        let converted = client.convert_messages_with_cache(messages, false);
-        assert_eq!(converted.len(), 1);
-
-        match &converted[0] {
-            WsInputItem::Message { content, .. } => match &content[0] {
-                WsContentItem::InputText { .. } => { /* correct */ }
-                WsContentItem::OutputText { .. } => {
-                    panic!("User message should use InputText, not OutputText")
-                }
-                _ => panic!("Expected InputText"),
-            },
-            _ => panic!("Expected Message"),
-        }
+        assert!(matches!(&converted[1], WsInputItem::FunctionCall { .. }));
     }
 
-    /// The `phase` field must be serialized correctly.
+    /// User messages never carry a phase.
     #[test]
-    fn test_ws_output_text_phase_serialization() {
-        let final_item = WsContentItem::OutputText {
-            text: "done".to_string(),
-            phase: Some("final_answer".to_string()),
+    fn test_ws_phase_not_set_on_user_messages() {
+        let messages = vec![
+            Message::new_user("Hello"),
+            Message::new_user_content(vec![ContentBlock::new_text("Again")]),
+        ];
+        let converted = ws_client().convert_messages_with_cache(messages, false);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(ws_message_phase(&converted[0]), None);
+        assert_eq!(ws_message_phase(&converted[1]), None);
+    }
+
+    /// The label the model attached to a message wins over the structural
+    /// fallback: a commentary message without a tool call stays commentary
+    /// when resent.
+    #[test]
+    fn test_ws_server_phase_round_trips_through_content_blocks() {
+        let output = vec![WsResponseOutputItem::Message {
+            id: Some("msg_1".to_string()),
+            role: "assistant".to_string(),
+            content: vec![WsResponseOutputContent::OutputText {
+                text: "Ich schaue kurz nach.".to_string(),
+            }],
+            phase: Some(MessagePhase::Commentary),
+        }];
+        let blocks = convert_output_items(output);
+        assert_eq!(blocks[0].phase(), Some(MessagePhase::Commentary));
+
+        let items = OpenAIResponsesWsClient::response_blocks_to_input_items(&blocks);
+        assert_eq!(items.len(), 1);
+        assert_eq!(ws_message_phase(&items[0]), Some(MessagePhase::Commentary));
+
+        let history = vec![Message::new_assistant_content(blocks)];
+        let converted = ws_client().convert_messages_with_cache(history, false);
+        assert_eq!(
+            ws_message_phase(&converted[0]),
+            Some(MessagePhase::Commentary)
+        );
+    }
+
+    /// A response holding commentary followed by the final answer stays two
+    /// message items, each with its own label.
+    #[test]
+    fn test_ws_mixed_phases_split_into_separate_message_items() {
+        let blocks = vec![
+            ContentBlock::new_text("Kurz nachdenken.").with_phase(Some(MessagePhase::Commentary)),
+            ContentBlock::new_text("Die Antwort ist vier.")
+                .with_phase(Some(MessagePhase::FinalAnswer)),
+        ];
+        let items = OpenAIResponsesWsClient::response_blocks_to_input_items(&blocks);
+        assert_eq!(items.len(), 2);
+        assert_eq!(ws_message_phase(&items[0]), Some(MessagePhase::Commentary));
+        assert_eq!(ws_message_phase(&items[1]), Some(MessagePhase::FinalAnswer));
+    }
+
+    /// The bookkeeping of what the server holds and the rendering of the same
+    /// response from history must agree, or the next request loses its
+    /// incremental delta.
+    #[test]
+    fn test_ws_response_bookkeeping_matches_history_rendering() {
+        let blocks = vec![
+            ContentBlock::RedactedThinking {
+                id: "rs_1".to_string(),
+                summary: vec![],
+                data: "enc".to_string(),
+                start_time: None,
+                end_time: None,
+            },
+            ContentBlock::new_text("Let me look that up.")
+                .with_phase(Some(MessagePhase::Commentary)),
+            ContentBlock::new_tool_use("call_1", "search", serde_json::json!({"query": "x"})),
+        ];
+        let recorded = OpenAIResponsesWsClient::response_blocks_to_input_items(&blocks);
+        let rendered = ws_client()
+            .convert_messages_with_cache(vec![Message::new_assistant_content(blocks)], false);
+        assert_eq!(
+            serde_json::to_value(&recorded).unwrap(),
+            serde_json::to_value(&rendered).unwrap()
+        );
+    }
+
+    /// On the wire the label sits on the message item, never on the
+    /// `output_text` content part.
+    #[test]
+    fn test_ws_phase_serializes_on_the_message_item() {
+        let item = WsInputItem::Message {
+            role: "assistant".to_string(),
+            content: vec![WsContentItem::OutputText {
+                text: "done".to_string(),
+            }],
+            phase: Some(MessagePhase::FinalAnswer),
         };
-        let json = serde_json::to_value(&final_item).unwrap();
-        assert_eq!(json["type"], "output_text");
-        assert_eq!(json["text"], "done");
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["type"], "message");
         assert_eq!(json["phase"], "final_answer");
+        assert_eq!(json["content"][0]["type"], "output_text");
+        assert!(json["content"][0].get("phase").is_none());
 
-        let commentary_item = WsContentItem::OutputText {
-            text: "thinking".to_string(),
-            phase: Some("commentary".to_string()),
+        let user = WsInputItem::Message {
+            role: "user".to_string(),
+            content: vec![WsContentItem::input_text("hello".to_string())],
+            phase: None,
         };
-        let json = serde_json::to_value(&commentary_item).unwrap();
-        assert_eq!(json["phase"], "commentary");
-
-        let input_item = WsContentItem::input_text("hello".to_string());
-        let json = serde_json::to_value(&input_item).unwrap();
+        let json = serde_json::to_value(&user).unwrap();
         assert!(json.get("phase").is_none());
     }
 
@@ -2154,5 +2186,37 @@ mod tests {
         let items = client.convert_messages_with_cache(extended, true);
         assert_eq!(ws_items_with_breakpoint(&items), vec![9, 14]);
         assert!(client.compute_delta(&items).is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // retry gating
+    // -------------------------------------------------------------------------
+
+    /// A connection error after output was streamed is retried only when the
+    /// client accepts re-streaming; an attempt without output is always
+    /// retried within the budget.
+    #[test]
+    fn test_retry_gating_respects_partial_output_setting() {
+        // Untouched attempt: retried either way.
+        assert!(should_retry(true, 1, 3, false, true));
+        assert!(should_retry(true, 1, 3, false, false));
+        // Output already delivered: only with re-streaming allowed.
+        assert!(should_retry(true, 1, 3, true, true));
+        assert!(!should_retry(true, 1, 3, true, false));
+        // Budget and error class still gate everything.
+        assert!(!should_retry(true, 3, 3, false, true));
+        assert!(!should_retry(false, 1, 3, false, true));
+    }
+
+    #[test]
+    fn test_model_output_chunks_are_the_ones_a_consumer_acts_on() {
+        assert!(is_model_output(&StreamingChunk::Text("a".into())));
+        assert!(is_model_output(&StreamingChunk::InputJson {
+            content: "{".into(),
+            tool_name: None,
+            tool_id: None,
+        }));
+        assert!(!is_model_output(&StreamingChunk::RateLimitClear));
+        assert!(!is_model_output(&StreamingChunk::StreamingComplete));
     }
 }
