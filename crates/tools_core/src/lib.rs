@@ -11,6 +11,7 @@
 
 pub mod coerce;
 pub mod dyn_tool;
+pub mod image;
 pub mod permissions;
 pub mod registry;
 pub mod render;
@@ -20,6 +21,7 @@ pub mod title;
 pub mod tool;
 
 pub use dyn_tool::{AnyOutput, DynTool};
+pub use image::{MAX_IMAGE_EDGE, cap_base64_image, cap_image_data};
 pub use permissions::{
     PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
     PermissionTier, ToolPermissions,

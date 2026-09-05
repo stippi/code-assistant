@@ -19,6 +19,38 @@ use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 // use alongside the session persistence types.
 pub use agent_core::{ConversationPath, MessageNode, NodeId};
 
+/// Cap oversized images carried by a freshly loaded session's conversation so
+/// no edge exceeds `max_edge`. Walks both the message-node tree (authoritative)
+/// and any legacy linear messages, correcting `ContentBlock::Image` blocks in
+/// place. Tool-result images live in `tool_executions` and are corrected when
+/// those records are deserialized (see `DynTool::deserialize_output`).
+fn cap_session_image_dimensions(session: &mut ChatSession, max_edge: u32) {
+    for node in session.message_nodes.values_mut() {
+        cap_message_images(&mut node.message, max_edge);
+    }
+    for message in &mut session.messages {
+        cap_message_images(message, max_edge);
+    }
+}
+
+/// Cap oversized `ContentBlock::Image` blocks in a single message in place.
+fn cap_message_images(message: &mut Message, max_edge: u32) {
+    let llm::MessageContent::Structured(blocks) = &mut message.content else {
+        return;
+    };
+    for block in blocks {
+        if let llm::ContentBlock::Image {
+            media_type, data, ..
+        } = block
+            && let Some((new_media_type, new_data)) =
+                tools_core::cap_base64_image(media_type, data, max_edge)
+        {
+            *media_type = new_media_type;
+            *data = new_data;
+        }
+    }
+}
+
 /// The structured application snapshot riding on a message node's
 /// `extension` slot. Holds the plan and the set of active skills as they
 /// stood after this message's response — used to reconstruct that state when
@@ -763,6 +795,13 @@ impl FileSessionPersistence {
         let json = std::fs::read_to_string(session_path)?;
         let mut session: ChatSession = serde_json::from_str(&json)?;
         session.ensure_config()?;
+        // Re-check image dimensions on load: sessions persisted before image
+        // capping (or by an older version) may carry oversized images that a
+        // provider would reject, making the session unresumable. This corrects
+        // user-attached images in the conversation tree; oversized tool-result
+        // images are corrected when their execution records are deserialized
+        // (see `DynTool::deserialize_output`).
+        cap_session_image_dimensions(&mut session, tools_core::MAX_IMAGE_EDGE);
         Ok(Some(session))
     }
 
@@ -1274,7 +1313,61 @@ mod tests {
     use super::*;
     use crate::session::SessionConfig;
     use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus};
+    use base64::Engine as _;
     use tempfile::tempdir;
+
+    fn oversized_png_base64(width: u32, height: u32) -> String {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            width,
+            height,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn png_dimensions(base64_data: &str) -> (u32, u32) {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64_data)
+            .unwrap();
+        image::ImageReader::new(std::io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap()
+    }
+
+    #[test]
+    fn cap_message_images_shrinks_oversized_user_image() {
+        let mut message = Message::new_user_content(vec![
+            llm::ContentBlock::new_text("look at this"),
+            llm::ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: oversized_png_base64(9000, 3000),
+                start_time: None,
+                end_time: None,
+            },
+        ]);
+
+        cap_message_images(&mut message, 1568);
+
+        match &message.content {
+            llm::MessageContent::Structured(blocks) => match &blocks[1] {
+                llm::ContentBlock::Image { data, .. } => {
+                    let (w, h) = png_dimensions(data);
+                    assert_eq!(w, 1568);
+                    assert!(h <= 1568);
+                }
+                other => panic!("expected image block, got {other:?}"),
+            },
+            other => panic!("expected structured content, got {other:?}"),
+        }
+    }
 
     #[test]
     fn chat_session_plan_roundtrip() {

@@ -12,6 +12,13 @@ pub const MAX_TOOL_NAME_LENGTH: usize = 64;
 /// Prefix marking registry tools that proxy an MCP server tool.
 pub const MCP_TOOL_PREFIX: &str = "mcp__";
 
+/// Whether `name` was minted by [`registry_tool_name`] — i.e. it records the
+/// execution of an MCP server tool. The prefix is reserved: no native tool
+/// may claim it.
+pub fn is_mcp_tool_name(name: &str) -> bool {
+    name.starts_with(MCP_TOOL_PREFIX)
+}
+
 /// The registry name for a tool offered by a server.
 pub fn registry_tool_name(server: &str, tool: &str) -> String {
     let name = format!("{MCP_TOOL_PREFIX}{}__{}", sanitize(server), sanitize(tool));
@@ -77,6 +84,13 @@ mod tests {
         assert_eq!(name_b.len(), MAX_TOOL_NAME_LENGTH);
         assert_ne!(name_a, name_b, "truncated names must stay distinct");
         assert!(name_a.starts_with("mcp__server__"));
+    }
+
+    #[test]
+    fn mcp_tool_names_are_recognized() {
+        assert!(is_mcp_tool_name(&registry_tool_name("jira", "search")));
+        assert!(!is_mcp_tool_name("execute_command"));
+        assert!(!is_mcp_tool_name("parse_error"));
     }
 
     #[test]

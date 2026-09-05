@@ -74,12 +74,23 @@ pub fn convert_prompt_to_content_blocks(
                 Some(llm::ContentBlock::new_text(text_content.text))
             }
 
-            acp::ContentBlock::Image(image_content) => Some(llm::ContentBlock::Image {
-                media_type: image_content.mime_type,
-                data: image_content.data,
-                start_time: None,
-                end_time: None,
-            }),
+            acp::ContentBlock::Image(image_content) => {
+                // Cap oversized images once, at the point they enter the
+                // conversation, so the bounded version is what gets stored and
+                // re-sent on later turns.
+                let (media_type, data) = tools_core::cap_base64_image(
+                    &image_content.mime_type,
+                    &image_content.data,
+                    tools_core::MAX_IMAGE_EDGE,
+                )
+                .unwrap_or((image_content.mime_type, image_content.data));
+                Some(llm::ContentBlock::Image {
+                    media_type,
+                    data,
+                    start_time: None,
+                    end_time: None,
+                })
+            }
 
             acp::ContentBlock::Resource(embedded_resource) => {
                 // Convert embedded resource to text with file context

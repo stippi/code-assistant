@@ -41,6 +41,16 @@ pub trait Render: Send + Sync + 'static {
     fn render_images(&self) -> Vec<ImageData> {
         Vec::new()
     }
+
+    /// Shrink any oversized images this output holds so no edge exceeds
+    /// `max_edge` (aspect ratio preserved), mutating stored base64 in place.
+    ///
+    /// The default is a no-op. Image-producing tools override it so oversized
+    /// images are corrected once — at creation time and again when a persisted
+    /// session is deserialized — after which [`Render::render_images`] returns
+    /// bounded data on every turn without repeated resize work. See
+    /// [`crate::image`] for the resizing logic.
+    fn cap_images(&mut self, _max_edge: u32) {}
 }
 
 /// Tracks resources that have been included in tool outputs to prevent redundant display

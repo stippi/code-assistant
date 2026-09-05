@@ -24,26 +24,49 @@ impl McpServersConfig {
         self.servers.iter().filter(|(_, server)| server.enabled)
     }
 
-    /// Substitute `${VAR}` patterns in every server's secret-carrying values,
-    /// so config files can reference secrets instead of baking them in. That
-    /// means stdio env values and HTTP header values. `lookup` resolves a
-    /// variable name (typically `|name| std::env::var(name).ok()`); an
-    /// unresolvable variable or an unclosed `${` is an error naming the
-    /// offending server.
-    pub fn substitute_env_values(&mut self, lookup: impl Fn(&str) -> Option<String>) -> Result<()> {
-        for (name, server) in self.servers.iter_mut() {
-            match &mut server.transport {
-                McpTransport::Stdio { env, .. } => {
-                    for value in env.values_mut() {
-                        *value = substitute_variables(value, &lookup)
-                            .with_context(|| format!("in env of MCP server '{name}'"))?;
-                    }
+    /// Substitute `${VAR}` patterns in every server's secret-carrying values
+    /// — stdio env values and HTTP header values — so config files can
+    /// reference secrets instead of baking them in. `lookup` resolves a
+    /// variable name (typically `|name| std::env::var(name).ok()`). A server
+    /// with an unresolvable variable (or an unclosed `${`) is **dropped**
+    /// rather than failing the whole configuration: missing its secret it
+    /// could not connect anyway, but it must not take the other servers down
+    /// with it. The dropped servers are returned as `(name, error)` for the
+    /// caller to log.
+    pub fn substitute_env_values(
+        &mut self,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Vec<(String, anyhow::Error)> {
+        let mut dropped = Vec::new();
+        self.servers
+            .retain(|name, server| match server.substitute_env_values(&lookup) {
+                Ok(()) => true,
+                Err(error) => {
+                    dropped.push((name.clone(), error));
+                    false
                 }
-                McpTransport::Http { headers, .. } => {
-                    for value in headers.values_mut() {
-                        *value = substitute_variables(value, &lookup)
-                            .with_context(|| format!("in headers of MCP server '{name}'"))?;
-                    }
+            });
+        dropped
+    }
+}
+
+impl McpServerConfig {
+    /// Substitute `${VAR}` in this server's stdio `env` / HTTP `headers`
+    /// values (both carry secrets), erroring on the first unresolvable
+    /// variable.
+    pub fn substitute_env_values(
+        &mut self,
+        lookup: &impl Fn(&str) -> Option<String>,
+    ) -> Result<()> {
+        match &mut self.transport {
+            McpTransport::Stdio { env, .. } => {
+                for value in env.values_mut() {
+                    *value = substitute_variables(value, lookup).context("in env")?;
+                }
+            }
+            McpTransport::Http { headers, .. } => {
+                for value in headers.values_mut() {
+                    *value = substitute_variables(value, lookup).context("in headers")?;
                 }
             }
         }
@@ -165,6 +188,104 @@ impl McpServerConfig {
     }
 }
 
+/// Deserialisation types for Claude Code's project-local `.mcp.json` format.
+/// The schema differs from our `mcp-servers.json`: the top-level key is
+/// `mcpServers` (not `servers`), and each entry carries an explicit `type`
+/// field (`"stdio"` / `"http"` / `"sse"`).
+mod local_format {
+    use super::*;
+
+    #[derive(Deserialize)]
+    pub(super) struct LocalMcpFile {
+        #[serde(rename = "mcpServers", default)]
+        pub mcp_servers: BTreeMap<String, LocalMcpEntry>,
+    }
+
+    #[derive(Deserialize)]
+    pub(super) struct LocalMcpEntry {
+        #[serde(rename = "type", default)]
+        pub transport_type: Option<String>,
+        // stdio
+        pub command: Option<String>,
+        #[serde(default)]
+        pub args: Vec<String>,
+        #[serde(default)]
+        pub env: HashMap<String, String>,
+        // http / sse
+        pub url: Option<String>,
+        #[serde(default)]
+        pub headers: HashMap<String, String>,
+    }
+
+    impl TryFrom<LocalMcpEntry> for McpTransport {
+        type Error = anyhow::Error;
+
+        fn try_from(e: LocalMcpEntry) -> Result<Self> {
+            let is_http = matches!(
+                e.transport_type.as_deref(),
+                Some("http") | Some("sse") | Some("streamable-http")
+            );
+            // An explicit `"type": "stdio"` forces the stdio transport even if a
+            // stray `url` is present, so a misconfigured entry surfaces a
+            // missing-`command` error rather than being silently reinterpreted
+            // as HTTP. A `url` only *implies* HTTP when no type was given.
+            let is_stdio = matches!(e.transport_type.as_deref(), Some("stdio"));
+            if is_http || (e.url.is_some() && !is_stdio) {
+                let url = e
+                    .url
+                    .ok_or_else(|| anyhow::anyhow!("HTTP server entry is missing 'url'"))?;
+                Ok(McpTransport::Http {
+                    url,
+                    headers: e.headers,
+                })
+            } else {
+                let command = e
+                    .command
+                    .ok_or_else(|| anyhow::anyhow!("stdio server entry is missing 'command'"))?;
+                Ok(McpTransport::Stdio {
+                    command,
+                    args: e.args,
+                    env: e.env,
+                })
+            }
+        }
+    }
+}
+
+/// Parse the contents of a `.mcp.json` file (Claude Code's project-local MCP
+/// config format) into an [`McpServersConfig`]. All servers are enabled with
+/// no tool allow- or denylists (the project file carries no such metadata).
+pub fn parse_local_mcp_json(content: &str) -> Result<McpServersConfig> {
+    let file: local_format::LocalMcpFile =
+        serde_json::from_str(content).context("Failed to parse .mcp.json")?;
+    let mut servers = BTreeMap::new();
+    for (name, entry) in file.mcp_servers {
+        let transport = McpTransport::try_from(entry)
+            .with_context(|| format!("Invalid entry for server '{name}' in .mcp.json"))?;
+        servers.insert(
+            name,
+            McpServerConfig {
+                transport,
+                enabled: true,
+                enabled_tools: None,
+                disabled_tools: Vec::new(),
+            },
+        );
+    }
+    Ok(McpServersConfig { servers })
+}
+
+impl McpServersConfig {
+    /// Merge `other` into `self`, with entries from `other` taking precedence
+    /// on name collision. Used to layer a project-local `.mcp.json` on top of
+    /// the global `mcp-servers.json`.
+    pub fn merge(&mut self, other: McpServersConfig) {
+        for (name, server) in other.servers {
+            self.servers.insert(name, server);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,9 +351,9 @@ mod tests {
             } } }"#,
         )
         .unwrap();
-        config
-            .substitute_env_values(|name| (name == "JIRA_TOKEN").then(|| "s3cret".to_string()))
-            .unwrap();
+        let dropped = config
+            .substitute_env_values(|name| (name == "JIRA_TOKEN").then(|| "s3cret".to_string()));
+        assert!(dropped.is_empty());
         let McpTransport::Stdio { env, .. } = &config.servers["jira"].transport else {
             panic!("expected stdio transport");
         };
@@ -249,9 +370,9 @@ mod tests {
             } } }"#,
         )
         .unwrap();
-        config
-            .substitute_env_values(|name| (name == "API_TOKEN").then(|| "s3cret".to_string()))
-            .unwrap();
+        let dropped = config
+            .substitute_env_values(|name| (name == "API_TOKEN").then(|| "s3cret".to_string()));
+        assert!(dropped.is_empty());
         let McpTransport::Http { url, headers } = &config.servers["remote"].transport else {
             panic!("expected http transport");
         };
@@ -282,27 +403,41 @@ mod tests {
     }
 
     #[test]
-    fn unresolvable_variable_errors_with_server_name() {
+    fn unresolvable_variable_drops_only_that_server() {
+        // A server missing its secret cannot connect anyway; it must not
+        // take the other servers down with it.
         let mut config: McpServersConfig = serde_json::from_str(
-            r#"{ "servers": { "jira": { "command": "npx", "env": { "T": "${MISSING}" } } } }"#,
+            r#"{ "servers": {
+                "jira": { "command": "npx", "env": { "T": "${MISSING}" } },
+                "docs": { "command": "npx", "env": { "T": "${SET}" } }
+            } }"#,
         )
         .unwrap();
-        let error = format!("{:#}", config.substitute_env_values(|_| None).unwrap_err());
+        let dropped =
+            config.substitute_env_values(|name| (name == "SET").then(|| "ok".to_string()));
+
+        assert_eq!(dropped.len(), 1);
+        let (name, error) = &dropped[0];
+        assert_eq!(name, "jira");
+        let error = format!("{error:#}");
         assert!(error.contains("MISSING"), "names the variable: {error}");
-        assert!(error.contains("jira"), "names the server: {error}");
+
+        assert!(!config.servers.contains_key("jira"), "failing server gone");
+        let McpTransport::Stdio { env, .. } = &config.servers["docs"].transport else {
+            panic!("expected stdio transport");
+        };
+        assert_eq!(env["T"], "ok", "the other server is kept and substituted");
     }
 
     #[test]
-    fn unclosed_substitution_errors() {
+    fn unclosed_substitution_drops_the_server() {
         let mut config: McpServersConfig = serde_json::from_str(
             r#"{ "servers": { "jira": { "command": "npx", "env": { "T": "${OOPS" } } } }"#,
         )
         .unwrap();
-        assert!(
-            config
-                .substitute_env_values(|_| Some("x".to_string()))
-                .is_err()
-        );
+        let dropped = config.substitute_env_values(|_| Some("x".to_string()));
+        assert_eq!(dropped.len(), 1);
+        assert!(config.servers.is_empty());
     }
 
     #[test]
@@ -314,7 +449,7 @@ mod tests {
             r#"{ "servers": { "jira": { "command": "${CMD}", "args": ["${ARG}"] } } }"#,
         )
         .unwrap();
-        config.substitute_env_values(|_| None).unwrap();
+        assert!(config.substitute_env_values(|_| None).is_empty());
         assert_eq!(
             config.servers["jira"].transport,
             McpTransport::Stdio {
@@ -339,5 +474,109 @@ mod tests {
             .map(|(name, _)| name.as_str())
             .collect();
         assert_eq!(names, ["b"]);
+    }
+
+    #[test]
+    fn parse_local_mcp_json_stdio() {
+        let json = r#"{
+            "mcpServers": {
+                "backlog": {
+                    "type": "stdio",
+                    "command": "uv",
+                    "args": ["run", "server.py"],
+                    "env": { "TOKEN": "abc" }
+                }
+            }
+        }"#;
+        let config = parse_local_mcp_json(json).unwrap();
+        assert_eq!(config.servers.len(), 1);
+        let server = &config.servers["backlog"];
+        assert!(server.enabled);
+        assert!(server.enabled_tools.is_none());
+        assert!(server.disabled_tools.is_empty());
+        assert_eq!(
+            server.transport,
+            McpTransport::Stdio {
+                command: "uv".to_string(),
+                args: vec!["run".to_string(), "server.py".to_string()],
+                env: [("TOKEN".to_string(), "abc".to_string())].into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_local_mcp_json_http() {
+        let json = r#"{
+            "mcpServers": {
+                "jira": { "type": "http", "url": "https://example.com/mcp" }
+            }
+        }"#;
+        let config = parse_local_mcp_json(json).unwrap();
+        let server = &config.servers["jira"];
+        assert_eq!(
+            server.transport,
+            McpTransport::Http {
+                url: "https://example.com/mcp".to_string(),
+                headers: HashMap::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_local_mcp_json_sse_transport_name() {
+        let json = r#"{
+            "mcpServers": {
+                "old": { "type": "sse", "url": "https://example.com/sse" }
+            }
+        }"#;
+        let config = parse_local_mcp_json(json).unwrap();
+        assert!(config.servers["old"].transport.is_http());
+    }
+
+    #[test]
+    fn parse_local_mcp_json_implicit_http_via_url() {
+        let json = r#"{
+            "mcpServers": {
+                "srv": { "url": "https://example.com/mcp" }
+            }
+        }"#;
+        let config = parse_local_mcp_json(json).unwrap();
+        assert!(config.servers["srv"].transport.is_http());
+    }
+
+    #[test]
+    fn parse_local_mcp_json_empty_mcp_servers() {
+        let config = parse_local_mcp_json(r#"{ "mcpServers": {} }"#).unwrap();
+        assert!(config.servers.is_empty());
+    }
+
+    #[test]
+    fn merge_local_overrides_global() {
+        let mut global: McpServersConfig = serde_json::from_str(
+            r#"{
+            "servers": {
+                "a": { "command": "global-a" },
+                "b": { "command": "global-b" }
+            }
+        }"#,
+        )
+        .unwrap();
+        let local: McpServersConfig = serde_json::from_str(
+            r#"{
+            "servers": { "b": { "command": "local-b" }, "c": { "command": "local-c" } }
+        }"#,
+        )
+        .unwrap();
+        global.merge(local);
+        assert_eq!(global.servers.len(), 3);
+        let McpTransport::Stdio { command, .. } = &global.servers["b"].transport else {
+            panic!("expected stdio");
+        };
+        assert_eq!(command, "local-b", "local should win on collision");
+        assert!(
+            global.servers.contains_key("a"),
+            "global-only entry preserved"
+        );
+        assert!(global.servers.contains_key("c"), "local-only entry added");
     }
 }

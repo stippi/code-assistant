@@ -17,8 +17,14 @@ pub mod tool;
 mod tests;
 
 pub use client::McpServerConnection;
-pub use config::{McpServerConfig, McpServersConfig, McpTransport, substitute_variables};
+pub use config::{
+    McpServerConfig, McpServersConfig, McpTransport, parse_local_mcp_json, substitute_variables,
+};
+pub use naming::is_mcp_tool_name;
+pub use output::deserialize_mcp_output;
 pub use registry::{
-    DiscoveredTool, MCP_CAPABILITY, McpServerStatus, discover_tools, register_mcp_tools,
+    ConnectionProvider, DiscoveredTool, MCP_CAPABILITY, McpServerStatus, discover_tools,
+    register_connection_tools, register_mcp_tools, register_mcp_tools_pooled,
+    server_scope_capability,
 };
 pub use tool::McpTool;

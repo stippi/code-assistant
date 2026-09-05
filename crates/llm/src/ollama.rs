@@ -272,6 +272,7 @@ impl OllamaClient {
         if !ollama_response.message.content.is_empty() {
             content.push(ContentBlock::Text {
                 text: ollama_response.message.content,
+                phase: None,
                 start_time: None,
                 end_time: None,
             });
@@ -364,6 +365,7 @@ impl OllamaClient {
                                 } else {
                                     content_blocks.push(ContentBlock::Text {
                                         text: chunk_response.message.content.clone(),
+                                        phase: None,
                                         start_time: Some(std::time::SystemTime::now()),
                                         end_time: None,
                                     });

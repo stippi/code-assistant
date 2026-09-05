@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use llm::{ContentBlock, Message};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -19,17 +19,31 @@ use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
 use sandbox::SandboxPolicy;
-use tools_core::permissions::PermissionMediator;
+use tools_core::permissions::{
+    PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
+};
 use tracing::{debug, error, info, warn};
+
+/// What registry a run needs: the project it operates in, and whether that
+/// project's local `.mcp.json` servers should be included (i.e. the user has
+/// approved them). `Default` — no project, no local MCP — is the global-only
+/// registry used for the process-startup pre-warm.
+#[derive(Debug, Clone, Default)]
+pub struct RegistryRequest {
+    pub project_dir: Option<PathBuf>,
+    pub include_local_mcp: bool,
+}
 
 /// Provides the tool registry for the next agent run. Consulted at the
 /// start of every run, so embedders can rebuild the registry from their
 /// current configuration (e.g. reconnect MCP servers after a settings
-/// change). Within one run the registry stays the one the run started
-/// with; the provider must be cheap when nothing changed (return the
-/// same `Arc`).
+/// change) and scope it to the run's project (see [`RegistryRequest`]).
+/// Within one run the registry stays the one the run started with; the
+/// provider must be cheap when nothing changed (return the same `Arc`).
 pub type ToolRegistryProvider = Arc<
-    dyn Fn() -> futures::future::BoxFuture<'static, Arc<crate::tools::core::ToolRegistry>>
+    dyn Fn(
+            RegistryRequest,
+        ) -> futures::future::BoxFuture<'static, Arc<crate::tools::core::ToolRegistry>>
         + Send
         + Sync,
 >;
@@ -230,21 +244,89 @@ impl SessionManager {
         &self.tool_registry
     }
 
-    /// Pull the current registry from the provider (no-op without one).
-    /// Session instances follow the swap so their UI rebuilds resolve tool
-    /// executions against the same registry the next run uses.
-    async fn refresh_tool_registry(&mut self) {
+    /// Pull the registry for `req` from the provider (no-op without one) and
+    /// assign it to `session_id`'s instance — and only that one. Sessions in
+    /// other projects keep the registry of their own last run; MCP tool
+    /// executions render independently of any registry (see
+    /// [`crate::tools::mcp::deserialize_tool_execution`]), so no session
+    /// depends on following a foreign run's swap. The manager-level registry
+    /// follows too: it is this run's working registry and the default for
+    /// instances that have not run yet.
+    async fn refresh_tool_registry(&mut self, session_id: &str, req: RegistryRequest) {
         let Some(provider) = &self.tool_registry_provider else {
             return;
         };
-        let fresh = provider().await;
-        if Arc::ptr_eq(&fresh, &self.tool_registry) {
-            return;
+        let fresh = provider(req).await;
+        if !Arc::ptr_eq(&fresh, &self.tool_registry) {
+            info!("Tool registry refreshed for the next agent run");
+            self.tool_registry = fresh.clone();
         }
-        info!("Tool registry refreshed for the next agent run");
-        self.tool_registry = fresh.clone();
-        for instance in self.active_sessions.values_mut() {
-            instance.tool_registry = fresh.clone();
+        // Assign even when the manager already held it: a second session in
+        // the same project gets the same `Arc` from the provider's cache, but
+        // its instance may still hold an older registry.
+        if let Some(instance) = self.active_sessions.get_mut(session_id)
+            && !Arc::ptr_eq(&instance.tool_registry, &fresh)
+        {
+            instance.tool_registry = fresh;
+        }
+    }
+
+    /// Decide whether a run in `project_dir` may load that project's local
+    /// `.mcp.json` servers. Returns `false` when there is no project or no
+    /// `.mcp.json`. An untrusted (or edited) `.mcp.json` is prompted through
+    /// `handler`: "always (this project)" persists the trust across sessions
+    /// (keyed to the file's contents), "load once" allows just this run, and
+    /// denial (or no frontend to ask) skips the local servers. Launching a
+    /// project's MCP servers runs project-supplied commands, so this gate is
+    /// what keeps an untrusted repository from doing that silently.
+    pub async fn resolve_local_mcp_trust(
+        project_dir: Option<&Path>,
+        handler: Option<&dyn PermissionMediator>,
+    ) -> bool {
+        let Some(dir) = project_dir else {
+            return false;
+        };
+        let Ok(content) = std::fs::read_to_string(dir.join(".mcp.json")) else {
+            return false; // no project-local .mcp.json
+        };
+        let fingerprint = crate::tools::mcp_trust::fingerprint(&content);
+        if crate::tools::mcp_trust::is_trusted(dir, &fingerprint) {
+            return true;
+        }
+        let Some(handler) = handler else {
+            warn!(
+                "Project {} has an untrusted .mcp.json but this frontend cannot ask; \
+                 skipping its MCP servers",
+                dir.display()
+            );
+            return false;
+        };
+        let server_names = crate::tools::mcp::parse_local_mcp_json(&content)
+            .map(|cfg| cfg.servers.into_keys().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let decision = handler
+            .request_permission(PermissionRequest {
+                tool_id: None,
+                tool_name: ".mcp.json",
+                reason: PermissionRequestReason::TrustLocalMcp {
+                    project_dir: dir,
+                    server_names,
+                },
+            })
+            .await;
+        match decision {
+            Ok(PermissionDecision::GrantedPersistent) => {
+                if let Err(error) = crate::tools::mcp_trust::add_trusted(dir, &fingerprint) {
+                    warn!("Failed to persist .mcp.json trust: {error:#}");
+                }
+                true
+            }
+            Ok(PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession) => true,
+            Ok(PermissionDecision::Denied) => false,
+            Err(error) => {
+                warn!("Trust prompt for .mcp.json failed: {error:#}");
+                false
+            }
         }
     }
 
@@ -704,6 +786,7 @@ impl SessionManager {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
+        registry_request: RegistryRequest,
     ) -> Result<()> {
         // Add the message first
         self.add_user_message(session_id, content_blocks, branch_parent_id)?;
@@ -717,6 +800,7 @@ impl SessionManager {
             permission_handler,
             None,
             None,
+            registry_request,
         )
         .await
     }
@@ -744,10 +828,16 @@ impl SessionManager {
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         tool_scope_override: Option<crate::tools::core::ToolScope>,
         turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+        registry_request: RegistryRequest,
     ) -> Result<()> {
-        // A new run is the point where configuration changes take effect:
-        // pull the current registry before anything below binds to it.
-        self.refresh_tool_registry().await;
+        // A new run is the point where configuration changes take effect: pull
+        // the registry the caller resolved for this run (scoped to the
+        // session's project, and to whether its local `.mcp.json` was trusted)
+        // before anything below binds to it. Trust is resolved by the caller —
+        // not here — because prompting must happen without the manager lock
+        // that wraps this call, or the response could never be delivered.
+        self.refresh_tool_registry(session_id, registry_request)
+            .await;
 
         // Acquire exclusive cross-process agent lock.
         // This prevents another code-assistant instance from running an agent
@@ -807,7 +897,10 @@ impl SessionManager {
                     // MCP server) must not brick the session: skip its
                     // records, the conversation itself lives in the messages.
                     .filter(|se| {
-                        let available = se.tool_available(self.tool_registry.as_ref());
+                        let available = crate::tools::mcp::execution_renderable(
+                            se,
+                            self.tool_registry.as_ref(),
+                        );
                         if !available {
                             warn!(
                                 "Skipping recorded execution of unavailable tool '{}'",
@@ -816,7 +909,12 @@ impl SessionManager {
                         }
                         available
                     })
-                    .map(|se| se.deserialize(self.tool_registry.as_ref()))
+                    .map(|se| {
+                        crate::tools::mcp::deserialize_tool_execution(
+                            se,
+                            self.tool_registry.as_ref(),
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?,
 
                 plan: session_instance.session.plan.clone(),
@@ -1410,6 +1508,40 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Set the MCP servers deactivated for a session (by config name), persist
+    /// it, and update the live instance. Returns the recomputed server list
+    /// (available servers with their per-session enabled state) for the UI.
+    /// Mirrors [`set_session_permission_tier`]; takes effect on the next run
+    /// (tools are bound at run start).
+    ///
+    /// [`set_session_permission_tier`]: Self::set_session_permission_tier
+    pub fn set_session_disabled_mcp_servers(
+        &mut self,
+        session_id: &str,
+        disabled: Vec<String>,
+    ) -> Result<Vec<crate::ui::ui_events::McpServerToggle>> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        session.config.disabled_mcp_servers = disabled.clone();
+        self.persistence.save_chat_session(&session)?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.config.disabled_mcp_servers = disabled.clone();
+        }
+
+        let project_dir = session
+            .config
+            .effective_project_path()
+            .map(|p| p.to_path_buf());
+        Ok(crate::tools::mcp::session_mcp_servers(
+            project_dir.as_deref(),
+            &disabled,
+        ))
+    }
+
     /// Build the event-stream permission mediator for a session, used by the
     /// `SessionService`-driven frontends (GPUI, terminal). ACP supplies its
     /// own protocol-level mediator instead.
@@ -1648,6 +1780,7 @@ impl SessionManager {
             session_id,
             vec![ContentBlock::Text {
                 text: message,
+                phase: None,
                 start_time: None,
                 end_time: None,
             }],
@@ -2026,33 +2159,162 @@ mod tests {
     fn fixed_registry_provider(
         registry: Arc<crate::tools::core::ToolRegistry>,
     ) -> ToolRegistryProvider {
-        Arc::new(move || {
+        Arc::new(move |_req: RegistryRequest| {
             let registry = registry.clone();
             Box::pin(async move { registry })
         })
     }
 
-    /// The provider seam: refreshing swaps the manager's registry and the
-    /// registries of the active session instances (their UI rebuilds must
-    /// resolve tools against what the next run uses); an unchanged provider
-    /// result (same `Arc`) is a no-op.
+    /// Permission mediator returning a fixed decision and counting prompts.
+    struct CountingMediator {
+        calls: std::sync::atomic::AtomicUsize,
+        decision: PermissionDecision,
+    }
+
+    impl CountingMediator {
+        fn new(decision: PermissionDecision) -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                decision,
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PermissionMediator for CountingMediator {
+        async fn request_permission(
+            &self,
+            _request: PermissionRequest<'_>,
+        ) -> Result<PermissionDecision> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(self.decision)
+        }
+    }
+
+    const LOCAL_MCP: &str = r#"{ "mcpServers": { "srv": { "type": "stdio", "command": "uv" } } }"#;
+
     #[tokio::test]
-    async fn refresh_swaps_manager_and_instance_registries() {
+    async fn local_mcp_trust_false_without_project_or_file() {
+        // No project → nothing to load.
+        assert!(!SessionManager::resolve_local_mcp_trust(None, None).await);
+        // Project directory without a `.mcp.json` → nothing to load.
+        let project = TempDir::new().unwrap();
+        assert!(!SessionManager::resolve_local_mcp_trust(Some(project.path()), None).await);
+    }
+
+    #[tokio::test]
+    async fn local_mcp_trust_denied_skips_servers() {
+        let config = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        std::fs::write(project.path().join(".mcp.json"), LOCAL_MCP).unwrap();
+        let handler = CountingMediator::new(PermissionDecision::Denied);
+        let granted = temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            SessionManager::resolve_local_mcp_trust(Some(project.path()), Some(&handler)),
+        )
+        .await;
+        assert!(!granted, "denied trust must skip the local servers");
+        assert_eq!(handler.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn local_mcp_trust_persistent_persists_and_stops_prompting() {
+        let config = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        std::fs::write(project.path().join(".mcp.json"), LOCAL_MCP).unwrap();
+        let handler = CountingMediator::new(PermissionDecision::GrantedPersistent);
+        let (first, second) = temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let first =
+                    SessionManager::resolve_local_mcp_trust(Some(project.path()), Some(&handler))
+                        .await;
+                let second =
+                    SessionManager::resolve_local_mcp_trust(Some(project.path()), Some(&handler))
+                        .await;
+                (first, second)
+            },
+        )
+        .await;
+        assert!(first && second, "granted then trusted-from-store");
+        assert_eq!(
+            handler.calls(),
+            1,
+            "persisted trust means the second run does not re-prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_mcp_trust_once_does_not_persist() {
+        let config = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        std::fs::write(project.path().join(".mcp.json"), LOCAL_MCP).unwrap();
+        let handler = CountingMediator::new(PermissionDecision::GrantedOnce);
+        let (first, second) = temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let first =
+                    SessionManager::resolve_local_mcp_trust(Some(project.path()), Some(&handler))
+                        .await;
+                let second =
+                    SessionManager::resolve_local_mcp_trust(Some(project.path()), Some(&handler))
+                        .await;
+                (first, second)
+            },
+        )
+        .await;
+        assert!(first && second, "each run is allowed once");
+        assert_eq!(
+            handler.calls(),
+            2,
+            "load-once is not remembered, so every run re-prompts"
+        );
+    }
+
+    /// The provider seam: refreshing swaps the manager's registry and the
+    /// registry of the session the refresh is for — and only that session's.
+    /// Other sessions may be running in other projects with other registries;
+    /// their rendering must not follow a foreign run's swap. An unchanged
+    /// provider result (same `Arc`) is a no-op.
+    #[tokio::test]
+    async fn refresh_swaps_only_the_requesting_sessions_registry() {
         let (mut manager, _dir) = build_manager(false);
         let initial = manager.tool_registry().clone();
         let session_id = manager.create_session(None).expect("create session");
+        let other_id = manager.create_session(None).expect("create session");
 
         // Without a provider, refreshing changes nothing.
-        manager.refresh_tool_registry().await;
+        manager
+            .refresh_tool_registry(&session_id, RegistryRequest::default())
+            .await;
         assert!(Arc::ptr_eq(manager.tool_registry(), &initial));
 
         let fresh = crate::tools::test_registry();
         manager.set_tool_registry_provider(fixed_registry_provider(fresh.clone()));
-        manager.refresh_tool_registry().await;
+        manager
+            .refresh_tool_registry(&session_id, RegistryRequest::default())
+            .await;
 
         assert!(Arc::ptr_eq(manager.tool_registry(), &fresh));
         let instance = manager.get_session(&session_id).expect("instance");
         assert!(Arc::ptr_eq(&instance.tool_registry, &fresh));
+        let other = manager.get_session(&other_id).expect("instance");
+        assert!(
+            Arc::ptr_eq(&other.tool_registry, &initial),
+            "a refresh for one session must not swap another session's registry"
+        );
+
+        // A later refresh *for* the other session catches its instance up,
+        // even though the manager-level registry is already the same Arc.
+        manager
+            .refresh_tool_registry(&other_id, RegistryRequest::default())
+            .await;
+        let other = manager.get_session(&other_id).expect("instance");
+        assert!(Arc::ptr_eq(&other.tool_registry, &fresh));
     }
 
     /// Starting an agent run is the point where the provider is consulted:
@@ -2080,6 +2342,7 @@ mod tests {
                 project_manager,
                 command_executor,
                 None,
+                RegistryRequest::default(),
             )
             .await
             .expect("start agent");

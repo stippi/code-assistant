@@ -795,6 +795,14 @@ impl Gpui {
                 *self.current_permission_tier.lock().unwrap() = Some(tier);
                 cx.refresh();
             }
+            UiEvent::UpdateMcpServers { servers } => {
+                debug!(
+                    "UI: UpdateMcpServers event with {} server(s)",
+                    servers.len()
+                );
+                *self.current_mcp_servers.lock().unwrap() = servers;
+                cx.refresh();
+            }
             UiEvent::RequestToolPermission { request } => {
                 debug!(
                     "UI: RequestToolPermission for tool {} ({})",

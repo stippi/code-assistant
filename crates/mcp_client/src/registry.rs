@@ -9,9 +9,24 @@ use crate::client::McpServerConnection;
 use crate::config::{McpServerConfig, McpServersConfig};
 use crate::tool::McpTool;
 use anyhow::Result;
+use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::Arc;
 use tools_core::registry::ToolRegistry;
+
+/// Supplies (and typically caches) live [`McpServerConnection`]s for
+/// [`register_mcp_tools_pooled`]. Implementors return a shared connection —
+/// reusing an already-open one when possible — so registering a server's
+/// tools a second time (e.g. rebuilding the registry for another project)
+/// does not relaunch its child process.
+#[async_trait]
+pub trait ConnectionProvider: Send + Sync {
+    async fn get_or_connect(
+        &self,
+        name: &str,
+        config: &McpServerConfig,
+    ) -> Result<Arc<McpServerConnection>>;
+}
 
 /// Capability tag carried by every MCP-backed tool.
 pub const MCP_CAPABILITY: &str = "mcp";
@@ -50,6 +65,32 @@ pub async fn register_mcp_tools(
                 extra_capabilities,
             )
             .await
+        }
+        .await;
+        statuses.push(McpServerStatus {
+            server: name.clone(),
+            result: result.map_err(|error| format!("{error:#}")),
+        });
+    }
+    statuses
+}
+
+/// Like [`register_mcp_tools`], but obtains each server's connection from a
+/// [`ConnectionProvider`] instead of always connecting fresh. Lets an embedder
+/// pool connections across registry rebuilds so servers shared between builds
+/// (e.g. the global `mcp-servers.json` set, unchanged when only a project's
+/// local config differs) stay connected rather than being relaunched.
+pub async fn register_mcp_tools_pooled(
+    registry: &mut ToolRegistry,
+    config: &McpServersConfig,
+    extra_capabilities: &[&'static str],
+    provider: &dyn ConnectionProvider,
+) -> Vec<McpServerStatus> {
+    let mut statuses = Vec::new();
+    for (name, server_config) in config.enabled_servers() {
+        let result = async {
+            let connection = provider.get_or_connect(name, server_config).await?;
+            register_connection_tools(registry, connection, server_config, extra_capabilities).await
         }
         .await;
         statuses.push(McpServerStatus {

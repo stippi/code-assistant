@@ -120,6 +120,18 @@ impl UiEvent {
     }
 }
 
+/// One MCP server offered to a session, with whether it is currently enabled
+/// for that session. Carried by [`UiEvent::UpdateMcpServers`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpServerToggle {
+    /// The server's configuration name (its key in `mcp-servers.json` or the
+    /// project's `.mcp.json`).
+    pub name: String,
+    /// Whether the server's tools are offered to this session (i.e. it is not
+    /// in the session's disabled set).
+    pub enabled: bool,
+}
+
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
@@ -248,6 +260,9 @@ pub enum UiEvent {
     UpdatePermissionTier {
         tier: tools_core::permissions::PermissionTier,
     },
+    /// Update the MCP servers available to the active session and whether each
+    /// is currently enabled for it (see [`McpServerToggle`]).
+    UpdateMcpServers { servers: Vec<McpServerToggle> },
     /// The agent asks the user for permission to run a tool. Answered via
     /// `SessionService::respond_permission`; a
     /// [`UiEvent::ToolPermissionRequestResolved`] follows once settled.

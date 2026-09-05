@@ -1,4 +1,5 @@
 pub mod attachment;
+pub mod mcp_selector;
 pub mod model_selector;
 pub mod permission_selector;
 pub mod sandbox_selector;
@@ -10,12 +11,14 @@ use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
+use code_assistant_core::ui::ui_events::McpServerToggle;
 use gpui::{
     ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable,
     Render, SharedString, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
 use gpui_component::{ActiveTheme, Icon};
+use mcp_selector::{McpSelector, McpSelectorEvent};
 use model_selector::{ModelSelector, ModelSelectorEvent};
 use permission_selector::{PermissionSelector, PermissionSelectorEvent};
 use sandbox::SandboxPolicy;
@@ -56,6 +59,8 @@ pub enum InputAreaEvent {
     SandboxChanged { policy: SandboxPolicy },
     /// Permission tier changed
     PermissionTierChanged { tier: PermissionTier },
+    /// An MCP server was toggled on/off for the session.
+    McpServerToggled { name: String, enabled: bool },
     /// User wants to switch to local (no worktree)
     WorktreeSwitchedToLocal,
     /// User selected an existing worktree
@@ -76,6 +81,7 @@ pub struct InputArea {
     sandbox_selector: Entity<SandboxSelector>,
     permission_selector: Entity<PermissionSelector>,
     worktree_selector: Entity<WorktreeSelector>,
+    mcp_selector: Entity<McpSelector>,
     current_model: Option<String>,
     current_sandbox_policy: SandboxPolicy,
     current_permission_tier: PermissionTier,
@@ -103,6 +109,7 @@ pub struct InputArea {
     _sandbox_selector_subscription: Subscription,
     _permission_selector_subscription: Subscription,
     _worktree_selector_subscription: Subscription,
+    _mcp_selector_subscription: Subscription,
 }
 
 impl InputArea {
@@ -130,6 +137,7 @@ impl InputArea {
         let sandbox_selector = cx.new(|cx| SandboxSelector::new(window, cx));
         let permission_selector = cx.new(|cx| PermissionSelector::new(window, cx));
         let worktree_selector = cx.new(|cx| WorktreeSelector::new(window, cx));
+        let mcp_selector = cx.new(|cx| McpSelector::new(window, cx));
 
         // Subscribe to model selector events
         let model_selector_subscription =
@@ -143,6 +151,8 @@ impl InputArea {
         );
         let worktree_selector_subscription =
             cx.subscribe_in(&worktree_selector, window, Self::on_worktree_selector_event);
+        let mcp_selector_subscription =
+            cx.subscribe_in(&mcp_selector, window, Self::on_mcp_selector_event);
 
         Self {
             text_input,
@@ -150,6 +160,7 @@ impl InputArea {
             sandbox_selector,
             permission_selector,
             worktree_selector,
+            mcp_selector,
             current_model: None,
             current_sandbox_policy: SandboxPolicy::DangerFullAccess,
             current_permission_tier: PermissionTier::default(),
@@ -170,6 +181,7 @@ impl InputArea {
             _sandbox_selector_subscription: sandbox_selector_subscription,
             _permission_selector_subscription: permission_selector_subscription,
             _worktree_selector_subscription: worktree_selector_subscription,
+            _mcp_selector_subscription: mcp_selector_subscription,
         }
     }
 
@@ -556,6 +568,29 @@ impl InputArea {
         }
     }
 
+    fn on_mcp_selector_event(
+        &mut self,
+        _selector: &Entity<McpSelector>,
+        event: &McpSelectorEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            McpSelectorEvent::ServerToggled { name, enabled } => {
+                cx.emit(InputAreaEvent::McpServerToggled {
+                    name: name.clone(),
+                    enabled: *enabled,
+                });
+            }
+        }
+    }
+
+    /// Set the MCP servers shown in the input-bar toggle menu.
+    pub fn set_mcp_servers(&mut self, servers: Vec<McpServerToggle>, cx: &mut Context<Self>) {
+        self.mcp_selector
+            .update(cx, |selector, cx| selector.set_servers(servers, cx));
+    }
+
     fn on_worktree_selector_event(
         &mut self,
         _selector: &Entity<WorktreeSelector>,
@@ -780,6 +815,12 @@ impl InputArea {
                                             .flex_none()
                                             .flex()
                                             .child(self.permission_selector.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .child(self.mcp_selector.clone()),
                                     )
                                     .child({
                                         let usage = self.context_usage;

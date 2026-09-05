@@ -168,6 +168,10 @@ pub struct Gpui {
     // Current permission tier selection.
     current_permission_tier: Arc<Mutex<Option<tools_core::PermissionTier>>>,
 
+    // MCP servers available to the active session and their per-session
+    // enabled state, shown in the input-bar MCP toggle menu.
+    current_mcp_servers: Arc<Mutex<Vec<code_assistant_core::ui::ui_events::McpServerToggle>>>,
+
     // Tool permission requests awaiting the user's decision, rendered as a
     // prompt above the input area. Keyed order = arrival order.
     pending_permission_requests:
@@ -413,6 +417,7 @@ impl Gpui {
         *self.allowed_models.lock().unwrap() = None;
         *self.current_sandbox_policy.lock().unwrap() = None;
         *self.current_permission_tier.lock().unwrap() = None;
+        self.current_mcp_servers.lock().unwrap().clear();
         self.pending_permission_requests.lock().unwrap().clear();
         *self.current_worktree_data.lock().unwrap() = None;
         self.set_current_review_listing(None);
@@ -508,6 +513,7 @@ impl Gpui {
 
             // Current permission tier selection + open permission prompts
             current_permission_tier: Arc::new(Mutex::new(None)),
+            current_mcp_servers: Arc::new(Mutex::new(Vec::new())),
             pending_permission_requests: Arc::new(Mutex::new(Vec::new())),
 
             // Pending message edit state
@@ -825,6 +831,12 @@ impl Gpui {
 
     pub fn get_current_permission_tier(&self) -> Option<tools_core::PermissionTier> {
         *self.current_permission_tier.lock().unwrap()
+    }
+
+    pub fn get_current_mcp_servers(
+        &self,
+    ) -> Vec<code_assistant_core::ui::ui_events::McpServerToggle> {
+        self.current_mcp_servers.lock().unwrap().clone()
     }
 
     pub fn get_pending_permission_requests(

@@ -745,6 +745,7 @@ impl OpenAIClient {
                     {
                         blocks.push(ContentBlock::Text {
                             text: text.to_string(),
+                            phase: None,
                             start_time: None,
                             end_time: None,
                         });
@@ -940,6 +941,7 @@ impl OpenAIClient {
                                 } else {
                                     content_blocks.push(ContentBlock::Text {
                                         text: reasoning.clone(),
+                                        phase: None,
                                         start_time: Some(std::time::SystemTime::now()),
                                         end_time: None,
                                     });
@@ -960,6 +962,7 @@ impl OpenAIClient {
                                 } else {
                                     content_blocks.push(ContentBlock::Text {
                                         text: content.clone(),
+                                        phase: None,
                                         start_time: Some(std::time::SystemTime::now()),
                                         end_time: None,
                                     });
