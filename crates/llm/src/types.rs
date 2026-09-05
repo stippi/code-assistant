@@ -570,6 +570,19 @@ impl Message {
 }
 
 impl ContentBlock {
+    /// Variant name only — for log lines that must not carry the block's
+    /// content (message text, images, tool arguments).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ContentBlock::Thinking { .. } => "thinking",
+            ContentBlock::RedactedThinking { .. } => "redacted_thinking",
+            ContentBlock::Text { .. } => "text",
+            ContentBlock::Image { .. } => "image",
+            ContentBlock::ToolUse { .. } => "tool_use",
+            ContentBlock::ToolResult { .. } => "tool_result",
+        }
+    }
+
     /// Create a thinking content block from a String
     pub fn new_thinking(text: impl Into<String>, signature: impl Into<String>) -> Self {
         ContentBlock::Thinking {

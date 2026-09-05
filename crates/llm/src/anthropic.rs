@@ -1163,7 +1163,16 @@ impl AnthropicClient {
                         _ => {}
                     }
                 } else {
-                    return Err(anyhow::anyhow!("Failed to parse stream event:\n{line}"));
+                    // The raw line is model output; the error message travels
+                    // into user-facing toasts and logs, so keep it out.
+                    let error = serde_json::from_str::<StreamEvent>(data)
+                        .err()
+                        .map(|e| e.to_string())
+                        .unwrap_or_default();
+                    return Err(anyhow::anyhow!(
+                        "Failed to parse stream event ({} bytes): {error}",
+                        data.len()
+                    ));
                 }
             }
             Ok(())

@@ -1281,9 +1281,11 @@ impl<'a> StreamProcessor<'a> {
                 return Ok(());
             }
 
+            // The raw event is model output; it must not end up in logs or in
+            // the error message (which reaches user-facing toasts and logs).
             let event: StreamEvent = serde_json::from_str(data).map_err(|e| {
-                warn!("Failed to parse SSE event (raw data: {data:?}): {e}");
-                anyhow::anyhow!("Failed to parse SSE event: {e} (raw data: {data:?})")
+                warn!("Failed to parse SSE event ({} bytes): {e}", data.len());
+                anyhow::anyhow!("Failed to parse SSE event ({} bytes): {e}", data.len())
             })?;
 
             match event.event_type.as_str() {

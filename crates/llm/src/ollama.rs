@@ -204,7 +204,10 @@ impl OllamaClient {
                     // Ignore redacted thinking blocks
                 }
                 _ => {
-                    warn!("Unexpected content block type in user message: {:?}", block);
+                    warn!(
+                        "Unexpected content block type in user message: {}",
+                        block.kind()
+                    );
                 }
             }
         }
