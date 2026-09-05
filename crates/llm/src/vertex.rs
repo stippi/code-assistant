@@ -1278,10 +1278,22 @@ impl VertexClient {
                         }
                     }
                 } else {
-                    warn!("Failed to parse Vertex response from data: {}", data);
+                    // The payload is model output — log the failure, not the data.
+                    let error = serde_json::from_str::<VertexResponse>(data)
+                        .err()
+                        .map(|e| e.to_string())
+                        .unwrap_or_default();
+                    warn!(
+                        "Failed to parse Vertex response ({} bytes): {}",
+                        data.len(),
+                        error
+                    );
                 }
             } else if line.len() > 1 {
-                warn!("Received line without 'data' prefix: {}", line);
+                warn!(
+                    "Received SSE line without 'data' prefix ({} bytes)",
+                    line.len()
+                );
             }
             Ok(())
         };

@@ -500,8 +500,8 @@ impl OpenAIClient {
                 }
                 _ => {
                     warn!(
-                        "Unexpected content block type in assistant message: {:?}",
-                        block
+                        "Unexpected content block type in assistant message: {}",
+                        block.kind()
                     );
                 }
             }
@@ -590,7 +590,10 @@ impl OpenAIClient {
                     // Ignore redacted thinking blocks
                 }
                 _ => {
-                    warn!("Unexpected content block type in user message: {:?}", block);
+                    warn!(
+                        "Unexpected content block type in user message: {}",
+                        block.kind()
+                    );
                 }
             }
         }
@@ -1095,7 +1098,16 @@ impl OpenAIClient {
                         *usage = Some(chunk_usage);
                     }
                 } else {
-                    warn!("Failed to parse stream event: '{}'", data);
+                    // The payload is model output — log the failure, not the data.
+                    let error = serde_json::from_str::<OpenAIStreamResponse>(data)
+                        .err()
+                        .map(|e| e.to_string())
+                        .unwrap_or_default();
+                    warn!(
+                        "Failed to parse stream event ({} bytes): {}",
+                        data.len(),
+                        error
+                    );
                 }
             }
             Ok(())
