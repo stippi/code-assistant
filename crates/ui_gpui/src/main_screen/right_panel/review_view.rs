@@ -482,6 +482,12 @@ impl ReviewView {
             },
         );
 
+        // Sections default to collapsed; only repos the user expanded (stored
+        // by absolute root path in the UI settings) start open.
+        let expanded = cx
+            .try_global::<crate::UiSettingsGlobal>()
+            .is_some_and(|g| g.0.review_expanded_repos.contains(&data.repo_root));
+
         RepoSection {
             repo_root: data.repo_root.clone(),
             label: data.label.clone(),
@@ -491,7 +497,7 @@ impl ReviewView {
             files: data.files.clone(),
             stats: data.stats,
             scan_state: data.scan_state,
-            collapsed: false,
+            collapsed: !expanded,
             _base_sub: base_sub,
         }
     }
@@ -826,12 +832,27 @@ impl ReviewView {
                 )
                 .child(self.render_scan_indicator(&self.repos[ix], cx))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    if let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == toggle_root) {
-                        s.collapsed = !s.collapsed;
-                        // Expanding may unlock diffs skipped while collapsed.
-                        this.ensure_diff_request(cx);
-                        cx.notify();
-                    }
+                    let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == toggle_root) else {
+                        return;
+                    };
+                    s.collapsed = !s.collapsed;
+                    let expanded = !s.collapsed;
+
+                    // Persist per repo root (sections default to collapsed).
+                    let root = toggle_root.clone();
+                    crate::update_ui_settings(cx, move |settings| {
+                        if expanded {
+                            if !settings.review_expanded_repos.contains(&root) {
+                                settings.review_expanded_repos.push(root);
+                            }
+                        } else {
+                            settings.review_expanded_repos.retain(|r| r != &root);
+                        }
+                    });
+
+                    // Expanding may unlock diffs skipped while collapsed.
+                    this.ensure_diff_request(cx);
+                    cx.notify();
                 }));
             section_el = section_el.child(header);
 

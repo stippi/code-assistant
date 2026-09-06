@@ -538,11 +538,61 @@ fn normalize_for_diff(text: &str) -> String {
 }
 
 /// One line of a computed unified diff. `text` is a [`SharedString`] so cached
-/// diffs can be re-rendered every frame with cheap clones.
+/// diffs can be re-rendered every frame with cheap clones. `emphasis` marks
+/// the byte ranges within `text` that changed *within* the line (word diff);
+/// they get a stronger background on top of the row color.
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub tag: ChangeTag,
     pub text: SharedString,
+    pub emphasis: Vec<std::ops::Range<usize>>,
+}
+
+/// Replace blocks larger than this skip the word-level diff — pairing lines
+/// across big rewrites produces noise, not signal (Zed caps similarly).
+const MAX_WORD_DIFF_LINES: usize = 16;
+
+/// Expand one diff op into [`DiffLine`]s, with word-level emphasis for small
+/// replace blocks. `iter_inline_changes` falls back to plain changes on its
+/// own when the block's similarity ratio is too low for a useful word diff.
+fn collect_change_lines<'a>(
+    diff: &'a TextDiff<'a, 'a, 'a, str>,
+    op: &similar::DiffOp,
+    out: &mut Vec<DiffLine>,
+) {
+    let block_lines = op.old_range().len().max(op.new_range().len());
+    if block_lines <= MAX_WORD_DIFF_LINES {
+        for change in diff.iter_inline_changes(op) {
+            let mut text = String::new();
+            let mut emphasis = Vec::new();
+            for (emphasized, piece) in change.iter_strings_lossy() {
+                let start = text.len();
+                text.push_str(&piece);
+                if emphasized {
+                    emphasis.push(start..text.len());
+                }
+            }
+            let trimmed_len = text.trim_end().len();
+            text.truncate(trimmed_len);
+            emphasis.retain_mut(|r| {
+                r.end = r.end.min(trimmed_len);
+                r.start < r.end
+            });
+            out.push(DiffLine {
+                tag: change.tag(),
+                text: text.into(),
+                emphasis,
+            });
+        }
+    } else {
+        for change in diff.iter_changes(op) {
+            out.push(DiffLine {
+                tag: change.tag(),
+                text: change.value().trim_end().to_string().into(),
+                emphasis: Vec::new(),
+            });
+        }
+    }
 }
 
 /// Run the line diff (the expensive part: normalization + Myers diff + per-line
@@ -557,12 +607,11 @@ pub(crate) fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine
         .newline_terminated(true)
         .diff_lines(&old_norm, &new_norm);
 
-    diff.iter_all_changes()
-        .map(|change| DiffLine {
-            tag: change.tag(),
-            text: change.value().trim_end().to_string().into(),
-        })
-        .collect()
+    let mut lines = Vec::new();
+    for op in diff.ops() {
+        collect_change_lines(&diff, op, &mut lines);
+    }
+    lines
 }
 
 /// One hunk of a unified diff: a run of changed lines plus surrounding
@@ -587,16 +636,15 @@ pub fn compute_diff_hunks(old_text: &str, new_text: &str, context: usize) -> Vec
 
     diff.grouped_ops(context)
         .iter()
-        .map(|ops| DiffHunk {
-            new_start: ops.first().map(|op| op.new_range().start + 1).unwrap_or(1),
-            lines: ops
-                .iter()
-                .flat_map(|op| diff.iter_changes(op))
-                .map(|change| DiffLine {
-                    tag: change.tag(),
-                    text: change.value().trim_end().to_string().into(),
-                })
-                .collect(),
+        .map(|ops| {
+            let mut lines = Vec::new();
+            for op in ops {
+                collect_change_lines(&diff, op, &mut lines);
+            }
+            DiffHunk {
+                new_start: ops.first().map(|op| op.new_range().start + 1).unwrap_or(1),
+                lines,
+            }
         })
         .collect()
 }
@@ -611,6 +659,7 @@ pub fn single_sided_hunk(text: &str, tag: ChangeTag) -> Vec<DiffHunk> {
         .map(|l| DiffLine {
             tag,
             text: l.trim_end().to_string().into(),
+            emphasis: Vec::new(),
         })
         .collect();
     if lines.is_empty() {
@@ -775,7 +824,25 @@ fn render_diff_rows(
             }
 
             // Content — overflow_x_hidden enables min-width:0 in flex so text
-            // wraps instead of pushing the row wider than the card.
+            // wraps instead of pushing the row wider than the card. Word-level
+            // changes get a stronger background via text-run highlights, which
+            // wrap with the text (unlike per-span elements).
+            let content: gpui::AnyElement = if dl.emphasis.is_empty() {
+                dl.text.clone().into_any_element()
+            } else {
+                let word_bg = word_emphasis_bg(dl.tag, theme);
+                gpui::StyledText::new(dl.text.clone())
+                    .with_highlights(dl.emphasis.iter().map(|range| {
+                        (
+                            range.clone(),
+                            gpui::HighlightStyle {
+                                background_color: Some(word_bg),
+                                ..Default::default()
+                            },
+                        )
+                    }))
+                    .into_any_element()
+            };
             row = row.child(
                 div()
                     .flex_grow(1.0)
@@ -783,7 +850,7 @@ fn render_diff_rows(
                     .when(start_line.is_none(), |d| d.px_3())
                     .when(start_line.is_some(), |d| d.pl_1().pr_3())
                     .text_color(text_color)
-                    .child(dl.text.clone()),
+                    .child(content),
             );
 
             row.into_any()
@@ -1048,6 +1115,18 @@ pub(crate) fn added_row_colors(
     }
 }
 
+/// Background for word-level (intra-line) changes: a stronger tint layered on
+/// top of the row's add/delete background.
+fn word_emphasis_bg(tag: ChangeTag, theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+    match (tag, theme.is_dark()) {
+        (ChangeTag::Delete, true) => rgba_color(0xC0, 0x38, 0x38, 0x70),
+        (ChangeTag::Delete, false) => rgba_color(0xE0, 0x60, 0x60, 0x60),
+        (ChangeTag::Insert, true) => rgba_color(0x38, 0xA0, 0x38, 0x70),
+        (ChangeTag::Insert, false) => rgba_color(0x40, 0xB8, 0x40, 0x50),
+        (ChangeTag::Equal, _) => gpui::transparent_black(),
+    }
+}
+
 pub(crate) fn unchanged_row_colors(
     theme: &gpui_component::theme::Theme,
 ) -> (Option<gpui::Hsla>, gpui::Hsla) {
@@ -1093,6 +1172,27 @@ mod tests {
             assert_eq!((deletes, inserts), (1, 1));
             assert!(equals <= 6, "at most 3 context lines per side");
         }
+    }
+
+    #[test]
+    fn compute_diff_lines_marks_word_level_changes() {
+        let lines = compute_diff_lines("fn foo(alpha: u32) {}\n", "fn foo(beta: u32) {}\n");
+        let del = lines.iter().find(|l| l.tag == ChangeTag::Delete).unwrap();
+        let ins = lines.iter().find(|l| l.tag == ChangeTag::Insert).unwrap();
+
+        // The changed identifier is emphasized — not the whole line.
+        assert_eq!(del.emphasis.len(), 1);
+        assert_eq!(&del.text[del.emphasis[0].clone()], "alpha");
+        assert_eq!(ins.emphasis.len(), 1);
+        assert_eq!(&ins.text[ins.emphasis[0].clone()], "beta");
+
+        // Unchanged context lines carry no emphasis.
+        assert!(
+            lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Equal)
+                .all(|l| l.emphasis.is_empty())
+        );
     }
 
     #[test]

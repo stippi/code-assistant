@@ -37,7 +37,7 @@ dirs = "5.0"
 open = "5"
 
 # Diff visualization
-similar = { version = "2.7.0", features = ["inline"] }
+similar = { version = "2.7.0", features = ["inline", "unicode"] }
 
 # Image handling (pasted/attached images)
 image = "0.25"
