@@ -77,10 +77,6 @@ pub struct UiSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right_sidebar_width: Option<f32>,
 
-    /// Persisted width (px) of the Review panel's file-tree column.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_tree_width: Option<f32>,
-
     /// Persisted default base ref for "Branch vs base" review mode; seeds each
     /// repo's per-session base override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,7 +99,6 @@ impl Default for UiSettings {
             window_bounds: None,
             default_model: None,
             right_sidebar_width: None,
-            review_tree_width: None,
             review_default_base: None,
         }
     }

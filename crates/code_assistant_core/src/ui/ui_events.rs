@@ -334,18 +334,11 @@ pub enum UiEvent {
     },
 
     // === Review Panel Events ===
-    /// Updated list of changed files for the Review panel, grouped per repo.
-    UpdateReviewFiles {
-        repos: Vec<crate::session::RepoReview>,
-        is_git_repo: bool,
-        mode: crate::session::ReviewMode,
-    },
-    /// The loaded diff for a single file selected in the Review panel.
-    UpdateReviewDiff {
-        repo_root: PathBuf,
-        path: String,
-        diff: git::FileDiffContent,
-    },
+    /// The Review panel's changed-files listing changed. Pure notification —
+    /// the data itself is mirrored into the UI layer's state by the sender.
+    UpdateReviewFiles,
+    /// A prepared file diff for the Review panel arrived (same mirror scheme).
+    UpdateReviewDiff,
 
     // === Configuration Events ===
     /// Configuration files (providers.json / models.json) were changed on disk.

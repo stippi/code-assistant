@@ -1,37 +1,36 @@
-//! The "Review" view for the right sidebar: a compare-mode selector plus a
-//! two-column body — the unified diff on the **left** and, on the **right**, a
-//! per-repo set of changed-file trees (each repo gets its own base-branch
-//! selector in "Branch vs base" mode). The two columns are separated by a
-//! draggable divider (`h_resizable`).
+//! The "Review" view for the right sidebar: a compare-mode selector above a
+//! single scrollable column of per-repo sections. Within a repo, changed files
+//! are **stacked**: each file has a collapsible header (icon, path, status,
+//! per-file `+/−`) with its diff hunks directly below — no separate tree/diff
+//! split.
 //!
 //! Backend data arrives through the `current_review_listing` / `current_review_diff`
 //! globals on [`Gpui`]; this view consumes them in `render` (the "sync-in-render"
 //! technique the worktree selector uses). Change detection is generation-based:
-//! the per-frame unchanged case costs an integer compare, and the expensive
-//! line diff is computed once per content change, never during render.
+//! the per-frame unchanged case costs an integer compare.
+//!
+//! Diffs load lazily, one file at a time: after each arrival the next visible
+//! file without a diff is requested. Hunks (changed lines + a few context
+//! lines) are computed once on arrival and cached — rendering never diffs, and
+//! the element count scales with changed lines, not file sizes.
 
-use crate::shared::file_tree::{ChangedFilesTree, ChangedFilesTreeEvent};
-use crate::tool_cards::diff_card::{
-    DiffLine, added_row_colors, compute_diff_lines, deleted_row_colors, render_diff_lines,
-};
-use crate::{Gpui, ReviewData};
+use crate::shared::file_icons;
+use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_hunks};
+use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
+use git::{ChangeStatus, ChangedFile};
 use gpui::{
     AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Render,
-    ScrollHandle, Subscription, Window, div, prelude::*, px, rems,
+    Subscription, Window, div, prelude::*, px, rems,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable, Size,
-    resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
     v_flex,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-
-/// Default width (px) of the file-tree column when nothing is persisted.
-const DEFAULT_TREE_WIDTH: f32 = 240.0;
 
 // ---------------------------------------------------------------------------
 // Compare-mode dropdown
@@ -95,36 +94,39 @@ impl SelectItem for BaseOption {
 // Per-repo section
 // ---------------------------------------------------------------------------
 
-/// One git repo's changed-files tree plus its base selector, rendered as a
-/// collapsible section in the right column.
+/// One git repo's stacked file list plus its base selector, rendered as a
+/// collapsible section.
 struct RepoSection {
     repo_root: PathBuf,
     label: String,
-    tree: Entity<ChangedFilesTree>,
     base_state: Entity<SelectState<Vec<BaseOption>>>,
     base_candidates: Vec<String>,
     base: Option<String>,
-    has_files: bool,
+    files: Vec<ChangedFile>,
     stats: git::DiffStats,
     scan_state: ReviewScanState,
     collapsed: bool,
-    _tree_sub: Subscription,
     _base_sub: Subscription,
+}
+
+/// Single-letter status badge (same colors the old file tree used).
+fn status_badge(status: ChangeStatus) -> (&'static str, gpui::Hsla) {
+    match status {
+        ChangeStatus::Added | ChangeStatus::Untracked => ("A", gpui::rgb(0x3f_a5_5a).into()),
+        ChangeStatus::Modified => ("M", gpui::rgb(0xc7_9a_3a).into()),
+        ChangeStatus::Deleted => ("D", gpui::rgb(0xc7_4a_4a).into()),
+        ChangeStatus::Renamed => ("R", gpui::rgb(0x4a_82_c7).into()),
+        ChangeStatus::Copied => ("C", gpui::rgb(0x4a_82_c7).into()),
+        ChangeStatus::TypeChanged => ("T", gpui::rgb(0x8a_6a_c7).into()),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // ReviewView
 // ---------------------------------------------------------------------------
 
-/// A diff prepared for per-frame rendering: the expensive line diff is
-/// computed once when the backend data changes, never during render.
-struct PreparedDiff {
-    repo_root: PathBuf,
-    path: String,
-    is_binary: bool,
-    too_large: bool,
-    lines: Vec<DiffLine>,
-}
+/// Identifies one changed file across repos.
+type FileKey = (PathBuf, String);
 
 /// Sentinel for "never synced": guarantees the first generation compare
 /// mismatches, whatever the global's current generation is.
@@ -137,32 +139,28 @@ pub struct ReviewView {
     /// Current compare mode (drives requests). Base is tracked per repo.
     mode: ReviewMode,
     is_git_repo: bool,
+    /// Whether the first discovery response has arrived.
+    has_listing: bool,
 
-    /// Per-repo sections in the right column.
+    /// Per-repo sections, in listing order.
     repos: Vec<RepoSection>,
-    /// Currently selected file as `(repo_root, repo-relative path)`.
-    selected: Option<(PathBuf, String)>,
     /// User's explicit per-repo base choices for this session.
     base_overrides: HashMap<PathBuf, String>,
     /// Persisted default base ref, seeds a repo's base when it has no override.
     default_base: Option<String>,
 
-    /// Two-column split state (LEFT = diff, RIGHT = tree column).
-    split_state: Entity<ResizableState>,
-    /// Persisted tree-column width, used as the initial panel size.
-    tree_width: f32,
-    /// Scroll position of the diff pane.
-    diff_scroll: ScrollHandle,
+    /// Prepared diffs by file, filled lazily one request at a time.
+    file_diffs: HashMap<FileKey, PreparedReviewDiff>,
+    /// Files the user collapsed (default is expanded).
+    collapsed_files: HashSet<FileKey>,
+    /// The single outstanding diff request; arrivals for anything else are
+    /// stale (e.g. from before a mode/base change) and dropped.
+    in_flight: Option<FileKey>,
 
-    /// Last listing consumed from the global; needed to resolve file lookups.
-    last_listing: Option<ReviewData>,
-    /// Generation of `last_listing`. Change detection per frame is a plain
-    /// integer compare against the global's generation — no clones.
+    /// Generation of the consumed listing. Change detection per frame is a
+    /// plain integer compare against the global's generation — no clones.
     listing_generation: u64,
-
-    /// The selected file's diff, with its line diff computed once on arrival.
-    prepared_diff: Option<PreparedDiff>,
-    /// Generation of `prepared_diff` (see `listing_generation`).
+    /// Generation of the last consumed diff (see `listing_generation`).
     diff_generation: u64,
 
     focus_handle: FocusHandle,
@@ -180,34 +178,24 @@ impl ReviewView {
         });
         let mode_sub = cx.subscribe_in(&mode_state, window, Self::on_mode_event);
 
-        // Seed persisted preferences (default base + tree width) from settings.
-        let (default_base, tree_width) = cx
+        // Seed the persisted default base from settings.
+        let default_base = cx
             .try_global::<crate::UiSettingsGlobal>()
-            .map(|g| {
-                (
-                    g.0.review_default_base.clone(),
-                    g.0.review_tree_width.unwrap_or(DEFAULT_TREE_WIDTH),
-                )
-            })
-            .unwrap_or((None, DEFAULT_TREE_WIDTH));
-
-        let split_state = cx.new(|_| ResizableState::default());
+            .and_then(|g| g.0.review_default_base.clone());
 
         Self {
             session_id: None,
             mode_state,
             mode: ReviewMode::WorkingTree,
             is_git_repo: false,
+            has_listing: false,
             repos: Vec::new(),
-            selected: None,
             base_overrides: HashMap::new(),
             default_base,
-            split_state,
-            tree_width,
-            diff_scroll: ScrollHandle::new(),
-            last_listing: None,
+            file_diffs: HashMap::new(),
+            collapsed_files: HashSet::new(),
+            in_flight: None,
             listing_generation: GENERATION_UNSEEN,
-            prepared_diff: None,
             diff_generation: GENERATION_UNSEEN,
             focus_handle: cx.focus_handle(),
             _mode_sub: mode_sub,
@@ -218,13 +206,14 @@ impl ReviewView {
     pub fn set_session(&mut self, session_id: Option<String>, cx: &mut Context<Self>) {
         self.session_id = session_id;
         // Reset per-session state; fresh data will arrive via the global.
-        self.selected = None;
-        self.last_listing = None;
+        self.has_listing = false;
         self.listing_generation = GENERATION_UNSEEN;
-        self.prepared_diff = None;
         self.diff_generation = GENERATION_UNSEEN;
         self.repos.clear();
         self.base_overrides.clear();
+        self.file_diffs.clear();
+        self.collapsed_files.clear();
+        self.in_flight = None;
 
         // Restore the persisted compare mode for this session. The selector
         // resyncs from the echoed listing on the next render.
@@ -278,43 +267,53 @@ impl ReviewView {
         }
     }
 
-    fn request_diff(&self, repo_root: &PathBuf, path: &str, cx: &mut Context<Self>) {
+    /// Request the next visible file that has no prepared diff yet. At most
+    /// one request is in flight; collapsed repos and files are skipped, which
+    /// keeps loading lazy.
+    fn ensure_diff_request(&mut self, cx: &mut Context<Self>) {
+        if self.in_flight.is_some() {
+            return;
+        }
         let Some(session_id) = self.session_id.clone() else {
             return;
         };
-        let Some(listing) = &self.last_listing else {
-            return;
-        };
-        let Some(repo) = listing.repos.iter().find(|r| &r.repo_root == repo_root) else {
-            return;
-        };
-        let Some(file) = repo.files.iter().find(|f| f.path == path).cloned() else {
-            return;
-        };
-        let base = repo.base.clone();
-        if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.cmd_get_review_file_diff(session_id, repo_root.clone(), self.mode, base, file);
-        }
-    }
 
-    fn on_file_selected(&mut self, repo_root: PathBuf, path: String, cx: &mut Context<Self>) {
-        // Clear selection highlight in sibling repos' trees.
-        for section in &self.repos {
-            if section.repo_root != repo_root {
-                section.tree.update(cx, |t, cx| t.set_selected(None, cx));
+        let mut next: Option<(PathBuf, Option<String>, ChangedFile)> = None;
+        'outer: for section in &self.repos {
+            if section.collapsed {
+                continue;
+            }
+            for file in &section.files {
+                let key = (section.repo_root.clone(), file.path.clone());
+                if self.collapsed_files.contains(&key) || self.file_diffs.contains_key(&key) {
+                    continue;
+                }
+                next = Some((
+                    section.repo_root.clone(),
+                    section.base.clone(),
+                    file.clone(),
+                ));
+                break 'outer;
             }
         }
-        self.request_diff(&repo_root, &path, cx);
-        self.selected = Some((repo_root, path));
-        cx.notify();
+
+        if let Some((repo_root, base, file)) = next {
+            self.in_flight = Some((repo_root.clone(), file.path.clone()));
+            if let Some(gpui) = cx.try_global::<Gpui>() {
+                gpui.cmd_get_review_file_diff(session_id, repo_root, self.mode, base, file);
+            }
+        }
     }
 
     fn on_repo_base_changed(&mut self, repo_root: PathBuf, branch: String, cx: &mut Context<Self>) {
+        // Diffs of this repo were computed against the old base.
+        self.file_diffs.retain(|(root, _), _| root != &repo_root);
+        self.in_flight = None;
+
         self.base_overrides.insert(repo_root, branch.clone());
         // Remember this as the global default for future repos/sessions.
         self.default_base = Some(branch.clone());
         crate::update_ui_settings(cx, |s| s.review_default_base = Some(branch));
-        self.selected = None;
         self.request_listing(cx);
         cx.notify();
     }
@@ -330,8 +329,9 @@ impl ReviewView {
             && *mode != self.mode
         {
             self.mode = *mode;
-            // Selecting a new mode invalidates the current diff selection.
-            self.selected = None;
+            // A new mode invalidates every prepared diff.
+            self.file_diffs.clear();
+            self.in_flight = None;
             self.persist_mode(cx);
             self.request_listing(cx);
             cx.notify();
@@ -348,14 +348,15 @@ impl ReviewView {
             return;
         };
         self.listing_generation = generation;
-        self.last_listing = listing.clone();
 
         let Some(listing) = listing else {
             // Cleared (e.g. session change): drop all sections.
+            self.has_listing = false;
             self.repos.clear();
             return;
         };
 
+        self.has_listing = true;
         self.is_git_repo = listing.is_git_repo;
         self.mode = listing.mode;
 
@@ -365,7 +366,7 @@ impl ReviewView {
         });
 
         // Rebuild sections when the set of repos changes; otherwise update the
-        // existing sections in place (preserving expansion / selection).
+        // existing sections in place (preserving expansion state).
         let incoming_roots: Vec<PathBuf> =
             listing.repos.iter().map(|r| r.repo_root.clone()).collect();
         let current_roots: Vec<PathBuf> = self.repos.iter().map(|r| r.repo_root.clone()).collect();
@@ -380,6 +381,25 @@ impl ReviewView {
             for (section, data) in self.repos.iter_mut().zip(listing.repos.iter()) {
                 Self::update_section(section, data, window, cx);
             }
+        }
+
+        // Drop prepared diffs and collapse state of files that vanished from
+        // the listing.
+        let live: HashSet<FileKey> = self
+            .repos
+            .iter()
+            .flat_map(|s| {
+                s.files
+                    .iter()
+                    .map(|f| (s.repo_root.clone(), f.path.clone()))
+            })
+            .collect();
+        self.file_diffs.retain(|key, _| live.contains(key));
+        self.collapsed_files.retain(|key| live.contains(key));
+        if let Some(in_flight) = &self.in_flight
+            && !live.contains(in_flight)
+        {
+            self.in_flight = None;
         }
 
         // Apply the persisted default base to any repo that has no explicit
@@ -404,43 +424,39 @@ impl ReviewView {
             }
         }
 
-        // Reconcile the selection against the fresh listing.
-        let still_present = self.selected.as_ref().is_some_and(|(root, path)| {
-            listing
-                .repos
-                .iter()
-                .any(|r| &r.repo_root == root && r.files.iter().any(|f| &f.path == path))
-        });
-        if !still_present {
-            self.selected = None;
-        }
-        let selected = self.selected.clone();
-        for section in &self.repos {
-            let sel = selected
-                .as_ref()
-                .filter(|(root, _)| root == &section.repo_root)
-                .map(|(_, path)| path.clone());
-            section.tree.update(cx, |t, cx| t.set_selected(sel, cx));
-        }
+        self.ensure_diff_request(cx);
     }
 
-    /// Create a fresh [`RepoSection`] for `data`, wiring per-repo subscriptions
-    /// that capture the repo root so events identify their origin.
+    /// Consume the latest diff arrival from the global if it changed. Only the
+    /// response to the outstanding request is accepted; the hunks are computed
+    /// once here, then the next missing diff is requested.
+    fn sync_diff(&mut self, cx: &mut Context<Self>) {
+        let Some((generation, diff)) = cx
+            .try_global::<Gpui>()
+            .and_then(|g| g.review_diff_if_newer(self.diff_generation))
+        else {
+            return;
+        };
+        self.diff_generation = generation;
+
+        if let Some(d) = diff {
+            let key = (d.repo_root, d.path);
+            if self.in_flight.as_ref() == Some(&key) {
+                self.in_flight = None;
+                self.file_diffs.insert(key, d.prepared);
+            }
+        }
+        self.ensure_diff_request(cx);
+    }
+
+    /// Create a fresh [`RepoSection`] for `data`, wiring the base-selector
+    /// subscription so events identify their repo.
     fn build_section(
         &self,
-        data: &crate::RepoReviewData,
+        data: &RepoReviewData,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> RepoSection {
-        let tree = cx.new(ChangedFilesTree::new);
-        tree.update(cx, |t, cx| t.set_files(&data.files, cx));
-
-        let root_for_tree = data.repo_root.clone();
-        let tree_sub = cx.subscribe_in(&tree, window, move |this, _tree, event, _window, cx| {
-            let ChangedFilesTreeEvent::FileSelected(path) = event;
-            this.on_file_selected(root_for_tree.clone(), path.clone(), cx);
-        });
-
         let items: Vec<BaseOption> = data
             .base_candidates
             .iter()
@@ -469,33 +485,28 @@ impl ReviewView {
         RepoSection {
             repo_root: data.repo_root.clone(),
             label: data.label.clone(),
-            tree,
             base_state,
             base_candidates: data.base_candidates.clone(),
             base: effective_base,
-            has_files: !data.files.is_empty(),
+            files: data.files.clone(),
             stats: data.stats,
             scan_state: data.scan_state,
             collapsed: false,
-            _tree_sub: tree_sub,
             _base_sub: base_sub,
         }
     }
 
-    /// Update an existing section's tree + base selector in place.
+    /// Update an existing section's data + base selector in place.
     fn update_section(
         section: &mut RepoSection,
-        data: &crate::RepoReviewData,
+        data: &RepoReviewData,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         section.label = data.label.clone();
-        section.has_files = !data.files.is_empty();
+        section.files = data.files.clone();
         section.stats = data.stats;
         section.scan_state = data.scan_state;
-        section
-            .tree
-            .update(cx, |t, cx| t.set_files(&data.files, cx));
 
         if section.base_candidates != data.base_candidates {
             section.base_candidates = data.base_candidates.clone();
@@ -518,7 +529,7 @@ impl ReviewView {
 
     /// The base ref to preselect for a repo: an explicit session override, else
     /// the persisted default (when it is a candidate), else the resolved base.
-    fn effective_base(&self, data: &crate::RepoReviewData) -> Option<String> {
+    fn effective_base(&self, data: &RepoReviewData) -> Option<String> {
         if let Some(base) = self.base_overrides.get(&data.repo_root) {
             return Some(base.clone());
         }
@@ -528,110 +539,6 @@ impl ReviewView {
             return Some(default.clone());
         }
         data.base.clone()
-    }
-
-    /// Consume the latest diff from the global if it changed, computing the
-    /// line diff exactly once. Rendering then reuses the prepared lines.
-    fn sync_diff(&mut self, cx: &mut Context<Self>) {
-        let Some((generation, diff)) = cx
-            .try_global::<Gpui>()
-            .and_then(|g| g.review_diff_if_newer(self.diff_generation))
-        else {
-            return;
-        };
-        self.diff_generation = generation;
-        self.prepared_diff = diff.map(|d| {
-            let lines = if d.diff.is_binary || d.diff.too_large {
-                Vec::new()
-            } else {
-                let old = d.diff.old_text.as_deref().unwrap_or_default();
-                let new = d.diff.new_text.as_deref().unwrap_or_default();
-                if old.is_empty() && new.is_empty() {
-                    Vec::new()
-                } else {
-                    compute_diff_lines(old, new)
-                }
-            };
-            PreparedDiff {
-                repo_root: d.repo_root,
-                path: d.path,
-                is_binary: d.diff.is_binary,
-                too_large: d.diff.too_large,
-                lines,
-            }
-        });
-    }
-
-    fn render_diff_pane(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let muted = cx.theme().muted_foreground;
-
-        let placeholder = |msg: &str| {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .p_4()
-                .text_sm()
-                .text_color(muted)
-                .child(msg.to_string())
-                .into_any_element()
-        };
-
-        let Some((sel_root, sel_path)) = self.selected.as_ref() else {
-            return placeholder("Select a file to view its diff");
-        };
-
-        let Some(prepared) = self
-            .prepared_diff
-            .as_ref()
-            .filter(|p| &p.repo_root == sel_root && &p.path == sel_path)
-        else {
-            return placeholder("Loading diff…");
-        };
-
-        if prepared.is_binary {
-            return placeholder("Binary file — no text diff");
-        }
-        if prepared.too_large {
-            return placeholder("File too large to display");
-        }
-        if prepared.lines.is_empty() {
-            return placeholder("No changes to display");
-        }
-
-        let rem_size = window.rem_size();
-        let theme = cx.theme();
-        // Match the chat diff card's body styling so the unified diff (with its
-        // red/green row backgrounds) renders identically here.
-        let is_dark = theme.background.l < 0.5;
-        let body_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.08, 1.0)
-        } else {
-            gpui::hsla(0.0, 0.0, 0.97, 1.0)
-        };
-        let line_height_px = rems(1.25).to_pixels(rem_size).round();
-        let diff = render_diff_lines(&prepared.lines, theme, Some(1), rem_size);
-
-        div()
-            .id("review-diff-scroll")
-            .size_full()
-            .overflow_scroll()
-            .track_scroll(&self.diff_scroll)
-            .child(
-                div()
-                    .w_full()
-                    .py_1()
-                    .bg(body_bg)
-                    .flex()
-                    .flex_col()
-                    .text_size(rems(0.78125))
-                    .line_height(line_height_px)
-                    .font_family("Menlo")
-                    .font_weight(FontWeight(400.0))
-                    .child(diff),
-            )
-            .into_any_element()
     }
 
     /// The rotating double-arrow used on active sessions, in grey — shown on
@@ -661,8 +568,8 @@ impl ReviewView {
             .into_any_element()
     }
 
-    /// The header's right-hand slot: a spinner while a repo is being scanned,
-    /// a faded static one while it waits its turn, and a `+adds −dels`
+    /// The repo header's right-hand slot: a spinner while a repo is being
+    /// scanned, a faded static one while it waits its turn, and a `+adds −dels`
     /// summary once its (possibly cached) result is in.
     fn render_scan_indicator(&self, section: &RepoSection, cx: &Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme();
@@ -673,7 +580,7 @@ impl ReviewView {
         }
 
         let pending = matches!(section.scan_state, ReviewScanState::Pending);
-        let has_data = section.has_files || section.stats != git::DiffStats::default();
+        let has_data = !section.files.is_empty() || section.stats != git::DiffStats::default();
         if !has_data {
             // Nothing (yet) to summarize: a queued repo shows a wait marker,
             // a scanned clean repo shows no indicator at all.
@@ -705,8 +612,165 @@ impl ReviewView {
             .into_any_element()
     }
 
-    /// Render the right column: a scrollable stack of per-repo sections.
-    fn render_tree_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// One stacked file: collapsible header (icon, path, status, `+/−`) with
+    /// the file's diff hunks directly below.
+    fn render_file_entry(
+        &self,
+        repo_root: &std::path::Path,
+        file: &ChangedFile,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let fg = theme.foreground;
+        let border = theme.border;
+
+        let key: FileKey = (repo_root.to_path_buf(), file.path.clone());
+        let collapsed = self.collapsed_files.contains(&key);
+        let entry = self.file_diffs.get(&key);
+        let loading = self.in_flight.as_ref() == Some(&key);
+
+        // Right-hand slot of the file header.
+        let indicator: gpui::AnyElement = match entry {
+            Some(e) if e.is_binary => div()
+                .text_xs()
+                .text_color(muted)
+                .child("binary")
+                .into_any_element(),
+            Some(e) if e.too_large => div()
+                .text_xs()
+                .text_color(muted)
+                .child("too large")
+                .into_any_element(),
+            Some(e) => div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .text_xs()
+                .child(
+                    div()
+                        .text_color(added_row_colors(theme).1)
+                        .child(format!("+{}", e.additions)),
+                )
+                .child(
+                    div()
+                        .text_color(deleted_row_colors(theme).1)
+                        .child(format!("−{}", e.deletions)),
+                )
+                .into_any_element(),
+            None if loading => {
+                Self::scan_spinner(format!("{}:{}", repo_root.display(), file.path), muted)
+            }
+            None => Self::pending_marker(muted),
+        };
+
+        let chevron = if collapsed {
+            "icons/chevron_right.svg"
+        } else {
+            "icons/chevron_down.svg"
+        };
+        let (status_letter, status_color) = status_badge(file.status);
+        let file_name = file.path.rsplit('/').next().unwrap_or(&file.path);
+        let icon = file_icons::get().get_icon_for_filename(file_name);
+
+        let toggle_key = key.clone();
+        let header = div()
+            .id(gpui::SharedString::from(format!(
+                "review-file-{}:{}",
+                repo_root.display(),
+                file.path
+            )))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .pl_3()
+            .pr_2()
+            .py_0p5()
+            .border_t_1()
+            .border_color(border)
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.muted))
+            .child(gpui::svg().size(px(10.)).path(chevron).text_color(muted))
+            .child(file_icons::render_icon(&icon, 14.0, muted, "📄"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_xs()
+                    .text_color(fg)
+                    .child(file.path.clone()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(status_color)
+                    .child(status_letter),
+            )
+            .child(indicator)
+            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                if !this.collapsed_files.remove(&toggle_key) {
+                    this.collapsed_files.insert(toggle_key.clone());
+                }
+                // Expanding may unlock a diff that was skipped while collapsed.
+                this.ensure_diff_request(cx);
+                cx.notify();
+            }));
+
+        let mut container = v_flex().w_full().child(header);
+
+        if !collapsed && let Some(entry) = entry {
+            let body: Option<gpui::AnyElement> = if entry.is_binary || entry.too_large {
+                None // The header badge already says why there is no diff.
+            } else if entry.hunks.is_empty() {
+                Some(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("No content changes")
+                        .into_any_element(),
+                )
+            } else {
+                let rem_size = window.rem_size();
+                let is_dark = theme.background.l < 0.5;
+                let body_bg = if is_dark {
+                    gpui::hsla(0.0, 0.0, 0.08, 1.0)
+                } else {
+                    gpui::hsla(0.0, 0.0, 0.97, 1.0)
+                };
+                let line_height_px = rems(1.25).to_pixels(rem_size).round();
+                Some(
+                    div()
+                        .w_full()
+                        .py_1()
+                        .bg(body_bg)
+                        .flex()
+                        .flex_col()
+                        .text_size(rems(0.78125))
+                        .line_height(line_height_px)
+                        .font_family("Menlo")
+                        .font_weight(FontWeight(400.0))
+                        .child(render_diff_hunks(&entry.hunks, theme, rem_size))
+                        .into_any_element(),
+                )
+            };
+            if let Some(body) = body {
+                container = container.child(body);
+            }
+        }
+
+        container.into_any_element()
+    }
+
+    /// The scrollable stack of per-repo sections with their stacked files.
+    fn render_sections(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
         let fg = cx.theme().foreground;
         let border = cx.theme().border;
@@ -714,9 +778,20 @@ impl ReviewView {
 
         let mut column = v_flex().size_full().overflow_y_scrollbar();
 
-        for (ix, section) in self.repos.iter().enumerate() {
-            let repo_root = section.repo_root.clone();
-            let collapsed = section.collapsed;
+        // Snapshot the per-section data needed while building children, so the
+        // listener closures (which borrow `this`) don't fight the loop borrow.
+        let section_count = self.repos.len();
+        for ix in 0..section_count {
+            let (repo_root, label, collapsed, scan_state) = {
+                let s = &self.repos[ix];
+                (
+                    s.repo_root.clone(),
+                    s.label.clone(),
+                    s.collapsed,
+                    s.scan_state,
+                )
+            };
+            let _ = scan_state;
 
             // Sections are separated by a line ABOVE each section (not by a
             // line between a section's header and its content).
@@ -729,6 +804,7 @@ impl ReviewView {
             } else {
                 "icons/chevron_down.svg"
             };
+            let toggle_root = repo_root.clone();
             let header = div()
                 .id(gpui::SharedString::from(format!("repo-header-{ix}")))
                 .flex()
@@ -744,14 +820,16 @@ impl ReviewView {
                     div()
                         .flex_1()
                         .text_sm()
-                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(fg)
-                        .child(section.label.clone()),
+                        .child(label),
                 )
-                .child(self.render_scan_indicator(section, cx))
+                .child(self.render_scan_indicator(&self.repos[ix], cx))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    if let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == repo_root) {
+                    if let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == toggle_root) {
                         s.collapsed = !s.collapsed;
+                        // Expanding may unlock diffs skipped while collapsed.
+                        this.ensure_diff_request(cx);
                         cx.notify();
                     }
                 }));
@@ -761,7 +839,7 @@ impl ReviewView {
                 if branch_mode {
                     section_el = section_el.child(
                         div().px_2().py_1().child(
-                            Select::new(&section.base_state)
+                            Select::new(&self.repos[ix].base_state)
                                 .placeholder("Base")
                                 .with_size(Size::XSmall)
                                 .icon(
@@ -775,9 +853,11 @@ impl ReviewView {
                     );
                 }
                 // A repo without changes shows just its header — the missing
-                // +/− badge already says "clean", so no placeholder text.
-                if section.has_files {
-                    section_el = section_el.child(section.tree.clone());
+                // +/− badge already says "clean".
+                let files = self.repos[ix].files.clone();
+                for file in &files {
+                    section_el =
+                        section_el.child(self.render_file_entry(&repo_root, file, window, cx));
                 }
             }
 
@@ -806,7 +886,7 @@ impl Render for ReviewView {
 
         // Before the first (fast) discovery response there is nothing to lay
         // out yet — show explicit activity instead of an empty panel.
-        if self.last_listing.is_none() {
+        if !self.has_listing {
             return v_flex()
                 .size_full()
                 .items_center()
@@ -854,32 +934,7 @@ impl Render for ReviewView {
                     .min_w(px(130.)),
             );
 
-        // Two-column body: diff (LEFT, grows) | tree column (RIGHT, sized).
-        let diff_pane = self.render_diff_pane(window, cx);
-        let tree_column = self.render_tree_column(cx);
-
-        let body = h_resizable("review-split")
-            .with_state(&self.split_state)
-            .on_resize(|state, _window, cx| {
-                if let Some(width) = state.read(cx).sizes().get(1).copied() {
-                    let w = f32::from(width);
-                    crate::update_ui_settings(cx, |s| s.review_tree_width = Some(w));
-                }
-            })
-            .child(resizable_panel().child(diff_pane))
-            .child(
-                resizable_panel()
-                    .size(px(self.tree_width))
-                    .size_range(px(180.)..px(600.))
-                    .flex_none()
-                    .child(
-                        div()
-                            .size_full()
-                            .border_l_1()
-                            .border_color(border)
-                            .child(tree_column),
-                    ),
-            );
+        let body = self.render_sections(window, cx);
 
         v_flex()
             .size_full()

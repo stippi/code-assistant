@@ -973,7 +973,7 @@ impl UserInterface for ACPUserUI {
             UiEvent::UpdateWorktreeData { .. } => {
                 // Worktree management not supported in ACP UI
             }
-            UiEvent::UpdateReviewFiles { .. } | UiEvent::UpdateReviewDiff { .. } => {
+            UiEvent::UpdateReviewFiles | UiEvent::UpdateReviewDiff => {
                 // Review panel is GPUI-specific.
             }
             UiEvent::UpdateAllowedModels { .. } => {

@@ -638,15 +638,31 @@ impl Gpui {
         let epoch = self.review_scan_epoch.fetch_add(1, Ordering::SeqCst) + 1;
 
         self.dispatch(async move {
+            // Mirror the listing into the Gpui global and notify the UI. The
+            // event itself carries no data (see UiEvent::UpdateReviewFiles).
             let push = |repos: &[RepoReview], is_git_repo: bool| {
                 if gpui.review_scan_epoch.load(Ordering::SeqCst) == epoch
                     && gpui.is_current_session(&session_id)
                 {
-                    gpui.push_event(UiEvent::UpdateReviewFiles {
-                        repos: repos.to_vec(),
+                    let repos = repos
+                        .iter()
+                        .map(|r| crate::RepoReviewData {
+                            repo_root: r.repo_root.clone(),
+                            label: r.label.clone(),
+                            current_branch: r.current_branch.clone(),
+                            base_candidates: r.base_candidates.clone(),
+                            base: r.base.clone(),
+                            files: r.files.clone(),
+                            stats: r.stats,
+                            scan_state: r.scan_state,
+                        })
+                        .collect();
+                    gpui.set_current_review_listing(Some(crate::ReviewData {
+                        repos,
                         is_git_repo,
                         mode,
-                    });
+                    }));
+                    gpui.push_event(UiEvent::UpdateReviewFiles);
                 }
             };
 
@@ -718,20 +734,32 @@ impl Gpui {
         let path = file.path.clone();
         let event_repo_root = repo_root.clone();
         self.dispatch(async move {
-            match service
+            let result = service
                 .get_review_file_diff(session_id.clone(), repo_root, mode, base, file)
-                .await
-            {
-                Ok(diff) => {
-                    if gpui.is_current_session(&session_id) {
-                        gpui.push_event(UiEvent::UpdateReviewDiff {
-                            repo_root: event_repo_root,
-                            path,
-                            diff,
-                        });
-                    }
-                }
-                Err(e) => gpui.display_error(format!("Failed to load diff: {e:#}")),
+                .await;
+            // Hunks are computed HERE, on the background executor — the UI
+            // thread only ever renders prepared hunks (never runs a diff).
+            let prepared = match &result {
+                Ok(diff) => crate::PreparedReviewDiff::from_content(diff),
+                // An empty prepared diff still completes the view's one-at-a-
+                // time request pipeline; the error itself is surfaced below.
+                Err(_) => crate::PreparedReviewDiff::from_content(&git::FileDiffContent {
+                    old_text: None,
+                    new_text: None,
+                    is_binary: false,
+                    too_large: false,
+                }),
+            };
+            if let Err(e) = &result {
+                gpui.display_error(format!("Failed to load diff: {e:#}"));
+            }
+            if gpui.is_current_session(&session_id) {
+                gpui.set_current_review_diff(Some(crate::ReviewDiff {
+                    repo_root: event_repo_root,
+                    path,
+                    prepared,
+                }));
+                gpui.push_event(UiEvent::UpdateReviewDiff);
             }
         });
     }

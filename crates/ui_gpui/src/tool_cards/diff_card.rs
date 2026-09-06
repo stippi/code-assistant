@@ -539,7 +539,8 @@ fn normalize_for_diff(text: &str) -> String {
 
 /// One line of a computed unified diff. `text` is a [`SharedString`] so cached
 /// diffs can be re-rendered every frame with cheap clones.
-pub(crate) struct DiffLine {
+#[derive(Debug, Clone)]
+pub struct DiffLine {
     pub tag: ChangeTag,
     pub text: SharedString,
 }
@@ -562,6 +563,107 @@ pub(crate) fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine
             text: change.value().trim_end().to_string().into(),
         })
         .collect()
+}
+
+/// One hunk of a unified diff: a run of changed lines plus surrounding
+/// context, positioned at `new_start` (1-based) in the new file.
+#[derive(Debug, Clone)]
+pub struct DiffHunk {
+    pub new_start: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+/// Like [`compute_diff_lines`], but grouped into hunks with `context` lines
+/// of surrounding context (à la `git diff`) — unchanged stretches between
+/// hunks are dropped entirely, which keeps the element count proportional to
+/// the *changed* lines instead of the file size.
+pub fn compute_diff_hunks(old_text: &str, new_text: &str, context: usize) -> Vec<DiffHunk> {
+    let old_norm = normalize_for_diff(old_text);
+    let new_norm = normalize_for_diff(new_text);
+
+    let diff = TextDiff::configure()
+        .newline_terminated(true)
+        .diff_lines(&old_norm, &new_norm);
+
+    diff.grouped_ops(context)
+        .iter()
+        .map(|ops| DiffHunk {
+            new_start: ops.first().map(|op| op.new_range().start + 1).unwrap_or(1),
+            lines: ops
+                .iter()
+                .flat_map(|op| diff.iter_changes(op))
+                .map(|change| DiffLine {
+                    tag: change.tag(),
+                    text: change.value().trim_end().to_string().into(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// A whole file as one one-sided hunk (pure add or pure delete). No diff
+/// computation — diffing against an empty side would only produce a phantom
+/// deleted/inserted blank line (`normalize_for_diff` maps "" to "\n").
+pub fn single_sided_hunk(text: &str, tag: ChangeTag) -> Vec<DiffHunk> {
+    let norm = normalize_for_diff(text);
+    let lines: Vec<DiffLine> = norm
+        .lines()
+        .map(|l| DiffLine {
+            tag,
+            text: l.trim_end().to_string().into(),
+        })
+        .collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    vec![DiffHunk {
+        new_start: 1,
+        lines,
+    }]
+}
+
+/// Render already-computed hunks with real new-file line numbers, a shared
+/// gutter width, and a slim "⋯" separator between hunks.
+pub(crate) fn render_diff_hunks(
+    hunks: &[DiffHunk],
+    theme: &gpui_component::theme::Theme,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
+    let max_line = hunks
+        .iter()
+        .map(|h| {
+            h.new_start
+                + h.lines
+                    .iter()
+                    .filter(|l| l.tag != ChangeTag::Delete)
+                    .count()
+        })
+        .max()
+        .unwrap_or(1);
+    let gutter_width = max_line.to_string().len();
+
+    let mut column = div().flex().flex_col();
+    for (ix, hunk) in hunks.iter().enumerate() {
+        if ix > 0 {
+            let (_, ctx_color) = unchanged_row_colors(theme);
+            column = column.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .text_color(ctx_color.opacity(0.5))
+                    .child("⋯"),
+            );
+        }
+        column = column.child(render_diff_rows(
+            &hunk.lines,
+            theme,
+            Some(hunk.new_start),
+            gutter_width,
+            rem_size,
+        ));
+    }
+    column.into_any()
 }
 
 /// Compute and render a unified diff in one go. For per-frame rendering of
@@ -600,7 +702,18 @@ pub(crate) fn render_diff_lines(
     } else {
         0
     };
+    render_diff_rows(diff_lines, theme, start_line, gutter_width, rem_size)
+}
 
+/// Shared row builder: renders diff rows with numbering from `start_line`
+/// (when given) into a fixed `gutter_width`-digit gutter.
+fn render_diff_rows(
+    diff_lines: &[DiffLine],
+    theme: &gpui_component::theme::Theme,
+    start_line: Option<usize>,
+    gutter_width: usize,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
     // Track both old and new line numbers
     let mut old_line_num = start_line.unwrap_or(1);
     let mut new_line_num = start_line.unwrap_or(1);
@@ -948,6 +1061,48 @@ pub(crate) fn unchanged_row_colors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_diff_hunks_groups_changes_with_context() {
+        let old: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        let mut new_lines: Vec<String> = (1..=20).map(|i| format!("line {i}\n")).collect();
+        new_lines[2] = "changed 3\n".into();
+        new_lines[15] = "changed 16\n".into();
+        let new: String = new_lines.concat();
+
+        let hunks = compute_diff_hunks(&old, &new, 3);
+        assert_eq!(hunks.len(), 2, "two distant changes → two hunks");
+        assert_eq!(hunks[0].new_start, 1);
+        assert_eq!(hunks[1].new_start, 13);
+        for hunk in &hunks {
+            let deletes = hunk
+                .lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Delete)
+                .count();
+            let inserts = hunk
+                .lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Insert)
+                .count();
+            let equals = hunk
+                .lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Equal)
+                .count();
+            assert_eq!((deletes, inserts), (1, 1));
+            assert!(equals <= 6, "at most 3 context lines per side");
+        }
+    }
+
+    #[test]
+    fn single_sided_hunk_is_one_pure_hunk() {
+        let hunks = single_sided_hunk("a\nb\nc\n", ChangeTag::Insert);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].new_start, 1);
+        assert!(hunks[0].lines.iter().all(|l| l.tag == ChangeTag::Insert));
+        assert_eq!(hunks[0].lines.len(), 3);
+    }
 
     #[test]
     fn test_parse_single_section() {
