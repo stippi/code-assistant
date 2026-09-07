@@ -842,6 +842,12 @@ impl Gpui {
                 cx.refresh();
             }
 
+            // Pure notifications — the command layer already mirrored the
+            // review data (listing / prepared diff) into the Gpui globals.
+            UiEvent::UpdateReviewFiles | UiEvent::UpdateReviewDiff => {
+                cx.refresh();
+            }
+
             UiEvent::RefreshCurrentSession { session_id } => {
                 // Another process modified the session file on disk.
                 // Use incremental refresh which diffs the active path and only

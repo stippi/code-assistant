@@ -537,13 +537,69 @@ fn normalize_for_diff(text: &str) -> String {
     format!("{trimmed}\n")
 }
 
-fn render_unified_diff(
-    old_text: &str,
-    new_text: &str,
-    theme: &gpui_component::theme::Theme,
-    start_line: Option<usize>,
-    rem_size: gpui::Pixels,
-) -> gpui::AnyElement {
+/// One line of a computed unified diff. `text` is a [`SharedString`] so cached
+/// diffs can be re-rendered every frame with cheap clones. `emphasis` marks
+/// the byte ranges within `text` that changed *within* the line (word diff);
+/// they get a stronger background on top of the row color.
+#[derive(Debug, Clone)]
+pub struct DiffLine {
+    pub tag: ChangeTag,
+    pub text: SharedString,
+    pub emphasis: Vec<std::ops::Range<usize>>,
+}
+
+/// Replace blocks larger than this skip the word-level diff — pairing lines
+/// across big rewrites produces noise, not signal (Zed caps similarly).
+const MAX_WORD_DIFF_LINES: usize = 16;
+
+/// Expand one diff op into [`DiffLine`]s, with word-level emphasis for small
+/// replace blocks. `iter_inline_changes` falls back to plain changes on its
+/// own when the block's similarity ratio is too low for a useful word diff.
+fn collect_change_lines<'a>(
+    diff: &'a TextDiff<'a, 'a, 'a, str>,
+    op: &similar::DiffOp,
+    out: &mut Vec<DiffLine>,
+) {
+    let block_lines = op.old_range().len().max(op.new_range().len());
+    if block_lines <= MAX_WORD_DIFF_LINES {
+        for change in diff.iter_inline_changes(op) {
+            let mut text = String::new();
+            let mut emphasis = Vec::new();
+            for (emphasized, piece) in change.iter_strings_lossy() {
+                let start = text.len();
+                text.push_str(&piece);
+                if emphasized {
+                    emphasis.push(start..text.len());
+                }
+            }
+            let trimmed_len = text.trim_end().len();
+            text.truncate(trimmed_len);
+            emphasis.retain_mut(|r| {
+                r.end = r.end.min(trimmed_len);
+                r.start < r.end
+            });
+            out.push(DiffLine {
+                tag: change.tag(),
+                text: text.into(),
+                emphasis,
+            });
+        }
+    } else {
+        for change in diff.iter_changes(op) {
+            out.push(DiffLine {
+                tag: change.tag(),
+                text: change.value().trim_end().to_string().into(),
+                emphasis: Vec::new(),
+            });
+        }
+    }
+}
+
+/// Run the line diff (the expensive part: normalization + Myers diff + per-line
+/// allocations). Callers that render on every frame — like the Review panel —
+/// should call this once per content change, cache the result, and feed it to
+/// [`render_diff_lines`] per frame.
+pub(crate) fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
     let old_norm = normalize_for_diff(old_text);
     let new_norm = normalize_for_diff(new_text);
 
@@ -551,19 +607,139 @@ fn render_unified_diff(
         .newline_terminated(true)
         .diff_lines(&old_norm, &new_norm);
 
-    // Collect individual lines with their tags for line-number rendering
-    struct DiffLine {
-        tag: ChangeTag,
-        text: String,
+    let mut lines = Vec::new();
+    for op in diff.ops() {
+        collect_change_lines(&diff, op, &mut lines);
     }
-    let mut diff_lines: Vec<DiffLine> = Vec::new();
-    for change in diff.iter_all_changes() {
-        diff_lines.push(DiffLine {
-            tag: change.tag(),
-            text: change.value().trim_end().to_string(),
-        });
-    }
+    lines
+}
 
+/// One hunk of a unified diff: a run of changed lines plus surrounding
+/// context, positioned at `new_start` (1-based) in the new file.
+#[derive(Debug, Clone)]
+pub struct DiffHunk {
+    pub new_start: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+/// Like [`compute_diff_lines`], but grouped into hunks with `context` lines
+/// of surrounding context (à la `git diff`) — unchanged stretches between
+/// hunks are dropped entirely, which keeps the element count proportional to
+/// the *changed* lines instead of the file size.
+pub fn compute_diff_hunks(old_text: &str, new_text: &str, context: usize) -> Vec<DiffHunk> {
+    let old_norm = normalize_for_diff(old_text);
+    let new_norm = normalize_for_diff(new_text);
+
+    let diff = TextDiff::configure()
+        .newline_terminated(true)
+        .diff_lines(&old_norm, &new_norm);
+
+    diff.grouped_ops(context)
+        .iter()
+        .map(|ops| {
+            let mut lines = Vec::new();
+            for op in ops {
+                collect_change_lines(&diff, op, &mut lines);
+            }
+            DiffHunk {
+                new_start: ops.first().map(|op| op.new_range().start + 1).unwrap_or(1),
+                lines,
+            }
+        })
+        .collect()
+}
+
+/// A whole file as one one-sided hunk (pure add or pure delete). No diff
+/// computation — diffing against an empty side would only produce a phantom
+/// deleted/inserted blank line (`normalize_for_diff` maps "" to "\n").
+pub fn single_sided_hunk(text: &str, tag: ChangeTag) -> Vec<DiffHunk> {
+    let norm = normalize_for_diff(text);
+    let lines: Vec<DiffLine> = norm
+        .lines()
+        .map(|l| DiffLine {
+            tag,
+            text: l.trim_end().to_string().into(),
+            emphasis: Vec::new(),
+        })
+        .collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    vec![DiffHunk {
+        new_start: 1,
+        lines,
+    }]
+}
+
+/// Render already-computed hunks with real new-file line numbers, a shared
+/// gutter width, and a slim "⋯" separator between hunks.
+pub(crate) fn render_diff_hunks(
+    hunks: &[DiffHunk],
+    theme: &gpui_component::theme::Theme,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
+    let max_line = hunks
+        .iter()
+        .map(|h| {
+            h.new_start
+                + h.lines
+                    .iter()
+                    .filter(|l| l.tag != ChangeTag::Delete)
+                    .count()
+        })
+        .max()
+        .unwrap_or(1);
+    let gutter_width = max_line.to_string().len();
+
+    let mut column = div().flex().flex_col();
+    for (ix, hunk) in hunks.iter().enumerate() {
+        if ix > 0 {
+            let (_, ctx_color) = unchanged_row_colors(theme);
+            column = column.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .text_color(ctx_color.opacity(0.5))
+                    .child("⋯"),
+            );
+        }
+        column = column.child(render_diff_rows(
+            &hunk.lines,
+            theme,
+            Some(hunk.new_start),
+            gutter_width,
+            rem_size,
+        ));
+    }
+    column.into_any()
+}
+
+/// Compute and render a unified diff in one go. For per-frame rendering of
+/// unchanged content, prefer caching [`compute_diff_lines`]'s result and
+/// calling [`render_diff_lines`] instead.
+pub(crate) fn render_unified_diff(
+    old_text: &str,
+    new_text: &str,
+    theme: &gpui_component::theme::Theme,
+    start_line: Option<usize>,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
+    render_diff_lines(
+        &compute_diff_lines(old_text, new_text),
+        theme,
+        start_line,
+        rem_size,
+    )
+}
+
+/// Build the element tree for already-computed diff lines.
+pub(crate) fn render_diff_lines(
+    diff_lines: &[DiffLine],
+    theme: &gpui_component::theme::Theme,
+    start_line: Option<usize>,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
     // Compute the gutter width (number of digits) based on new-file line numbers
     let gutter_width = if let Some(start) = start_line {
         let new_count = diff_lines
@@ -575,7 +751,18 @@ fn render_unified_diff(
     } else {
         0
     };
+    render_diff_rows(diff_lines, theme, start_line, gutter_width, rem_size)
+}
 
+/// Shared row builder: renders diff rows with numbering from `start_line`
+/// (when given) into a fixed `gutter_width`-digit gutter.
+fn render_diff_rows(
+    diff_lines: &[DiffLine],
+    theme: &gpui_component::theme::Theme,
+    start_line: Option<usize>,
+    gutter_width: usize,
+    rem_size: gpui::Pixels,
+) -> gpui::AnyElement {
     // Track both old and new line numbers
     let mut old_line_num = start_line.unwrap_or(1);
     let mut new_line_num = start_line.unwrap_or(1);
@@ -589,7 +776,7 @@ fn render_unified_diff(
     div()
         .flex()
         .flex_col()
-        .children(diff_lines.into_iter().map(|dl| {
+        .children(diff_lines.iter().map(|dl| {
             let (row_bg, text_color) = match dl.tag {
                 ChangeTag::Equal => unchanged_row_colors(theme),
                 ChangeTag::Delete => deleted_row_colors(theme),
@@ -637,7 +824,25 @@ fn render_unified_diff(
             }
 
             // Content — overflow_x_hidden enables min-width:0 in flex so text
-            // wraps instead of pushing the row wider than the card.
+            // wraps instead of pushing the row wider than the card. Word-level
+            // changes get a stronger background via text-run highlights, which
+            // wrap with the text (unlike per-span elements).
+            let content: gpui::AnyElement = if dl.emphasis.is_empty() {
+                dl.text.clone().into_any_element()
+            } else {
+                let word_bg = word_emphasis_bg(dl.tag, theme);
+                gpui::StyledText::new(dl.text.clone())
+                    .with_highlights(dl.emphasis.iter().map(|range| {
+                        (
+                            range.clone(),
+                            gpui::HighlightStyle {
+                                background_color: Some(word_bg),
+                                ..Default::default()
+                            },
+                        )
+                    }))
+                    .into_any_element()
+            };
             row = row.child(
                 div()
                     .flex_grow(1.0)
@@ -645,7 +850,7 @@ fn render_unified_diff(
                     .when(start_line.is_none(), |d| d.px_3())
                     .when(start_line.is_some(), |d| d.pl_1().pr_3())
                     .text_color(text_color)
-                    .child(dl.text),
+                    .child(content),
             );
 
             row.into_any()
@@ -878,7 +1083,9 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
     .into()
 }
 
-fn deleted_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn deleted_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x80, 0x20, 0x20, 0x60)),
@@ -892,7 +1099,9 @@ fn deleted_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsl
     }
 }
 
-fn added_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+pub(crate) fn added_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x20, 0x60, 0x20, 0x60)),
@@ -906,7 +1115,21 @@ fn added_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>
     }
 }
 
-fn unchanged_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::Hsla>, gpui::Hsla) {
+/// Background for word-level (intra-line) changes: a stronger tint layered on
+/// top of the row's add/delete background.
+fn word_emphasis_bg(tag: ChangeTag, theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+    match (tag, theme.is_dark()) {
+        (ChangeTag::Delete, true) => rgba_color(0xC0, 0x38, 0x38, 0x70),
+        (ChangeTag::Delete, false) => rgba_color(0xE0, 0x60, 0x60, 0x60),
+        (ChangeTag::Insert, true) => rgba_color(0x38, 0xA0, 0x38, 0x70),
+        (ChangeTag::Insert, false) => rgba_color(0x40, 0xB8, 0x40, 0x50),
+        (ChangeTag::Equal, _) => gpui::transparent_black(),
+    }
+}
+
+pub(crate) fn unchanged_row_colors(
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
     if theme.is_dark() {
         (None, rgba_color(0xFF, 0xFF, 0xFF, 0x99))
     } else {
@@ -917,6 +1140,69 @@ fn unchanged_row_colors(theme: &gpui_component::theme::Theme) -> (Option<gpui::H
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_diff_hunks_groups_changes_with_context() {
+        let old: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        let mut new_lines: Vec<String> = (1..=20).map(|i| format!("line {i}\n")).collect();
+        new_lines[2] = "changed 3\n".into();
+        new_lines[15] = "changed 16\n".into();
+        let new: String = new_lines.concat();
+
+        let hunks = compute_diff_hunks(&old, &new, 3);
+        assert_eq!(hunks.len(), 2, "two distant changes → two hunks");
+        assert_eq!(hunks[0].new_start, 1);
+        assert_eq!(hunks[1].new_start, 13);
+        for hunk in &hunks {
+            let deletes = hunk
+                .lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Delete)
+                .count();
+            let inserts = hunk
+                .lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Insert)
+                .count();
+            let equals = hunk
+                .lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Equal)
+                .count();
+            assert_eq!((deletes, inserts), (1, 1));
+            assert!(equals <= 6, "at most 3 context lines per side");
+        }
+    }
+
+    #[test]
+    fn compute_diff_lines_marks_word_level_changes() {
+        let lines = compute_diff_lines("fn foo(alpha: u32) {}\n", "fn foo(beta: u32) {}\n");
+        let del = lines.iter().find(|l| l.tag == ChangeTag::Delete).unwrap();
+        let ins = lines.iter().find(|l| l.tag == ChangeTag::Insert).unwrap();
+
+        // The changed identifier is emphasized — not the whole line.
+        assert_eq!(del.emphasis.len(), 1);
+        assert_eq!(&del.text[del.emphasis[0].clone()], "alpha");
+        assert_eq!(ins.emphasis.len(), 1);
+        assert_eq!(&ins.text[ins.emphasis[0].clone()], "beta");
+
+        // Unchanged context lines carry no emphasis.
+        assert!(
+            lines
+                .iter()
+                .filter(|l| l.tag == ChangeTag::Equal)
+                .all(|l| l.emphasis.is_empty())
+        );
+    }
+
+    #[test]
+    fn single_sided_hunk_is_one_pure_hunk() {
+        let hunks = single_sided_hunk("a\nb\nc\n", ChangeTag::Insert);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].new_start, 1);
+        assert!(hunks[0].lines.iter().all(|l| l.tag == ChangeTag::Insert));
+        assert_eq!(hunks[0].lines.len(), 3);
+    }
 
     #[test]
     fn test_parse_single_section() {

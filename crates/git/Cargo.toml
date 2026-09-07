@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.95"
 serde = { version = "1.0.215", features = ["derive"] }
-tokio = { version = "1.40.0", features = ["process"] }
+tokio = { version = "1.40.0", features = ["fs", "process"] }
 tracing = "0.1.40"
 which = "7.0"
 

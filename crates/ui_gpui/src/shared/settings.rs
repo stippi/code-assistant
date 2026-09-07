@@ -72,6 +72,20 @@ pub struct UiSettings {
     /// Used when no `--model` CLI argument is given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+
+    /// Persisted width (px) of the right Review sidebar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_sidebar_width: Option<f32>,
+
+    /// Persisted default base ref for "Branch vs base" review mode; seeds each
+    /// repo's per-session base override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_default_base: Option<String>,
+
+    /// Repo roots whose Review section the user expanded — sections default
+    /// to collapsed. Absolute paths, so the state is per project/repo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_expanded_repos: Vec<PathBuf>,
 }
 
 fn default_theme_mode() -> ThemeModeSetting {
@@ -89,6 +103,9 @@ impl Default for UiSettings {
             ui_scale: default_ui_scale(),
             window_bounds: None,
             default_model: None,
+            right_sidebar_width: None,
+            review_default_base: None,
+            review_expanded_repos: Vec::new(),
         }
     }
 }

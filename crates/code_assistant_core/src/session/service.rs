@@ -31,7 +31,7 @@ use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 use sandbox::SandboxPolicy;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -133,6 +133,64 @@ pub struct WorktreeListing {
     pub worktrees: Vec<git::Worktree>,
     pub current_branch: Option<String>,
     pub is_git_repo: bool,
+}
+
+/// Which changes the Review panel should compare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ReviewMode {
+    /// Local working-tree changes (staged, unstaged, untracked) vs `HEAD`.
+    WorkingTree,
+    /// The current branch vs a base branch, using merge-base (PR) semantics.
+    BranchVsBase,
+}
+
+/// Progress of one repo's background review scan, carried alongside the data
+/// so the UI can render an activity indicator per repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewScanState {
+    /// Not scanned yet in this round (data, if any, is from the cache).
+    Pending,
+    /// Currently being scanned in the background.
+    Scanning,
+    /// Scan finished; data is fresh.
+    Done,
+}
+
+/// Changed files for a single git repository within the reviewed project,
+/// plus the per-repo metadata the UI needs to render its selectors.
+#[derive(Debug, Clone)]
+pub struct RepoReview {
+    /// Absolute path to the repository's working directory.
+    pub repo_root: PathBuf,
+    /// Human-readable label (the repo directory's name).
+    pub label: String,
+    pub current_branch: Option<String>,
+    /// Candidate base refs (local + remote branches) for `BranchVsBase` mode.
+    pub base_candidates: Vec<String>,
+    /// The base ref actually used in `BranchVsBase` mode (may have been
+    /// defaulted from `None`).
+    pub base: Option<String>,
+    pub files: Vec<git::ChangedFile>,
+    /// Aggregate added/deleted line counts (untracked files not included).
+    pub stats: git::DiffStats,
+    /// Scan progress for this repo in the current listing round.
+    pub scan_state: ReviewScanState,
+}
+
+impl RepoReview {
+    /// An entry for a discovered-but-not-yet-scanned repo.
+    pub fn pending(repo_root: PathBuf, label: String) -> Self {
+        Self {
+            repo_root,
+            label,
+            current_branch: None,
+            base_candidates: Vec::new(),
+            base: None,
+            files: Vec::new(),
+            stats: git::DiffStats::default(),
+            scan_state: ReviewScanState::Pending,
+        }
+    }
 }
 
 /// A git worktree the session was switched to.
@@ -1028,6 +1086,110 @@ impl SessionService {
         .await
     }
 
+    /// Discover the git repositories to review for a session — fast, no
+    /// per-repo scanning. Returns `(repo workdir, display label)` pairs.
+    ///
+    /// Resolves the session's on-disk directory with `effective_project_path`
+    /// (worktree-aware). An empty result means "not a git project".
+    pub async fn list_review_repos(&self, session_id: String) -> Result<Vec<(PathBuf, String)>> {
+        self.call(move |ctx| async move {
+            let project_root = {
+                let manager = ctx.manager.lock().await;
+                session_effective_path(&manager, &session_id)?
+            };
+            Ok(discover_review_repos(&project_root))
+        })
+        .await
+    }
+
+    /// Scan a single repo for the Review panel: changed files, diff stats, and
+    /// the selector metadata. In `BranchVsBase` mode a `None` `base_override`
+    /// defaults to the current branch's upstream, else the first remote
+    /// candidate.
+    pub async fn scan_review_repo(
+        &self,
+        repo_root: PathBuf,
+        label: String,
+        mode: ReviewMode,
+        base_override: Option<String>,
+    ) -> Result<RepoReview> {
+        self.call(move |_ctx| async move {
+            let repo =
+                git::GitRepository::open(&repo_root).context("Failed to open git repository")?;
+            let current_branch = repo.current_branch();
+            let base_candidates = repo.list_base_candidates().unwrap_or_default();
+
+            let (files, stats, resolved_base) = match mode {
+                ReviewMode::WorkingTree => {
+                    let files = repo
+                        .changed_files_working_tree()
+                        .await
+                        .context("Failed to list working-tree changes")?;
+                    // Stats are best-effort (e.g. unborn HEAD has no diff base).
+                    let stats = repo.diff_stats_working_tree().await.unwrap_or_default();
+                    (files, stats, None)
+                }
+                ReviewMode::BranchVsBase => {
+                    let resolved = resolve_review_base(&repo, base_override, &base_candidates);
+                    match &resolved {
+                        Some(b) => {
+                            let files = repo
+                                .changed_files_vs_base(b)
+                                .await
+                                .with_context(|| format!("Failed to diff against {b}"))?;
+                            let stats = repo.diff_stats_vs_base(b).await.unwrap_or_default();
+                            (files, stats, resolved)
+                        }
+                        None => (Vec::new(), git::DiffStats::default(), None),
+                    }
+                }
+            };
+
+            Ok(RepoReview {
+                repo_root,
+                label,
+                current_branch,
+                base_candidates,
+                base: resolved_base,
+                files,
+                stats,
+                scan_state: ReviewScanState::Done,
+            })
+        })
+        .await
+    }
+
+    /// Load both sides of the diff for a single file in the Review panel.
+    pub async fn get_review_file_diff(
+        &self,
+        _session_id: String,
+        repo_root: PathBuf,
+        mode: ReviewMode,
+        base: Option<String>,
+        file: git::ChangedFile,
+    ) -> Result<git::FileDiffContent> {
+        self.call(move |_ctx| async move {
+            let repo =
+                git::GitRepository::open(&repo_root).context("Failed to open git repository")?;
+
+            match mode {
+                ReviewMode::WorkingTree => repo
+                    .file_diff_working_tree(&file)
+                    .await
+                    .context("Failed to load working-tree diff"),
+                ReviewMode::BranchVsBase => {
+                    let base_candidates = repo.list_base_candidates().unwrap_or_default();
+                    let resolved = resolve_review_base(&repo, base, &base_candidates)
+                        .ok_or_else(|| anyhow!("No base branch available for comparison"))?;
+                    repo.file_diff_vs_base(&resolved, &file)
+                        .await
+                        .context("Failed to load branch-vs-base diff")
+                }
+            }
+        })
+        .await
+    }
+
     pub async fn switch_worktree(
         &self,
         session_id: String,
@@ -1204,6 +1366,173 @@ fn session_project_root(manager: &SessionManager, session_id: &str) -> Result<Pa
         .init_path
         .clone()
         .ok_or_else(|| anyhow!("Session has no project path configured"))
+}
+
+/// Resolve the session's effective on-disk directory (worktree if set, else
+/// init_path). This is what the agent actually operates in, so it is the
+/// correct root for reviewing changes.
+fn session_effective_path(manager: &SessionManager, session_id: &str) -> Result<PathBuf> {
+    let session = manager
+        .get_session(session_id)
+        .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
+    session
+        .session
+        .config
+        .effective_project_path()
+        .cloned()
+        .ok_or_else(|| anyhow!("Session has no project path configured"))
+}
+
+/// Choose the base ref for `BranchVsBase` mode. Prefers an explicit `base`
+/// (validated against candidates), then the current branch's upstream, then
+/// the first `origin/*` candidate, then any candidate that is not the current
+/// branch.
+fn resolve_review_base(
+    repo: &git::GitRepository,
+    base: Option<String>,
+    candidates: &[String],
+) -> Option<String> {
+    if let Some(base) = base
+        && candidates.iter().any(|c| c == &base)
+    {
+        return Some(base);
+    }
+
+    let current = repo.current_branch();
+
+    if let Some(branch) = repo.list_branches().ok().and_then(|branches| {
+        branches
+            .into_iter()
+            .find(|b| b.is_head)
+            .and_then(|b| b.upstream)
+    }) && candidates.iter().any(|c| c == &branch)
+    {
+        return Some(branch);
+    }
+
+    if let Some(origin) = candidates.iter().find(|c| c.starts_with("origin/")) {
+        return Some(origin.clone());
+    }
+
+    candidates
+        .iter()
+        .find(|c| current.as_deref() != Some(c.as_str()))
+        .cloned()
+}
+
+/// Discover the git repositories to review under `root`.
+///
+/// Returns `(repo workdir, display label)` pairs. If `root` is itself a repo
+/// root, that single repo is returned (preserving single-repo behavior).
+/// Otherwise `root`'s immediate subdirectories are scanned and each one that is
+/// its own repo root is included — no deep recursion. Results are sorted by
+/// label.
+///
+/// `GitRepository::open` discovers *upward*, so a plain child folder inside an
+/// upward repo would resolve to that ancestor; the `workdir() == dir` check
+/// (both canonicalized) is what pins each entry to an actual repo root.
+fn discover_review_repos(root: &Path) -> Vec<(PathBuf, String)> {
+    fn is_repo_root(dir: &Path) -> bool {
+        let Ok(repo) = git::GitRepository::open(dir) else {
+            return false;
+        };
+        let workdir = repo.workdir();
+        match (workdir.canonicalize(), dir.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => workdir == dir,
+        }
+    }
+
+    fn label_for(dir: &Path) -> String {
+        dir.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.display().to_string())
+    }
+
+    if is_repo_root(root) {
+        return vec![(root.to_path_buf(), label_for(root))];
+    }
+
+    let mut repos: Vec<(PathBuf, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if is_repo_root(&path) {
+                let label = label_for(&path);
+                repos.push((path, label));
+            }
+        }
+    }
+    repos.sort_by_key(|(_, label)| label.to_lowercase());
+    repos
+}
+
+#[cfg(test)]
+mod discover_tests {
+    use super::discover_review_repos;
+    use std::process::Command;
+
+    fn git_init(dir: &std::path::Path) {
+        let ok = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .expect("run git init")
+            .success();
+        assert!(ok, "git init failed in {}", dir.display());
+    }
+
+    #[test]
+    fn root_is_repo_returns_single_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        git_init(tmp.path());
+        let repos = discover_review_repos(tmp.path());
+        assert_eq!(repos.len(), 1);
+        assert_eq!(
+            repos[0].0.canonicalize().unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn plain_folder_with_two_child_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("alpha");
+        let b = tmp.path().join("beta");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::fs::create_dir(tmp.path().join("plain")).unwrap();
+        git_init(&a);
+        git_init(&b);
+        let repos = discover_review_repos(tmp.path());
+        assert_eq!(repos.len(), 2);
+        assert_eq!(repos[0].1, "alpha");
+        assert_eq!(repos[1].1, "beta");
+    }
+
+    #[test]
+    fn nested_non_root_child_is_ignored() {
+        // A repo at root/outer, with root/outer/inner a plain subdir. Scanning
+        // root sees only `outer`; `inner` is never a scanned top-level child,
+        // and a plain folder with no repos yields nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path().join("outer");
+        std::fs::create_dir(&outer).unwrap();
+        git_init(&outer);
+        std::fs::create_dir(outer.join("inner")).unwrap();
+
+        // Scanning the repo root itself → single entry (the root).
+        let repos = discover_review_repos(&outer);
+        assert_eq!(repos.len(), 1);
+
+        // A sibling plain folder with no git repos → empty.
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert!(discover_review_repos(&empty).is_empty());
+    }
 }
 
 async fn send_user_message_impl(

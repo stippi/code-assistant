@@ -1,11 +1,13 @@
 mod binary;
 mod branch;
+mod diff;
 mod repository;
 mod types;
 pub mod worktree;
 
 pub use binary::GitBinary;
 pub use branch::BranchNotMerged;
+pub use diff::*;
 pub use repository::GitRepository;
 pub use types::*;
 

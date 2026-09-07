@@ -333,6 +333,13 @@ pub enum UiEvent {
         is_git_repo: bool,
     },
 
+    // === Review Panel Events ===
+    /// The Review panel's changed-files listing changed. Pure notification —
+    /// the data itself is mirrored into the UI layer's state by the sender.
+    UpdateReviewFiles,
+    /// A prepared file diff for the Review panel arrived (same mirror scheme).
+    UpdateReviewDiff,
+
     // === Configuration Events ===
     /// Configuration files (providers.json / models.json) were changed on disk.
     /// The UI should reload model lists, settings sections, etc.

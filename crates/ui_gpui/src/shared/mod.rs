@@ -5,6 +5,7 @@ pub mod context_indicator;
 pub mod file_icons;
 pub mod image;
 pub mod plan_banner;
+pub mod review_cache;
 pub mod settings;
 pub mod theme;
 pub mod ui_state;
