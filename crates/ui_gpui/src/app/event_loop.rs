@@ -175,10 +175,6 @@ impl Gpui {
                     message_container.end_tool_use(&id, cx);
                 });
                 self.auto_scroll_if_following(cx);
-                // Any tool may have touched the working tree (edits, but also
-                // shell commands): let the Review panel re-list changes.
-                self.bump_files_changed_generation();
-                cx.refresh();
             }
             UiEvent::HiddenToolCompleted => {
                 // Mark that a hidden tool completed - message container handles paragraph breaks
@@ -509,9 +505,6 @@ impl Gpui {
                         message.finish_any_thinking_blocks(cx);
                     });
                 }
-                // Catch-all for the turn's file changes (see `EndTool`).
-                self.bump_files_changed_generation();
-                cx.refresh();
             }
             UiEvent::RollbackStreaming { id } => {
                 // Discard all blocks produced by the failed request so the retry

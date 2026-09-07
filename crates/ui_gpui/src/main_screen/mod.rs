@@ -226,6 +226,7 @@ pub struct MainScreen {
     _new_project_dialog_subscription: Option<Subscription>,
     _about_dialog_subscription: Option<Subscription>,
     _window_bounds_subscription: Subscription,
+    _window_activation_subscription: Subscription,
 }
 
 impl MainScreen {
@@ -268,6 +269,8 @@ impl MainScreen {
         // Watch for window move / resize so we can persist bounds.
         let window_bounds_subscription =
             cx.observe_window_bounds(window, Self::on_window_bounds_changed);
+        let window_activation_subscription =
+            cx.observe_window_activation(window, Self::on_window_activation_changed);
 
         // Create the right (review) sidebar panel.
         let right_panel = cx.new(|cx| right_panel::RightPanel::new(window, cx));
@@ -311,6 +314,7 @@ impl MainScreen {
             _new_project_dialog_subscription: None,
             _about_dialog_subscription: None,
             _window_bounds_subscription: window_bounds_subscription,
+            _window_activation_subscription: window_activation_subscription,
         };
 
         // Request initial chat session list
@@ -344,13 +348,14 @@ impl MainScreen {
         self.ensure_sidebar_animation_task(cx);
 
         // When opening, make sure the panel reflects the current session and
-        // has fresh data.
-        if should_expand {
-            let session_id = self.current_session_id.clone();
-            self.right_panel.update(cx, |panel, cx| {
-                panel.set_session(session_id, cx);
-            });
-        }
+        // has fresh data. When closing, detach it so it stops watching and
+        // refreshing for nobody.
+        let session_id = should_expand
+            .then(|| self.current_session_id.clone())
+            .flatten();
+        self.right_panel.update(cx, |panel, cx| {
+            panel.set_session(session_id, cx);
+        });
 
         // Persist the open/closed state for the active session.
         if let Some(session_id) = &self.current_session_id {
@@ -553,6 +558,15 @@ impl MainScreen {
     /// Update the global [`UiSettings`], persist to disk on a background thread.
     fn update_settings(cx: &mut Context<Self>, f: impl FnOnce(&mut settings::UiSettings)) {
         crate::update_ui_settings(cx, f);
+    }
+
+    /// Coming back to the window: re-list the review panel's changes. The
+    /// panel's filesystem watcher normally keeps it fresh; this covers the
+    /// cases a watcher can miss (e.g. inotify limits on large trees).
+    fn on_window_activation_changed(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if window.is_window_active() && !self.right_sidebar_collapsed {
+            self.right_panel.update(cx, |panel, cx| panel.reload(cx));
+        }
     }
 
     /// Called when the window is moved or resized.
@@ -1285,11 +1299,12 @@ impl MainScreen {
         }
         self.right_sidebar_collapsed = !restored_open;
 
-        // Point the panel at the new session (clears stale tree/diff) and, when
-        // open, request fresh data.
+        // Point the panel at the new session when it is open (clears stale
+        // data and requests fresh); a closed panel stays detached until opened.
         self.right_panel_session_id = new_session_id.clone();
+        let panel_session_id = restored_open.then(|| new_session_id.clone()).flatten();
         self.right_panel.update(cx, |panel, cx| {
-            panel.set_session(new_session_id.clone(), cx);
+            panel.set_session(panel_session_id, cx);
         });
     }
 }

@@ -279,11 +279,6 @@ pub struct Gpui {
     /// Components compare their locally cached generation with this to know when to reload.
     config_generation: Arc<std::sync::atomic::AtomicU64>,
 
-    /// Incremented whenever the viewed session may have changed files on disk
-    /// (a tool finished, a turn ended). The Review panel compares this with
-    /// its cached value and re-lists changes when it moved.
-    files_changed_generation: Arc<std::sync::atomic::AtomicU64>,
-
     /// Skills available to the current session, cached for the `/skill`
     /// input-area completion and submit-time invocation. Refreshed on
     /// session load via [`Gpui::refresh_skills`].
@@ -613,7 +608,6 @@ impl Gpui {
             )),
 
             config_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            files_changed_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
 
             skills: Arc::new(Mutex::new(Vec::new())),
         }
@@ -873,18 +867,6 @@ impl Gpui {
     pub fn config_generation(&self) -> u64 {
         self.config_generation
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Current files-changed generation; see the field docs.
-    pub fn files_changed_generation(&self) -> u64 {
-        self.files_changed_generation
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Note that the viewed session's files may have changed on disk.
-    pub fn bump_files_changed_generation(&self) {
-        self.files_changed_generation
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn get_current_error(&self) -> Option<String> {

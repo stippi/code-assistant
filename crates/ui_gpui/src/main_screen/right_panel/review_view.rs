@@ -14,9 +14,10 @@
 //! lines) are computed once on arrival and cached — rendering never diffs, and
 //! the element count scales with changed lines, not file sizes.
 //!
-//! Freshness: the listing is re-requested (debounced) whenever the app bumps
-//! [`Gpui::files_changed_generation`] — after every finished tool and at the
-//! end of a turn. Each changed file carries a fingerprint; a cached diff whose
+//! Freshness: while the view has a listing it owns a [`git::ChangeWatcher`]
+//! on the listed repos and re-requests the listing whenever the watcher
+//! reports activity (the main screen also reloads on window activation as a
+//! safety net). Each changed file carries a fingerprint; a cached diff whose
 //! listing entry changed is stale and re-requested, but keeps rendering until
 //! its replacement arrives, so nothing flickers.
 
@@ -138,9 +139,9 @@ type FileKey = (PathBuf, String);
 /// mismatches, whatever the global's current generation is.
 const GENERATION_UNSEEN: u64 = u64::MAX;
 
-/// Quiet period after a files-changed signal before the listing is
-/// re-requested, so a burst of tool completions costs one scan.
-const FILES_CHANGED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+/// Quiet period the change watcher waits before reporting a burst of
+/// filesystem events, so an edit (or a build) costs one scan.
+const REVIEW_WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// A prepared diff together with the listing entry it was loaded for. When a
 /// later listing carries a different entry for the same path (new
@@ -178,11 +179,11 @@ pub struct ReviewView {
     /// mode/base change) and dropped.
     in_flight: Option<(FileKey, ChangedFile)>,
 
-    /// Last consumed [`Gpui::files_changed_generation`]; a newer value
-    /// schedules a debounced re-listing.
-    files_changed_seen: u64,
-    /// The pending debounced re-listing, if any. Dropping it cancels.
-    refresh_task: Option<Task<()>>,
+    /// Filesystem watcher on the listed repos (keyed by their roots so a
+    /// changed set restarts it). Dropping it stops watching.
+    watcher: Option<(Vec<PathBuf>, git::ChangeWatcher)>,
+    /// Forwards watcher callbacks to `request_listing` on the UI thread.
+    watch_task: Option<Task<()>>,
 
     /// Generation of the consumed listing. Change detection per frame is a
     /// plain integer compare against the global's generation — no clones.
@@ -222,8 +223,8 @@ impl ReviewView {
             file_diffs: HashMap::new(),
             collapsed_files: HashSet::new(),
             in_flight: None,
-            files_changed_seen: Self::files_changed_generation(cx),
-            refresh_task: None,
+            watcher: None,
+            watch_task: None,
             listing_generation: GENERATION_UNSEEN,
             diff_generation: GENERATION_UNSEEN,
             focus_handle: cx.focus_handle(),
@@ -243,9 +244,9 @@ impl ReviewView {
         self.file_diffs.clear();
         self.collapsed_files.clear();
         self.in_flight = None;
-        // The listing requested below is fresh; earlier signals are moot.
-        self.refresh_task = None;
-        self.files_changed_seen = Self::files_changed_generation(cx);
+        // A new session lists its own repos; the watcher follows the listing.
+        self.watcher = None;
+        self.watch_task = None;
 
         // Restore the persisted compare mode for this session. The selector
         // resyncs from the echoed listing on the next render.
@@ -290,29 +291,46 @@ impl ReviewView {
         self.request_listing(cx);
     }
 
-    fn files_changed_generation(cx: &Context<Self>) -> u64 {
-        cx.try_global::<Gpui>()
-            .map_or(0, |g| g.files_changed_generation())
-    }
+    /// Keep a change watcher running on exactly the listed repos. Watcher
+    /// callbacks (background thread) are forwarded through a one-slot channel
+    /// to `request_listing` on the UI thread; the listing's fingerprints then
+    /// decide which diffs are stale.
+    fn ensure_watcher(&mut self, cx: &mut Context<Self>) {
+        let roots: Vec<PathBuf> = self.repos.iter().map(|r| r.repo_root.clone()).collect();
+        if roots.is_empty() {
+            self.watcher = None;
+            self.watch_task = None;
+            return;
+        }
+        if self.watcher.as_ref().is_some_and(|(r, _)| *r == roots) {
+            return;
+        }
 
-    /// Re-list changes (debounced) when the app signals that the session's
-    /// files may have changed. The listing's fingerprints then decide which
-    /// diffs are stale; the rest keep their prepared hunks.
-    fn sync_files_changed(&mut self, cx: &mut Context<Self>) {
-        let generation = Self::files_changed_generation(cx);
-        if generation == self.files_changed_seen {
-            return;
+        // A bounded(1) channel coalesces callbacks that land while the UI
+        // thread is still busy; dropping the watcher closes it, ending the task.
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        match git::ChangeWatcher::start(&roots, REVIEW_WATCH_DEBOUNCE, move || {
+            let _ = tx.try_send(());
+        }) {
+            Ok(watcher) => {
+                self.watcher = Some((roots, watcher));
+                self.watch_task = Some(cx.spawn(async move |this, cx| {
+                    while rx.recv().await.is_ok() {
+                        if this
+                            .update(cx, |this, cx| this.request_listing(cx))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }));
+            }
+            Err(e) => {
+                tracing::warn!("Review panel: change watcher unavailable: {e:#}");
+                self.watcher = None;
+                self.watch_task = None;
+            }
         }
-        self.files_changed_seen = generation;
-        if self.session_id.is_none() {
-            return;
-        }
-        // Replacing the task drops (cancels) a still-pending one, so a burst
-        // of signals ends in a single request.
-        self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(FILES_CHANGED_DEBOUNCE).await;
-            let _ = this.update(cx, |this, cx| this.request_listing(cx));
-        }));
     }
 
     fn request_listing(&self, cx: &mut Context<Self>) {
@@ -488,6 +506,7 @@ impl ReviewView {
             }
         }
 
+        self.ensure_watcher(cx);
         self.ensure_diff_request(cx);
     }
 
@@ -966,9 +985,8 @@ impl Focusable for ReviewView {
 
 impl Render for ReviewView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Pull fresh backend data before laying out. All syncs are a cheap
+        // Pull fresh backend data before laying out. Both syncs are a cheap
         // generation compare when nothing changed.
-        self.sync_files_changed(cx);
         self.sync_listing(window, cx);
         self.sync_diff(cx);
 
