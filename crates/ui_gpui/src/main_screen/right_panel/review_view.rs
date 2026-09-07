@@ -13,6 +13,12 @@
 //! file without a diff is requested. Hunks (changed lines + a few context
 //! lines) are computed once on arrival and cached — rendering never diffs, and
 //! the element count scales with changed lines, not file sizes.
+//!
+//! Freshness: the listing is re-requested (debounced) whenever the app bumps
+//! [`Gpui::files_changed_generation`] — after every finished tool and at the
+//! end of a turn. Each changed file carries a fingerprint; a cached diff whose
+//! listing entry changed is stale and re-requested, but keeps rendering until
+//! its replacement arrives, so nothing flickers.
 
 use crate::shared::file_icons;
 use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_hunks};
@@ -21,7 +27,7 @@ use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
 use gpui::{
     AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Render,
-    Subscription, Window, div, prelude::*, px, rems,
+    Subscription, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable, Size,
@@ -132,6 +138,18 @@ type FileKey = (PathBuf, String);
 /// mismatches, whatever the global's current generation is.
 const GENERATION_UNSEEN: u64 = u64::MAX;
 
+/// Quiet period after a files-changed signal before the listing is
+/// re-requested, so a burst of tool completions costs one scan.
+const FILES_CHANGED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A prepared diff together with the listing entry it was loaded for. When a
+/// later listing carries a different entry for the same path (new
+/// fingerprint or status), the diff is stale.
+struct LoadedDiff {
+    file: ChangedFile,
+    prepared: PreparedReviewDiff,
+}
+
 pub struct ReviewView {
     session_id: Option<String>,
     mode_state: Entity<SelectState<Vec<ModeOption>>>,
@@ -149,13 +167,22 @@ pub struct ReviewView {
     /// Persisted default base ref, seeds a repo's base when it has no override.
     default_base: Option<String>,
 
-    /// Prepared diffs by file, filled lazily one request at a time.
-    file_diffs: HashMap<FileKey, PreparedReviewDiff>,
+    /// Prepared diffs by file, filled lazily one request at a time. A stale
+    /// entry (see [`LoadedDiff`]) stays here — and on screen — until its
+    /// replacement arrives.
+    file_diffs: HashMap<FileKey, LoadedDiff>,
     /// Files the user collapsed (default is expanded).
     collapsed_files: HashSet<FileKey>,
-    /// The single outstanding diff request; arrivals for anything else are
-    /// stale (e.g. from before a mode/base change) and dropped.
-    in_flight: Option<FileKey>,
+    /// The single outstanding diff request, with the listing entry it was
+    /// made for; arrivals for anything else are stale (e.g. from before a
+    /// mode/base change) and dropped.
+    in_flight: Option<(FileKey, ChangedFile)>,
+
+    /// Last consumed [`Gpui::files_changed_generation`]; a newer value
+    /// schedules a debounced re-listing.
+    files_changed_seen: u64,
+    /// The pending debounced re-listing, if any. Dropping it cancels.
+    refresh_task: Option<Task<()>>,
 
     /// Generation of the consumed listing. Change detection per frame is a
     /// plain integer compare against the global's generation — no clones.
@@ -195,6 +222,8 @@ impl ReviewView {
             file_diffs: HashMap::new(),
             collapsed_files: HashSet::new(),
             in_flight: None,
+            files_changed_seen: Self::files_changed_generation(cx),
+            refresh_task: None,
             listing_generation: GENERATION_UNSEEN,
             diff_generation: GENERATION_UNSEEN,
             focus_handle: cx.focus_handle(),
@@ -214,6 +243,9 @@ impl ReviewView {
         self.file_diffs.clear();
         self.collapsed_files.clear();
         self.in_flight = None;
+        // The listing requested below is fresh; earlier signals are moot.
+        self.refresh_task = None;
+        self.files_changed_seen = Self::files_changed_generation(cx);
 
         // Restore the persisted compare mode for this session. The selector
         // resyncs from the echoed listing on the next render.
@@ -258,6 +290,31 @@ impl ReviewView {
         self.request_listing(cx);
     }
 
+    fn files_changed_generation(cx: &Context<Self>) -> u64 {
+        cx.try_global::<Gpui>()
+            .map_or(0, |g| g.files_changed_generation())
+    }
+
+    /// Re-list changes (debounced) when the app signals that the session's
+    /// files may have changed. The listing's fingerprints then decide which
+    /// diffs are stale; the rest keep their prepared hunks.
+    fn sync_files_changed(&mut self, cx: &mut Context<Self>) {
+        let generation = Self::files_changed_generation(cx);
+        if generation == self.files_changed_seen {
+            return;
+        }
+        self.files_changed_seen = generation;
+        if self.session_id.is_none() {
+            return;
+        }
+        // Replacing the task drops (cancels) a still-pending one, so a burst
+        // of signals ends in a single request.
+        self.refresh_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FILES_CHANGED_DEBOUNCE).await;
+            let _ = this.update(cx, |this, cx| this.request_listing(cx));
+        }));
+    }
+
     fn request_listing(&self, cx: &mut Context<Self>) {
         let Some(session_id) = self.session_id.clone() else {
             return;
@@ -285,7 +342,14 @@ impl ReviewView {
             }
             for file in &section.files {
                 let key = (section.repo_root.clone(), file.path.clone());
-                if self.collapsed_files.contains(&key) || self.file_diffs.contains_key(&key) {
+                // A diff loaded for exactly this listing entry is current;
+                // one loaded for an older entry (fingerprint moved) is stale
+                // and gets requested again.
+                let is_current = self
+                    .file_diffs
+                    .get(&key)
+                    .is_some_and(|loaded| &loaded.file == file);
+                if self.collapsed_files.contains(&key) || is_current {
                     continue;
                 }
                 next = Some((
@@ -298,7 +362,7 @@ impl ReviewView {
         }
 
         if let Some((repo_root, base, file)) = next {
-            self.in_flight = Some((repo_root.clone(), file.path.clone()));
+            self.in_flight = Some(((repo_root.clone(), file.path.clone()), file.clone()));
             if let Some(gpui) = cx.try_global::<Gpui>() {
                 gpui.cmd_get_review_file_diff(session_id, repo_root, self.mode, base, file);
             }
@@ -396,7 +460,7 @@ impl ReviewView {
             .collect();
         self.file_diffs.retain(|key, _| live.contains(key));
         self.collapsed_files.retain(|key| live.contains(key));
-        if let Some(in_flight) = &self.in_flight
+        if let Some((in_flight, _)) = &self.in_flight
             && !live.contains(in_flight)
         {
             self.in_flight = None;
@@ -441,9 +505,14 @@ impl ReviewView {
 
         if let Some(d) = diff {
             let key = (d.repo_root, d.path);
-            if self.in_flight.as_ref() == Some(&key) {
-                self.in_flight = None;
-                self.file_diffs.insert(key, d.prepared);
+            if let Some((_, file)) = self.in_flight.take_if(|(k, _)| *k == key) {
+                self.file_diffs.insert(
+                    key,
+                    LoadedDiff {
+                        file,
+                        prepared: d.prepared,
+                    },
+                );
             }
         }
         self.ensure_diff_request(cx);
@@ -634,8 +703,8 @@ impl ReviewView {
 
         let key: FileKey = (repo_root.to_path_buf(), file.path.clone());
         let collapsed = self.collapsed_files.contains(&key);
-        let entry = self.file_diffs.get(&key);
-        let loading = self.in_flight.as_ref() == Some(&key);
+        let entry = self.file_diffs.get(&key).map(|loaded| &loaded.prepared);
+        let loading = self.in_flight.as_ref().is_some_and(|(k, _)| *k == key);
 
         // Right-hand slot of the file header.
         let indicator: gpui::AnyElement = match entry {
@@ -897,8 +966,9 @@ impl Focusable for ReviewView {
 
 impl Render for ReviewView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Pull fresh backend data before laying out. Both syncs are a cheap
+        // Pull fresh backend data before laying out. All syncs are a cheap
         // generation compare when nothing changed.
+        self.sync_files_changed(cx);
         self.sync_listing(window, cx);
         self.sync_diff(cx);
 
