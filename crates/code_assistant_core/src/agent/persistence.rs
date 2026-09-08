@@ -58,6 +58,8 @@ impl SnapshotPersistence for SessionStateAdapter {
             tool_executions: snapshot.tool_executions,
             plan: state.plan.clone(),
             active_skills: state.active_skills.clone(),
+            // Compatibility restore inputs only. The session manager owns the
+            // persistent settings and never applies a run's config on save.
             config: state.session_config.clone(),
             next_request_id: Some(snapshot.next_request_id),
             model_config: state.model_config.clone(),

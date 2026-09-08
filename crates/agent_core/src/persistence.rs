@@ -1,5 +1,6 @@
 //! Core-shaped persistence: the loop saves what it owns — the conversation
-//! tree, the linearized history, the tool executions, and the id counters.
+//! tree, its derived linear history, the tool executions, and the id counters.
+//! Prompt-only repairs and context-recovery projections are never checkpointed.
 //! Application-level fields travel separately through the extension state
 //! and are assembled into the application's storage format by its adapter.
 
@@ -15,7 +16,9 @@ pub struct AgentSnapshot {
     pub message_nodes: BTreeMap<NodeId, MessageNode>,
     pub active_path: ConversationPath,
     pub next_node_id: NodeId,
-    /// Linearized message history (derived from `active_path`).
+    /// Canonical linear history derived from `active_path`, retained for API
+    /// compatibility. Never the rendered/repaired LLM prompt. A supplied tree
+    /// takes precedence over this field on restore.
     pub messages: Vec<llm::Message>,
     pub tool_executions: Vec<ToolExecution>,
     pub next_request_id: u64,
