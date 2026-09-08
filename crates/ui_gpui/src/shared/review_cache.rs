@@ -111,6 +111,7 @@ mod tests {
                 path: "src/lib.rs".into(),
                 orig_path: None,
                 status: git::ChangeStatus::Modified,
+                fingerprint: Some("abc:def".into()),
             }],
             stats: git::DiffStats {
                 additions: 12,

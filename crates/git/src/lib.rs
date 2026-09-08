@@ -3,6 +3,7 @@ mod branch;
 mod diff;
 mod repository;
 mod types;
+mod watch;
 pub mod worktree;
 
 pub use binary::GitBinary;
@@ -10,6 +11,7 @@ pub use branch::BranchNotMerged;
 pub use diff::*;
 pub use repository::GitRepository;
 pub use types::*;
+pub use watch::ChangeWatcher;
 
 #[cfg(test)]
 pub(crate) mod testutil {

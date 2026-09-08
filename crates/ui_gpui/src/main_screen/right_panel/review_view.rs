@@ -13,6 +13,13 @@
 //! file without a diff is requested. Hunks (changed lines + a few context
 //! lines) are computed once on arrival and cached — rendering never diffs, and
 //! the element count scales with changed lines, not file sizes.
+//!
+//! Freshness: while the view has a listing it owns a [`git::ChangeWatcher`]
+//! on the listed repos and re-requests the listing whenever the watcher
+//! reports activity (the main screen also reloads on window activation as a
+//! safety net). Each changed file carries a fingerprint; a cached diff whose
+//! listing entry changed is stale and re-requested, but keeps rendering until
+//! its replacement arrives, so nothing flickers.
 
 use crate::shared::file_icons;
 use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_hunks};
@@ -21,7 +28,7 @@ use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
 use gpui::{
     AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Render,
-    Subscription, Window, div, prelude::*, px, rems,
+    Subscription, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable, Size,
@@ -132,6 +139,18 @@ type FileKey = (PathBuf, String);
 /// mismatches, whatever the global's current generation is.
 const GENERATION_UNSEEN: u64 = u64::MAX;
 
+/// Quiet period the change watcher waits before reporting a burst of
+/// filesystem events, so an edit (or a build) costs one scan.
+const REVIEW_WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// A prepared diff together with the listing entry it was loaded for. When a
+/// later listing carries a different entry for the same path (new
+/// fingerprint or status), the diff is stale.
+struct LoadedDiff {
+    file: ChangedFile,
+    prepared: PreparedReviewDiff,
+}
+
 pub struct ReviewView {
     session_id: Option<String>,
     mode_state: Entity<SelectState<Vec<ModeOption>>>,
@@ -149,13 +168,22 @@ pub struct ReviewView {
     /// Persisted default base ref, seeds a repo's base when it has no override.
     default_base: Option<String>,
 
-    /// Prepared diffs by file, filled lazily one request at a time.
-    file_diffs: HashMap<FileKey, PreparedReviewDiff>,
+    /// Prepared diffs by file, filled lazily one request at a time. A stale
+    /// entry (see [`LoadedDiff`]) stays here — and on screen — until its
+    /// replacement arrives.
+    file_diffs: HashMap<FileKey, LoadedDiff>,
     /// Files the user collapsed (default is expanded).
     collapsed_files: HashSet<FileKey>,
-    /// The single outstanding diff request; arrivals for anything else are
-    /// stale (e.g. from before a mode/base change) and dropped.
-    in_flight: Option<FileKey>,
+    /// The single outstanding diff request, with the listing entry it was
+    /// made for; arrivals for anything else are stale (e.g. from before a
+    /// mode/base change) and dropped.
+    in_flight: Option<(FileKey, ChangedFile)>,
+
+    /// Filesystem watcher on the listed repos (keyed by their roots so a
+    /// changed set restarts it). Dropping it stops watching.
+    watcher: Option<(Vec<PathBuf>, git::ChangeWatcher)>,
+    /// Forwards watcher callbacks to `request_listing` on the UI thread.
+    watch_task: Option<Task<()>>,
 
     /// Generation of the consumed listing. Change detection per frame is a
     /// plain integer compare against the global's generation — no clones.
@@ -195,6 +223,8 @@ impl ReviewView {
             file_diffs: HashMap::new(),
             collapsed_files: HashSet::new(),
             in_flight: None,
+            watcher: None,
+            watch_task: None,
             listing_generation: GENERATION_UNSEEN,
             diff_generation: GENERATION_UNSEEN,
             focus_handle: cx.focus_handle(),
@@ -214,6 +244,9 @@ impl ReviewView {
         self.file_diffs.clear();
         self.collapsed_files.clear();
         self.in_flight = None;
+        // A new session lists its own repos; the watcher follows the listing.
+        self.watcher = None;
+        self.watch_task = None;
 
         // Restore the persisted compare mode for this session. The selector
         // resyncs from the echoed listing on the next render.
@@ -258,6 +291,48 @@ impl ReviewView {
         self.request_listing(cx);
     }
 
+    /// Keep a change watcher running on exactly the listed repos. Watcher
+    /// callbacks (background thread) are forwarded through a one-slot channel
+    /// to `request_listing` on the UI thread; the listing's fingerprints then
+    /// decide which diffs are stale.
+    fn ensure_watcher(&mut self, cx: &mut Context<Self>) {
+        let roots: Vec<PathBuf> = self.repos.iter().map(|r| r.repo_root.clone()).collect();
+        if roots.is_empty() {
+            self.watcher = None;
+            self.watch_task = None;
+            return;
+        }
+        if self.watcher.as_ref().is_some_and(|(r, _)| *r == roots) {
+            return;
+        }
+
+        // A bounded(1) channel coalesces callbacks that land while the UI
+        // thread is still busy; dropping the watcher closes it, ending the task.
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        match git::ChangeWatcher::start(&roots, REVIEW_WATCH_DEBOUNCE, move || {
+            let _ = tx.try_send(());
+        }) {
+            Ok(watcher) => {
+                self.watcher = Some((roots, watcher));
+                self.watch_task = Some(cx.spawn(async move |this, cx| {
+                    while rx.recv().await.is_ok() {
+                        if this
+                            .update(cx, |this, cx| this.request_listing(cx))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }));
+            }
+            Err(e) => {
+                tracing::warn!("Review panel: change watcher unavailable: {e:#}");
+                self.watcher = None;
+                self.watch_task = None;
+            }
+        }
+    }
+
     fn request_listing(&self, cx: &mut Context<Self>) {
         let Some(session_id) = self.session_id.clone() else {
             return;
@@ -285,7 +360,14 @@ impl ReviewView {
             }
             for file in &section.files {
                 let key = (section.repo_root.clone(), file.path.clone());
-                if self.collapsed_files.contains(&key) || self.file_diffs.contains_key(&key) {
+                // A diff loaded for exactly this listing entry is current;
+                // one loaded for an older entry (fingerprint moved) is stale
+                // and gets requested again.
+                let is_current = self
+                    .file_diffs
+                    .get(&key)
+                    .is_some_and(|loaded| &loaded.file == file);
+                if self.collapsed_files.contains(&key) || is_current {
                     continue;
                 }
                 next = Some((
@@ -298,7 +380,7 @@ impl ReviewView {
         }
 
         if let Some((repo_root, base, file)) = next {
-            self.in_flight = Some((repo_root.clone(), file.path.clone()));
+            self.in_flight = Some(((repo_root.clone(), file.path.clone()), file.clone()));
             if let Some(gpui) = cx.try_global::<Gpui>() {
                 gpui.cmd_get_review_file_diff(session_id, repo_root, self.mode, base, file);
             }
@@ -396,7 +478,7 @@ impl ReviewView {
             .collect();
         self.file_diffs.retain(|key, _| live.contains(key));
         self.collapsed_files.retain(|key| live.contains(key));
-        if let Some(in_flight) = &self.in_flight
+        if let Some((in_flight, _)) = &self.in_flight
             && !live.contains(in_flight)
         {
             self.in_flight = None;
@@ -424,6 +506,7 @@ impl ReviewView {
             }
         }
 
+        self.ensure_watcher(cx);
         self.ensure_diff_request(cx);
     }
 
@@ -441,9 +524,14 @@ impl ReviewView {
 
         if let Some(d) = diff {
             let key = (d.repo_root, d.path);
-            if self.in_flight.as_ref() == Some(&key) {
-                self.in_flight = None;
-                self.file_diffs.insert(key, d.prepared);
+            if let Some((_, file)) = self.in_flight.take_if(|(k, _)| *k == key) {
+                self.file_diffs.insert(
+                    key,
+                    LoadedDiff {
+                        file,
+                        prepared: d.prepared,
+                    },
+                );
             }
         }
         self.ensure_diff_request(cx);
@@ -634,8 +722,8 @@ impl ReviewView {
 
         let key: FileKey = (repo_root.to_path_buf(), file.path.clone());
         let collapsed = self.collapsed_files.contains(&key);
-        let entry = self.file_diffs.get(&key);
-        let loading = self.in_flight.as_ref() == Some(&key);
+        let entry = self.file_diffs.get(&key).map(|loaded| &loaded.prepared);
+        let loading = self.in_flight.as_ref().is_some_and(|(k, _)| *k == key);
 
         // Right-hand slot of the file header.
         let indicator: gpui::AnyElement = match entry {

@@ -79,6 +79,12 @@ impl GitRepository {
         &self.workdir
     }
 
+    /// Return this worktree's private git directory: `.git` for the main
+    /// worktree, `<main>/.git/worktrees/<name>` for a linked one.
+    pub fn gitdir(&self) -> PathBuf {
+        self.repo.to_thread_local().git_dir().to_path_buf()
+    }
+
     /// Return the common directory (shared across worktrees).
     ///
     /// For the main worktree this is the same as `git_dir`.

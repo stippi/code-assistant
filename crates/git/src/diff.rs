@@ -29,6 +29,13 @@ pub struct ChangedFile {
     pub orig_path: Option<String>,
     /// The kind of change.
     pub status: ChangeStatus,
+    /// Opaque token that changes whenever either side of this file's diff may
+    /// have changed (blob ids in branch mode; `HEAD` plus the working-tree
+    /// file's mtime/size in working-tree mode). Lets consumers detect that a
+    /// previously loaded diff is stale without re-diffing. `None` when the
+    /// listing came from a source without fingerprints (e.g. an old cache).
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
 /// Aggregate line-change counts for a review listing (à la `git diff --stat`).
@@ -95,7 +102,33 @@ impl GitRepository {
                 ],
             )
             .await?;
-        Ok(parse_status_z(&out))
+        let mut files = parse_status_z(&out);
+
+        // Fingerprint: HEAD (the old side of every diff) plus the working-tree
+        // file's mtime and size (the new side). Cheap — one stat per changed
+        // file — and precise enough to notice edits made while a diff is shown.
+        let head = self
+            .repo
+            .to_thread_local()
+            .head_id()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|_| "unborn".to_owned());
+        for file in &mut files {
+            let new_side = match tokio::fs::metadata(self.workdir().join(&file.path)).await {
+                Ok(meta) => {
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    format!("{mtime}:{}", meta.len())
+                }
+                Err(_) => "absent".to_owned(),
+            };
+            file.fingerprint = Some(format!("{head}:{new_side}"));
+        }
+        Ok(files)
     }
 
     /// List files that differ between `base` and `HEAD` using three-dot
@@ -110,14 +143,15 @@ impl GitRepository {
                     "-c",
                     "core.quotepath=false",
                     "diff",
-                    "--name-status",
+                    "--raw",
+                    "--no-abbrev",
                     "-M",
                     "-z",
                     &range,
                 ],
             )
             .await?;
-        Ok(parse_diff_name_status_z(&out))
+        Ok(parse_diff_raw_z(&out))
     }
 
     /// Load both sides of the diff for `file` in working-tree mode:
@@ -304,29 +338,42 @@ fn parse_status_z(bytes: &[u8]) -> Vec<ChangedFile> {
             path,
             orig_path,
             status,
+            fingerprint: None,
         });
     }
     files
 }
 
-/// Parse the output of `git diff --name-status -M -z`.
+/// Parse the output of `git diff --raw --no-abbrev -M -z`.
 ///
-/// Fields are NUL-terminated. A regular record is `STATUS`, then `PATH`. A
-/// rename/copy record is `STATUS`, then the source path, then the destination
-/// path.
-fn parse_diff_name_status_z(bytes: &[u8]) -> Vec<ChangedFile> {
+/// Fields are NUL-terminated. A record starts with a header
+/// `:<old mode> <new mode> <old blob> <new blob> <STATUS>[score]`, followed by
+/// `PATH` — or, for renames/copies, the source path and then the destination
+/// path. The two blob ids make up the file's fingerprint.
+fn parse_diff_raw_z(bytes: &[u8]) -> Vec<ChangedFile> {
     let mut files = Vec::new();
     let mut chunks = bytes.split(|&b| b == 0).filter(|c| !c.is_empty());
-    while let Some(status_chunk) = chunks.next() {
-        let code = status_chunk[0] as char;
-        let status = match code {
-            'A' => ChangeStatus::Added,
-            'D' => ChangeStatus::Deleted,
-            'R' => ChangeStatus::Renamed,
-            'C' => ChangeStatus::Copied,
-            'T' => ChangeStatus::TypeChanged,
+    while let Some(header) = chunks.next() {
+        let header = String::from_utf8_lossy(header);
+        let mut fields = header.trim_start_matches(':').split(' ');
+        let (Some(_old_mode), Some(_new_mode), Some(old_blob), Some(new_blob), Some(status)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            break;
+        };
+        let status = match status.chars().next() {
+            Some('A') => ChangeStatus::Added,
+            Some('D') => ChangeStatus::Deleted,
+            Some('R') => ChangeStatus::Renamed,
+            Some('C') => ChangeStatus::Copied,
+            Some('T') => ChangeStatus::TypeChanged,
             _ => ChangeStatus::Modified,
         };
+        let fingerprint = Some(format!("{old_blob}:{new_blob}"));
         if matches!(status, ChangeStatus::Renamed | ChangeStatus::Copied) {
             let Some(old) = chunks.next() else { break };
             let Some(new) = chunks.next() else { break };
@@ -334,6 +381,7 @@ fn parse_diff_name_status_z(bytes: &[u8]) -> Vec<ChangedFile> {
                 path: String::from_utf8_lossy(new).into_owned(),
                 orig_path: Some(String::from_utf8_lossy(old).into_owned()),
                 status,
+                fingerprint,
             });
         } else {
             let Some(path) = chunks.next() else { break };
@@ -341,6 +389,7 @@ fn parse_diff_name_status_z(bytes: &[u8]) -> Vec<ChangedFile> {
                 path: String::from_utf8_lossy(path).into_owned(),
                 orig_path: None,
                 status,
+                fingerprint,
             });
         }
     }
@@ -459,17 +508,73 @@ mod tests {
     }
 
     #[test]
-    fn parse_diff_name_status_handles_rename() {
-        let raw = b"M\0a.txt\0R100\0old.txt\0new.txt\0A\0added.txt\0";
-        let files = parse_diff_name_status_z(raw);
+    fn parse_diff_raw_handles_rename_and_fingerprints() {
+        let raw = b":100644 100644 aaa bbb M\0a.txt\0\
+                    :100644 100644 ccc ccc R100\0old.txt\0new.txt\0\
+                    :000000 100644 000 ddd A\0added.txt\0";
+        let files = parse_diff_raw_z(raw);
         assert_eq!(files.len(), 3);
         assert_eq!(files[0].status, ChangeStatus::Modified);
         assert_eq!(files[0].path, "a.txt");
+        assert_eq!(files[0].fingerprint.as_deref(), Some("aaa:bbb"));
         assert_eq!(files[1].status, ChangeStatus::Renamed);
         assert_eq!(files[1].orig_path.as_deref(), Some("old.txt"));
         assert_eq!(files[1].path, "new.txt");
+        assert_eq!(files[1].fingerprint.as_deref(), Some("ccc:ccc"));
         assert_eq!(files[2].status, ChangeStatus::Added);
         assert_eq!(files[2].path, "added.txt");
+        assert_eq!(files[2].fingerprint.as_deref(), Some("000:ddd"));
+    }
+
+    #[tokio::test]
+    async fn working_tree_fingerprint_tracks_content_changes() {
+        let dir = TempDir::new().unwrap();
+        init_repo_with_commit(dir.path());
+
+        write(dir.path(), "a.txt", b"a\n");
+        write(dir.path(), "b.txt", b"b\n");
+        write(dir.path(), "gone.txt", b"gone\n");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "seed"]);
+
+        write(dir.path(), "a.txt", b"a changed\n");
+        write(dir.path(), "b.txt", b"b changed\n");
+        std::fs::remove_file(dir.path().join("gone.txt")).unwrap();
+
+        let repo = GitRepository::open(dir.path()).unwrap();
+        let first = repo.changed_files_working_tree().await.unwrap();
+        let a1 = find(&first, "a.txt")
+            .fingerprint
+            .clone()
+            .expect("fingerprint");
+        let b1 = find(&first, "b.txt")
+            .fingerprint
+            .clone()
+            .expect("fingerprint");
+        assert!(find(&first, "gone.txt").fingerprint.is_some());
+
+        // Only a.txt changes again (different size, so mtime granularity is
+        // irrelevant): its fingerprint moves, b.txt's stays put.
+        write(dir.path(), "a.txt", b"a changed once more\n");
+        let second = repo.changed_files_working_tree().await.unwrap();
+        assert_ne!(
+            find(&second, "a.txt").fingerprint.as_deref(),
+            Some(a1.as_str())
+        );
+        assert_eq!(
+            find(&second, "b.txt").fingerprint.as_deref(),
+            Some(b1.as_str())
+        );
+
+        // A new HEAD changes the old side of every diff: b.txt is untouched in
+        // the working tree, yet its fingerprint must move.
+        git(dir.path(), &["add", "a.txt"]);
+        git(dir.path(), &["commit", "-m", "a only"]);
+        let third = repo.changed_files_working_tree().await.unwrap();
+        assert_ne!(
+            find(&third, "b.txt").fingerprint.as_deref(),
+            Some(b1.as_str())
+        );
     }
 
     #[test]
@@ -651,6 +756,26 @@ mod tests {
             .unwrap();
         assert_eq!(d.old_text, None);
         assert_eq!(d.new_text.as_deref(), Some("new on feature\n"));
+
+        // Fingerprints follow the blobs: another commit touching only
+        // shared.txt moves its fingerprint and leaves feature_only.txt's alone.
+        let shared1 = find(&files, "shared.txt").fingerprint.clone().unwrap();
+        let only1 = find(&files, "feature_only.txt")
+            .fingerprint
+            .clone()
+            .unwrap();
+        write(dir.path(), "shared.txt", b"feature line 2\n");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "more feature work"]);
+        let files = repo.changed_files_vs_base(&base_branch).await.unwrap();
+        assert_ne!(
+            find(&files, "shared.txt").fingerprint.as_deref(),
+            Some(shared1.as_str())
+        );
+        assert_eq!(
+            find(&files, "feature_only.txt").fingerprint.as_deref(),
+            Some(only1.as_str())
+        );
     }
 
     #[tokio::test]

@@ -548,9 +548,43 @@ pub struct DiffLine {
     pub emphasis: Vec<std::ops::Range<usize>>,
 }
 
-/// Replace blocks larger than this skip the word-level diff — pairing lines
-/// across big rewrites produces noise, not signal (Zed caps similarly).
-const MAX_WORD_DIFF_LINES: usize = 16;
+/// Replace blocks with more lines than this (per side) skip the word-level
+/// diff — pairing words across big rewrites produces noise, not signal, and
+/// the word diff's cost grows with the block. Same cap as Zed.
+const MAX_WORD_DIFF_LINES: usize = 8;
+
+/// A line whose emphasized share of non-whitespace bytes exceeds this is
+/// mostly rewritten: word emphasis would light up most of it, so the line is
+/// shown as a plain change instead. Long prose paragraphs share enough
+/// common words ("the", "data", …) to pass `similar`'s similarity cutoff
+/// while every other word changed; this is what filters that out.
+const MAX_EMPHASIS_SHARE: f32 = 0.5;
+
+/// Merge emphasis ranges whose gap is whitespace only: word tokens on either
+/// side of an unchanged space are one change to the eye.
+fn merge_whitespace_gaps(emphasis: &mut Vec<std::ops::Range<usize>>, text: &str) {
+    emphasis.dedup_by(|next, prev| {
+        let gap = &text[prev.end..next.start];
+        if gap.chars().all(char::is_whitespace) {
+            prev.end = next.end;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+/// True if emphasizing `emphasis` would cover more than [`MAX_EMPHASIS_SHARE`]
+/// of the line's non-whitespace bytes.
+fn emphasis_is_noise(emphasis: &[std::ops::Range<usize>], text: &str) -> bool {
+    let non_ws = |s: &str| s.bytes().filter(|b| !b.is_ascii_whitespace()).count();
+    let total = non_ws(text);
+    if total == 0 {
+        return false;
+    }
+    let emphasized: usize = emphasis.iter().map(|r| non_ws(&text[r.clone()])).sum();
+    emphasized as f32 / total as f32 > MAX_EMPHASIS_SHARE
+}
 
 /// Expand one diff op into [`DiffLine`]s, with word-level emphasis for small
 /// replace blocks. `iter_inline_changes` falls back to plain changes on its
@@ -578,6 +612,10 @@ fn collect_change_lines<'a>(
                 r.end = r.end.min(trimmed_len);
                 r.start < r.end
             });
+            merge_whitespace_gaps(&mut emphasis, &text);
+            if emphasis_is_noise(&emphasis, &text) {
+                emphasis.clear();
+            }
             out.push(DiffLine {
                 tag: change.tag(),
                 text: text.into(),
@@ -1191,6 +1229,50 @@ mod tests {
             lines
                 .iter()
                 .filter(|l| l.tag == ChangeTag::Equal)
+                .all(|l| l.emphasis.is_empty())
+        );
+    }
+
+    #[test]
+    fn word_diff_merges_ranges_split_only_by_whitespace() {
+        let lines = compute_diff_lines("keep foo bar keep\n", "keep qux quux keep\n");
+        let ins = lines.iter().find(|l| l.tag == ChangeTag::Insert).unwrap();
+        // "qux" and "quux" are separate word tokens with an unchanged space
+        // between them; visually that is one change.
+        assert_eq!(ins.emphasis.len(), 1);
+        assert_eq!(&ins.text[ins.emphasis[0].clone()], "qux quux");
+    }
+
+    #[test]
+    fn word_diff_kept_for_small_edit_in_long_paragraph() {
+        // A long prose paragraph (one line) with a single changed word is
+        // exactly where word emphasis helps most — length must not disable it.
+        let filler = "the data center deployment ".repeat(25);
+        let old = format!("{filler}serving a jurisdiction.\n");
+        let new = format!("{filler}serving one or more jurisdictions.\n");
+        assert!(old.len() > 512);
+        let lines = compute_diff_lines(&old, &new);
+        let ins = lines.iter().find(|l| l.tag == ChangeTag::Insert).unwrap();
+        assert_eq!(ins.emphasis.len(), 1);
+        assert_eq!(
+            &ins.text[ins.emphasis[0].clone()],
+            "one or more jurisdictions"
+        );
+    }
+
+    #[test]
+    fn word_diff_dropped_when_most_of_the_line_changed() {
+        // Enough tokens (spaces, one word) match for `similar` to attempt a
+        // word diff, but nearly every word changed: emphasizing most of the
+        // line is noise, so the line is shown as a plain change instead.
+        let lines = compute_diff_lines(
+            "one two three four five six seven\n",
+            "uno dos tres four cinco seis siete\n",
+        );
+        assert!(
+            lines
+                .iter()
+                .filter(|l| l.tag != ChangeTag::Equal)
                 .all(|l| l.emphasis.is_empty())
         );
     }
