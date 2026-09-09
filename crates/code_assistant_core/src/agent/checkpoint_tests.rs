@@ -161,6 +161,80 @@ async fn formatted_roundtrip(syntax: ToolSyntax) -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn journal_outcomes_survive_disk_reload_without_the_original_tools() -> Result<()> {
+    use agent_core::execution::{ExecutionState, RuntimeToolOutput};
+    let dir = tempdir()?;
+    let mut session = ChatSession::new_empty(
+        "journal".into(),
+        "test".into(),
+        SessionConfig::default(),
+        None,
+    );
+    let outputs = [
+        RuntimeToolOutput {
+            state: ExecutionState::Succeeded,
+            message: "completed before interruption".into(),
+        },
+        RuntimeToolOutput::started(),
+        RuntimeToolOutput::not_started("No invocation was made."),
+    ];
+    for (i, output) in outputs.into_iter().enumerate() {
+        let id = format!("call-{i}");
+        let request = agent_core::ToolRequest {
+            id: id.clone(),
+            name: "unavailable-tool".into(),
+            input: serde_json::json!({"path":"evidence.txt"}),
+            start_offset: None,
+            end_offset: None,
+        };
+        session.add_message(Message::new_assistant_content(vec![
+            ContentBlock::new_tool_use(&id, &request.name, request.input.clone()),
+        ]));
+        session.tool_executions.push(
+            agent_core::ToolExecution {
+                tool_request: request,
+                result: Box::new(output),
+            }
+            .serialize()?,
+        );
+    }
+    let mut store = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+    store.save_chat_session(&session)?;
+    let loaded = store.load_chat_session("journal")?.unwrap();
+    let registry = tools_core::ToolRegistry::new();
+    let restored: Vec<_> = loaded
+        .tool_executions
+        .iter()
+        .map(|entry| {
+            assert!(crate::tools::mcp::execution_renderable(entry, &registry));
+            crate::tools::mcp::deserialize_tool_execution(entry, &registry)
+        })
+        .collect::<Result<_>>()?;
+    assert_eq!(restored.len(), 3);
+    for entry in &restored {
+        assert_eq!(entry.tool_request.name, "unavailable-tool");
+        assert_eq!(entry.tool_request.input["path"], "evidence.txt");
+    }
+    assert!(restored[0].result.is_success());
+    let mut tracker = tools_core::ResourcesTracker::new();
+    assert!(
+        restored[1]
+            .result
+            .as_render()
+            .render(&mut tracker)
+            .contains("unknown")
+    );
+    assert!(
+        restored[2]
+            .result
+            .as_render()
+            .render(&mut tracker)
+            .contains("not started")
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn checkpoint_native_formatted_roundtrip() -> Result<()> {
     formatted_roundtrip(ToolSyntax::Native).await

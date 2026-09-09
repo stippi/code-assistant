@@ -1170,8 +1170,8 @@ impl SessionManager {
             permissions
         };
 
-        let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> =
-            Arc::new(DefaultSubAgentRunner::new(
+        let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> = Arc::new(
+            DefaultSubAgentRunner::new(
                 model_name_for_subagent,
                 session_config.clone(),
                 sandbox_context_clone,
@@ -1182,7 +1182,9 @@ impl SessionManager {
                 self.tool_registry.clone(),
                 Some(Arc::new(self.persistence.clone())),
                 self.hooks_factory.clone(),
-            ));
+            )
+            .with_parent_cancellation(cancellation.clone()),
+        );
 
         let components = AgentComponents {
             llm_provider,

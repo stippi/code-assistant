@@ -181,11 +181,24 @@ impl Tool for SpawnAgentTool {
                 error: None,
                 ui_output: Some(sub_result.ui_output),
             }),
-            Err(e) => Ok(SpawnAgentOutput {
-                answer: String::new(),
-                error: Some(e.to_string()),
-                ui_output: None,
-            }),
+            Err(e) => {
+                let ui_output = match e.downcast_ref::<crate::agent::sub_agent::SubAgentFailure>() {
+                    Some(failure) => failure.ui_output.clone(),
+                    None => {
+                        // Alternate runners may only return an error. Still
+                        // replace the live card with a terminal structured result.
+                        let mut output = crate::agent::sub_agent::SubAgentOutput::new();
+                        output.activity = Some(crate::agent::sub_agent::SubAgentActivity::Failed);
+                        output.error = Some(e.to_string());
+                        output.to_json()
+                    }
+                };
+                Ok(SpawnAgentOutput {
+                    answer: String::new(),
+                    error: Some(e.to_string()),
+                    ui_output: Some(ui_output),
+                })
+            }
         }
     }
 }
