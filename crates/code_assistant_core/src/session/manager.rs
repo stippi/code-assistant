@@ -34,6 +34,13 @@ pub struct RegistryRequest {
     pub include_local_mcp: bool,
 }
 
+/// Immutable configuration captured when a run reserves its session.
+/// Settings changed during preparation belong to a subsequent run.
+pub(crate) struct RunConfig {
+    pub session: SessionConfig,
+    pub model: Option<SessionModelConfig>,
+}
+
 /// Provides the tool registry for the next agent run. Consulted at the
 /// start of every run, so embedders can rebuild the registry from their
 /// current configuration (e.g. reconnect MCP servers after a settings
@@ -242,6 +249,75 @@ impl SessionManager {
     /// The tool registry the next agent run would currently use.
     pub fn tool_registry(&self) -> &Arc<crate::tools::core::ToolRegistry> {
         &self.tool_registry
+    }
+
+    /// Clone the registry loader under the lock; poll it only after releasing it.
+    pub fn registry_loader(&self) -> ToolRegistryProvider {
+        self.tool_registry_provider.clone().unwrap_or_else(|| {
+            let registry = self.tool_registry.clone();
+            Arc::new(move |_| {
+                let registry = registry.clone();
+                Box::pin(async move { registry })
+            })
+        })
+    }
+
+    pub(crate) fn reserve_agent_run(
+        &mut self,
+        session_id: &str,
+        cancellation: tools_core::RunCancellation,
+    ) -> Result<()> {
+        self.ensure_session_loaded(session_id)?;
+        let instance = self.active_sessions.get_mut(session_id).unwrap();
+        anyhow::ensure!(
+            instance.get_activity_state().is_terminal(),
+            "Session is already running"
+        );
+        let lock =
+            file_utils::try_acquire_agent_lock(&self.persistence.sessions_dir()?, session_id)?
+                .ok_or_else(|| anyhow::anyhow!("Session is running in another instance"))?;
+        instance.begin_agent_run();
+        instance.cancellation = cancellation;
+        instance.agent_lock = Some(lock);
+        instance.set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+        instance.sleep_guard = Some(self.sleep_inhibitor.agent_guard());
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionActivityState {
+                session_id: session_id.to_string(),
+                activity_state: crate::session::instance::SessionActivityState::AgentRunning,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn finish_failed_setup(
+        &mut self,
+        session_id: &str,
+        cancellation: &tools_core::RunCancellation,
+        error: String,
+    ) {
+        let Some(instance) = self.active_sessions.get_mut(session_id) else {
+            return;
+        };
+        if !instance.cancellation.same_run(cancellation) || instance.agent_lock.is_none() {
+            return;
+        }
+        instance.agent_lock = None;
+        instance.sleep_guard = None;
+        let state = if cancellation.is_cancelled() {
+            crate::session::instance::SessionActivityState::Idle
+        } else {
+            crate::session::instance::SessionActivityState::Errored { message: error }
+        };
+        instance.set_activity_state(state.clone());
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionActivityState {
+                session_id: session_id.to_string(),
+                activity_state: state,
+            },
+        );
     }
 
     /// Pull the registry for `req` from the provider (no-op without one) and
@@ -854,26 +930,74 @@ impl SessionManager {
         turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
         registry_request: RegistryRequest,
     ) -> Result<()> {
+        let cancellation = turn_recorder
+            .as_ref()
+            .map(|r| r.cancellation.clone())
+            .unwrap_or_default();
+        self.reserve_agent_run(session_id, cancellation.clone())?;
+        let instance = self.active_sessions.get(session_id).unwrap();
+        let run_config = RunConfig {
+            session: instance.session.config.clone(),
+            model: instance.session.model_config.clone(),
+        };
+        self.refresh_tool_registry(session_id, registry_request)
+            .await;
+        let registry = self.tool_registry.clone();
+        let result = self
+            .start_reserved_agent_for_session(
+                session_id,
+                llm_provider,
+                project_manager,
+                command_executor,
+                permission_handler,
+                tool_scope_override,
+                turn_recorder,
+                registry,
+                cancellation.clone(),
+                run_config,
+            )
+            .await;
+        if let Err(error) = &result {
+            self.finish_failed_setup(session_id, &cancellation, format!("{error:#}"));
+        }
+        result
+    }
+
+    /// Commit a prepared run. No MCP/LLM network work may occur under this lock.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn start_reserved_agent_for_session(
+        &mut self,
+        session_id: &str,
+        llm_provider: Box<dyn LLMProvider>,
+        project_manager: Box<dyn ProjectManager>,
+        command_executor: Box<dyn CommandExecutor>,
+        permission_handler: Option<Arc<dyn PermissionMediator>>,
+        tool_scope_override: Option<crate::tools::core::ToolScope>,
+        turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+        registry: Arc<crate::tools::core::ToolRegistry>,
+        cancellation: tools_core::RunCancellation,
+        run_config: RunConfig,
+    ) -> Result<()> {
+        cancellation.check()?;
+        let instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        anyhow::ensure!(
+            instance.cancellation.same_run(&cancellation),
+            "Run superseded"
+        );
+        self.tool_registry = registry.clone();
+        self.active_sessions
+            .get_mut(session_id)
+            .unwrap()
+            .tool_registry = registry;
         // A new run is the point where configuration changes take effect: pull
         // the registry the caller resolved for this run (scoped to the
         // session's project, and to whether its local `.mcp.json` was trusted)
         // before anything below binds to it. Trust is resolved by the caller —
         // not here — because prompting must happen without the manager lock
         // that wraps this call, or the response could never be delivered.
-        self.refresh_tool_registry(session_id, registry_request)
-            .await;
-
-        // Acquire exclusive cross-process agent lock.
-        // This prevents another code-assistant instance from running an agent
-        // for the same session concurrently.
-        let sessions_dir = self.persistence.sessions_dir()?;
-        let agent_lock = file_utils::try_acquire_agent_lock(&sessions_dir, session_id)?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Cannot start agent for session {session_id}: \
-                     another code-assistant instance is already running an agent for this session"
-                )
-            })?;
 
         // Project grouping is session-owned initialization, not a side effect
         // of a later agent checkpoint carrying its stale run configuration.
@@ -900,10 +1024,8 @@ impl SessionManager {
 
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
-            let session_config = session_instance.session.config.clone();
-            // A new agent run supersedes any prior stop request and the
-            // previous run's live tool statuses.
-            session_instance.begin_agent_run();
+            let session_config = run_config.session;
+            // The reservation already installed this run's fresh cancellation token.
 
             let publisher =
                 session_instance.create_publisher(self.events.clone(), turn_recorder.clone());
@@ -949,7 +1071,7 @@ impl SessionManager {
                 active_skills: session_instance.session.active_skills.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
-                model_config: session_instance.session.model_config.clone(),
+                model_config: run_config.model,
             };
 
             // Set activity state
@@ -1099,22 +1221,7 @@ impl SessionManager {
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
 
-        // Load the session state into the agent
-        agent.load_from_session_state(session_state).await?;
-
-        // Apply the per-run scope after the load, which derives the scope
-        // from the session config and would otherwise win.
-        if let Some(scope) = tool_scope_override {
-            agent.set_tool_scope(scope);
-            agent.invalidate_system_message_cache();
-        }
-
-        // Announce the restored plan to the UI
-        let _ = publisher
-            .send_event(UiEvent::UpdatePlan {
-                plan: agent.plan().clone(),
-            })
-            .await;
+        agent.set_cancellation(cancellation.clone());
 
         // Spawn the agent task.
         //
@@ -1123,11 +1230,22 @@ impl SessionManager {
         // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
         let events_clone = self.events.clone();
-        let sleep_inhibitor = self.sleep_inhibitor.clone();
-        sleep_inhibitor.agent_started();
-
+        let sleep_guard = self
+            .active_sessions
+            .get_mut(session_id)
+            .unwrap()
+            .sleep_guard
+            .take();
+        let agent_lock = self
+            .active_sessions
+            .get_mut(session_id)
+            .unwrap()
+            .agent_lock
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Run reservation lost"))?;
         let task_handle = tokio::spawn(async move {
             let _agent_lock = agent_lock; // moved in — released on drop
+
             debug!("Starting agent for session {}", session_id_clone);
 
             // Use catch_unwind to ensure cleanup runs even if the agent panics.
@@ -1135,7 +1253,20 @@ impl SessionManager {
             // AgentRunning state because the cleanup code below is never reached.
             let result = {
                 use futures::FutureExt;
-                let iteration_future = std::panic::AssertUnwindSafe(agent.run_single_iteration());
+                let iteration_future = std::panic::AssertUnwindSafe(async {
+                    cancellation.check()?;
+                    agent.load_from_session_state(session_state).await?;
+                    if let Some(scope) = tool_scope_override {
+                        agent.set_tool_scope(scope);
+                        agent.invalidate_system_message_cache();
+                    }
+                    let _ = publisher
+                        .send_event(UiEvent::UpdatePlan {
+                            plan: agent.plan().clone(),
+                        })
+                        .await;
+                    agent.run_single_iteration().await
+                });
                 match iteration_future.catch_unwind().await {
                     Ok(result) => result,
                     Err(panic_payload) => {
@@ -1155,6 +1286,26 @@ impl SessionManager {
                 }
             };
 
+            let result = if cancellation.is_cancelled() {
+                Ok(())
+            } else {
+                result
+            };
+            // Read usage while this run still owns the session. After publishing
+            // Idle a successor may already append messages and save its own usage.
+            let final_usage = if turn_recorder.is_some() {
+                let mut manager = manager_for_outcome.lock().await;
+                manager
+                    .ensure_session_loaded(&session_id_clone)
+                    .ok()
+                    .and_then(|_| manager.get_session(&session_id_clone))
+                    .map(|instance| instance.calculate_total_usage())
+            } else {
+                None
+            };
+            // Release before publishing idle: a dispatch observing idle can acquire it.
+            drop(_agent_lock);
+            drop(sleep_guard);
             // Log the completion with detailed error information if failed
             match &result {
                 Ok(()) => {
@@ -1211,20 +1362,8 @@ impl SessionManager {
             // publisher is synchronous), so the record is complete here; the
             // token delta comes from the state the run persisted.
             if let Some(recorder) = turn_recorder {
-                let final_usage = {
-                    let mut manager = manager_for_outcome.lock().await;
-                    manager
-                        .ensure_session_loaded(&session_id_clone)
-                        .ok()
-                        .and_then(|_| manager.get_session(&session_id_clone))
-                        .map(|instance| instance.calculate_total_usage())
-                };
                 recorder.finish(result.as_ref().err().map(|e| format!("{e:#}")), final_usage);
             }
-
-            // Signal that this agent is no longer running so the system sleep
-            // inhibition can be released once all agents have finished.
-            sleep_inhibitor.agent_stopped();
 
             result
         });
@@ -1246,15 +1385,7 @@ impl SessionManager {
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
         // Remove from active sessions
         if let Some(mut session_instance) = self.active_sessions.remove(session_id) {
-            let agent_is_running = !session_instance.get_activity_state().is_terminal();
             session_instance.terminate_agent();
-            // When aborting a task, the cleanup code inside the task (including
-            // agent_stopped) won't run, so we signal completion here instead.
-            // We check the activity state rather than task_handle.is_some()
-            // because the handle persists even after the task has completed.
-            if agent_is_running {
-                self.sleep_inhibitor.agent_stopped();
-            }
         }
 
         // Clear active session if it was the deleted one
@@ -1286,18 +1417,10 @@ impl SessionManager {
 
     /// Terminate a running agent for a session (e.g. on user cancel).
     ///
-    /// This is the proper way to abort an agent task from outside `SessionManager`,
-    /// because it also updates the sleep-inhibition reference count. Calling
-    /// `session.terminate_agent()` directly would leak a count.
+    /// Run-owned guards release the process/wake locks on every exit path.
     pub fn terminate_session_agent(&mut self, session_id: &str) {
         if let Some(session) = self.active_sessions.get_mut(session_id) {
-            // Check the activity state rather than task_handle.is_some() because
-            // the handle persists even after the task has completed naturally.
-            let agent_is_running = !session.get_activity_state().is_terminal();
             session.terminate_agent();
-            if agent_is_running {
-                self.sleep_inhibitor.agent_stopped();
-            }
         }
     }
 
@@ -1309,6 +1432,31 @@ impl SessionManager {
     /// Get a mutable session instance by ID
     pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut SessionInstance> {
         self.active_sessions.get_mut(session_id)
+    }
+
+    /// Heal a removed model without overwriting a selection made after the
+    /// run was reserved, including selections written by another process.
+    pub(crate) fn persist_model_fallback(
+        &mut self,
+        session_id: &str,
+        expected_model: &str,
+        fallback: &SessionModelConfig,
+    ) -> Result<()> {
+        let session = self.persistence.update_entry(session_id, |session| {
+            if session
+                .model_config
+                .as_ref()
+                .map(|model| model.model_name.as_str())
+                == Some(expected_model)
+            {
+                session.model_config = Some(fallback.clone());
+            }
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.model_config = session.model_config;
+        }
+        Ok(())
     }
 
     /// Get the model config for a session, if any
@@ -1572,7 +1720,8 @@ impl SessionManager {
                 self.events.clone(),
                 instance.pending_permission_requests.clone(),
                 self.permission_timeout,
-            ),
+            )
+            .with_cancellation(instance.cancellation.clone()),
         ))
     }
 

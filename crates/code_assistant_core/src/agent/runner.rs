@@ -147,6 +147,10 @@ impl Agent {
         }
     }
 
+    pub fn set_cancellation(&mut self, cancellation: tools_core::RunCancellation) {
+        self.runtime.set_cancellation(cancellation);
+    }
+
     /// The application state riding on the loop.
     fn app_state(&self) -> &AgentAppState {
         AgentAppState::of_ref(self.runtime.extensions())

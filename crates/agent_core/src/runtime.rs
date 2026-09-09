@@ -90,6 +90,7 @@ pub struct AgentRuntime {
 
     permission_handler: Option<Arc<dyn PermissionMediator>>,
     permissions: ToolPermissions,
+    cancellation: tools_core::RunCancellation,
 
     conversation: Conversation,
     /// Run-local LLM projection. Never included in a checkpoint.
@@ -160,6 +161,7 @@ impl AgentRuntime {
             services_provider,
             permission_handler,
             permissions,
+            cancellation: tools_core::RunCancellation::default(),
             conversation: Conversation::default(),
             prompt_projection: PromptProjection::default(),
             tool_executions: Vec::new(),
@@ -169,6 +171,11 @@ impl AgentRuntime {
             pending_message_ref: None,
             model_hint: None,
         }
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: tools_core::RunCancellation) {
+        self.permissions.set_cancellation(cancellation.clone());
+        self.cancellation = cancellation;
     }
 
     /// Replace the dialect (e.g. after the embedding application reloaded a
@@ -332,9 +339,17 @@ impl AgentRuntime {
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
+        match self.run_until_complete().await {
+            Err(error) if error.is::<tools_core::Cancelled>() => Ok(()),
+            result => result,
+        }
+    }
+
+    async fn run_until_complete(&mut self) -> Result<()> {
         let mut streaming_retry_count: u32 = 0;
 
         loop {
+            self.cancellation.check()?;
             // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_blocks) = self.get_and_clear_pending_message() {
                 let text_summary = text_summary_from_blocks(&pending_blocks);
@@ -375,6 +390,7 @@ impl AgentRuntime {
                 // `continue` restarts the loop, which re-renders the messages and
                 // retries get_next_assistant_message. (StreamingStopped was already
                 // sent by get_next_assistant_message in its error path.)
+                Err(e) if e.is::<tools_core::Cancelled>() => return Err(e),
                 Err(e) => match self.hooks.recovery.classify(&e, streaming_retry_count) {
                     RecoveryAction::ReduceContext => {
                         self.recover_from_oversized_prompt().await?;
@@ -388,13 +404,18 @@ impl AgentRuntime {
                         streaming_retry_count = attempt;
                         self.prepare_streaming_retry(&e, attempt, max_attempts, delay)
                             .await;
-                        tokio::time::sleep(delay).await;
+                        tokio::select! {
+                            biased;
+                            _ = self.cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
+                            _ = tokio::time::sleep(delay) => {}
+                        }
                         continue;
                     }
                     RecoveryAction::Fail => return Err(e),
                 },
             };
 
+            self.cancellation.check()?;
             // 2. Add original LLM response to message history using the pre-allocated node_id
             if !llm_response.content.is_empty() {
                 self.append_message_with_node_id(
@@ -549,6 +570,9 @@ impl AgentRuntime {
 
         // Process results in original order
         for (idx, tool_request) in tool_requests.iter().enumerate() {
+            if self.cancellation.is_cancelled() {
+                break;
+            }
             let result_block = if parallel_indices.len() > 1 && parallel_indices.contains(&idx) {
                 // This request ran in parallel - get result from parallel execution
 
@@ -615,6 +639,7 @@ impl AgentRuntime {
                 let command_executor = self.command_executor.clone();
                 let permission_handler = self.permission_handler.clone();
                 let permissions = self.permissions.clone();
+                let cancellation = self.cancellation.clone();
                 let services_provider = self.services_provider.clone();
                 let scope_tag = self.tool_capability.clone();
                 let excluded_capabilities = self.excluded_tool_capabilities.clone();
@@ -630,6 +655,7 @@ impl AgentRuntime {
                         command_executor,
                         permission_handler,
                         permissions,
+                        cancellation,
                         services_provider,
                         scope_tag,
                         excluded_capabilities,
@@ -681,6 +707,7 @@ impl AgentRuntime {
         command_executor: Arc<dyn CommandExecutor>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         permissions: ToolPermissions,
+        cancellation: tools_core::RunCancellation,
         services_provider: Arc<dyn ToolServicesProvider>,
         scope_tag: String,
         excluded_capabilities: Vec<String>,
@@ -729,6 +756,7 @@ impl AgentRuntime {
                     .await
                 {
                     Err(e) => Err(e),
+                    Ok(()) if cancellation.is_cancelled() => Err(tools_core::Cancelled.into()),
                     Ok(()) => {
                         let mut services = services_provider.detached(&tool_request.id);
                         let mut context = ToolContext {
@@ -970,11 +998,14 @@ impl AgentRuntime {
         )));
 
         let ui_for_callback = self.ui.clone();
+        let cancellation = self.cancellation.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
+            cancellation.check()?;
             // Check if streaming should continue
             if !ui_for_callback.should_streaming_continue() {
                 debug!("Streaming should stop - user requested cancellation");
-                return Err(anyhow::anyhow!("Streaming cancelled by user"));
+                cancellation.cancel();
+                return Err(tools_core::Cancelled.into());
             }
 
             let mut processor_guard = processor
@@ -986,15 +1017,16 @@ impl AgentRuntime {
         });
 
         // Send message to LLM provider
-        let response = match self
-            .llm_provider
-            .send_message(request, Some(&streaming_callback))
-            .await
-        {
+        let response_result = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(tools_core::Cancelled.into()),
+            result = self.llm_provider.send_message(request, Some(&streaming_callback)) => result,
+        };
+        let response = match response_result {
             Ok(response) => response,
             Err(e) => {
                 // Check for streaming cancelled error
-                if e.to_string().contains("Streaming cancelled by user") {
+                if self.cancellation.is_cancelled() || e.is::<tools_core::Cancelled>() {
                     debug!("Streaming cancelled by user in LLM request {}", request_id);
                     // End LLM request with cancelled=true
                     let _ = self
@@ -1004,15 +1036,7 @@ impl AgentRuntime {
                             error: None,
                         })
                         .await;
-                    // Return empty response
-                    return Ok((
-                        llm::LLMResponse {
-                            content: Vec::new(),
-                            usage: llm::Usage::zero(),
-                            rate_limit_info: None,
-                        },
-                        request_id,
-                    ));
+                    return Err(tools_core::Cancelled.into());
                 }
 
                 // For other errors, still end the request but not cancelled
@@ -1097,7 +1121,11 @@ impl AgentRuntime {
             session_id: self.session_id.clone().unwrap_or_default(),
         };
 
-        let response = self.llm_provider.send_message(request, None).await?;
+        let response = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
+            result = self.llm_provider.send_message(request, None) => result?,
+        };
 
         debug!(
             "Compaction response usage — Input: {}, Output: {}, Cache Read: {}",
@@ -1649,6 +1677,7 @@ impl AgentRuntime {
     }
 
     async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<bool> {
+        self.cancellation.check()?;
         debug!(
             "Executing tool request: {} (id: {})",
             tool_request.name, tool_request.id
@@ -1734,6 +1763,7 @@ impl AgentRuntime {
             return Err(e);
         }
 
+        self.cancellation.check()?;
         // Create a tool context. The services provider builds the application
         // extension for this invocation (state such as the plan may move in
         // for the duration) and takes it back afterwards.

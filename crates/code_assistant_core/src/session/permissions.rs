@@ -171,6 +171,7 @@ pub struct SessionPermissionMediator {
     /// on a prompt nobody is there to answer. `None` waits indefinitely (the
     /// right default for an interactive frontend with a human present).
     timeout: Option<std::time::Duration>,
+    cancellation: tools_core::RunCancellation,
 }
 
 impl SessionPermissionMediator {
@@ -185,7 +186,13 @@ impl SessionPermissionMediator {
             events,
             pending,
             timeout,
+            cancellation: tools_core::RunCancellation::default(),
         }
+    }
+
+    pub fn with_cancellation(mut self, cancellation: tools_core::RunCancellation) -> Self {
+        self.cancellation = cancellation;
+        self
     }
 
     fn next_request_id() -> String {
@@ -256,36 +263,63 @@ impl PermissionMediator for SessionPermissionMediator {
     ) -> Result<PermissionDecision> {
         let data = Self::request_data(&request);
         let request_id = data.request_id.clone();
-        let rx = self.pending.insert(data.clone());
-
-        self.events.publish_ui(
-            &self.session_id,
-            UiEvent::RequestToolPermission { request: data },
-        );
+        let rx = self.cancellation.if_active(|| {
+            let rx = self.pending.insert(data.clone());
+            self.events.publish_ui(
+                &self.session_id,
+                UiEvent::RequestToolPermission { request: data },
+            );
+            rx
+        })?;
+        // Also clean up when an enclosing cancellation select drops this future.
+        let _guard = RequestGuard {
+            mediator: self,
+            request_id: request_id.clone(),
+        };
 
         // A dropped responder (stop request, new agent run) counts as denial.
         // With a timeout, an unanswered prompt also fails closed: drop the
         // pending entry (so a late answer is a no-op) and deny, freeing the
         // lane's turn instead of blocking it forever.
-        let decision = match self.timeout {
-            Some(dur) => match tokio::time::timeout(dur, rx).await {
-                Ok(result) => result.unwrap_or(PermissionDecision::Denied),
-                Err(_elapsed) => {
-                    self.pending
-                        .resolve(&request_id, PermissionDecision::Denied);
-                    PermissionDecision::Denied
-                }
-            },
-            None => rx.await.unwrap_or(PermissionDecision::Denied),
+        let wait = async {
+            match self.timeout {
+                Some(dur) => match tokio::time::timeout(dur, rx).await {
+                    Ok(result) => result.unwrap_or(PermissionDecision::Denied),
+                    Err(_elapsed) => {
+                        self.pending
+                            .resolve(&request_id, PermissionDecision::Denied);
+                        PermissionDecision::Denied
+                    }
+                },
+                None => rx.await.unwrap_or(PermissionDecision::Denied),
+            }
         };
-
-        // Tell every view the request is settled so open prompts dismiss.
-        self.events.publish_ui(
-            &self.session_id,
-            UiEvent::ToolPermissionRequestResolved { request_id },
-        );
-
+        let decision = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
+            decision = wait => decision,
+        };
+        self.cancellation.check()?;
         Ok(decision)
+    }
+}
+
+struct RequestGuard<'a> {
+    mediator: &'a SessionPermissionMediator,
+    request_id: String,
+}
+
+impl Drop for RequestGuard<'_> {
+    fn drop(&mut self) {
+        self.mediator
+            .pending
+            .resolve(&self.request_id, PermissionDecision::Denied);
+        self.mediator.events.publish_ui(
+            &self.mediator.session_id,
+            UiEvent::ToolPermissionRequestResolved {
+                request_id: self.request_id.clone(),
+            },
+        );
     }
 }
 

@@ -52,6 +52,7 @@ impl PermissionTier {
 pub struct ToolPermissions {
     pub tier: PermissionTier,
     granted_tools: Arc<Mutex<HashSet<String>>>,
+    cancellation: crate::RunCancellation,
 }
 
 impl ToolPermissions {
@@ -59,7 +60,12 @@ impl ToolPermissions {
         Self {
             tier,
             granted_tools: Arc::default(),
+            cancellation: crate::RunCancellation::default(),
         }
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: crate::RunCancellation) {
+        self.cancellation = cancellation;
     }
 
     pub fn is_granted(&self, tool_name: &str) -> bool {
@@ -85,6 +91,7 @@ impl ToolPermissions {
         tool_id: Option<&str>,
         params: &serde_json::Value,
     ) -> Result<()> {
+        self.cancellation.check()?;
         if !self.tier.requires_permission(spec) {
             return Ok(());
         }
@@ -98,13 +105,16 @@ impl ToolPermissions {
                 spec.name
             );
         };
-        let decision = handler
-            .request_permission(PermissionRequest {
+        let decision = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => return Err(crate::Cancelled.into()),
+            decision = handler.request_permission(PermissionRequest {
                 tool_id,
                 tool_name: &spec.name,
                 reason: PermissionRequestReason::ToolInvocation { params },
-            })
-            .await?;
+            }) => decision?,
+        };
+        self.cancellation.check()?;
         match decision {
             PermissionDecision::GrantedOnce => Ok(()),
             PermissionDecision::GrantedSession | PermissionDecision::GrantedPersistent => {
