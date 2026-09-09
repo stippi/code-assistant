@@ -1,3 +1,5 @@
+mod dispatch_tests;
+
 use super::*;
 use crate::hooks::*;
 use serde_json::json;

@@ -11,6 +11,7 @@
 //! dyn-Any approach) — no generics infect the embedding application.
 
 pub mod dialect;
+pub mod execution;
 pub mod hooks;
 pub mod native;
 pub mod persistence;

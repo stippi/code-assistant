@@ -36,13 +36,16 @@ pub struct LoopCtx<'a> {
 /// Intercepts tool requests that the application handles itself instead of
 /// dispatching them to the registry, and observes successful executions.
 pub trait ToolInterceptor: Send + Sync {
-    /// Returns `Some(result)` when the request was handled here. Intercepted
-    /// tools do not appear in the UI.
+    /// Returns `Some(result)` when the request was handled here. Scope and
+    /// permission checks and the start checkpoint always precede this hook,
+    /// including for parallel batches. Intercepted tools do not appear in the UI.
+    /// Hooks may append a ToolExecution; otherwise a generic outcome is recorded.
     fn try_intercept(&self, _request: &ToolRequest, _ctx: &mut LoopCtx) -> Option<Result<bool>> {
         None
     }
 
-    /// Invoked after any tool executed successfully (standard path included).
+    /// Invoked on the state owner after any successful tool (including
+    /// intercepted and parallel calls), with its final, possibly rewritten input.
     fn after_tool_success(&self, _request: &ToolRequest, _ctx: &mut LoopCtx) {}
 }
 
@@ -74,7 +77,9 @@ pub trait IterationHook: Send + Sync {
 
 /// Decides which tool requests of a turn may execute concurrently.
 pub trait ToolDispatchPolicy: Send + Sync {
-    /// Indices of the requests that may execute concurrently with each other.
+    /// Indices of requests that support detached services and may overlap.
+    /// Only adjacent selected requests overlap: unselected calls are ordering
+    /// barriers. Authorization and completion hooks still run on the state owner.
     fn parallel_indices(&self, requests: &[ToolRequest]) -> Vec<usize>;
 }
 
