@@ -13,7 +13,9 @@ use fs_explorer::{
         reconstruct_formatted_replacements,
     },
 };
-use llm::{LLMProvider, LLMRequest, StreamingCallback as LlmStreamingCallback, types::*};
+use llm::{
+    LLMProvider, LLMRequest, StreamingCallback as LlmStreamingCallback, StreamingChunk, types::*,
+};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,11 +23,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tools_core::permissions::PermissionMediator;
 
-// New MockLLMProvider that works with the trait-based tool system
+/// Scripted LLM provider: serves prepared responses and records requests.
 #[derive(Default, Clone)]
 pub struct MockLLMProvider {
     requests: Arc<Mutex<Vec<LLMRequest>>>,
     responses: Arc<Mutex<Vec<Result<LLMResponse, anyhow::Error>>>>,
+    streaming: bool,
 }
 
 impl MockLLMProvider {
@@ -36,7 +39,39 @@ impl MockLLMProvider {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(responses)),
+            streaming: false,
         }
+    }
+
+    /// Replay each response's content through the streaming callback before
+    /// returning it, the way a real provider does. Needed by tests that
+    /// watch display fragments or tool cards; the default stays silent.
+    pub fn streaming(mut self) -> Self {
+        self.streaming = true;
+        self
+    }
+
+    /// A client factory serving this provider to every run. Clones share the
+    /// response stack, so the responses are consumed across runs.
+    pub fn into_factory(self) -> crate::session::service::LlmClientFactory {
+        Arc::new(move |_| Ok(Box::new(self.clone())))
+    }
+
+    fn replay(response: &LLMResponse, callback: &LlmStreamingCallback) -> Result<()> {
+        for block in &response.content {
+            match block {
+                ContentBlock::Text { text, .. } => callback(&StreamingChunk::Text(text.clone()))?,
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => callback(&StreamingChunk::InputJson {
+                    content: input.to_string(),
+                    tool_name: Some(name.clone()),
+                    tool_id: Some(id.clone()),
+                })?,
+                _ => {}
+            }
+        }
+        callback(&StreamingChunk::StreamingComplete)
     }
 
     // Get access to the stored requests
@@ -71,14 +106,46 @@ impl LLMProvider for MockLLMProvider {
     async fn send_message(
         &mut self,
         request: LLMRequest,
-        _streaming_callback: Option<&LlmStreamingCallback>,
+        streaming_callback: Option<&LlmStreamingCallback>,
     ) -> Result<LLMResponse, anyhow::Error> {
         self.requests.lock().unwrap().push(request);
-        self.responses
+        let response = self
+            .responses
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or(Err(anyhow::anyhow!("No more mock responses")))
+            .unwrap_or(Err(anyhow::anyhow!("No more mock responses")))?;
+        if let Some(callback) = streaming_callback.filter(|_| self.streaming) {
+            Self::replay(&response, callback)?;
+        }
+        Ok(response)
+    }
+}
+
+/// A provider that never answers. Tests that need a run parked inside the
+/// provider wait on `entered` to know it got there.
+#[derive(Default, Clone)]
+pub struct PendingLLMProvider {
+    pub entered: Arc<tokio::sync::Notify>,
+}
+
+impl PendingLLMProvider {
+    /// A client factory serving clones of this provider, which share
+    /// `entered`.
+    pub fn into_factory(self) -> crate::session::service::LlmClientFactory {
+        Arc::new(move |_| Ok(Box::new(self.clone())))
+    }
+}
+
+#[async_trait]
+impl LLMProvider for PendingLLMProvider {
+    async fn send_message(
+        &mut self,
+        _request: LLMRequest,
+        _streaming_callback: Option<&LlmStreamingCallback>,
+    ) -> Result<LLMResponse, anyhow::Error> {
+        self.entered.notify_one();
+        std::future::pending().await
     }
 }
 

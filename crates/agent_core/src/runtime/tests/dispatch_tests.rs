@@ -5,15 +5,18 @@ use tools_core::{Render, Tool, ToolResult, ToolSpec};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Output(String);
+
 impl ToolResult for Output {
     fn is_success(&self) -> bool {
         true
     }
 }
+
 impl Render for Output {
     fn status(&self) -> String {
         "done".into()
     }
+
     fn render(&self, _: &mut ResourcesTracker) -> String {
         self.0.clone()
     }
@@ -25,6 +28,7 @@ struct Probe {
     release: Arc<tokio::sync::Notify>,
     capabilities: Vec<std::borrow::Cow<'static, str>>,
 }
+
 #[async_trait::async_trait]
 impl Tool for Probe {
     type Input = serde_json::Value;
@@ -41,6 +45,7 @@ impl Tool for Probe {
             title_template: None,
         }
     }
+
     async fn execute<'a>(
         &self,
         _: &mut ToolContext<'a>,
@@ -58,6 +63,7 @@ impl Tool for Probe {
         Ok(Output(format!("result for {id}")))
     }
 }
+
 struct Fixture {
     agent: AgentRuntime,
     saved: Capture,
@@ -65,6 +71,7 @@ struct Fixture {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
 }
+
 fn probe_registry(f: &Fixture, capabilities: &[&str]) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(Probe {
@@ -98,6 +105,7 @@ fn fixture(requests: &[ToolRequest]) -> Fixture {
         .unwrap();
     f
 }
+
 fn request(id: &str, wait: bool) -> ToolRequest {
     ToolRequest {
         id: id.into(),
@@ -107,17 +115,21 @@ fn request(id: &str, wait: bool) -> ToolRequest {
         end_offset: None,
     }
 }
+
 struct Parallel(Vec<usize>);
+
 impl ToolDispatchPolicy for Parallel {
     fn parallel_indices(&self, _: &[ToolRequest]) -> Vec<usize> {
         self.0.clone()
     }
 }
+
 struct Observer {
     attempts: Arc<AtomicUsize>,
     successes: Arc<Mutex<Vec<ToolRequest>>>,
     intercept: bool,
 }
+
 impl ToolInterceptor for Observer {
     fn try_intercept(
         &self,
@@ -128,6 +140,7 @@ impl ToolInterceptor for Observer {
         self.intercept
             .then(|| Ok(Box::new(Output("intercepted".into())) as Box<dyn tools_core::AnyOutput>))
     }
+
     fn after_tool_success(&self, request: &ToolRequest, _: &mut LoopCtx) {
         self.successes.lock().unwrap().push(request.clone());
     }
@@ -225,10 +238,12 @@ async fn completion_is_checkpointed_while_sibling_waits(parallel: bool) {
         "a completed tool must be durable before the batch finishes"
     );
 }
+
 #[tokio::test]
 async fn dispatch_sequential_completions_are_saved_individually() {
     completion_is_checkpointed_while_sibling_waits(false).await;
 }
+
 #[tokio::test]
 async fn dispatch_parallel_completions_are_saved_individually() {
     completion_is_checkpointed_while_sibling_waits(true).await;
@@ -298,6 +313,7 @@ async fn dispatch_read_only_calls_checkpoint_once() {
 }
 
 struct FailingUi;
+
 #[async_trait::async_trait]
 impl AgentUi for FailingUi {
     async fn send_event(&self, event: AgentUiEvent) -> Result<(), UIError> {
@@ -312,15 +328,19 @@ impl AgentUi for FailingUi {
         }
         Ok(())
     }
+
     fn display_fragment(&self, _: &DisplayFragment) -> Result<(), UIError> {
         Ok(())
     }
+
     fn should_streaming_continue(&self) -> bool {
         true
     }
+
     fn notify_rate_limit(&self, _: u64) {}
     fn clear_rate_limit(&self) {}
 }
+
 #[tokio::test]
 async fn dispatch_ui_failure_does_not_erase_successful_tool_evidence() {
     let requests = vec![request("one", false)];
@@ -350,6 +370,7 @@ async fn dispatch_parallel_groups_do_not_cross_sequential_barriers() {
 }
 
 struct FailCompletionSave;
+
 impl CheckpointPersistence for FailCompletionSave {
     fn commit(&mut self, checkpoint: &AgentCheckpoint<'_>, _: &(dyn Any + Send)) -> Result<()> {
         anyhow::ensure!(
@@ -362,6 +383,7 @@ impl CheckpointPersistence for FailCompletionSave {
         Ok(())
     }
 }
+
 #[tokio::test]
 async fn dispatch_checkpoint_failure_prevents_further_side_effects() {
     let requests = vec![request("one", false), request("two", false)];

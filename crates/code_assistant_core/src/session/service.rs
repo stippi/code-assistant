@@ -2099,6 +2099,7 @@ mod recovery_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mocks::{MockLLMProvider, PendingLLMProvider, create_test_response_text};
     use crate::persistence::FileSessionPersistence;
     use crate::session::SessionConfig;
 
@@ -2133,26 +2134,12 @@ mod tests {
         test_service_with_manager(root).0
     }
 
-    /// A provider that streams its scripted text through the callback (like
-    /// a real provider) and returns it as the response — enough to drive a
-    /// complete agent turn without any network.
-    struct StreamingScriptedProvider {
-        text: String,
-    }
-
-    #[async_trait::async_trait]
-    impl llm::LLMProvider for StreamingScriptedProvider {
-        async fn send_message(
-            &mut self,
-            _request: llm::LLMRequest,
-            streaming_callback: Option<&llm::StreamingCallback>,
-        ) -> Result<llm::LLMResponse> {
-            if let Some(callback) = streaming_callback {
-                callback(&llm::StreamingChunk::Text(self.text.clone()))?;
-                callback(&llm::StreamingChunk::StreamingComplete)?;
-            }
-            Ok(llm::LLMResponse {
-                content: vec![llm::ContentBlock::new_text(&self.text)],
+    /// One scripted turn per run: the text is streamed like a real provider
+    /// would, with a small token usage so outcomes can be checked.
+    pub(super) fn scripted_turn(text: &'static str) -> LlmClientFactory {
+        Arc::new(move |_| {
+            let response = llm::LLMResponse {
+                content: vec![llm::ContentBlock::new_text(text)],
                 usage: llm::Usage {
                     input_tokens: 10,
                     output_tokens: 5,
@@ -2160,8 +2147,11 @@ mod tests {
                     cache_read_input_tokens: 0,
                 },
                 rate_limit_info: None,
-            })
-        }
+            };
+            Ok(Box::new(
+                MockLLMProvider::new(vec![Ok(response)]).streaming(),
+            ))
+        })
     }
 
     /// Service whose agent runs use the injected LLM factory instead of the
@@ -2195,18 +2185,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn checkpoint2_setup_is_reserved_and_control_stays_responsive() {
+    async fn setup_is_reserved_and_control_stays_responsive() {
         use crate::session::{TurnDispatch, TurnRequest, TurnStatus};
         use std::time::Duration;
         let tmp = tempfile::tempdir().unwrap();
-        let (service, manager) = test_service_with_llm(
-            tmp.path(),
-            Arc::new(|_| {
-                Ok(Box::new(StreamingScriptedProvider {
-                    text: "done".into(),
-                }))
-            }),
-        );
+        let (service, manager) = test_service_with_llm(tmp.path(), scripted_turn("done"));
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         manager.lock().await.set_tool_registry_provider({
@@ -2266,24 +2249,12 @@ mod tests {
         assert!(!service.is_session_busy(id).await.unwrap());
     }
 
-    struct WaitingProvider;
-    #[async_trait::async_trait]
-    impl llm::LLMProvider for WaitingProvider {
-        async fn send_message(
-            &mut self,
-            _: llm::LLMRequest,
-            _: Option<&llm::StreamingCallback>,
-        ) -> Result<llm::LLMResponse> {
-            std::future::pending().await
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread")]
-    async fn checkpoint2_stop_interrupts_a_provider_without_chunks() {
+    async fn stop_interrupts_a_provider_without_chunks() {
         use crate::session::{TurnDispatch, TurnRequest, TurnStatus};
         let tmp = tempfile::tempdir().unwrap();
         let (service, _) =
-            test_service_with_llm(tmp.path(), Arc::new(|_| Ok(Box::new(WaitingProvider))));
+            test_service_with_llm(tmp.path(), PendingLLMProvider::default().into_factory());
         let id = service.create_session(None, None).await.unwrap();
         let TurnDispatch::Started(handle) = service
             .start_turn_if_idle(id.clone(), TurnRequest::text("wait"))
@@ -2306,7 +2277,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn checkpoint2_old_turn_handle_does_not_stop_a_new_run() {
+    async fn an_old_turn_handle_does_not_stop_a_new_run() {
         use crate::session::{TurnDispatch, TurnRequest};
         let tmp = tempfile::tempdir().unwrap();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2314,11 +2285,12 @@ mod tests {
             tmp.path(),
             Arc::new(move |_| {
                 if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    Ok(Box::new(StreamingScriptedProvider {
-                        text: "first done".into(),
-                    }))
+                    Ok(Box::new(
+                        MockLLMProvider::new(vec![Ok(create_test_response_text("first done"))])
+                            .streaming(),
+                    ))
                 } else {
-                    Ok(Box::new(WaitingProvider))
+                    Ok(Box::new(PendingLLMProvider::default()))
                 }
             }),
         );
@@ -2359,14 +2331,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn start_turn_if_idle_resolves_the_exact_outcome() {
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _) = test_service_with_llm(
-            tmp.path(),
-            Arc::new(|_model| {
-                Ok(Box::new(StreamingScriptedProvider {
-                    text: "Considered it carefully; done.".to_string(),
-                }))
-            }),
-        );
+        let (service, _) =
+            test_service_with_llm(tmp.path(), scripted_turn("Considered it carefully; done."));
         let id = service.create_session(None, None).await.unwrap();
 
         let dispatch = service
@@ -2488,14 +2454,7 @@ mod tests {
     async fn start_fresh_session_keeps_the_history_and_copies_the_settings() {
         use crate::session::{TurnDispatch, TurnRequest};
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _) = test_service_with_llm(
-            tmp.path(),
-            Arc::new(|_| {
-                Ok(Box::new(StreamingScriptedProvider {
-                    text: "done".into(),
-                }))
-            }),
-        );
+        let (service, _) = test_service_with_llm(tmp.path(), scripted_turn("done"));
         let id = service.create_session(None, None).await.unwrap();
         service
             .change_permission_tier(id.clone(), tools_core::PermissionTier::AllTools)

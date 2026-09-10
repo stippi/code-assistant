@@ -1,5 +1,5 @@
 use super::*;
-use crate::mocks::{MockProjectManager, MockUI};
+use crate::mocks::{MockLLMProvider, MockProjectManager, MockUI, PendingLLMProvider};
 use crate::session::service::LlmClientFactory;
 use std::time::Duration;
 
@@ -21,33 +21,52 @@ fn runner(factory: LlmClientFactory) -> (Arc<DefaultSubAgentRunner>, Arc<MockUI>
     .with_project_manager_factory(Arc::new(|| Box::new(MockProjectManager::new())));
     (Arc::new(runner), ui)
 }
-struct Fails;
-#[async_trait::async_trait]
-impl llm::LLMProvider for Fails {
-    async fn send_message(
-        &mut self,
-        _: llm::LLMRequest,
-        _: Option<&llm::StreamingCallback>,
-    ) -> Result<llm::LLMResponse> {
-        anyhow::bail!("fatal provider failure")
-    }
+
+fn failing_provider() -> LlmClientFactory {
+    Arc::new(|_| {
+        Ok(Box::new(MockLLMProvider::new(vec![Err(anyhow::anyhow!(
+            "fatal provider failure"
+        ))])))
+    })
 }
-struct Silent(Arc<tokio::sync::Notify>);
-#[async_trait::async_trait]
-impl llm::LLMProvider for Silent {
-    async fn send_message(
-        &mut self,
-        _: llm::LLMRequest,
-        _: Option<&llm::StreamingCallback>,
-    ) -> Result<llm::LLMResponse> {
-        self.0.notify_one();
-        std::future::pending().await
+
+/// Start the child on its own task and wait until it is parked inside the
+/// provider.
+async fn parked_child(
+    runner: &Arc<DefaultSubAgentRunner>,
+    entered: &tokio::sync::Notify,
+) -> tokio::task::JoinHandle<Result<SubAgentResult>> {
+    let task = tokio::spawn({
+        let runner = runner.clone();
+        async move {
+            runner
+                .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    task
+}
+
+/// The child must end with an error within a short while, without a
+/// provider chunk ever arriving.
+async fn assert_ends_cancelled(mut task: tokio::task::JoinHandle<Result<SubAgentResult>>) {
+    let ended = tokio::time::timeout(Duration::from_millis(250), &mut task).await;
+    if ended.is_err() {
+        task.abort();
+        let _ = task.await;
     }
+    assert!(
+        matches!(ended, Ok(Ok(Err(_)))),
+        "cancellation waited for another provider chunk"
+    );
 }
 
 #[tokio::test]
 async fn sub_agent_failure_unregisters_and_publishes_terminal_output() {
-    let (runner, ui) = runner(Arc::new(|_| Ok(Box::new(Fails))));
+    let (runner, ui) = runner(failing_provider());
     let result = runner
         .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
         .await;
@@ -56,6 +75,7 @@ async fn sub_agent_failure_unregisters_and_publishes_terminal_output() {
         !runner.cancellation_registry.cancel("child"),
         "failed child remained registered as busy"
     );
+
     let events = ui.events();
     let last = events.iter().rev().find_map(|event| match event {
         UiEvent::UpdateToolStatus { status, output, .. } => Some((status, output)),
@@ -83,22 +103,10 @@ async fn sub_agent_construction_failure_unregisters() {
 
 #[tokio::test]
 async fn sub_agent_drop_unregisters_even_without_a_return_value() {
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let (runner, _) = runner({
-        let entered = entered.clone();
-        Arc::new(move |_| Ok(Box::new(Silent(entered.clone()))))
-    });
-    let task = tokio::spawn({
-        let runner = runner.clone();
-        async move {
-            runner
-                .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
-                .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(2), entered.notified())
-        .await
-        .unwrap();
+    let provider = PendingLLMProvider::default();
+    let entered = provider.entered.clone();
+    let (runner, _) = runner(provider.into_factory());
+    let task = parked_child(&runner, &entered).await;
     task.abort();
     let _ = task.await;
     assert!(
@@ -109,64 +117,24 @@ async fn sub_agent_drop_unregisters_even_without_a_return_value() {
 
 #[tokio::test]
 async fn sub_agent_cancel_wakes_a_provider_without_chunks() {
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let (runner, _) = runner({
-        let entered = entered.clone();
-        Arc::new(move |_| Ok(Box::new(Silent(entered.clone()))))
-    });
-    let mut task = tokio::spawn({
-        let runner = runner.clone();
-        async move {
-            runner
-                .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
-                .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(2), entered.notified())
-        .await
-        .unwrap();
+    let provider = PendingLLMProvider::default();
+    let entered = provider.entered.clone();
+    let (runner, _) = runner(provider.into_factory());
+    let task = parked_child(&runner, &entered).await;
     assert!(runner.cancellation_registry.cancel("child"));
-    let ended = tokio::time::timeout(Duration::from_millis(250), &mut task).await;
-    if ended.is_err() {
-        task.abort();
-        let _ = task.await;
-    }
-    assert!(
-        matches!(ended, Ok(Ok(Err(_)))),
-        "child cancellation waited for another provider chunk"
-    );
+    assert_ends_cancelled(task).await;
     assert!(!runner.cancellation_registry.cancel("child"));
 }
 
 #[tokio::test]
 async fn sub_agent_parent_cancel_wakes_a_provider_without_chunks() {
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let (runner, _) = runner({
-        let entered = entered.clone();
-        Arc::new(move |_| Ok(Box::new(Silent(entered.clone()))))
-    });
+    let provider = PendingLLMProvider::default();
+    let entered = provider.entered.clone();
+    let (runner, _) = runner(provider.into_factory());
     let parent = runner.parent_cancellation.clone();
-    let mut task = tokio::spawn({
-        let runner = runner.clone();
-        async move {
-            runner
-                .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
-                .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(2), entered.notified())
-        .await
-        .unwrap();
+    let task = parked_child(&runner, &entered).await;
     parent.cancel();
-    let ended = tokio::time::timeout(Duration::from_millis(250), &mut task).await;
-    if ended.is_err() {
-        task.abort();
-        let _ = task.await;
-    }
-    assert!(
-        matches!(ended, Ok(Ok(Err(_)))),
-        "parent cancellation did not reach the child runtime"
-    );
+    assert_ends_cancelled(task).await;
     assert!(!runner.cancellation_registry.cancel("child"));
 }
 
@@ -174,7 +142,8 @@ async fn sub_agent_parent_cancel_wakes_a_provider_without_chunks() {
 async fn sub_agent_tool_retains_structured_failure_output() {
     use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentTool};
     use tools_core::Tool;
-    let (runner, ui) = runner(Arc::new(|_| Ok(Box::new(Fails))));
+
+    let (runner, ui) = runner(failing_provider());
     let mut services = crate::tools::ToolServices {
         project_manager: Arc::new(MockProjectManager::new()),
         plan: None,
@@ -213,88 +182,81 @@ async fn sub_agent_tool_retains_structured_failure_output() {
     );
 }
 
+/// A read-only probe tool whose success the sub-agent's UI must remember.
+struct Probe;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Written;
+
+impl tools_core::ToolResult for Written {
+    fn is_success(&self) -> bool {
+        true
+    }
+}
+
+impl tools_core::Render for Written {
+    fn status(&self) -> String {
+        "written".into()
+    }
+
+    fn render(&self, _: &mut tools_core::ResourcesTracker) -> String {
+        "changed test resource".into()
+    }
+}
+
+#[async_trait::async_trait]
+impl tools_core::Tool for Probe {
+    type Input = serde_json::Value;
+    type Output = Written;
+
+    fn spec(&self) -> tools_core::ToolSpec {
+        tools_core::ToolSpec {
+            name: "probe".into(),
+            description: "test".into(),
+            parameters_schema: serde_json::json!({"type":"object"}),
+            annotations: None,
+            capabilities: tools_core::ToolSpec::capabilities(&[ToolScope::SubAgentReadOnly.tag()]),
+            multiline_params: &[],
+            hidden: false,
+            title_template: None,
+        }
+    }
+
+    async fn execute<'a>(
+        &self,
+        _: &mut tools_core::ToolContext<'a>,
+        _: &mut Self::Input,
+    ) -> Result<Written> {
+        Ok(Written)
+    }
+}
+
 #[tokio::test]
 async fn sub_agent_keeps_completed_child_evidence_when_later_request_fails() {
-    use tools_core::{Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec};
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct Written;
-    impl ToolResult for Written {
-        fn is_success(&self) -> bool {
-            true
-        }
-    }
-    impl Render for Written {
-        fn status(&self) -> String {
-            "written".into()
-        }
-        fn render(&self, _: &mut ResourcesTracker) -> String {
-            "changed test resource".into()
-        }
-    }
-    struct Probe;
-    #[async_trait::async_trait]
-    impl Tool for Probe {
-        type Input = serde_json::Value;
-        type Output = Written;
-        fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: "probe".into(),
-                description: "test".into(),
-                parameters_schema: serde_json::json!({"type":"object"}),
-                annotations: None,
-                capabilities: ToolSpec::capabilities(&[ToolScope::SubAgentReadOnly.tag()]),
-                multiline_params: &[],
-                hidden: false,
-                title_template: None,
-            }
-        }
-        async fn execute<'a>(
-            &self,
-            _: &mut ToolContext<'a>,
-            _: &mut Self::Input,
-        ) -> Result<Written> {
-            Ok(Written)
-        }
-    }
-    struct FailAfterTool(bool);
-    #[async_trait::async_trait]
-    impl llm::LLMProvider for FailAfterTool {
-        async fn send_message(
-            &mut self,
-            _: llm::LLMRequest,
-            callback: Option<&llm::StreamingCallback>,
-        ) -> Result<llm::LLMResponse> {
-            if std::mem::replace(&mut self.0, true) {
-                anyhow::bail!("fatal provider failure after tool")
-            }
-            if let Some(callback) = callback {
-                callback(&llm::StreamingChunk::InputJson {
-                    content: "{}".into(),
-                    tool_name: Some("probe".into()),
-                    tool_id: Some("inner".into()),
-                })?;
-                callback(&llm::StreamingChunk::StreamingComplete)?;
-            }
-            Ok(llm::LLMResponse {
-                content: vec![llm::ContentBlock::new_tool_use(
-                    "inner",
-                    "probe",
-                    serde_json::json!({}),
-                )],
-                usage: llm::Usage {
-                    input_tokens: 10,
-                    output_tokens: 5,
-                    cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: 0,
-                },
-                rate_limit_info: None,
-            })
-        }
-    }
-    let (mut runner, _) = runner(Arc::new(|_| Ok(Box::new(FailAfterTool(false)))));
+    // Served in reverse: first a tool call, then a fatal failure.
+    let provider = MockLLMProvider::new(vec![
+        Err(anyhow::anyhow!("fatal provider failure after tool")),
+        Ok(llm::LLMResponse {
+            content: vec![llm::ContentBlock::new_tool_use(
+                "inner",
+                "probe",
+                serde_json::json!({}),
+            )],
+            usage: llm::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            rate_limit_info: None,
+        }),
+    ])
+    .streaming();
+    let (mut runner, _) = runner(provider.into_factory());
     let mut registry = tools_core::ToolRegistry::new();
     registry.register(Box::new(Probe));
     Arc::get_mut(&mut runner).unwrap().tool_registry = Arc::new(registry);
+
     let error = runner
         .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
         .await

@@ -1,24 +1,13 @@
-use super::tests::{test_service_with_llm, test_service_with_manager};
+//! Run setup and cancellation under adverse conditions: slow preparation,
+//! settings changed meanwhile, external locks, stops at awkward moments.
+
+use super::tests::{scripted_turn, test_service_with_llm, test_service_with_manager};
 use super::*;
+use crate::mocks::{MockLLMProvider, PendingLLMProvider};
 use crate::session::{TurnDispatch, TurnRequest};
 use std::time::Duration;
 
-struct Done;
-#[async_trait::async_trait]
-impl llm::LLMProvider for Done {
-    async fn send_message(
-        &mut self,
-        _: llm::LLMRequest,
-        _: Option<&llm::StreamingCallback>,
-    ) -> Result<llm::LLMResponse> {
-        Ok(llm::LLMResponse {
-            content: vec![llm::ContentBlock::new_text("done")],
-            usage: llm::Usage::zero(),
-            rate_limit_info: None,
-        })
-    }
-}
-
+/// A registry provider that parks run preparation until released.
 fn blocked_registry(
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -35,9 +24,9 @@ fn blocked_registry(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn recovery_pending_setup_does_not_keep_its_owner_alive() {
+async fn pending_setup_does_not_keep_its_owner_alive() {
     let tmp = tempfile::tempdir().unwrap();
-    let (service, manager) = test_service_with_llm(tmp.path(), Arc::new(|_| Ok(Box::new(Done))));
+    let (service, manager) = test_service_with_llm(tmp.path(), scripted_turn("done"));
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     manager
@@ -57,6 +46,7 @@ async fn recovery_pending_setup_does_not_keep_its_owner_alive() {
         .unwrap();
     let inhibitor = manager.lock().await.sleep_inhibitor();
     assert_eq!(inhibitor.running_count(), 1);
+
     let weak = Arc::downgrade(&manager);
     drop(manager);
     drop(service);
@@ -66,7 +56,8 @@ async fn recovery_pending_setup_does_not_keep_its_owner_alive() {
         }
     })
     .await;
-    // Cleanup even on RED: do not leave a pending task or file lock behind.
+    // Clean up even when the assertion below fails: no pending task or file
+    // lock may outlive the test.
     if let Some(manager) = weak.upgrade() {
         manager.lock().await.terminate_session_agent(&id);
     }
@@ -86,9 +77,9 @@ async fn recovery_pending_setup_does_not_keep_its_owner_alive() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn recovery_setup_preserves_a_newer_model_selection() {
+async fn setup_preserves_a_newer_model_selection() {
     let tmp = tempfile::tempdir().unwrap();
-    let (service, manager) = test_service_with_llm(tmp.path(), Arc::new(|_| Ok(Box::new(Done))));
+    let (service, manager) = test_service_with_llm(tmp.path(), scripted_turn("done"));
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     manager
@@ -106,8 +97,9 @@ async fn recovery_setup_preserves_a_newer_model_selection() {
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
         .await
         .unwrap();
-    // Simulate a selection arriving during preparation without depending on
-    // the developer's models.json or any real provider configuration.
+
+    // A selection arriving during preparation, written the way another
+    // process would write it. No models.json involved.
     let next_model = SessionModelConfig::new("selected-during-setup".into());
     {
         let mut manager = manager.lock().await;
@@ -131,7 +123,7 @@ async fn recovery_setup_preserves_a_newer_model_selection() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn recovery_external_run_rejection_does_not_append_a_message() {
+async fn a_run_refused_by_an_external_lock_does_not_append_a_message() {
     let tmp = tempfile::tempdir().unwrap();
     let (service, _) = test_service_with_manager(tmp.path());
     let id = service.create_session(None, None).await.unwrap();
@@ -151,34 +143,26 @@ async fn recovery_external_run_rejection_does_not_append_a_message() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn recovery_stop_during_permission_does_not_open_the_next_prompt() {
-    struct TwoCalls;
-    #[async_trait::async_trait]
-    impl llm::LLMProvider for TwoCalls {
-        async fn send_message(
-            &mut self,
-            _: llm::LLMRequest,
-            _: Option<&llm::StreamingCallback>,
-        ) -> Result<llm::LLMResponse> {
-            Ok(llm::LLMResponse {
-                content: ["first", "second"]
-                    .into_iter()
-                    .map(|id| {
-                        llm::ContentBlock::new_tool_use(
-                            id,
-                            "read_files",
-                            serde_json::json!({"project":"test", "paths":["a.rs"]}),
-                        )
-                    })
-                    .collect(),
-                usage: llm::Usage::zero(),
-                rate_limit_info: None,
+async fn a_stop_during_a_permission_prompt_does_not_open_the_next_one() {
+    let two_calls = llm::LLMResponse {
+        content: ["first", "second"]
+            .into_iter()
+            .map(|id| {
+                llm::ContentBlock::new_tool_use(
+                    id,
+                    "read_files",
+                    serde_json::json!({"project":"test", "paths":["a.rs"]}),
+                )
             })
-        }
-    }
+            .collect(),
+        usage: llm::Usage::zero(),
+        rate_limit_info: None,
+    };
     let tmp = tempfile::tempdir().unwrap();
-    let (service, manager) =
-        test_service_with_llm(tmp.path(), Arc::new(|_| Ok(Box::new(TwoCalls))));
+    let (service, manager) = test_service_with_llm(
+        tmp.path(),
+        MockLLMProvider::new(vec![Ok(two_calls)]).into_factory(),
+    );
     let id = service.create_session(None, None).await.unwrap();
     service
         .change_permission_tier(id.clone(), tools_core::PermissionTier::AllTools)
@@ -204,6 +188,7 @@ async fn recovery_stop_during_permission_does_not_open_the_next_prompt() {
     .await
     .unwrap();
     assert_eq!(first.tool_id.as_deref(), Some("first"));
+
     service.request_stop(id.clone()).await.unwrap();
     let outcome = tokio::time::timeout(Duration::from_secs(2), handle.wait())
         .await
@@ -220,7 +205,7 @@ async fn recovery_stop_during_permission_does_not_open_the_next_prompt() {
             .snapshot()
             .is_empty()
     );
-    // An event after completion fences every earlier prompt publication.
+    // An event published after completion fences every earlier prompt.
     service.clear_session_error(id).await.unwrap();
     loop {
         match events.recv().await.unwrap().payload {
@@ -237,25 +222,11 @@ async fn recovery_stop_during_permission_does_not_open_the_next_prompt() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn recovery_stop_wakes_an_already_waiting_silent_provider() {
-    struct Silent(Arc<tokio::sync::Notify>);
-    #[async_trait::async_trait]
-    impl llm::LLMProvider for Silent {
-        async fn send_message(
-            &mut self,
-            _: llm::LLMRequest,
-            _: Option<&llm::StreamingCallback>,
-        ) -> Result<llm::LLMResponse> {
-            self.0.notify_one();
-            std::future::pending().await
-        }
-    }
+async fn a_stop_wakes_a_provider_that_never_sends_a_chunk() {
     let tmp = tempfile::tempdir().unwrap();
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let (service, _) = test_service_with_llm(tmp.path(), {
-        let entered = entered.clone();
-        Arc::new(move |_| Ok(Box::new(Silent(entered.clone()))))
-    });
+    let provider = PendingLLMProvider::default();
+    let entered = provider.entered.clone();
+    let (service, _) = test_service_with_llm(tmp.path(), provider.into_factory());
     let id = service.create_session(None, None).await.unwrap();
     let TurnDispatch::Started(handle) = service
         .start_turn_if_idle(id.clone(), TurnRequest::text("wait"))
@@ -277,13 +248,13 @@ async fn recovery_stop_wakes_an_already_waiting_silent_provider() {
 }
 
 #[tokio::test]
-async fn recovery_slow_io_does_not_block_session_control() {
+async fn a_slow_query_does_not_block_session_control() {
     let tmp = tempfile::tempdir().unwrap();
     let (service, manager) = test_service_with_manager(tmp.path());
     let id = service.create_session(None, None).await.unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let task = tokio::spawn({
+    let query = tokio::spawn({
         let service = service.clone();
         let entered = entered.clone();
         let release = release.clone();
@@ -303,8 +274,8 @@ async fn recovery_slow_io_does_not_block_session_control() {
     let stopped =
         tokio::time::timeout(Duration::from_millis(250), service.request_stop(id.clone())).await;
     release.notify_one();
-    task.await.unwrap().unwrap();
-    stopped.expect("slow IO blocked stop").unwrap();
+    query.await.unwrap().unwrap();
+    stopped.expect("a slow query blocked stop").unwrap();
     assert!(
         manager
             .lock()

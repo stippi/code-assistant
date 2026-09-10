@@ -260,10 +260,12 @@ fn journal_outcomes_survive_disk_reload_without_the_original_tools() -> Result<(
 async fn checkpoint_native_formatted_roundtrip() -> Result<()> {
     formatted_roundtrip(ToolSyntax::Native).await
 }
+
 #[tokio::test]
 async fn checkpoint_xml_formatted_roundtrip() -> Result<()> {
     formatted_roundtrip(ToolSyntax::Xml).await
 }
+
 #[tokio::test]
 async fn checkpoint_caret_formatted_roundtrip() -> Result<()> {
     formatted_roundtrip(ToolSyntax::Caret).await
