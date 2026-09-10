@@ -282,15 +282,16 @@ async fn recovery_slow_io_does_not_block_session_control() {
     let (service, manager) = test_service_with_manager(tmp.path());
     let id = service.create_session(None, None).await.unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());
-    let (release, released) = std::sync::mpsc::channel();
+    let release = Arc::new(tokio::sync::Notify::new());
     let task = tokio::spawn({
         let service = service.clone();
         let entered = entered.clone();
+        let release = release.clone();
         async move {
             service
                 .call_io(move |_| async move {
                     entered.notify_one();
-                    released.recv_timeout(Duration::from_secs(3)).unwrap();
+                    release.notified().await;
                     Ok(())
                 })
                 .await
@@ -301,7 +302,7 @@ async fn recovery_slow_io_does_not_block_session_control() {
         .unwrap();
     let stopped =
         tokio::time::timeout(Duration::from_millis(250), service.request_stop(id.clone())).await;
-    release.send(()).unwrap();
+    release.notify_one();
     task.await.unwrap().unwrap();
     stopped.expect("slow IO blocked stop").unwrap();
     assert!(

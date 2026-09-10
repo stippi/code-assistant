@@ -6,11 +6,13 @@
 //! caller gets *its* answer or *its* error — no correlation over shared
 //! channels.
 //!
-//! Bounded dispatch serializes mutations per session on the backend tokio
-//! runtime. Slow queries use independent tasks; a separate bounded control
-//! mailbox handles stop and permission replies. The caller executor (e.g.
-//! GPUI) stays decoupled from tokio. Core→UI notifications keep flowing through [`UiEvent`] and are
-//! not part of this API.
+//! Internally each method hands a command to a worker on the backend tokio
+//! runtime, which keeps the caller's executor (e.g. GPUI) decoupled from
+//! tokio. Commands that mutate a session run in that session's lane, one
+//! after the other; read-only queries run as independent tasks; and a
+//! separate control mailbox takes stop requests and permission replies so
+//! they never wait behind queued work. Core→UI notifications keep flowing
+//! through [`UiEvent`] and are not part of this API.
 
 use crate::config::{DefaultProjectManager, ProjectManager, save_project};
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
@@ -225,13 +227,18 @@ impl ServiceCtx {
 type BoxedCommandFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 type Command = Box<dyn FnOnce(ServiceCtx) -> BoxedCommandFuture + Send>;
 
+/// A command on its way to the worker, holding its admission permit until
+/// it has run.
 struct Dispatch {
-    lane: String,
+    /// Commands in the same lane run one after the other, in arrival order.
+    /// `None` runs the command on its own.
+    lane: Option<String>,
     command: Command,
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    permit: tokio::sync::OwnedSemaphorePermit,
 }
 
-// At most 64 submitted commands, INCLUDING active and lane-queued work.
+/// At most this many commands are admitted at once, queued or running.
+/// Callers beyond that wait before their command is even accepted.
 const COMMAND_CAPACITY: usize = 64;
 
 /// Cloneable handle to the session command worker. See module docs.
@@ -265,54 +272,28 @@ impl SessionService {
             events: events.clone(),
         };
         let worker = async move {
-            let control_ctx = ctx.clone();
-            let control = async move {
-                while let Ok(command) = control_rx.recv().await {
-                    command(control_ctx.clone()).await;
+            let control = {
+                let ctx = ctx.clone();
+                async move {
+                    while let Ok(command) = control_rx.recv().await {
+                        command(ctx.clone()).await;
+                    }
                 }
             };
             let dispatch = async move {
-                use futures::FutureExt;
-                use std::collections::{HashMap, VecDeque};
-                let mut lanes: HashMap<String, VecDeque<Dispatch>> = HashMap::new();
-                let mut tasks = tokio::task::JoinSet::new();
-                let mut closed = false;
-                loop {
-                    tokio::select! {
-                        received = rx.recv(), if !closed => match received {
-                            Ok(dispatch) => {
-                                let lane = dispatch.lane.clone();
-                                if let Some(queue) = lanes.get_mut(&lane) {
-                                    queue.push_back(dispatch);
-                                } else {
-                                    lanes.insert(lane.clone(), VecDeque::new());
-                                    let ctx = ctx.clone();
-                                    tasks.spawn(async move {
-                                        let _permit = dispatch._permit;
-                                        let _ = std::panic::AssertUnwindSafe((dispatch.command)(ctx)).catch_unwind().await;
-                                        lane
-                                    });
-                                }
-                            }
-                            Err(_) => closed = true,
-                        },
-                        completed = tasks.join_next(), if !tasks.is_empty() => {
-                            if let Some(Ok(lane)) = completed {
-                                if let Some(dispatch) = lanes.get_mut(&lane).and_then(|queue| queue.pop_front()) {
-                                    let ctx = ctx.clone();
-                                    tasks.spawn(async move {
-                                        let _permit = dispatch._permit;
-                                        let _ = std::panic::AssertUnwindSafe((dispatch.command)(ctx)).catch_unwind().await;
-                                        lane
-                                    });
-                                } else {
-                                    lanes.remove(&lane);
-                                }
-                            }
+                let mut lanes = std::collections::HashMap::new();
+                while let Ok(dispatch) = rx.recv().await {
+                    match dispatch.lane {
+                        None => {
+                            let ctx = ctx.clone();
+                            tokio::spawn(run_command(ctx, dispatch.command, dispatch.permit));
                         }
-                    }
-                    if closed && tasks.is_empty() {
-                        break;
+                        Some(name) => {
+                            let lane = lanes.entry(name).or_insert_with(|| spawn_lane(ctx.clone()));
+                            // Only fails once the lane task is gone, which
+                            // takes the reply channel with it.
+                            let _ = lane.send((dispatch.command, dispatch.permit));
+                        }
                     }
                 }
             };
@@ -371,43 +352,39 @@ impl SessionService {
         .await
     }
 
-    /// Enqueue a mutation on the global (non-session) lane.
+    /// Run a mutation that is not tied to one session, after earlier ones.
     async fn call<T, F, Fut>(&self, f: F) -> Result<T>
     where
         F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
-        self.call_lane("global".into(), f).await
+        self.dispatch(Some("global".into()), f).await
     }
 
+    /// Run a mutation of one session, after that session's earlier ones.
     async fn call_session<T, F, Fut>(&self, session_id: String, f: F) -> Result<T>
     where
         F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
-        self.call_lane(format!("session:{session_id}"), f).await
+        self.dispatch(Some(format!("session:{session_id}")), f)
+            .await
     }
 
-    /// Read-only slow IO gets an independent, supervised task on the backend.
-    /// Even synchronous libgit/filesystem work cannot stall a single-thread runtime.
+    /// Run a read-only query on its own, so slow git or filesystem work
+    /// never holds up session commands.
     async fn call_io<T, F, Fut>(&self, f: F) -> Result<T>
     where
         F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
-        static NEXT_IO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = NEXT_IO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.call_lane(format!("io:{id}"), move |ctx| async move {
-            let runtime = tokio::runtime::Handle::current();
-            tokio::task::spawn_blocking(move || runtime.block_on(f(ctx))).await?
-        })
-        .await
+        self.dispatch(None, f).await
     }
 
-    async fn call_lane<T, F, Fut>(&self, lane: String, f: F) -> Result<T>
+    async fn dispatch<T, F, Fut>(&self, lane: Option<String>, f: F) -> Result<T>
     where
         F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
@@ -418,7 +395,7 @@ impl SessionService {
         self.tx
             .send(Dispatch {
                 lane,
-                _permit: permit,
+                permit,
                 command: Box::new(move |ctx| {
                     Box::pin(async move {
                         let _ = reply_tx.send(f(ctx).await);
@@ -432,8 +409,9 @@ impl SessionService {
             .map_err(|_| anyhow!("session service dropped the request"))?
     }
 
-    // Separate bounded mailbox: control never waits behind lane or IO capacity.
-    // These closures still read/mutate the authoritative manager under its lock.
+    /// Control commands (stop, permission replies) bypass admission and the
+    /// lanes: they must reach the manager even while it is busy. They still
+    /// take the manager lock like everything else.
     async fn call_control<T, F, Fut>(&self, f: F) -> Result<T>
     where
         F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
@@ -1228,7 +1206,9 @@ impl SessionService {
                 let manager = ctx.manager.lock().await;
                 session_effective_path(&manager, &session_id)?
             };
-            Ok(discover_review_repos(&project_root))
+            tokio::task::spawn_blocking(move || discover_review_repos(&project_root))
+                .await
+                .context("Review repo scan was aborted")
         })
         .await
     }
@@ -1691,14 +1671,6 @@ async fn send_user_message_impl(
         // Headless dispatch (channel adapters, schedulers) reaches sessions
         // no frontend has opened since the restart — load on demand.
         manager.ensure_session_loaded(session_id)?;
-        anyhow::ensure!(
-            manager
-                .get_session(session_id)
-                .unwrap()
-                .get_activity_state()
-                .is_terminal(),
-            "Session is already running"
-        );
         let cancellation = turn_recorder
             .as_ref()
             .map(|recorder| recorder.cancellation.clone())
@@ -1967,6 +1939,10 @@ fn schedule_agent_impl(
     let task_session = session_id.clone();
     let task = tokio::spawn(async move {
         use futures::FutureExt;
+
+        // Everything that may take long or wait for the user: the LLM
+        // client, the MCP trust prompt, the tool registry. Abandoned the
+        // moment the run is cancelled.
         let prepare = async {
             let mut session_config =
                 session_config.ok_or_else(|| anyhow!("Session has no model configuration"))?;
@@ -1982,8 +1958,6 @@ fn schedule_agent_impl(
                     let factory = factory.clone();
                     let model = session_config.model_name.clone();
                     // A synchronous injected constructor must not stall the backend.
-                    // Dropping this wait cannot kill blocking user code, but its result
-                    // has no authority to install a run after cancellation.
                     tokio::task::spawn_blocking(move || factory(&model)).await??
                 }
                 None => {
@@ -1996,66 +1970,88 @@ fn schedule_agent_impl(
                     .await?
                 }
             };
-            cancellation.check()?;
             let include_local_mcp = SessionManager::resolve_local_mcp_trust(
                 project_dir.as_deref(),
                 Some(permission_handler.as_ref()),
             )
             .await;
-            cancellation.check()?;
             let registry = loader(crate::session::manager::RegistryRequest {
                 project_dir: project_dir.clone(),
                 include_local_mcp,
             })
             .await;
-            cancellation.check()?;
-            let project_manager = (runtime.project_manager_factory)();
-            let command_executor = (runtime.command_executor_factory)(&task_session);
-            let owner = owner
-                .upgrade()
-                .ok_or_else(|| anyhow!("Session service shut down"))?;
-            let mut manager = owner.lock().await;
-            // Stop/delete may have won while preparation was in flight.
-            cancellation.check()?;
-            // Persist a fallback only while the selection still matches the
-            // one captured at reservation. A newer selection belongs to the next run.
-            if session_config.model_name != original_model {
-                manager.persist_model_fallback(&task_session, &original_model, &session_config)?;
-            }
-            events.publish_ui(
-                &task_session,
-                UiEvent::UpdateMcpServers {
-                    servers: crate::tools::mcp::session_mcp_servers(
-                        project_dir.as_deref(),
-                        &disabled,
-                    ),
-                },
-            );
-            manager
-                .start_reserved_agent_for_session(
-                    &task_session,
-                    llm_client,
-                    project_manager,
-                    command_executor,
-                    Some(permission_handler.clone()),
-                    tool_scope_override,
-                    turn_recorder.clone(),
-                    registry,
-                    cancellation.clone(),
-                    crate::session::manager::RunConfig {
-                        session: run_session_config,
-                        model: Some(session_config),
-                    },
-                )
-                .await
+            Ok::<_, anyhow::Error>((llm_client, registry, session_config, original_model))
         };
-        let result = tokio::select! {
+        let prepared = tokio::select! {
             biased;
             _ = cancellation.cancelled() => Err(tools_core::Cancelled.into()),
             result = std::panic::AssertUnwindSafe(prepare).catch_unwind() => {
                 result.unwrap_or_else(|_| Err(anyhow!("Run preparation panicked")))
             }
         };
+
+        // Committing the run mutates the manager and therefore runs to
+        // completion once started; it checks for cancellation itself.
+        let commit = |(llm_client, registry, session_config, original_model): (
+            Box<dyn llm::LLMProvider>,
+            Arc<crate::tools::core::ToolRegistry>,
+            SessionModelConfig,
+            String,
+        )| {
+            let owner = owner.clone();
+            let cancellation = cancellation.clone();
+            let turn_recorder = turn_recorder.clone();
+            let task_session = task_session.clone();
+            let events = events.clone();
+            async move {
+                let owner = owner
+                    .upgrade()
+                    .ok_or_else(|| anyhow!("Session service shut down"))?;
+                let mut manager = owner.lock().await;
+                // Stop/delete may have won while preparation was in flight.
+                cancellation.check()?;
+                // Persist a fallback only while the selection still matches the
+                // one captured at reservation. A newer selection belongs to the next run.
+                if session_config.model_name != original_model {
+                    manager.persist_model_fallback(
+                        &task_session,
+                        &original_model,
+                        &session_config,
+                    )?;
+                }
+                events.publish_ui(
+                    &task_session,
+                    UiEvent::UpdateMcpServers {
+                        servers: crate::tools::mcp::session_mcp_servers(
+                            project_dir.as_deref(),
+                            &disabled,
+                        ),
+                    },
+                );
+                manager
+                    .start_reserved_agent_for_session(
+                        &task_session,
+                        llm_client,
+                        (runtime.project_manager_factory)(),
+                        (runtime.command_executor_factory)(&task_session),
+                        Some(permission_handler.clone()),
+                        tool_scope_override,
+                        turn_recorder,
+                        registry,
+                        cancellation,
+                        crate::session::manager::RunConfig {
+                            session: run_session_config,
+                            model: Some(session_config),
+                        },
+                    )
+                    .await
+            }
+        };
+        let result = match prepared {
+            Ok(prepared) => commit(prepared).await,
+            Err(error) => Err(error),
+        };
+
         if let Err(error) = result {
             let message = format!("Failed to start agent: {error:#}");
             if let Some(owner) = owner.upgrade() {
@@ -2072,6 +2068,29 @@ fn schedule_agent_impl(
     });
     manager.get_session_mut(&session_id).unwrap().setup_task = Some(task);
     Ok(())
+}
+
+type LaneSender = tokio::sync::mpsc::UnboundedSender<(Command, tokio::sync::OwnedSemaphorePermit)>;
+
+/// A lane: one task that runs its commands strictly in arrival order. Lives
+/// until the worker shuts down; a lane per session id is cheap.
+fn spawn_lane(ctx: ServiceCtx) -> LaneSender {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some((command, permit)) = rx.recv().await {
+            run_command(ctx.clone(), command, permit).await;
+        }
+    });
+    tx
+}
+
+/// Run one command, containing a panic so it fails only its own caller.
+async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::OwnedSemaphorePermit) {
+    use futures::FutureExt;
+    let _ = std::panic::AssertUnwindSafe(command(ctx))
+        .catch_unwind()
+        .await;
+    drop(permit);
 }
 
 #[cfg(test)]
