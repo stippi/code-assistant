@@ -3,7 +3,6 @@ use llm::{ContentBlock, Message};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
@@ -13,7 +12,7 @@ use crate::persistence::{
 };
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
-use crate::session::{SessionConfig, SessionState};
+use crate::session::{SessionCheckpoint, SessionConfig};
 use crate::ui::ui_events::UiEvent;
 use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
@@ -32,6 +31,13 @@ use tracing::{debug, error, info, warn};
 pub struct RegistryRequest {
     pub project_dir: Option<PathBuf>,
     pub include_local_mcp: bool,
+}
+
+/// Immutable configuration captured when a run reserves its session.
+/// Settings changed during preparation belong to a subsequent run.
+pub(crate) struct RunConfig {
+    pub session: SessionConfig,
+    pub model: Option<SessionModelConfig>,
 }
 
 /// Provides the tool registry for the next agent run. Consulted at the
@@ -242,6 +248,75 @@ impl SessionManager {
     /// The tool registry the next agent run would currently use.
     pub fn tool_registry(&self) -> &Arc<crate::tools::core::ToolRegistry> {
         &self.tool_registry
+    }
+
+    /// Clone the registry loader under the lock; poll it only after releasing it.
+    pub fn registry_loader(&self) -> ToolRegistryProvider {
+        self.tool_registry_provider.clone().unwrap_or_else(|| {
+            let registry = self.tool_registry.clone();
+            Arc::new(move |_| {
+                let registry = registry.clone();
+                Box::pin(async move { registry })
+            })
+        })
+    }
+
+    pub(crate) fn reserve_agent_run(
+        &mut self,
+        session_id: &str,
+        cancellation: tools_core::RunCancellation,
+    ) -> Result<()> {
+        self.ensure_session_loaded(session_id)?;
+        let instance = self.active_sessions.get_mut(session_id).unwrap();
+        anyhow::ensure!(
+            instance.get_activity_state().is_terminal(),
+            "Session is already running"
+        );
+        let lock =
+            file_utils::try_acquire_agent_lock(&self.persistence.sessions_dir()?, session_id)?
+                .ok_or_else(|| anyhow::anyhow!("Session is running in another instance"))?;
+        instance.begin_agent_run();
+        instance.cancellation = cancellation;
+        instance.agent_lock = Some(lock);
+        instance.set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+        instance.sleep_guard = Some(self.sleep_inhibitor.agent_guard());
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionActivityState {
+                session_id: session_id.to_string(),
+                activity_state: crate::session::instance::SessionActivityState::AgentRunning,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn finish_failed_setup(
+        &mut self,
+        session_id: &str,
+        cancellation: &tools_core::RunCancellation,
+        error: String,
+    ) {
+        let Some(instance) = self.active_sessions.get_mut(session_id) else {
+            return;
+        };
+        if !instance.cancellation.same_run(cancellation) || instance.agent_lock.is_none() {
+            return;
+        }
+        instance.agent_lock = None;
+        instance.sleep_guard = None;
+        let state = if cancellation.is_cancelled() {
+            crate::session::instance::SessionActivityState::Idle
+        } else {
+            crate::session::instance::SessionActivityState::Errored { message: error }
+        };
+        instance.set_activity_state(state.clone());
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionActivityState {
+                session_id: session_id.to_string(),
+                activity_state: state,
+            },
+        );
     }
 
     /// Pull the registry for `req` from the provider (no-op without one) and
@@ -547,7 +622,14 @@ impl SessionManager {
                 let session_instance = self.active_sessions.get(&session_id).unwrap();
                 session_instance.session.clone()
             };
-            self.persistence.save_chat_session(&session_snapshot)?;
+            self.persistence.update_entry(&session_id, |session| {
+                // Backfill only if a concurrent settings update has not already
+                // selected a model. Never replace its conversation or config.
+                if session.model_config.is_none() {
+                    session.model_config = session_snapshot.model_config;
+                }
+                Ok(())
+            })?;
         }
 
         Ok(snapshot)
@@ -771,6 +853,23 @@ impl SessionManager {
             .collect()
     }
 
+    fn initialize_session_project(
+        &mut self,
+        session_id: &str,
+        project_manager: &dyn ProjectManager,
+    ) -> Result<()> {
+        self.persistence.update_entry(session_id, |session| {
+            if session.config.initial_project.is_empty()
+                && let Some(path) = session.config.effective_project_path()
+            {
+                session.config.initial_project =
+                    project_manager.add_temporary_project(path.clone())?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     /// Start an agent for a session (message must already be added via add_user_message)
     /// This is the key method - agents run on-demand for specific messages
     ///
@@ -830,26 +929,78 @@ impl SessionManager {
         turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
         registry_request: RegistryRequest,
     ) -> Result<()> {
+        let cancellation = turn_recorder
+            .as_ref()
+            .map(|r| r.cancellation.clone())
+            .unwrap_or_default();
+        self.reserve_agent_run(session_id, cancellation.clone())?;
+        let instance = self.active_sessions.get(session_id).unwrap();
+        let run_config = RunConfig {
+            session: instance.session.config.clone(),
+            model: instance.session.model_config.clone(),
+        };
+        self.refresh_tool_registry(session_id, registry_request)
+            .await;
+        let registry = self.tool_registry.clone();
+        let result = self
+            .start_reserved_agent_for_session(
+                session_id,
+                llm_provider,
+                project_manager,
+                command_executor,
+                permission_handler,
+                tool_scope_override,
+                turn_recorder,
+                registry,
+                cancellation.clone(),
+                run_config,
+            )
+            .await;
+        if let Err(error) = &result {
+            self.finish_failed_setup(session_id, &cancellation, format!("{error:#}"));
+        }
+        result
+    }
+
+    /// Commit a prepared run. No MCP/LLM network work may occur under this lock.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn start_reserved_agent_for_session(
+        &mut self,
+        session_id: &str,
+        llm_provider: Box<dyn LLMProvider>,
+        project_manager: Box<dyn ProjectManager>,
+        command_executor: Box<dyn CommandExecutor>,
+        permission_handler: Option<Arc<dyn PermissionMediator>>,
+        tool_scope_override: Option<crate::tools::core::ToolScope>,
+        turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+        registry: Arc<crate::tools::core::ToolRegistry>,
+        cancellation: tools_core::RunCancellation,
+        run_config: RunConfig,
+    ) -> Result<()> {
+        cancellation.check()?;
+        let instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        anyhow::ensure!(
+            instance.cancellation.same_run(&cancellation),
+            "Run superseded"
+        );
+        self.tool_registry = registry.clone();
+        self.active_sessions
+            .get_mut(session_id)
+            .unwrap()
+            .tool_registry = registry;
         // A new run is the point where configuration changes take effect: pull
         // the registry the caller resolved for this run (scoped to the
         // session's project, and to whether its local `.mcp.json` was trusted)
         // before anything below binds to it. Trust is resolved by the caller —
         // not here — because prompting must happen without the manager lock
         // that wraps this call, or the response could never be delivered.
-        self.refresh_tool_registry(session_id, registry_request)
-            .await;
 
-        // Acquire exclusive cross-process agent lock.
-        // This prevents another code-assistant instance from running an agent
-        // for the same session concurrently.
-        let sessions_dir = self.persistence.sessions_dir()?;
-        let agent_lock = file_utils::try_acquire_agent_lock(&sessions_dir, session_id)?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Cannot start agent for session {session_id}: \
-                     another code-assistant instance is already running an agent for this session"
-                )
-            })?;
+        // Project grouping is session-owned initialization, not a side effect
+        // of a later agent checkpoint carrying its stale run configuration.
+        self.initialize_session_project(session_id, project_manager.as_ref())?;
 
         // Prepare session - need to scope the mutable borrow carefully
         let (
@@ -872,10 +1023,8 @@ impl SessionManager {
 
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
-            let session_config = session_instance.session.config.clone();
-            // A new agent run supersedes any prior stop request and the
-            // previous run's live tool statuses.
-            session_instance.begin_agent_run();
+            let session_config = run_config.session;
+            // The reservation already installed this run's fresh cancellation token.
 
             let publisher =
                 session_instance.create_publisher(self.events.clone(), turn_recorder.clone());
@@ -921,7 +1070,7 @@ impl SessionManager {
                 active_skills: session_instance.session.active_skills.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
-                model_config: session_instance.session.model_config.clone(),
+                model_config: run_config.model,
             };
 
             // Set activity state
@@ -937,9 +1086,6 @@ impl SessionManager {
                 session_instance.sandbox_context.clone(),
             )
         };
-
-        // Now save the session state with the user message (outside the borrow scope)
-        self.save_session_state(session_state.clone())?;
 
         // Broadcast the initial state change
         self.events.publish_ui(
@@ -966,13 +1112,6 @@ impl SessionManager {
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
             session_manager_ref,
         ));
-        // Saves announce the refreshed session metadata to the UI
-        let state_storage = Box::new(
-            crate::agent::persistence::MetadataNotifyingPersistence::new(
-                state_storage,
-                publisher.clone(),
-            ),
-        );
 
         let sandbox_context_clone = sandbox_context.clone();
 
@@ -1020,8 +1159,8 @@ impl SessionManager {
             permissions
         };
 
-        let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> =
-            Arc::new(DefaultSubAgentRunner::new(
+        let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> = Arc::new(
+            DefaultSubAgentRunner::new(
                 model_name_for_subagent,
                 session_config.clone(),
                 sandbox_context_clone,
@@ -1032,7 +1171,9 @@ impl SessionManager {
                 self.tool_registry.clone(),
                 Some(Arc::new(self.persistence.clone())),
                 self.hooks_factory.clone(),
-            ));
+            )
+            .with_parent_cancellation(cancellation.clone()),
+        );
 
         let components = AgentComponents {
             llm_provider,
@@ -1071,22 +1212,7 @@ impl SessionManager {
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
 
-        // Load the session state into the agent
-        agent.load_from_session_state(session_state).await?;
-
-        // Apply the per-run scope after the load, which derives the scope
-        // from the session config and would otherwise win.
-        if let Some(scope) = tool_scope_override {
-            agent.set_tool_scope(scope);
-            agent.invalidate_system_message_cache();
-        }
-
-        // Announce the restored plan to the UI
-        let _ = publisher
-            .send_event(UiEvent::UpdatePlan {
-                plan: agent.plan().clone(),
-            })
-            .await;
+        agent.set_cancellation(cancellation.clone());
 
         // Spawn the agent task.
         //
@@ -1095,11 +1221,22 @@ impl SessionManager {
         // automatically on completion, error, panic, or task abort.
         let session_id_clone = session_id.to_string();
         let events_clone = self.events.clone();
-        let sleep_inhibitor = self.sleep_inhibitor.clone();
-        sleep_inhibitor.agent_started();
-
+        let sleep_guard = self
+            .active_sessions
+            .get_mut(session_id)
+            .unwrap()
+            .sleep_guard
+            .take();
+        let agent_lock = self
+            .active_sessions
+            .get_mut(session_id)
+            .unwrap()
+            .agent_lock
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Run reservation lost"))?;
         let task_handle = tokio::spawn(async move {
             let _agent_lock = agent_lock; // moved in — released on drop
+
             debug!("Starting agent for session {}", session_id_clone);
 
             // Use catch_unwind to ensure cleanup runs even if the agent panics.
@@ -1107,7 +1244,20 @@ impl SessionManager {
             // AgentRunning state because the cleanup code below is never reached.
             let result = {
                 use futures::FutureExt;
-                let iteration_future = std::panic::AssertUnwindSafe(agent.run_single_iteration());
+                let iteration_future = std::panic::AssertUnwindSafe(async {
+                    cancellation.check()?;
+                    agent.load_from_session_state(session_state).await?;
+                    if let Some(scope) = tool_scope_override {
+                        agent.set_tool_scope(scope);
+                        agent.invalidate_system_message_cache();
+                    }
+                    let _ = publisher
+                        .send_event(UiEvent::UpdatePlan {
+                            plan: agent.plan().clone(),
+                        })
+                        .await;
+                    agent.run_single_iteration().await
+                });
                 match iteration_future.catch_unwind().await {
                     Ok(result) => result,
                     Err(panic_payload) => {
@@ -1127,6 +1277,26 @@ impl SessionManager {
                 }
             };
 
+            let result = if cancellation.is_cancelled() {
+                Ok(())
+            } else {
+                result
+            };
+            // Read usage while this run still owns the session. After publishing
+            // Idle a successor may already append messages and save its own usage.
+            let final_usage = if turn_recorder.is_some() {
+                let mut manager = manager_for_outcome.lock().await;
+                manager
+                    .ensure_session_loaded(&session_id_clone)
+                    .ok()
+                    .and_then(|_| manager.get_session(&session_id_clone))
+                    .map(|instance| instance.calculate_total_usage())
+            } else {
+                None
+            };
+            // Release before publishing idle: a dispatch observing idle can acquire it.
+            drop(_agent_lock);
+            drop(sleep_guard);
             // Log the completion with detailed error information if failed
             match &result {
                 Ok(()) => {
@@ -1183,20 +1353,8 @@ impl SessionManager {
             // publisher is synchronous), so the record is complete here; the
             // token delta comes from the state the run persisted.
             if let Some(recorder) = turn_recorder {
-                let final_usage = {
-                    let mut manager = manager_for_outcome.lock().await;
-                    manager
-                        .ensure_session_loaded(&session_id_clone)
-                        .ok()
-                        .and_then(|_| manager.get_session(&session_id_clone))
-                        .map(|instance| instance.calculate_total_usage())
-                };
                 recorder.finish(result.as_ref().err().map(|e| format!("{e:#}")), final_usage);
             }
-
-            // Signal that this agent is no longer running so the system sleep
-            // inhibition can be released once all agents have finished.
-            sleep_inhibitor.agent_stopped();
 
             result
         });
@@ -1218,15 +1376,7 @@ impl SessionManager {
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
         // Remove from active sessions
         if let Some(mut session_instance) = self.active_sessions.remove(session_id) {
-            let agent_is_running = !session_instance.get_activity_state().is_terminal();
             session_instance.terminate_agent();
-            // When aborting a task, the cleanup code inside the task (including
-            // agent_stopped) won't run, so we signal completion here instead.
-            // We check the activity state rather than task_handle.is_some()
-            // because the handle persists even after the task has completed.
-            if agent_is_running {
-                self.sleep_inhibitor.agent_stopped();
-            }
         }
 
         // Clear active session if it was the deleted one
@@ -1258,18 +1408,10 @@ impl SessionManager {
 
     /// Terminate a running agent for a session (e.g. on user cancel).
     ///
-    /// This is the proper way to abort an agent task from outside `SessionManager`,
-    /// because it also updates the sleep-inhibition reference count. Calling
-    /// `session.terminate_agent()` directly would leak a count.
+    /// Run-owned guards release the process/wake locks on every exit path.
     pub fn terminate_session_agent(&mut self, session_id: &str) {
         if let Some(session) = self.active_sessions.get_mut(session_id) {
-            // Check the activity state rather than task_handle.is_some() because
-            // the handle persists even after the task has completed naturally.
-            let agent_is_running = !session.get_activity_state().is_terminal();
             session.terminate_agent();
-            if agent_is_running {
-                self.sleep_inhibitor.agent_stopped();
-            }
         }
     }
 
@@ -1281,6 +1423,31 @@ impl SessionManager {
     /// Get a mutable session instance by ID
     pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut SessionInstance> {
         self.active_sessions.get_mut(session_id)
+    }
+
+    /// Heal a removed model without overwriting a selection made after the
+    /// run was reserved, including selections written by another process.
+    pub(crate) fn persist_model_fallback(
+        &mut self,
+        session_id: &str,
+        expected_model: &str,
+        fallback: &SessionModelConfig,
+    ) -> Result<()> {
+        let session = self.persistence.update_entry(session_id, |session| {
+            if session
+                .model_config
+                .as_ref()
+                .map(|model| model.model_name.as_str())
+                == Some(expected_model)
+            {
+                session.model_config = Some(fallback.clone());
+            }
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.model_config = session.model_config;
+        }
+        Ok(())
     }
 
     /// Get the model config for a session, if any
@@ -1422,32 +1589,29 @@ impl SessionManager {
         session_id: &str,
         model_config: Option<SessionModelConfig>,
     ) -> Result<ModelSwitchOutcome> {
-        let mut session = self
-            .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        if let Some(new_config) = model_config.as_ref() {
-            let check = Self::check_model_switch_for_session(&session, new_config)?;
-            if !check.allowed {
-                anyhow::bail!(check.error_message());
+        let use_diff_blocks = self.resolve_use_diff_blocks(model_config.as_ref());
+        let session = self.persistence.update_entry(session_id, |session| {
+            if let Some(new_config) = model_config.as_ref() {
+                let check = Self::check_model_switch_for_session(session, new_config)?;
+                if !check.allowed {
+                    anyhow::bail!(check.error_message());
+                }
+            } else if session.message_count() > 0 || !session.tool_executions.is_empty() {
+                anyhow::bail!(
+                    "Cannot clear the model for a session after a conversation has started."
+                );
             }
-        } else if session.message_count() > 0 || !session.tool_executions.is_empty() {
-            anyhow::bail!("Cannot clear the model for a session after a conversation has started.");
-        }
-
+            if session.message_count() == 0 && session.tool_executions.is_empty() {
+                session.config.use_diff_blocks = use_diff_blocks;
+            }
+            session.model_config = model_config.clone();
+            Ok(())
+        })?;
         let is_empty = session.message_count() == 0 && session.tool_executions.is_empty();
-        if is_empty {
-            session.config.use_diff_blocks = self.resolve_use_diff_blocks(model_config.as_ref());
-        }
-
         let agent_running = self
             .active_sessions
             .get(session_id)
             .is_some_and(|instance| !instance.get_activity_state().is_terminal());
-
-        session.model_config = model_config.clone();
-        self.persistence.save_chat_session(&session)?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.model_config = model_config;
@@ -1470,13 +1634,10 @@ impl SessionManager {
         session_id: &str,
         policy: SandboxPolicy,
     ) -> Result<()> {
-        let mut session = self
-            .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        session.config.sandbox_policy = policy.clone();
-        self.persistence.save_chat_session(&session)?;
+        self.persistence.update_entry(session_id, |session| {
+            session.config.sandbox_policy = policy.clone();
+            Ok(())
+        })?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.config.sandbox_policy = policy;
@@ -1492,13 +1653,10 @@ impl SessionManager {
         session_id: &str,
         tier: tools_core::PermissionTier,
     ) -> Result<()> {
-        let mut session = self
-            .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        session.config.permission_tier = tier;
-        self.persistence.save_chat_session(&session)?;
+        self.persistence.update_entry(session_id, |session| {
+            session.config.permission_tier = tier;
+            Ok(())
+        })?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.config.permission_tier = tier;
@@ -1520,13 +1678,10 @@ impl SessionManager {
         session_id: &str,
         disabled: Vec<String>,
     ) -> Result<Vec<crate::ui::ui_events::McpServerToggle>> {
-        let mut session = self
-            .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        session.config.disabled_mcp_servers = disabled.clone();
-        self.persistence.save_chat_session(&session)?;
+        let session = self.persistence.update_entry(session_id, |session| {
+            session.config.disabled_mcp_servers = disabled.clone();
+            Ok(())
+        })?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.config.disabled_mcp_servers = disabled.clone();
@@ -1588,14 +1743,11 @@ impl SessionManager {
         worktree_path: Option<PathBuf>,
         branch: Option<String>,
     ) -> Result<()> {
-        let mut session = self
-            .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        session.config.worktree_path = worktree_path.clone();
-        session.config.branch = branch.clone();
-        self.persistence.save_chat_session(&session)?;
+        self.persistence.update_entry(session_id, |session| {
+            session.config.worktree_path = worktree_path.clone();
+            session.config.branch = branch.clone();
+            Ok(())
+        })?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.config.worktree_path = worktree_path.clone();
@@ -1690,51 +1842,25 @@ impl SessionManager {
             .save_chat_session(&session_instance.session)
     }
 
-    /// Save agent state to a specific session
-    pub fn save_session_state(&mut self, state: SessionState) -> Result<()> {
-        let mut session = self
+    /// Merge a running agent's checkpoint into the stored session. Only the
+    /// conversation delta and run-owned fields are written; settings changed
+    /// meanwhile, by this or another process, stay untouched.
+    pub fn commit_checkpoint(&mut self, checkpoint: SessionCheckpoint<'_>) -> Result<()> {
+        let session = self
             .persistence
-            .load_chat_session(&state.session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", state.session_id))?;
+            .update_entry(checkpoint.session_id, |session| {
+                session.apply_checkpoint(&checkpoint);
+                Ok(())
+            })?;
 
-        // Preserve session-level settings that can be changed outside the
-        // running agent. A model switch while an agent is running should take
-        // effect on the next iteration; the old agent must not overwrite it
-        // when it saves its captured state.
-        let persisted_model_config = session.model_config.clone();
-        let persisted_use_diff_blocks = session.config.use_diff_blocks;
-
-        // Update session with current state
-        session.name = state.name;
-
-        // Update tree structure.
-        session.message_nodes = state.message_nodes;
-        session.active_path = state.active_path;
-        session.next_node_id = state.next_node_id;
-
-        // Clear legacy messages (tree is now authoritative)
-        session.messages.clear();
-
-        session.tool_executions = state
-            .tool_executions
-            .into_iter()
-            .map(|te| te.serialize())
-            .collect::<Result<Vec<_>>>()?;
-        session.plan = state.plan;
-        session.active_skills = state.active_skills;
-        session.config = state.config;
-        session.config.use_diff_blocks = persisted_use_diff_blocks;
-        session.model_config = persisted_model_config;
-        session.next_request_id = state.next_request_id.unwrap_or(0);
-        session.updated_at = SystemTime::now();
-
-        self.persistence.save_chat_session(&session)?;
-
-        // Update active session instance if it exists
-        if let Some(instance) = self.active_sessions.get_mut(&state.session_id) {
+        if let Some(instance) = self.active_sessions.get_mut(checkpoint.session_id) {
             instance.session = session;
+            let metadata = instance.metadata();
+            self.events.publish_ui(
+                checkpoint.session_id,
+                UiEvent::UpdateSessionMetadata { metadata },
+            );
         }
-
         Ok(())
     }
 
@@ -1899,13 +2025,46 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::{MessageNode, NodeId};
     use std::collections::HashMap;
+    use std::time::SystemTime;
     use tempfile::TempDir;
 
     fn temp_persistence() -> (FileSessionPersistence, TempDir) {
         let dir = TempDir::new().expect("temp dir");
         let persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
         (persistence, dir)
+    }
+
+    /// Commit `messages` as a linear conversation, the way a run's first
+    /// checkpoints would.
+    fn commit_messages(manager: &mut SessionManager, session_id: &str, messages: Vec<Message>) {
+        let nodes: Vec<MessageNode> = messages
+            .into_iter()
+            .enumerate()
+            .map(|(index, message)| MessageNode {
+                id: index as NodeId + 1,
+                message,
+                parent_id: (index > 0).then_some(index as NodeId),
+                created_at: SystemTime::now(),
+                extension: None,
+            })
+            .collect();
+        let changed_nodes: Vec<&MessageNode> = nodes.iter().collect();
+        let active_path: Vec<NodeId> = nodes.iter().map(|node| node.id).collect();
+        manager
+            .commit_checkpoint(SessionCheckpoint {
+                session_id,
+                name: "run",
+                changed_nodes: &changed_nodes,
+                active_path: &active_path,
+                next_node_id: nodes.len() as NodeId + 1,
+                changed_executions: Vec::new(),
+                plan: &crate::types::PlanState::default(),
+                active_skills: &[],
+                next_request_id: 1,
+            })
+            .unwrap();
     }
 
     fn build_manager(force_diff: bool) -> (SessionManager, TempDir) {
@@ -1922,6 +2081,175 @@ mod tests {
             crate::session::event_stream::EventStream::new(),
         );
         (manager, dir)
+    }
+
+    #[test]
+    fn checkpoint_preserves_all_session_settings_after_external_changes() {
+        let (mut manager, dir) = build_manager(false);
+        let id = manager.create_session(None).unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
+        // Another manager owns the settings, independently of the run's manager.
+        let mut settings = SessionManager::new(
+            FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
+            SessionConfig::default(),
+            "test-model".into(),
+            crate::tools::test_registry(),
+            crate::session::event_stream::EventStream::new(),
+        );
+        settings
+            .set_session_permission_tier(&id, tools_core::PermissionTier::AllTools)
+            .unwrap();
+        settings
+            .set_session_sandbox_policy(&id, SandboxPolicy::ReadOnly)
+            .unwrap();
+        settings
+            .set_session_worktree(
+                &id,
+                Some(dir.path().join("worktree")),
+                Some("new-branch".into()),
+            )
+            .unwrap();
+        settings
+            .set_session_disabled_mcp_servers(&id, vec!["disabled-server".into()])
+            .unwrap();
+        let mut expected = settings
+            .persistence
+            .load_chat_session(&id)
+            .unwrap()
+            .unwrap();
+        expected.config.init_path = Some(dir.path().join("project"));
+        expected.config.initial_project = "session-owned-project".into();
+        expected.config.tool_syntax = crate::types::ToolSyntax::Caret;
+        expected.config.use_diff_blocks = true;
+        expected.model_config = Some(SessionModelConfig::new("new-model".into()));
+        expected.plan_collapsed = true;
+        settings.persistence.save_chat_session(&expected).unwrap();
+
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
+        let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved.config).unwrap(),
+            serde_json::to_value(&expected.config).unwrap()
+        );
+        assert_eq!(saved.model_config.as_ref().unwrap().model_name, "new-model");
+        assert!(saved.plan_collapsed);
+        assert_eq!(saved.get_active_messages().len(), 1);
+        assert_eq!(
+            serde_json::to_value(&manager.get_session(&id).unwrap().session.config).unwrap(),
+            serde_json::to_value(&expected.config).unwrap()
+        );
+    }
+
+    #[test]
+    fn checkpoint_settings_wait_for_entry_lock_and_read_latest_conversation() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (mut manager, _dir) = build_manager(false);
+        let id = manager.create_session(None).unwrap();
+        let lock_path = manager
+            .persistence
+            .sessions_dir()
+            .unwrap()
+            .join(format!("{id}.entry.lock"));
+        let lock = file_utils::lock_exclusive(&lock_path).unwrap();
+        let mut latest = manager.persistence.load_chat_session(&id).unwrap().unwrap();
+        let path = manager
+            .persistence
+            .sessions_dir()
+            .unwrap()
+            .join(format!("{id}.json"));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_id = id.clone();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            manager
+                .set_session_permission_tier(&worker_id, tools_core::PermissionTier::AllTools)
+                .unwrap();
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let blocked = done_rx.recv_timeout(Duration::from_millis(200)).is_err();
+        // The holder of the entry lock writes a newer conversation before releasing it.
+        latest.add_message(Message::new_user("arrived during settings update"));
+        file_utils::atomic_write_json(&path, &latest).unwrap();
+        drop(lock);
+        worker.join().unwrap();
+        assert!(
+            blocked,
+            "settings must hold the entry lock across load and save"
+        );
+        let saved: ChatSession = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved.get_active_messages().len(), 1);
+        assert_eq!(
+            saved.config.permission_tier,
+            tools_core::PermissionTier::AllTools
+        );
+    }
+
+    #[test]
+    fn checkpoint_project_initialization_is_session_owned_and_stable() {
+        let (mut manager, _dir) = build_manager(false);
+        let config = SessionConfig {
+            init_path: Some(PathBuf::from("./project")),
+            ..Default::default()
+        };
+        let id = manager
+            .create_session_with_config(None, Some(config.clone()), None)
+            .unwrap();
+        let projects = crate::mocks::MockProjectManager::new();
+        manager.initialize_session_project(&id, &projects).unwrap();
+        let initialized = manager.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert!(!initialized.config.initial_project.is_empty());
+        manager
+            .set_session_worktree(
+                &id,
+                Some(PathBuf::from("./worktree")),
+                Some("branch".into()),
+            )
+            .unwrap();
+        manager.initialize_session_project(&id, &projects).unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
+        let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(
+            saved.config.initial_project,
+            initialized.config.initial_project
+        );
+        assert_eq!(
+            saved.config.worktree_path,
+            Some(PathBuf::from("./worktree"))
+        );
+    }
+
+    #[test]
+    fn checkpoint_keeps_branches_and_execution_records_not_loaded_by_run() {
+        let (mut manager, _dir) = build_manager(false);
+        let id = manager.create_session(None).unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
+        let mut session = manager.persistence.load_chat_session(&id).unwrap().unwrap();
+        let branch = session.add_message(Message::new_assistant("another branch"));
+        session.message_nodes.get_mut(&branch).unwrap().extension =
+            Some(serde_json::json!({"snapshot": true}));
+        session.tool_executions.push(
+            agent_core::types::ToolExecution::create_parse_error(
+                "unavailable-tool".into(),
+                "retained evidence".into(),
+            )
+            .serialize()
+            .unwrap(),
+        );
+        manager.persistence.save_chat_session(&session).unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
+        let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved.message_nodes[&branch]).unwrap(),
+            serde_json::to_value(&session.message_nodes[&branch]).unwrap()
+        );
+        assert_eq!(saved.next_node_id, session.next_node_id);
+        assert_eq!(
+            serde_json::to_value(&saved.tool_executions).unwrap(),
+            serde_json::to_value(&session.tool_executions).unwrap()
+        );
     }
 
     fn provider_config(
@@ -2063,60 +2391,6 @@ mod tests {
                 .expect("compatibility check");
 
         assert!(check.allowed);
-    }
-
-    #[test]
-    fn save_session_state_preserves_model_switch_for_next_iteration() {
-        let (mut manager, _dir) = build_manager(false);
-        let session_id = manager
-            .create_session_with_config(
-                Some("test".to_string()),
-                None,
-                Some(SessionModelConfig::new("old-model".to_string())),
-            )
-            .expect("create session");
-
-        let mut persisted = manager
-            .persistence
-            .load_chat_session(&session_id)
-            .expect("load session")
-            .expect("session exists");
-        persisted.model_config = Some(SessionModelConfig::new("new-model".to_string()));
-        persisted.config.use_diff_blocks = true;
-        manager
-            .persistence
-            .save_chat_session(&persisted)
-            .expect("save switched session");
-
-        let captured_config = SessionConfig {
-            use_diff_blocks: false,
-            ..Default::default()
-        };
-        let mut captured_state = SessionState::from_messages(
-            session_id.clone(),
-            "test".to_string(),
-            vec![Message::new_user("hello")],
-            captured_config,
-        );
-        captured_state.model_config = Some(SessionModelConfig::new("old-model".to_string()));
-
-        manager
-            .save_session_state(captured_state)
-            .expect("save session state");
-
-        let saved = manager
-            .persistence
-            .load_chat_session(&session_id)
-            .expect("load saved session")
-            .expect("session exists");
-        assert_eq!(
-            saved
-                .model_config
-                .as_ref()
-                .map(|config| config.model_name.as_str()),
-            Some("new-model")
-        );
-        assert!(saved.config.use_diff_blocks);
     }
 
     /// CLI override (`--use-diff-format`) takes precedence regardless of

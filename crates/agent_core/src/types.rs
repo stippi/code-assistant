@@ -2,13 +2,13 @@
 //! records, and the placeholder outputs the loop itself produces (parse
 //! errors, prompt-too-long replacements).
 
+use crate::execution::{RUNTIME_OUTPUT_CODEC, RuntimeToolOutput};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tools_core::{
     AnnotatedToolDefinition, AnyOutput, Render, ResourcesTracker, ToolRegistry, ToolResult,
 };
-use tracing::debug;
 
 /// Convert a basic ToolDefinition (without annotations) for LLM providers
 pub fn to_tool_definition(tool: &AnnotatedToolDefinition) -> llm::ToolDefinition {
@@ -196,23 +196,23 @@ impl ToolExecution {
 
     /// Serialize the tool execution to a storable format
     pub fn serialize(&self) -> Result<SerializedToolExecution> {
-        // Try to serialize the result, but fallback to a simple representation if it fails
-        let result_json = match self.result.to_json() {
-            Ok(json) => json,
-            Err(e) => {
-                debug!("Failed to serialize tool result, using fallback: {}", e);
-                serde_json::json!({
-                    "error": "Failed to serialize result",
-                    "success": self.result.is_success(),
-                    "details": format!("{}", e)
-                })
-            }
+        // An undecodable fallback is not a committed outcome. Fail the save so
+        // the runtime stops dispatch instead of losing evidence silently.
+        let result_json = self.result.to_json()?;
+        let tool_name = if self
+            .result
+            .as_any()
+            .is_some_and(|output| output.is::<RuntimeToolOutput>())
+        {
+            RUNTIME_OUTPUT_CODEC
+        } else {
+            &self.tool_request.name
         };
 
         Ok(SerializedToolExecution {
             tool_request: self.tool_request.clone(),
             result_json,
-            tool_name: self.tool_request.name.clone(),
+            tool_name: tool_name.to_string(),
         })
     }
 }
@@ -234,11 +234,21 @@ impl SerializedToolExecution {
     /// (a reconfigured MCP server, a removed integration). Callers check
     /// this to skip the record instead of failing the whole session load.
     pub fn tool_available(&self, registry: &ToolRegistry) -> bool {
-        self.tool_name == "parse_error" || registry.get(&self.tool_name).is_some()
+        self.tool_name == "parse_error"
+            || self.tool_name == RUNTIME_OUTPUT_CODEC
+            || registry.get(&self.tool_name).is_some()
     }
 
     /// Deserialize back to a ToolExecution
     pub fn deserialize(&self, registry: &ToolRegistry) -> Result<ToolExecution> {
+        if self.tool_name == RUNTIME_OUTPUT_CODEC {
+            return Ok(ToolExecution {
+                tool_request: self.tool_request.clone(),
+                result: Box::new(serde_json::from_value::<RuntimeToolOutput>(
+                    self.result_json.clone(),
+                )?),
+            });
+        }
         // Special handling for parse errors
         if self.tool_name == "parse_error" {
             let parse_error: ParseError = serde_json::from_value(self.result_json.clone())?;

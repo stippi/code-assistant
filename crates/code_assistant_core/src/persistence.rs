@@ -583,6 +583,35 @@ impl ChatSession {
         self.message_nodes.len()
     }
 
+    /// Merge a running agent's checkpoint. Nodes and journal entries are
+    /// replaced by id, so branches and records the run never touched
+    /// survive; counters only ever grow.
+    pub fn apply_checkpoint(&mut self, checkpoint: &crate::session::SessionCheckpoint<'_>) {
+        self.name = checkpoint.name.to_string();
+        for node in checkpoint.changed_nodes {
+            self.message_nodes.insert(node.id, (*node).clone());
+        }
+        self.active_path = checkpoint.active_path.to_vec();
+        self.next_node_id = self.next_node_id.max(checkpoint.next_node_id);
+        // The tree is authoritative once a checkpoint has been applied.
+        self.messages.clear();
+        for execution in &checkpoint.changed_executions {
+            let id = &execution.tool_request.id;
+            match self
+                .tool_executions
+                .iter()
+                .position(|entry| &entry.tool_request.id == id)
+            {
+                Some(index) => self.tool_executions[index] = execution.clone(),
+                None => self.tool_executions.push(execution.clone()),
+            }
+        }
+        self.plan = checkpoint.plan.clone();
+        self.active_skills = checkpoint.active_skills.to_vec();
+        self.next_request_id = self.next_request_id.max(checkpoint.next_request_id);
+        self.updated_at = SystemTime::now();
+    }
+
     /// Returns true if the session looks like it failed mid-flight and could
     /// usefully be "resumed" by re-running the agent against the existing
     /// message history.
@@ -734,7 +763,42 @@ impl FileSessionPersistence {
         self.ensure_chats_dir()
     }
 
+    fn entry_lock_path(&self, session_id: &str) -> Result<PathBuf> {
+        Ok(self
+            .ensure_chats_dir()?
+            .join(format!("{session_id}.entry.lock")))
+    }
+
+    /// Update an existing session under a cross-process, per-entry lock.
+    /// The closure sees the latest on-disk entry; an error leaves it unchanged.
+    /// Lock order is entry -> metadata. This is separate from the long-lived
+    /// agent lock so settings can still change during a run. Do not re-enter
+    /// persistence from the closure. Lock files must never be unlinked.
+    pub fn update_entry(
+        &mut self,
+        session_id: &str,
+        update: impl FnOnce(&mut ChatSession) -> Result<()>,
+    ) -> Result<ChatSession> {
+        let _lock = lock_exclusive(&self.entry_lock_path(session_id)?)?;
+        let mut session = self
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        update(&mut session)?;
+        anyhow::ensure!(session.id == session_id, "Cannot change session identity");
+        session.ensure_config()?;
+        self.save_chat_session_unlocked(&session)?;
+        Ok(session)
+    }
+
+    /// Full replacement, retained for creation and legacy callers. The lock
+    /// serializes writes but cannot make a stale supplied snapshot current;
+    /// read-modify-write callers must use `update_entry` instead.
     pub fn save_chat_session(&mut self, session: &ChatSession) -> Result<()> {
+        let _lock = lock_exclusive(&self.entry_lock_path(&session.id)?)?;
+        self.save_chat_session_unlocked(session)
+    }
+
+    fn save_chat_session_unlocked(&mut self, session: &ChatSession) -> Result<()> {
         let mut session = session.clone();
         session.ensure_config()?;
 
@@ -852,6 +916,7 @@ impl FileSessionPersistence {
     }
 
     pub fn delete_chat_session(&mut self, session_id: &str) -> Result<()> {
+        let _entry_lock = lock_exclusive(&self.entry_lock_path(session_id)?)?;
         // Remove the session file
         let session_path = self.chat_file_path(session_id)?;
         if session_path.exists() {
@@ -1315,6 +1380,90 @@ mod tests {
     use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus};
     use base64::Engine as _;
     use tempfile::tempdir;
+
+    #[test]
+    fn checkpoint_update_entry_serializes_independent_persistence_instances() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        persistence
+            .save_chat_session(&ChatSession::new_empty(
+                "shared".into(),
+                "shared".into(),
+                SessionConfig::default(),
+                None,
+            ))
+            .unwrap();
+        let start = Arc::new(std::sync::Barrier::new(4));
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let root = dir.path().to_path_buf();
+                let start = start.clone();
+                scope.spawn(move || {
+                    let mut persistence = FileSessionPersistence::new_with_root_dir(root);
+                    start.wait();
+                    for _ in 0..10 {
+                        persistence
+                            .update_entry("shared", |session| {
+                                let previous = session.next_request_id;
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                                session.next_request_id = previous + 1;
+                                session.add_message(Message::new_user("concurrent append"));
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        let saved = persistence.load_chat_session("shared").unwrap().unwrap();
+        assert_eq!(saved.next_request_id, 41);
+        assert_eq!(saved.message_count(), 40);
+        assert_eq!(saved.get_active_messages().len(), 40);
+        assert_eq!(
+            persistence
+                .get_chat_session_metadata("shared")
+                .unwrap()
+                .unwrap()
+                .message_count,
+            40
+        );
+    }
+
+    #[test]
+    fn checkpoint_update_entry_error_does_not_write_or_create() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        assert!(persistence.update_entry("missing", |_| Ok(())).is_err());
+        assert!(persistence.load_chat_session("missing").unwrap().is_none());
+        persistence
+            .save_chat_session(&ChatSession::new_empty(
+                "existing".into(),
+                "original".into(),
+                SessionConfig::default(),
+                None,
+            ))
+            .unwrap();
+        let before = std::fs::read(persistence.chat_file_path("existing").unwrap()).unwrap();
+        assert!(
+            persistence
+                .update_entry("existing", |session| {
+                    session.name = "not committed".into();
+                    anyhow::bail!("abort update")
+                })
+                .is_err()
+        );
+        assert_eq!(
+            before,
+            std::fs::read(persistence.chat_file_path("existing").unwrap()).unwrap()
+        );
+        // The failed transaction also released its lock.
+        persistence
+            .update_entry("existing", |session| {
+                session.name = "committed".into();
+                Ok(())
+            })
+            .unwrap();
+    }
 
     fn oversized_png_base64(width: u32, height: u32) -> String {
         let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(

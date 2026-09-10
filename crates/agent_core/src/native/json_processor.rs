@@ -420,9 +420,9 @@ impl JsonStreamProcessor {
                         self.emit_fragment(DisplayFragment::ToolEnd { id: tool_id })?;
                         self.state.json_parsing_state = JsonParsingState::ExpectOpenBrace; // Reset for next potential JSON object
                         self.state.current_key = None;
-                        self.state.buffer.clear(); // Object done, clear buffer of this object. This might be too aggressive if there's trailing content.
-                    // Let's refine: only clear if this was the *only* content, or handle trailing chars.
-                    // For now, `drain` handles consumed chars.
+                        // The loop below consumes this closing brace. Clearing
+                        // here would both discard trailing input and make that
+                        // drain panic for an empty object ({}).
                     } else if char_to_process == ',' {
                         // This is for cases like {"a":"b",} -> expecting a key next.
                         // If we see `,,,` this will just loop. Assuming valid JSON structure mostly.

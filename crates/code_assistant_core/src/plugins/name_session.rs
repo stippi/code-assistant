@@ -3,10 +3,11 @@
 
 use crate::plugins::AgentAppState;
 use crate::tools::ToolRequest;
+use crate::tools::impls::name_session::NameSessionOutput;
 use agent_core::hooks::{IterationHook, LoopCtx, ToolInterceptor};
-use agent_core::types::ToolExecution;
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, MessageRole};
+use tools_core::AnyOutput;
 use tracing::{trace, warn};
 
 /// Handles the `name_session` tool at the agent level: the title is session
@@ -14,7 +15,11 @@ use tracing::{trace, warn};
 pub struct NameSessionInterceptor;
 
 impl ToolInterceptor for NameSessionInterceptor {
-    fn try_intercept(&self, request: &ToolRequest, ctx: &mut LoopCtx) -> Option<Result<bool>> {
+    fn try_intercept(
+        &self,
+        request: &ToolRequest,
+        ctx: &mut LoopCtx,
+    ) -> Option<Result<Box<dyn AnyOutput>>> {
         if request.name != "name_session" {
             return None;
         }
@@ -22,27 +27,21 @@ impl ToolInterceptor for NameSessionInterceptor {
     }
 }
 
-fn apply_session_name(request: &ToolRequest, ctx: &mut LoopCtx) -> Result<bool> {
-    if let Some(title) = request.input["title"].as_str() {
-        let title = title.trim();
-        if !title.is_empty() {
-            trace!("Obtained session title from LLM: {}", title);
-            AgentAppState::of(ctx.extensions).session_name = title.to_string();
+fn apply_session_name(request: &ToolRequest, ctx: &mut LoopCtx) -> Result<Box<dyn AnyOutput>> {
+    let title = request.input["title"]
+        .as_str()
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
+    let Some(title) = title else {
+        warn!("name_session was called without a usable title");
+        return Err(anyhow::anyhow!("Invalid session title provided"));
+    };
 
-            ctx.tool_executions.push(ToolExecution {
-                tool_request: request.clone(),
-                result: Box::new(crate::tools::impls::name_session::NameSessionOutput {
-                    title: title.to_string(),
-                }),
-            });
-            return Ok(true);
-        } else {
-            warn!("Title for name_session is empty after trimming");
-        }
-    } else {
-        warn!("No 'title' field found in name_session input or it's not a string");
-    }
-    Err(anyhow::anyhow!("Invalid session title provided"))
+    trace!("Obtained session title from LLM: {}", title);
+    AgentAppState::of(ctx.extensions).session_name = title.to_string();
+    Ok(Box::new(NameSessionOutput {
+        title: title.to_string(),
+    }))
 }
 
 /// Appends a system reminder to the last actual user message while the

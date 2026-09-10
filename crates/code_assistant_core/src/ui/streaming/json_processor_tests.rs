@@ -56,6 +56,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_tool_input_closes_once_without_panicking() {
+        for size in 1..=4 {
+            let fragments = process_json_chunks(&chunk_str("{} \n", size), "probe", "empty");
+            assert_eq!(
+                fragments
+                    .iter()
+                    .filter(|fragment| matches!(fragment,
+                        DisplayFragment::ToolEnd { id } if id == "empty"
+                    ))
+                    .count(),
+                1
+            );
+            assert!(
+                !fragments
+                    .iter()
+                    .any(|fragment| matches!(fragment, DisplayFragment::ToolParameter { .. }))
+            );
+        }
+    }
+
+    #[test]
     fn test_basic_json_param_parsing() {
         let json = r#"{"path": "src/main.rs"}"#;
         let chunks = chunk_str(json, 5);

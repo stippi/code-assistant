@@ -17,7 +17,6 @@ use crate::tools::core::ToolRegistry;
 use crate::types::ToolSyntax;
 use agent_core::ToolDialect;
 use anyhow::{Result, anyhow};
-use llm::{ContentBlock, Message, MessageContent};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,24 +29,6 @@ pub fn dialect_for(syntax: ToolSyntax) -> Arc<dyn ToolDialect> {
         ToolSyntax::Caret => Arc::new(CaretDialect),
     }
 }
-
-/// The text segments of a message, for invocation sniffing.
-pub(crate) fn message_text_segments(message: &Message) -> Vec<&str> {
-    match &message.content {
-        MessageContent::Text(text) => vec![text.as_str()],
-        MessageContent::Structured(blocks) => blocks
-            .iter()
-            .filter_map(|block| {
-                if let ContentBlock::Text { text, .. } = block {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    }
-}
-
 /// Whether the named parameter of the given tool typically spans multiple
 /// lines (block syntax in the text dialects).
 pub(crate) fn is_multiline_param(

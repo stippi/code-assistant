@@ -11,7 +11,7 @@ use crate::dialect::ToolDialect;
 use crate::types::ToolRequest;
 use crate::ui::{AgentUi, HiddenTools, StreamProcessorTrait};
 use anyhow::Result;
-use llm::{ContentBlock, LLMResponse, Message, MessageContent};
+use llm::{ContentBlock, LLMResponse};
 use std::sync::Arc;
 use tools_core::ToolRegistry;
 
@@ -81,15 +81,5 @@ impl ToolDialect for NativeDialect {
     ) -> Option<String> {
         // Native mode uses API-provided tool definitions, no custom documentation needed
         None
-    }
-
-    fn message_contains_invocation(&self, message: &Message, _registry: &ToolRegistry) -> bool {
-        if let MessageContent::Structured(blocks) = &message.content {
-            blocks
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
-        } else {
-            false
-        }
     }
 }

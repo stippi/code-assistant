@@ -1,4 +1,8 @@
-use crate::agent::persistence::AgentStatePersistence;
+mod run;
+#[cfg(test)]
+mod tests;
+
+use crate::agent::persistence::NoOpStatePersistence;
 use crate::agent::{Agent, AgentComponents};
 use crate::config::DefaultProjectManager;
 use crate::persistence::SessionModelConfig;
@@ -10,47 +14,72 @@ use command_executor::{CommandExecutor, DefaultCommandExecutor, SandboxedCommand
 use llm::Message;
 use sandbox::{SandboxContext, SandboxPolicy};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
+use std::sync::{Arc, Mutex};
 use tools_core::permissions::{PermissionMediator, ToolPermissions};
 
-/// Cancellation registry keyed by the parent `spawn_agent` tool id.
+/// Cancellation tokens of the running sub-agents, keyed by the parent
+/// `spawn_agent` tool id, so a child can be cancelled from the UI.
 #[derive(Default)]
 pub struct SubAgentCancellationRegistry {
-    flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    children: Mutex<HashMap<String, tools_core::RunCancellation>>,
+}
+
+/// A child's entry in the registry; removed when the run ends.
+struct ChildRegistration<'a> {
+    registry: &'a SubAgentCancellationRegistry,
+    tool_id: String,
+    token: tools_core::RunCancellation,
+}
+
+impl Drop for ChildRegistration<'_> {
+    fn drop(&mut self) {
+        let mut children = self.registry.children.lock().unwrap();
+        // A delayed old task must not unregister a replacement with the same id.
+        if children
+            .get(&self.tool_id)
+            .is_some_and(|token| token.same_run(&self.token))
+        {
+            children.remove(&self.tool_id);
+        }
+    }
 }
 
 impl SubAgentCancellationRegistry {
-    pub fn register(&self, tool_id: String) -> Arc<AtomicBool> {
-        let flag = Arc::new(AtomicBool::new(false));
-        let mut flags = self.flags.lock().unwrap();
-        flags.insert(tool_id, flag.clone());
-        flag
-    }
-
-    pub fn cancel(&self, tool_id: &str) -> bool {
-        let flags = self.flags.lock().unwrap();
-        if let Some(flag) = flags.get(tool_id) {
-            flag.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
+    /// Register a child of `parent`. An earlier child with the same id is
+    /// cancelled and replaced.
+    fn register_run(
+        &self,
+        tool_id: &str,
+        parent: &tools_core::RunCancellation,
+    ) -> ChildRegistration<'_> {
+        let token = parent.child();
+        if let Some(previous) = self
+            .children
+            .lock()
+            .unwrap()
+            .insert(tool_id.to_string(), token.clone())
+        {
+            previous.cancel();
+        }
+        ChildRegistration {
+            registry: self,
+            tool_id: tool_id.to_string(),
+            token,
         }
     }
 
-    pub fn unregister(&self, tool_id: &str) {
-        let mut flags = self.flags.lock().unwrap();
-        flags.remove(tool_id);
+    /// Cancel the child running for `tool_id`. Returns `false` if none is.
+    pub fn cancel(&self, tool_id: &str) -> bool {
+        match self.children.lock().unwrap().get(tool_id) {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
     }
 }
 
-/// Minimal in-memory persistence used for sub-agents.
-struct NoOpStatePersistence;
-
-impl AgentStatePersistence for NoOpStatePersistence {
-    fn save_agent_state(&mut self, _state: crate::session::SessionState) -> Result<()> {
-        Ok(())
-    }
-}
 /// Aggregated token usage for a sub-agent run.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SubAgentUsage {
@@ -114,6 +143,21 @@ pub struct SubAgentResult {
     pub ui_output: String,
 }
 
+/// A failed child still has useful structured evidence. The spawn tool persists
+/// this output instead of replacing it with an unstructured error string.
+#[derive(Debug)]
+pub struct SubAgentFailure {
+    pub message: String,
+    pub ui_output: String,
+}
+
+impl std::fmt::Display for SubAgentFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for SubAgentFailure {}
+
 /// Execution mode for a sub-agent, selected by the `spawn_agent` tool input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubAgentMode {
@@ -156,6 +200,9 @@ pub struct DefaultSubAgentRunner {
     /// Hook factory sub-agents run with (shared with the parent agent);
     /// `None` uses code-assistant's default hooks.
     hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
+    llm_client_factory: Option<crate::session::service::LlmClientFactory>,
+    project_manager_factory: crate::session::service::ProjectManagerFactory,
+    parent_cancellation: tools_core::RunCancellation,
 }
 
 impl DefaultSubAgentRunner {
@@ -185,19 +232,43 @@ impl DefaultSubAgentRunner {
             tool_registry,
             session_source,
             hooks_factory,
+            llm_client_factory: None,
+            project_manager_factory: Arc::new(|| Box::new(DefaultProjectManager::new())),
+            parent_cancellation: tools_core::RunCancellation::default(),
         }
+    }
+
+    pub fn with_llm_client_factory(
+        mut self,
+        factory: crate::session::service::LlmClientFactory,
+    ) -> Self {
+        self.llm_client_factory = Some(factory);
+        self
+    }
+
+    pub fn with_project_manager_factory(
+        mut self,
+        factory: crate::session::service::ProjectManagerFactory,
+    ) -> Self {
+        self.project_manager_factory = factory;
+        self
+    }
+
+    pub fn with_parent_cancellation(mut self, cancellation: tools_core::RunCancellation) -> Self {
+        self.parent_cancellation = cancellation;
+        self
     }
 
     fn build_sub_agent_ui(
         &self,
         parent_ui: Arc<dyn UserInterface>,
         parent_tool_id: String,
-        cancelled: Arc<AtomicBool>,
+        cancellation: tools_core::RunCancellation,
     ) -> Arc<SubAgentUiAdapter> {
         Arc::new(SubAgentUiAdapter::new(
             parent_ui,
             parent_tool_id,
-            cancelled,
+            cancellation,
             self.tool_registry.clone(),
         ))
     }
@@ -209,12 +280,21 @@ impl DefaultSubAgentRunner {
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<Agent> {
         // Create a fresh LLM provider (avoid requiring Clone).
-        let llm_provider =
-            llm::factory::create_llm_client_from_model(&self.model_name, None, false, None).await?;
+        let llm_provider = match &self.llm_client_factory {
+            Some(factory) => {
+                let factory = factory.clone();
+                let model = self.model_name.clone();
+                tokio::task::spawn_blocking(move || factory(&model)).await??
+            }
+            None => {
+                llm::factory::create_llm_client_from_model(&self.model_name, None, false, None)
+                    .await?
+            }
+        };
 
         // Create a fresh project manager, copying init_path if set.
         let project_manager: Arc<dyn crate::config::ProjectManager> =
-            Arc::new(DefaultProjectManager::new());
+            Arc::from((self.project_manager_factory)());
         if let Some(path) = self.session_config.effective_project_path().cloned() {
             let _ = project_manager.add_temporary_project(path);
         }
@@ -278,124 +358,6 @@ impl DefaultSubAgentRunner {
 fn tool_scope_for_subagent() -> ToolScope {
     // default; actual scope is set by caller via Agent::set_tool_scope
     ToolScope::SubAgentReadOnly
-}
-
-#[async_trait::async_trait]
-impl SubAgentRunner for DefaultSubAgentRunner {
-    async fn run(
-        &self,
-        parent_tool_id: &str,
-        instructions: String,
-        mode: SubAgentMode,
-        require_file_references: bool,
-    ) -> Result<SubAgentResult> {
-        // Sub-agents inherit the parent session's edit-tool layout: with the
-        // diff-format edit tool, the sub-agent uses `replace_in_file` instead
-        // of `edit`.
-        let tool_scope = match mode {
-            SubAgentMode::ReadOnly => ToolScope::SubAgentReadOnly,
-            SubAgentMode::Default if self.session_config.use_diff_blocks => {
-                ToolScope::SubAgentDefaultWithDiffBlocks
-            }
-            SubAgentMode::Default => ToolScope::SubAgentDefault,
-        };
-
-        let cancelled = self
-            .cancellation_registry
-            .register(parent_tool_id.to_string());
-        let sub_ui = self.build_sub_agent_ui(
-            self.ui.clone(),
-            parent_tool_id.to_string(),
-            cancelled.clone(),
-        );
-
-        // Keep a clone of the adapter so we can set the final response
-        let sub_ui_adapter = sub_ui.clone();
-
-        let mut agent = self
-            .build_agent(
-                parent_tool_id,
-                sub_ui as Arc<dyn UserInterface>,
-                self.permission_handler.clone(),
-            )
-            .await?;
-        agent.set_tool_scope(tool_scope);
-
-        // Start with a single user message containing the full instructions.
-        agent.append_message(Message::new_user(instructions))?;
-
-        // Run 1+ iterations if we need to enforce file references.
-        let mut last_answer = String::new();
-        let mut was_cancelled = false;
-
-        for attempt in 0..=2 {
-            // Check for cancellation before starting iteration
-            if cancelled.load(Ordering::SeqCst) {
-                was_cancelled = true;
-                break;
-            }
-
-            agent.run_single_iteration().await?;
-
-            // Update usage after each iteration so the UI ring indicator
-            // reflects current token consumption while the sub-agent is still running.
-            let usage = compute_sub_agent_usage(agent.message_history(), &self.model_name);
-            sub_ui_adapter.set_usage(usage);
-            sub_ui_adapter.send_output_update().await;
-
-            // Check for cancellation after iteration completes
-            // (cancellation may have occurred during streaming/tool execution)
-            if cancelled.load(Ordering::SeqCst) {
-                was_cancelled = true;
-                break;
-            }
-
-            last_answer = extract_last_assistant_text(agent.message_history()).unwrap_or_default();
-
-            if !require_file_references {
-                break;
-            }
-
-            if has_file_references_with_line_ranges(&last_answer) {
-                break;
-            }
-
-            if attempt >= 2 {
-                // Best-effort: return with warning.
-                last_answer = format!(
-                    "{last_answer}\n\n(Warning: requested file references with line ranges, but the sub-agent did not include them.)"
-                );
-                break;
-            }
-
-            // Ask the same sub-agent to revise.
-            agent.append_message(Message::new_user(
-                "Please revise your last answer to include exact file references with line ranges (e.g. `path/to/file.rs:10-20`).".to_string(),
-            ))?;
-        }
-
-        self.cancellation_registry.unregister(parent_tool_id);
-
-        // Handle cancellation: return error
-        if was_cancelled {
-            sub_ui_adapter.set_cancelled();
-            return Err(anyhow::anyhow!("Cancelled by user"));
-        }
-
-        // Collect token usage from the sub-agent's message history
-        let usage = compute_sub_agent_usage(agent.message_history(), &self.model_name);
-        sub_ui_adapter.set_usage(usage);
-
-        // Set the final response in the adapter and get the complete JSON output
-        // This preserves the tools list along with the final response for rendering
-        sub_ui_adapter.set_response(last_answer.clone());
-        let final_json = sub_ui_adapter.get_final_output();
-
-        Ok(SubAgentResult {
-            answer: last_answer,
-            ui_output: final_json,
-        })
-    }
 }
 
 /// Compute aggregated token usage from a sub-agent's message history.
@@ -573,7 +535,7 @@ impl Default for SubAgentOutput {
 struct SubAgentUiAdapter {
     parent: Arc<dyn UserInterface>,
     parent_tool_id: String,
-    cancelled: Arc<AtomicBool>,
+    cancellation: tools_core::RunCancellation,
     output: Mutex<SubAgentOutput>,
     /// Map from tool_id to index in output.tools for fast lookup
     tool_id_to_index: Mutex<std::collections::HashMap<String, usize>>,
@@ -585,13 +547,13 @@ impl SubAgentUiAdapter {
     fn new(
         parent: Arc<dyn UserInterface>,
         parent_tool_id: String,
-        cancelled: Arc<AtomicBool>,
+        cancellation: tools_core::RunCancellation,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
     ) -> Self {
         Self {
             parent,
             parent_tool_id,
-            cancelled,
+            cancellation,
             output: Mutex::new(SubAgentOutput::new()),
             tool_id_to_index: Mutex::new(std::collections::HashMap::new()),
             tool_registry,
@@ -599,9 +561,21 @@ impl SubAgentUiAdapter {
     }
 
     async fn send_output_update(&self) {
-        let (json, tool_count, activity) = {
+        let (json, tool_count, activity, status, message) = {
             let output = self.output.lock().unwrap();
-            (output.to_json(), output.tools.len(), output.activity)
+            let (status, message) = match output.activity {
+                Some(SubAgentActivity::Completed) => (ToolStatus::Success, "Sub-agent completed"),
+                Some(SubAgentActivity::Failed) => (ToolStatus::Error, "Sub-agent failed"),
+                Some(SubAgentActivity::Cancelled) => (ToolStatus::Error, "Sub-agent cancelled"),
+                _ => (ToolStatus::Running, "Sub-agent running"),
+            };
+            (
+                output.to_json(),
+                output.tools.len(),
+                output.activity,
+                status,
+                message,
+            )
         };
 
         tracing::debug!(
@@ -615,8 +589,8 @@ impl SubAgentUiAdapter {
             .parent
             .send_event(UiEvent::UpdateToolStatus {
                 tool_id: self.parent_tool_id.clone(),
-                status: ToolStatus::Running,
-                message: Some("Sub-agent running".to_string()),
+                status,
+                message: Some(message.to_string()),
                 output: Some(json),
                 styled_output: None,
                 duration_seconds: None,
@@ -724,6 +698,12 @@ impl SubAgentUiAdapter {
         let mut output = self.output.lock().unwrap();
         output.error = Some(error);
         output.activity = Some(SubAgentActivity::Failed);
+        for tool in &mut output.tools {
+            if tool.status == SubAgentToolStatus::Running {
+                tool.status = SubAgentToolStatus::Error;
+                tool.message = Some("Sub-agent ended without a recorded outcome for this tool; effects are unknown.".into());
+            }
+        }
     }
 
     fn set_activity(&self, activity: SubAgentActivity) {
@@ -735,6 +715,8 @@ impl SubAgentUiAdapter {
         let mut output = self.output.lock().unwrap();
         output.response = Some(response);
         output.activity = Some(SubAgentActivity::Completed);
+        output.error = None;
+        output.cancelled = None;
     }
 
     fn set_usage(&self, usage: SubAgentUsage) {
@@ -847,7 +829,7 @@ impl UserInterface for SubAgentUiAdapter {
     }
 
     fn should_streaming_continue(&self) -> bool {
-        !self.cancelled.load(Ordering::SeqCst) && self.parent.should_streaming_continue()
+        !self.cancellation.is_cancelled() && self.parent.should_streaming_continue()
     }
 
     fn notify_rate_limit(&self, _seconds_remaining: u64) {}

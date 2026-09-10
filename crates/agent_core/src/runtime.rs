@@ -1,10 +1,15 @@
 //! The agent loop. Application behavior plugs in through the hook traits in
 //! [`crate::hooks`]; application state travels type-erased in `extensions`.
 
+#[cfg(test)]
+mod tests;
+mod tool_execution;
+
 use crate::dialect::ToolDialect;
+use crate::execution::ToolJournal;
 use crate::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction, ToolServicesProvider};
-use crate::persistence::{AgentSnapshot, SnapshotPersistence};
-use crate::tree::{ConversationPath, MessageNode, NodeId};
+use crate::persistence::{AgentCheckpoint, CheckpointPersistence};
+use crate::tree::{Conversation, ConversationPath, MessageNode, NodeId};
 use crate::types::{ToolExecution, ToolRequest, text_summary_from_blocks, to_tool_definitions};
 use crate::ui::{AgentActivity, AgentUi, AgentUiEvent, DisplayFragment, HiddenTools, UIError};
 use anyhow::Result;
@@ -45,7 +50,7 @@ pub struct AgentRuntimeComponents {
     pub permissions: ToolPermissions,
     /// Builds the application services handed to each tool invocation.
     pub services_provider: Arc<dyn ToolServicesProvider>,
-    pub state_persistence: Box<dyn SnapshotPersistence>,
+    pub state_persistence: Box<dyn CheckpointPersistence>,
     pub hooks: HookRegistry,
     /// Application-specific loop state, exposed to the hooks type-erased.
     /// `Sync` because the loop holds `&self` across awaits.
@@ -58,6 +63,13 @@ enum LoopFlow {
     Continue,
     /// Get user input and then continue the loop.
     GetUserInput,
+}
+
+/// Purely derived request adjustments; canonical state is never edited here.
+#[derive(Default)]
+struct PromptProjection {
+    omitted_nodes: std::collections::HashSet<NodeId>,
+    tool_results: HashMap<String, String>,
 }
 
 pub struct AgentRuntime {
@@ -74,31 +86,20 @@ pub struct AgentRuntime {
     stream_hidden_tools: HiddenTools,
     command_executor: Arc<dyn CommandExecutor>,
     ui: Arc<dyn AgentUi>,
-    state_persistence: Box<dyn SnapshotPersistence>,
+    state_persistence: Box<dyn CheckpointPersistence>,
     /// Builds the application services handed to each tool invocation.
     services_provider: Arc<dyn ToolServicesProvider>,
 
     permission_handler: Option<Arc<dyn PermissionMediator>>,
     permissions: ToolPermissions,
+    cancellation: tools_core::RunCancellation,
 
-    // ========================================================================
-    // Branching: Tree-based message storage
-    // ========================================================================
-    /// All message nodes in the session (tree structure)
-    message_nodes: BTreeMap<NodeId, MessageNode>,
-    /// The currently active path through the tree
-    active_path: ConversationPath,
-    /// Counter for generating unique node IDs
-    next_node_id: NodeId,
+    conversation: Conversation,
+    /// Run-local LLM projection. Never included in a checkpoint.
+    prompt_projection: PromptProjection,
 
-    // ========================================================================
-    // Legacy: Linearized message history (derived from active_path)
-    // ========================================================================
-    /// Store all messages exchanged (kept in sync with active_path)
-    message_history: Vec<Message>,
-
-    // Store the history of tool executions
-    tool_executions: Vec<ToolExecution>,
+    /// Every tool call of the conversation with its outcome.
+    journal: ToolJournal,
     // Cached system prompts keyed by model hint
     cached_system_prompts: HashMap<String, String>,
     // Optional model identifier used for prompt selection
@@ -162,19 +163,20 @@ impl AgentRuntime {
             services_provider,
             permission_handler,
             permissions,
-            // Branching tree structure
-            message_nodes: BTreeMap::new(),
-            active_path: Vec::new(),
-            next_node_id: 1,
-            // Linearized message history
-            message_history: Vec::new(),
-            tool_executions: Vec::new(),
+            cancellation: tools_core::RunCancellation::default(),
+            conversation: Conversation::default(),
+            prompt_projection: PromptProjection::default(),
+            journal: ToolJournal::default(),
             cached_system_prompts: HashMap::new(),
             next_request_id: 1, // Start from 1
             session_id: None,
             pending_message_ref: None,
             model_hint: None,
         }
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: tools_core::RunCancellation) {
+        self.cancellation = cancellation;
     }
 
     /// Replace the dialect (e.g. after the embedding application reloaded a
@@ -207,8 +209,9 @@ impl AgentRuntime {
         self.extensions.as_mut()
     }
 
-    /// Restore the conversation (tree, active path, id counter, linearized
-    /// history) from persisted state.
+    /// Restore the conversation (tree, active path, id counter) from
+    /// persisted state. `messages` is the legacy linear history, imported
+    /// only when the session has no tree yet.
     pub fn restore_conversation(
         &mut self,
         message_nodes: BTreeMap<NodeId, MessageNode>,
@@ -216,15 +219,14 @@ impl AgentRuntime {
         next_node_id: NodeId,
         messages: Vec<Message>,
     ) {
-        self.message_nodes = message_nodes;
-        self.active_path = active_path;
-        self.next_node_id = next_node_id;
-        self.message_history = messages;
+        self.conversation =
+            Conversation::restore(message_nodes, active_path, next_node_id, messages);
+        self.prompt_projection = PromptProjection::default();
     }
 
     /// Restore the tool execution records from persisted state.
     pub fn set_tool_executions(&mut self, tool_executions: Vec<ToolExecution>) {
-        self.tool_executions = tool_executions;
+        self.journal = ToolJournal::restore(tool_executions);
     }
 
     /// Restore the request id counter from persisted state.
@@ -257,9 +259,9 @@ impl AgentRuntime {
         }
     }
 
-    /// Get a reference to the message history
-    pub fn message_history(&self) -> &[Message] {
-        &self.message_history
+    /// The messages on the active path, in order.
+    pub fn message_history(&self) -> Vec<Message> {
+        self.conversation.history()
     }
 
     /// Get and clear the pending message from shared state
@@ -286,61 +288,50 @@ impl AgentRuntime {
         self.ui.send_event(event).await
     }
 
-    /// Save the current state (message history and tool executions)
-    fn save_state(&mut self) -> Result<()> {
-        trace!(
-            "saving {} messages to persistence (tree nodes: {})",
-            self.message_history.len(),
-            self.message_nodes.len()
-        );
-
-        let snapshot = AgentSnapshot {
-            session_id: self.session_id.clone(),
-            message_nodes: self.message_nodes.clone(),
-            active_path: self.active_path.clone(),
-            next_node_id: self.next_node_id,
-            messages: self.message_history.clone(),
-            tool_executions: self.tool_executions.clone(),
+    /// Persist everything that changed since the previous checkpoint. An
+    /// agent without a session keeps nothing.
+    fn checkpoint(&mut self) -> Result<()> {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return Ok(());
+        };
+        let checkpoint = AgentCheckpoint {
+            session_id,
+            changed_nodes: self.conversation.changed_nodes().collect(),
+            active_path: self.conversation.path(),
+            next_node_id: self.conversation.next_id(),
+            changed_executions: self.journal.changed().collect(),
             next_request_id: self.next_request_id,
         };
+        trace!(
+            "checkpoint: {} changed node(s), {} changed execution(s)",
+            checkpoint.changed_nodes.len(),
+            checkpoint.changed_executions.len()
+        );
         self.state_persistence
-            .save(snapshot, self.extensions.as_ref())
+            .commit(&checkpoint, self.extensions.as_ref())?;
+        self.conversation.mark_checkpointed();
+        self.journal.mark_checkpointed();
+        Ok(())
     }
 
     /// Pre-allocate the next node_id without creating a node.
     /// The returned ID is guaranteed to be used by the next `append_message` call
     /// (or `append_message_with_node_id`).
     pub fn reserve_node_id(&mut self) -> NodeId {
-        let id = self.next_node_id;
-        self.next_node_id += 1;
-        id
+        self.conversation.reserve_id()
     }
 
     /// Adds a message to the history using a pre-allocated node_id.
     /// Use `reserve_node_id()` to obtain the ID before streaming starts,
     /// then call this after streaming completes.
     pub fn append_message_with_node_id(&mut self, message: Message, node_id: NodeId) -> Result<()> {
-        let parent_id = self.active_path.last().copied();
-
-        let node = MessageNode {
-            id: node_id,
-            message: message.clone(),
-            parent_id,
-            created_at: std::time::SystemTime::now(),
-            extension: None,
-        };
-
-        self.message_nodes.insert(node_id, node);
-        self.active_path.push(node_id);
+        self.conversation.append(message.clone(), node_id);
 
         for observer in &self.hooks.observers {
             observer.on_message(self.session_id.as_deref(), &message);
         }
 
-        // Also add to linearized history
-        self.message_history.push(message);
-
-        self.save_state()?;
+        self.checkpoint()?;
         Ok(())
     }
 
@@ -355,9 +346,17 @@ impl AgentRuntime {
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
+        match self.run_until_complete().await {
+            Err(error) if error.is::<tools_core::Cancelled>() => Ok(()),
+            result => result,
+        }
+    }
+
+    async fn run_until_complete(&mut self) -> Result<()> {
         let mut streaming_retry_count: u32 = 0;
 
         loop {
+            self.cancellation.check()?;
             // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_blocks) = self.get_and_clear_pending_message() {
                 let text_summary = text_summary_from_blocks(&pending_blocks);
@@ -398,6 +397,7 @@ impl AgentRuntime {
                 // `continue` restarts the loop, which re-renders the messages and
                 // retries get_next_assistant_message. (StreamingStopped was already
                 // sent by get_next_assistant_message in its error path.)
+                Err(e) if e.is::<tools_core::Cancelled>() => return Err(e),
                 Err(e) => match self.hooks.recovery.classify(&e, streaming_retry_count) {
                     RecoveryAction::ReduceContext => {
                         self.recover_from_oversized_prompt().await?;
@@ -411,13 +411,18 @@ impl AgentRuntime {
                         streaming_retry_count = attempt;
                         self.prepare_streaming_retry(&e, attempt, max_attempts, delay)
                             .await;
-                        tokio::time::sleep(delay).await;
+                        tokio::select! {
+                            biased;
+                            _ = self.cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
+                            _ = tokio::time::sleep(delay) => {}
+                        }
                         continue;
                     }
                     RecoveryAction::Fail => return Err(e),
                 },
             };
 
+            self.cancellation.check()?;
             // 2. Add original LLM response to message history using the pre-allocated node_id
             if !llm_response.content.is_empty() {
                 self.append_message_with_node_id(
@@ -433,22 +438,14 @@ impl AgentRuntime {
                 .extract_tool_requests_from_response(&llm_response, request_id)
                 .await?;
 
-            // 4. If we have a truncated response different from the original, update the last message
+            // Persist the parser's corrected response through the same tree
+            // mutation boundary used by format-on-save.
             if !truncated_response.content.is_empty()
-                && !self.message_history.is_empty()
                 && truncated_response.content != llm_response.content
             {
-                // Replace the last message with the truncated version
-                if let Some(last_msg) = self.message_history.last_mut()
-                    && last_msg.role == MessageRole::Assistant
-                {
-                    last_msg.content =
-                        MessageContent::Structured(truncated_response.content.clone());
-                    last_msg.usage = Some(truncated_response.usage.clone());
-                }
+                self.correct_last_assistant_response(&truncated_response)?;
             }
 
-            // 5. Act based on the flow instruction
             match flow {
                 LoopFlow::GetUserInput => {
                     // In on-demand mode, we don't wait for user input
@@ -463,7 +460,7 @@ impl AgentRuntime {
                         let flow = self.manage_tool_execution(&tool_requests).await?;
 
                         // Save state after tool executions
-                        self.save_state()?;
+                        self.checkpoint()?;
 
                         match flow {
                             LoopFlow::Continue => { /* Continue to the next iteration */ }
@@ -481,61 +478,20 @@ impl AgentRuntime {
         }
     }
 
-    /// Drop dangling assistant tool requests (no following tool result)
-    /// from a freshly restored history.
-    pub fn normalize_loaded_message_history(&mut self) {
-        if self.message_history.is_empty() {
-            return;
-        }
-
-        let dialect = self.dialect.clone();
-        let mut removed = 0usize;
-
-        while let Some(last_assistant_idx) = self
-            .message_history
-            .iter()
-            .rposition(|message| message.role == MessageRole::Assistant)
+    /// Replace the last assistant message with the parser's corrected
+    /// version (e.g. text after the tool call truncated).
+    fn correct_last_assistant_response(&mut self, response: &llm::LLMResponse) -> Result<()> {
+        let Some(id) = self.conversation.path().last().copied() else {
+            return Ok(());
+        };
+        if let Some(node) = self.conversation.node_mut(id)
+            && node.message.role == MessageRole::Assistant
         {
-            let last_assistant = &self.message_history[last_assistant_idx];
-
-            if !dialect.message_contains_invocation(last_assistant, self.registry.as_ref()) {
-                break;
-            }
-
-            let has_tool_result_after = self.message_history[last_assistant_idx + 1..]
-                .iter()
-                .any(Self::is_user_tool_result_message);
-
-            if has_tool_result_after {
-                break;
-            }
-
-            let message = self.message_history.remove(last_assistant_idx);
-            debug!(
-                "Removing dangling assistant tool request (request_id={:?}) from history",
-                message.request_id
-            );
-            removed += 1;
+            node.message.content = MessageContent::Structured(response.content.clone());
+            node.message.usage = Some(response.usage.clone());
+            self.checkpoint()?;
         }
-
-        if removed > 0 {
-            debug!(
-                "Normalized message history by dropping {removed} dangling tool request message(s)"
-            );
-        }
-    }
-
-    fn is_user_tool_result_message(message: &Message) -> bool {
-        if message.role != MessageRole::User {
-            return false;
-        }
-
-        match &message.content {
-            MessageContent::Structured(blocks) => blocks
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolResult { .. })),
-            MessageContent::Text(text) => text.trim().is_empty(),
-        }
+        Ok(())
     }
 
     /// Parses tool requests from the LLM response and returns a truncated response.
@@ -573,10 +529,10 @@ impl AgentRuntime {
                     // Generate normal tool ID for consistency with UI expectations
                     let tool_id = format!("tool-{request_counter}-1");
 
-                    // Create and store a ToolExecution for the parse error
-                    let tool_execution =
-                        ToolExecution::create_parse_error(tool_id.clone(), error_text.clone());
-                    self.tool_executions.push(tool_execution);
+                    self.journal.record(ToolExecution::create_parse_error(
+                        tool_id.clone(),
+                        error_text.clone(),
+                    ));
 
                     Message::new_user_content(vec![ContentBlock::ToolResult {
                         tool_use_id: tool_id,
@@ -590,288 +546,6 @@ impl AgentRuntime {
                 self.append_message(error_msg)?;
                 // Return original response for error cases
                 Ok((Vec::new(), LoopFlow::Continue, llm_response.clone())) // Continue without user input on parsing errors
-            }
-        }
-    }
-
-    /// Executes a list of tool requests and appends tool results to message history.
-    /// Requests selected by the dispatch policy are executed concurrently.
-    async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
-        let parallel_indices = self.hooks.dispatch.parallel_indices(tool_requests);
-
-        // Execute the policy-selected tools concurrently if we have multiple
-        let parallel_results = if parallel_indices.len() > 1 {
-            debug!("Running {} tools in parallel", parallel_indices.len());
-            self.execute_tools_in_parallel(
-                parallel_indices
-                    .iter()
-                    .map(|i| &tool_requests[*i])
-                    .collect(),
-            )
-            .await
-        } else {
-            Vec::new()
-        };
-
-        // Build content blocks in original order
-        let mut content_blocks: Vec<Option<ContentBlock>> = vec![None; tool_requests.len()];
-        let mut parallel_result_iter = parallel_results.into_iter();
-
-        // Process results in original order
-        for (idx, tool_request) in tool_requests.iter().enumerate() {
-            let result_block = if parallel_indices.len() > 1 && parallel_indices.contains(&idx) {
-                // This request ran in parallel - get result from parallel execution
-
-                parallel_result_iter.next().unwrap_or_else(|| {
-                    let start_time = Some(SystemTime::now());
-                    ContentBlock::ToolResult {
-                        tool_use_id: tool_request.id.clone(),
-                        content: ToolResultContent::text("Internal error: missing parallel result"),
-                        is_error: Some(true),
-                        start_time,
-                        end_time: Some(SystemTime::now()),
-                    }
-                })
-            } else {
-                // Sequential execution
-                let start_time = Some(SystemTime::now());
-                match self.execute_tool(tool_request).await {
-                    Ok(success) => ContentBlock::ToolResult {
-                        tool_use_id: tool_request.id.clone(),
-                        content: ToolResultContent::text(""),
-                        is_error: if success { None } else { Some(true) },
-                        start_time,
-                        end_time: Some(SystemTime::now()),
-                    },
-                    Err(e) => {
-                        let error_text = Self::format_error_for_user(&e);
-                        ContentBlock::ToolResult {
-                            tool_use_id: tool_request.id.clone(),
-                            content: ToolResultContent::text(error_text),
-                            is_error: Some(true),
-                            start_time,
-                            end_time: Some(SystemTime::now()),
-                        }
-                    }
-                }
-            };
-            content_blocks[idx] = Some(result_block);
-        }
-
-        // Flatten and add message
-        let final_blocks: Vec<_> = content_blocks.into_iter().flatten().collect();
-        if !final_blocks.is_empty() {
-            let result_message = Message::new_user_content(final_blocks);
-            self.append_message(result_message)?;
-        }
-        Ok(LoopFlow::Continue)
-    }
-
-    /// Execute multiple tool requests in parallel.
-    /// Returns ContentBlocks in the same order as input.
-    async fn execute_tools_in_parallel(
-        &mut self,
-        tool_requests: Vec<&ToolRequest>,
-    ) -> Vec<ContentBlock> {
-        use futures::future::join_all;
-
-        // Create futures for each tool request
-        let futures: Vec<_> = tool_requests
-            .iter()
-            .map(|tool_request| {
-                let request = (*tool_request).clone();
-                let ui = self.ui.clone();
-                let registry = self.registry.clone();
-                let command_executor = self.command_executor.clone();
-                let permission_handler = self.permission_handler.clone();
-                let permissions = self.permissions.clone();
-                let services_provider = self.services_provider.clone();
-                let scope_tag = self.tool_capability.clone();
-                let excluded_capabilities = self.excluded_tool_capabilities.clone();
-                let session_id = self.session_id.clone();
-
-                async move {
-                    let start_time = Some(SystemTime::now());
-
-                    let (is_success, tool_execution) = Self::execute_tool_request_detached(
-                        request,
-                        ui,
-                        registry,
-                        command_executor,
-                        permission_handler,
-                        permissions,
-                        services_provider,
-                        scope_tag,
-                        excluded_capabilities,
-                        session_id,
-                    )
-                    .await;
-
-                    let end_time = Some(SystemTime::now());
-
-                    let content_block = ContentBlock::ToolResult {
-                        tool_use_id: tool_execution.tool_request.id.clone(),
-                        content: ToolResultContent::text(""),
-                        is_error: if is_success { None } else { Some(true) },
-                        start_time,
-                        end_time,
-                    };
-                    (content_block, tool_execution)
-                }
-            })
-            .collect();
-
-        // Execute all in parallel
-        let results = join_all(futures).await;
-
-        // Collect results and tool executions
-        let mut content_blocks = Vec::new();
-        for (content_block, tool_execution) in results {
-            debug!(
-                "Parallel tool {} ({}) completed",
-                tool_execution.tool_request.name, tool_execution.tool_request.id
-            );
-            self.tool_executions.push(tool_execution);
-            content_blocks.push(content_block);
-        }
-
-        content_blocks
-    }
-
-    /// Execute a single tool request without exclusive access to the agent
-    /// state, for the parallel branch decided by the dispatch policy.
-    /// Compared to the sequential path, interceptors do not run, the plan is
-    /// unavailable, and input modifications are not propagated back into the
-    /// message history.
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_tool_request_detached(
-        tool_request: ToolRequest,
-        ui: Arc<dyn AgentUi>,
-        registry: Arc<ToolRegistry>,
-        command_executor: Arc<dyn CommandExecutor>,
-        permission_handler: Option<Arc<dyn PermissionMediator>>,
-        permissions: ToolPermissions,
-        services_provider: Arc<dyn ToolServicesProvider>,
-        scope_tag: String,
-        excluded_capabilities: Vec<String>,
-        session_id: Option<String>,
-    ) -> (bool, ToolExecution) {
-        let is_hidden = registry.is_tool_hidden(&tool_request.name, &scope_tag);
-
-        // Update UI to show running status (skip for hidden tools)
-        if !is_hidden {
-            let _ = ui
-                .send_event(AgentUiEvent::UpdateToolStatus {
-                    tool_id: tool_request.id.clone(),
-                    status: crate::ui::ToolStatus::Running,
-                    message: None,
-                    output: None,
-                    duration_seconds: None,
-                    images: vec![],
-                })
-                .await;
-        }
-
-        let execution_start = std::time::Instant::now();
-
-        let invoke_result = match registry.get(&tool_request.name) {
-            None => Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
-            Some(_)
-                if !registry.tool_has_capability(&tool_request.name, &scope_tag)
-                    || excluded_capabilities
-                        .iter()
-                        .any(|cap| registry.tool_has_capability(&tool_request.name, cap)) =>
-            {
-                Err(anyhow::anyhow!(
-                    "Tool '{}' is not available in the current scope",
-                    tool_request.name
-                ))
-            }
-            Some(tool) => {
-                // Tier-based permission gate, mirroring the sequential path.
-                match permissions
-                    .check(
-                        permission_handler.as_deref(),
-                        &tool.spec(),
-                        Some(&tool_request.id),
-                        &tool_request.input,
-                    )
-                    .await
-                {
-                    Err(e) => Err(e),
-                    Ok(()) => {
-                        let mut services = services_provider.detached(&tool_request.id);
-                        let mut context = ToolContext {
-                            command_executor: command_executor.as_ref(),
-                            tool_id: Some(tool_request.id.clone()),
-                            session_id,
-                            permission_handler: permission_handler.as_deref(),
-                            extensions: Some(services.as_mut()),
-                        };
-                        let mut input = tool_request.input.clone();
-                        tool.invoke(&mut context, &mut input).await
-                    }
-                }
-            }
-        };
-
-        let execution_duration = Some(execution_start.elapsed().as_secs_f64());
-
-        match invoke_result {
-            Ok(result) => {
-                let success = result.is_success();
-                let status = if success {
-                    crate::ui::ToolStatus::Success
-                } else {
-                    crate::ui::ToolStatus::Error
-                };
-
-                let status_msg = result.as_render().status();
-                let mut resources_tracker = ResourcesTracker::new();
-                let ui_output = result.as_render().render_for_ui(&mut resources_tracker);
-                let images = result.render_images();
-
-                if !is_hidden {
-                    let _ = ui
-                        .send_event(AgentUiEvent::UpdateToolStatus {
-                            tool_id: tool_request.id.clone(),
-                            status,
-                            message: Some(status_msg),
-                            output: Some(ui_output),
-                            duration_seconds: execution_duration,
-                            images,
-                        })
-                        .await;
-                }
-
-                (
-                    success,
-                    ToolExecution {
-                        tool_request,
-                        result,
-                    },
-                )
-            }
-            Err(e) => {
-                let error_text = Self::format_error_for_user(&e);
-
-                if !is_hidden {
-                    let _ = ui
-                        .send_event(AgentUiEvent::UpdateToolStatus {
-                            tool_id: tool_request.id.clone(),
-                            status: crate::ui::ToolStatus::Error,
-                            message: Some(error_text.clone()),
-                            output: Some(error_text.clone()),
-                            duration_seconds: execution_duration,
-                            images: vec![],
-                        })
-                        .await;
-                }
-
-                (
-                    false,
-                    ToolExecution::create_parse_error(tool_request.id, error_text),
-                )
             }
         }
     }
@@ -911,70 +585,29 @@ impl AgentRuntime {
 
     /// Convert ToolResult blocks to Text blocks for custom tool-syntax mode
     fn convert_tool_results_to_text(&self, messages: Vec<Message>) -> Vec<Message> {
-        // Create a fresh ResourcesTracker for rendering
-        let mut resources_tracker = ResourcesTracker::new();
-
-        // First, build a map of tool_use_id to rendered output
-        let mut tool_outputs = std::collections::HashMap::new();
-
-        // Process tool executions in reverse chronological order (newest first)
-        for execution in self.tool_executions.iter().rev() {
-            let tool_use_id = &execution.tool_request.id;
-            let rendered_output = execution.result.as_render().render(&mut resources_tracker);
-            tool_outputs.insert(tool_use_id.clone(), rendered_output);
-        }
-
-        // Process each message
+        // Inputs are already rendered, including recovery overrides. Rendering
+        // executions a second time here would undo the projection for XML/caret.
         messages
             .into_iter()
-            .map(|msg| {
-                match &msg.content {
-                    MessageContent::Structured(blocks) => {
-                        // Check if there are any ToolResult blocks that need conversion
-                        let has_tool_results = blocks
-                            .iter()
-                            .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
-
-                        if !has_tool_results {
-                            // No conversion needed
-                            return msg;
-                        }
-
-                        // Convert all blocks to Text
-                        let mut text_content = String::new();
-
-                        for block in blocks {
-                            match block {
-                                ContentBlock::ToolResult { tool_use_id, .. } => {
-                                    // Get the dynamically rendered content for this tool result
-                                    if let Some(rendered_output) = tool_outputs.get(tool_use_id) {
-                                        // Add the rendered tool output from actual tool execution
-                                        text_content.push_str(rendered_output);
-                                        text_content.push_str("\n\n");
-                                    }
-                                }
-                                ContentBlock::Text { text, .. } => {
-                                    // For existing Text blocks, keep as is
-                                    text_content.push_str(text);
-                                    text_content.push_str("\n\n");
-                                }
-                                _ => {} // Ignore other block types
+            .map(|mut message| {
+                if let MessageContent::Structured(blocks) = &message.content
+                    && blocks
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                {
+                    let text: Vec<_> = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolResult { content, .. } => {
+                                Some(content.text_content().to_string())
                             }
-                        }
-
-                        // Create a new message with Text content
-                        Message {
-                            role: msg.role,
-                            content: MessageContent::Text(text_content.trim().to_string()),
-                            volatile: msg.volatile,
-                            request_id: msg.request_id,
-                            usage: msg.usage.clone(),
-                            ..Default::default()
-                        }
-                    }
-                    // For non-structured content, keep as is
-                    _ => msg,
+                            ContentBlock::Text { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    message.content = MessageContent::Text(text.join("\n\n").trim().to_string());
                 }
+                message
             })
             .collect()
     }
@@ -983,9 +616,7 @@ impl AgentRuntime {
     /// are sent to the LLM (e.g. to inject system reminders).
     pub fn shape_request_messages(&mut self, mut messages: Vec<Message>) -> Vec<Message> {
         let ctx = LoopCtx {
-            tool_executions: &mut self.tool_executions,
-            message_nodes: &mut self.message_nodes,
-            active_path: &self.active_path,
+            conversation: &mut self.conversation,
             session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
@@ -1078,11 +709,14 @@ impl AgentRuntime {
         )));
 
         let ui_for_callback = self.ui.clone();
+        let cancellation = self.cancellation.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
+            cancellation.check()?;
             // Check if streaming should continue
             if !ui_for_callback.should_streaming_continue() {
                 debug!("Streaming should stop - user requested cancellation");
-                return Err(anyhow::anyhow!("Streaming cancelled by user"));
+                cancellation.cancel();
+                return Err(tools_core::Cancelled.into());
             }
 
             let mut processor_guard = processor
@@ -1094,15 +728,16 @@ impl AgentRuntime {
         });
 
         // Send message to LLM provider
-        let response = match self
-            .llm_provider
-            .send_message(request, Some(&streaming_callback))
-            .await
-        {
+        let response_result = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(tools_core::Cancelled.into()),
+            result = self.llm_provider.send_message(request, Some(&streaming_callback)) => result,
+        };
+        let response = match response_result {
             Ok(response) => response,
             Err(e) => {
                 // Check for streaming cancelled error
-                if e.to_string().contains("Streaming cancelled by user") {
+                if self.cancellation.is_cancelled() || e.is::<tools_core::Cancelled>() {
                     debug!("Streaming cancelled by user in LLM request {}", request_id);
                     // End LLM request with cancelled=true
                     let _ = self
@@ -1112,15 +747,7 @@ impl AgentRuntime {
                             error: None,
                         })
                         .await;
-                    // Return empty response
-                    return Ok((
-                        llm::LLMResponse {
-                            content: Vec::new(),
-                            usage: llm::Usage::zero(),
-                            rate_limit_info: None,
-                        },
-                        request_id,
-                    ));
+                    return Err(tools_core::Cancelled.into());
                 }
 
                 // For other errors, still end the request but not cancelled
@@ -1205,7 +832,11 @@ impl AgentRuntime {
             session_id: self.session_id.clone().unwrap_or_default(),
         };
 
-        let response = self.llm_provider.send_message(request, None).await?;
+        let response = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
+            result = self.llm_provider.send_message(request, None) => result?,
+        };
 
         debug!(
             "Compaction response usage — Input: {}, Output: {}, Cache Read: {}",
@@ -1246,16 +877,34 @@ impl AgentRuntime {
         }
     }
 
-    fn active_messages(&self) -> &[Message] {
-        if self.message_history.is_empty() {
-            return &[];
-        }
-        let start = self
-            .message_history
+    /// The active-path messages from the last compaction summary onwards.
+    fn active_messages(&self) -> Vec<&Message> {
+        let mut messages: Vec<&Message> = self.conversation.active_messages().collect();
+        let start = messages
             .iter()
             .rposition(|message| message.is_compaction_summary)
             .unwrap_or(0);
-        &self.message_history[start..]
+        messages.drain(..start);
+        messages
+    }
+
+    fn prompt_messages(&self) -> Vec<Message> {
+        let path = self.conversation.path();
+        let start = path
+            .iter()
+            .rposition(|id| {
+                self.conversation
+                    .nodes()
+                    .get(id)
+                    .is_some_and(|node| node.message.is_compaction_summary)
+            })
+            .unwrap_or(0);
+        path[start..]
+            .iter()
+            .filter(|id| !self.prompt_projection.omitted_nodes.contains(id))
+            .filter_map(|id| self.conversation.nodes().get(id))
+            .map(|node| node.message.clone())
+            .collect()
     }
 
     fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
@@ -1298,11 +947,9 @@ impl AgentRuntime {
         Ok(self.hooks.compaction.should_compact(&snapshot))
     }
 
-    /// Shrinks the conversation after the provider rejected the prompt as too long.
-    /// Replaces large tool results with error placeholders when possible — the next
-    /// render of the message history then produces a much smaller prompt. If nothing
-    /// is large enough to replace, drops the last assistant+tool-result exchange and
-    /// forces context compaction as a last resort.
+    /// Shrinks only the request projection after an oversized-prompt rejection.
+    /// Large results become prompt placeholders; otherwise the last exchange is
+    /// omitted from the compaction request. Canonical evidence is never removed.
     async fn recover_from_oversized_prompt(&mut self) -> Result<()> {
         warn!("Prompt too long error detected, replacing large tool results with error messages");
         let replaced = self.replace_large_tool_results();
@@ -1313,7 +960,8 @@ impl AgentRuntime {
             self.drop_last_tool_exchange();
             return self.perform_compaction().await;
         }
-        // Notify the UI that these tools switched from success → error
+        // Keep the existing transient UI notification for a rejected output;
+        // it is not a change to the persisted execution's actual outcome.
         for (tool_id, error_message) in &replaced {
             let _ = self
                 .send_ui(AgentUiEvent::UpdateToolStatus {
@@ -1362,9 +1010,8 @@ impl AgentRuntime {
             .await;
     }
 
-    /// Replace the largest tool execution results **from the most recent turn**
-    /// with [`PromptTooLongError`] placeholders so that the next LLM request has a
-    /// chance to succeed.
+    /// Project the largest results from the most recent turn as small error
+    /// placeholders for the next request. Original execution records survive.
     ///
     /// Returns a vec of `(tool_id, error_message)` for each replaced result,
     /// empty if nothing was replaced.  The caller is responsible for sending
@@ -1375,7 +1022,7 @@ impl AgentRuntime {
         // Collect tool_use_ids from the last user message that contains ToolResult
         // blocks — these are the results from the most recent turn.
         let current_turn_ids: std::collections::HashSet<String> = self
-            .message_history
+            .prompt_messages()
             .iter()
             .rev()
             .find_map(|msg| {
@@ -1409,8 +1056,13 @@ impl AgentRuntime {
         // Render each current-turn tool output to measure its size
         let mut sizes: Vec<(usize, usize)> = Vec::new(); // (index, byte_size)
         let mut tracker = ResourcesTracker::new();
-        for (i, exec) in self.tool_executions.iter().enumerate() {
-            if !current_turn_ids.contains(&exec.tool_request.id) {
+        for (i, exec) in self.journal.entries().iter().enumerate() {
+            if !current_turn_ids.contains(&exec.tool_request.id)
+                || self
+                    .prompt_projection
+                    .tool_results
+                    .contains_key(&exec.tool_request.id)
+            {
                 continue;
             }
             let rendered = exec.result.as_render().render(&mut tracker);
@@ -1429,8 +1081,8 @@ impl AgentRuntime {
             if byte_size < MIN_REPLACE_THRESHOLD {
                 break;
             }
-            let tool_name = self.tool_executions[idx].tool_request.name.clone();
-            let tool_id = self.tool_executions[idx].tool_request.id.clone();
+            let request = &self.journal.entries()[idx].tool_request;
+            let (tool_name, tool_id) = (request.name.clone(), request.id.clone());
             warn!(
                 "Replacing tool result for '{}' ({}KB) with prompt-too-long error",
                 tool_name,
@@ -1438,92 +1090,40 @@ impl AgentRuntime {
             );
             let error = PromptTooLongError::new(&tool_name, byte_size);
             let error_message = error.error_message.clone();
-            self.tool_executions[idx].result = Box::new(error);
+            self.prompt_projection
+                .tool_results
+                .insert(tool_id.clone(), error_message.clone());
             replaced.push((tool_id, error_message));
-        }
-
-        // Also update the corresponding ToolResult content blocks in message history
-        // so the is_error flag is set correctly
-        if !replaced.is_empty() {
-            let replaced_ids: std::collections::HashSet<&str> =
-                replaced.iter().map(|(id, _)| id.as_str()).collect();
-
-            for msg in &mut self.message_history {
-                if let MessageContent::Structured(blocks) = &mut msg.content {
-                    for block in blocks {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            is_error,
-                            ..
-                        } = block
-                            && replaced_ids.contains(tool_use_id.as_str())
-                        {
-                            *is_error = Some(true);
-                        }
-                    }
-                }
-            }
         }
 
         replaced
     }
 
-    /// Drop the last assistant → tool-result message pair from history.
-    /// Also removes the corresponding `tool_executions` entries.
-    /// Used as a last-resort fallback before forcing compaction when the prompt
-    /// is too long but no individual tool result is large enough to replace.
+    /// Omit the last tool exchange from the prompt only, as the fallback
+    /// before compaction. Canonical messages and execution evidence survive.
     fn drop_last_tool_exchange(&mut self) {
-        // Walk backwards to find the last user message with ToolResult blocks
-        // and the assistant message immediately before it.
-        let mut tool_result_idx = None;
-        for i in (0..self.message_history.len()).rev() {
-            let msg = &self.message_history[i];
-            if msg.role == MessageRole::User
-                && let MessageContent::Structured(blocks) = &msg.content
-                && blocks
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
-            {
-                tool_result_idx = Some(i);
-                break;
-            }
+        let visible: Vec<_> = self
+            .conversation
+            .path()
+            .iter()
+            .copied()
+            .filter(|id| !self.prompt_projection.omitted_nodes.contains(id))
+            .collect();
+        let Some(index) = visible.iter().rposition(|id| {
+            self.conversation.nodes().get(id).is_some_and(|node| {
+                node.message.role == MessageRole::User
+                    && matches!(&node.message.content, MessageContent::Structured(blocks)
+                        if blocks.iter().any(|block| matches!(block, ContentBlock::ToolResult { .. })))
+            })
+        }) else { return; };
+        self.prompt_projection.omitted_nodes.insert(visible[index]);
+        if index > 0
+            && self.conversation.nodes()[&visible[index - 1]].message.role == MessageRole::Assistant
+        {
+            self.prompt_projection
+                .omitted_nodes
+                .insert(visible[index - 1]);
         }
-
-        let Some(tr_idx) = tool_result_idx else {
-            return;
-        };
-
-        // Collect the tool_use_ids we're about to drop so we can clean up
-        // tool_executions too.
-        let mut dropped_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let MessageContent::Structured(blocks) = &self.message_history[tr_idx].content {
-            for block in blocks {
-                if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                    dropped_ids.insert(tool_use_id.clone());
-                }
-            }
-        }
-
-        // Remove the tool-result user message
-        self.message_history.remove(tr_idx);
-
-        // If the message right before it was the assistant message with the
-        // corresponding ToolUse blocks, remove that too.
-        if tr_idx > 0 {
-            let prev = &self.message_history[tr_idx - 1];
-            if prev.role == MessageRole::Assistant {
-                self.message_history.remove(tr_idx - 1);
-            }
-        }
-
-        // Remove corresponding tool executions
-        self.tool_executions
-            .retain(|e| !dropped_ids.contains(&e.tool_request.id));
-
-        debug!(
-            "Dropped last tool exchange ({} tool result(s)) from history",
-            dropped_ids.len()
-        );
     }
 
     async fn perform_compaction(&mut self) -> Result<()> {
@@ -1582,504 +1182,173 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Prepare messages for LLM request, dynamically rendering tool outputs.
-    ///
-    /// This function also handles cancelled tool executions: if an assistant message
-    /// contains `ToolUse` blocks but there's no corresponding `ToolResult` in the
-    /// following user message (or no following user message at all), we generate
-    /// a synthetic "user cancelled" `ToolResult` to satisfy the API requirement that
-    /// every `tool_use` must have a corresponding `tool_result`.
+    fn prompt_tool_use_ids(&self, message: &Message) -> Vec<String> {
+        if message.role != MessageRole::Assistant {
+            return Vec::new();
+        }
+        let content = match &message.content {
+            MessageContent::Structured(blocks) => blocks.clone(),
+            MessageContent::Text(text) => vec![ContentBlock::new_text(text.clone())],
+        };
+        let response = llm::LLMResponse {
+            content,
+            usage: llm::Usage::zero(),
+            rate_limit_info: None,
+        };
+        self.dialect
+            .extract_requests(
+                &response,
+                message.request_id.unwrap_or(0),
+                0,
+                self.registry.as_ref(),
+            )
+            .map(|(requests, _)| requests.into_iter().map(|request| request.id).collect())
+            .unwrap_or_default()
+    }
+
+    /// Render the run-local LLM projection, never modifying conversation or
+    /// tool evidence. Missing results are repaired by id in the immediate
+    /// follow-up message; absent evidence means an unknown outcome, not cancel.
     pub fn render_tool_results_in_messages(&self) -> Vec<Message> {
-        // Start with a clean slate
-        let mut messages = Vec::new();
-
-        // Create a fresh ResourcesTracker for this rendering pass
-        let mut resources_tracker = ResourcesTracker::new();
-
-        // First, collect all tool executions and build a map from tool_use_id to rendered output
-        let mut tool_outputs = std::collections::HashMap::new();
-        // Collect image data from tools that produce visual output
-        let mut tool_images: std::collections::HashMap<String, Vec<tools_core::ImageData>> =
-            std::collections::HashMap::new();
-
-        // Process tool executions in reverse chronological order (newest first)
-        // so newer tool calls take precedence in resource conflicts
-        for execution in self.tool_executions.iter().rev() {
-            let tool_use_id = &execution.tool_request.id;
-            let rendered_output = execution.result.as_render().render(&mut resources_tracker);
-            tool_outputs.insert(tool_use_id.clone(), rendered_output);
-
-            // Collect any image data from the tool output
-            let images = execution.result.render_images();
-            if !images.is_empty() {
-                tool_images.insert(tool_use_id.clone(), images);
+        let mut messages = self.prompt_messages();
+        let mut tracker = ResourcesTracker::new();
+        let mut outputs = HashMap::new();
+        // Only render executions visible in this prompt. Inactive branches and
+        // omitted exchanges must not claim resources in the render tracker.
+        let visible_ids: std::collections::HashSet<_> = messages
+            .iter()
+            .flat_map(|message| {
+                let mut ids = self.prompt_tool_use_ids(message);
+                if let MessageContent::Structured(blocks) = &message.content {
+                    ids.extend(blocks.iter().filter_map(|block| match block {
+                        ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                        _ => None,
+                    }));
+                }
+                ids
+            })
+            .collect();
+        for execution in self.journal.entries().iter().rev() {
+            let id = &execution.tool_request.id;
+            if !visible_ids.contains(id) || outputs.contains_key(id) {
+                continue;
             }
+            let (content, is_error) =
+                if let Some(replacement) = self.prompt_projection.tool_results.get(id) {
+                    (ToolResultContent::text(replacement.clone()), true)
+                } else {
+                    let text = execution.result.as_render().render(&mut tracker);
+                    let images = execution
+                        .result
+                        .render_images()
+                        .into_iter()
+                        .map(|image| ToolResultImage {
+                            media_type: image.media_type,
+                            base64_data: image.base64_data,
+                        })
+                        .collect();
+                    (
+                        ToolResultContent::with_images(text, images),
+                        !execution.result.is_success(),
+                    )
+                };
+            outputs.insert(id.clone(), (content, is_error));
         }
 
-        // Build a set of all tool_use_ids that have corresponding tool_results in the message history
-        let mut tool_ids_with_results: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
-        for msg in self.active_messages() {
-            if let MessageContent::Structured(blocks) = &msg.content {
-                for block in blocks {
-                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                        tool_ids_with_results.insert(tool_use_id.clone());
-                    }
+        // Repair only the projection, including partially recorded batches.
+        let mut index = 0;
+        while index < messages.len() {
+            let missing: Vec<_> = if messages[index].role == MessageRole::Assistant {
+                let ids = self.prompt_tool_use_ids(&messages[index]);
+                ids.into_iter().filter(|id| {
+                    !messages.get(index + 1).is_some_and(|next| {
+                        next.role == MessageRole::User && matches!(&next.content, MessageContent::Structured(blocks)
+                            if blocks.iter().any(|block| matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id)))
+                    })
+                }).map(|id| ContentBlock::ToolResult {
+                    content: outputs.get(&id).map(|(content, _)| content.clone()).unwrap_or_else(|| {
+                        ToolResultContent::text("No result was recorded for this tool call, so it did not run. Call it again if its result is still needed.")
+                    }),
+                    is_error: Some(outputs.get(&id).map(|(_, error)| *error).unwrap_or(true)),
+                    tool_use_id: id,
+                    start_time: None,
+                    end_time: None,
+                }).collect()
+            } else {
+                Vec::new()
+            };
+            if !missing.is_empty() {
+                if let Some(next) = messages.get_mut(index + 1)
+                    && next.role == MessageRole::User
+                    && let MessageContent::Structured(blocks) = &mut next.content
+                    && blocks
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                {
+                    blocks.extend(missing);
+                } else {
+                    messages.insert(index + 1, Message::new_user_content(missing));
                 }
             }
+            index += 1;
         }
 
-        // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
-        let active_msgs: Vec<_> = self.active_messages().to_vec();
-        for (idx, msg) in active_msgs.iter().enumerate() {
-            match &msg.content {
+        for message in &mut messages {
+            match &mut message.content {
                 MessageContent::Structured(blocks) => {
-                    if msg.role == MessageRole::Assistant {
-                        // Check for ToolUse blocks that need synthetic ToolResults
-                        let tool_use_ids: Vec<String> = blocks
-                            .iter()
-                            .filter_map(|block| {
-                                if let ContentBlock::ToolUse { id, .. } = block {
-                                    Some(id.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        // Find tool_use_ids without corresponding tool_results
-                        let missing_results: Vec<&String> = tool_use_ids
-                            .iter()
-                            .filter(|id| !tool_ids_with_results.contains(*id))
-                            .collect();
-
-                        if !missing_results.is_empty() {
-                            // We need to add the assistant message first, then add a synthetic
-                            // user message with cancelled tool results
-                            messages.push(msg.clone());
-
-                            // Generate synthetic ToolResult blocks for cancelled tools
-                            let cancelled_blocks: Vec<ContentBlock> = missing_results
-                                .iter()
-                                .map(|tool_id| {
-                                    debug!(
-                                        "Generating synthetic 'cancelled' tool result for tool_use_id: {}",
-                                        tool_id
-                                    );
-
-                                    ContentBlock::ToolResult {
-                                        tool_use_id: (*tool_id).clone(),
-                                        content: ToolResultContent::text(
-                                            "Tool execution was cancelled by user.",
-                                        ),
-                                        is_error: Some(true),
-                                        start_time: None,
-                                        end_time: None,
-                                    }
-                                })
-                                .collect();
-
-                            // Check if the next message is already a user message with tool results
-                            // In that case, we need to merge the cancelled results
-                            let next_msg = active_msgs.get(idx + 1);
-                            let should_create_new_message = match next_msg {
-                                Some(next) if next.role == MessageRole::User => {
-                                    // Check if this user message has tool results
-                                    match &next.content {
-                                        MessageContent::Structured(next_blocks) => !next_blocks
-                                            .iter()
-                                            .any(|b| matches!(b, ContentBlock::ToolResult { .. })),
-                                        _ => true,
-                                    }
-                                }
-                                _ => true,
-                            };
-
-                            if should_create_new_message {
-                                // Insert a new user message with the cancelled tool results
-                                let cancelled_msg =
-                                    Message::new_user_content(cancelled_blocks.clone());
-                                messages.push(cancelled_msg);
-                            }
-                            // If next message already has tool results, we'll handle merging when we process it
-                            continue;
-                        }
-                    }
-
-                    // Look for ToolResult blocks and update with rendered output.
-                    // When a tool produces images, they are embedded inside the
-                    // ToolResultContent so Anthropic receives them in the
-                    // `tool_result.content` array (per the API spec).
-                    let mut new_blocks = Vec::new();
-                    let mut need_update = false;
-
                     for block in blocks {
-                        match block {
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                is_error,
-                                start_time,
-                                end_time,
-                                ..
-                            } => {
-                                // If we have an execution result for this tool use, use it
-                                if let Some(output) = tool_outputs.get(tool_use_id) {
-                                    // Build content with optional images
-                                    let content = if let Some(images) = tool_images.get(tool_use_id)
-                                    {
-                                        ToolResultContent::with_images(
-                                            output.clone(),
-                                            images
-                                                .iter()
-                                                .map(|img| ToolResultImage {
-                                                    media_type: img.media_type.clone(),
-                                                    base64_data: img.base64_data.clone(),
-                                                })
-                                                .collect(),
-                                        )
-                                    } else {
-                                        ToolResultContent::text(output.clone())
-                                    };
-
-                                    new_blocks.push(ContentBlock::ToolResult {
-                                        tool_use_id: tool_use_id.clone(),
-                                        content,
-                                        is_error: *is_error,
-                                        start_time: *start_time,
-                                        end_time: *end_time,
-                                    });
-
-                                    need_update = true;
-                                } else {
-                                    // Keep the original block
-                                    new_blocks.push(block.clone());
-                                }
-                            }
-                            _ => {
-                                // Keep other blocks as is
-                                new_blocks.push(block.clone());
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                            ..
+                        } = block
+                            && let Some((output, error)) = outputs.get(tool_use_id)
+                        {
+                            *content = output.clone();
+                            if *error {
+                                *is_error = Some(true);
                             }
                         }
                     }
-
-                    if need_update {
-                        let mut updated = msg.clone();
-                        updated.content = MessageContent::Structured(new_blocks);
-                        messages.push(updated);
-                    } else {
-                        // No changes needed, use original message
-                        messages.push(msg.clone());
-                    }
                 }
-                MessageContent::Text(text) => {
-                    if msg.is_compaction_summary {
-                        let mut updated = msg.clone();
-                        updated.content =
-                            MessageContent::Text(Self::format_compaction_summary_for_prompt(text));
-                        messages.push(updated);
-                    } else {
-                        messages.push(msg.clone());
-                    }
+                MessageContent::Text(text) if message.is_compaction_summary => {
+                    *text = Self::format_compaction_summary_for_prompt(text);
                 }
+                _ => {}
             }
         }
-
         messages
     }
 
-    /// Executes a tool and catches all errors, returning them as Results
     /// Gives the registered interceptors a chance to handle the request
-    /// before the standard dispatch. Returns `Some(result)` when one did.
-    fn intercept_tool(&mut self, tool_request: &ToolRequest) -> Option<Result<bool>> {
+    /// instead of the registry. Returns the output one of them produced.
+    fn intercept_tool(
+        &mut self,
+        tool_request: &ToolRequest,
+    ) -> Option<Result<Box<dyn tools_core::AnyOutput>>> {
         let mut ctx = LoopCtx {
-            tool_executions: &mut self.tool_executions,
-            message_nodes: &mut self.message_nodes,
-            active_path: &self.active_path,
+            conversation: &mut self.conversation,
             session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
-        for interceptor in &self.hooks.interceptors {
-            if let Some(result) = interceptor.try_intercept(tool_request, &mut ctx) {
-                return Some(result);
-            }
-        }
-        None
+        self.hooks
+            .interceptors
+            .iter()
+            .find_map(|interceptor| interceptor.try_intercept(tool_request, &mut ctx))
     }
 
     /// Notifies the registered interceptors that a tool executed successfully.
     fn after_tool_success(&mut self, tool_request: &ToolRequest) {
         let mut ctx = LoopCtx {
-            tool_executions: &mut self.tool_executions,
-            message_nodes: &mut self.message_nodes,
-            active_path: &self.active_path,
+            conversation: &mut self.conversation,
             session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
             extensions: self.extensions.as_mut(),
         };
         for interceptor in &self.hooks.interceptors {
             interceptor.after_tool_success(tool_request, &mut ctx);
-        }
-    }
-
-    /// A tool may rewrite its own input while executing (e.g. format-on-save).
-    /// Propagates the updated input to the UI and rewrites the originating tool
-    /// call in the message history so that follow-up requests see the final input.
-    async fn propagate_modified_tool_input(
-        &mut self,
-        original_request: &ToolRequest,
-        final_request: &ToolRequest,
-        is_hidden: bool,
-    ) -> Result<()> {
-        if !is_hidden {
-            self.notify_tool_parameter_updates(
-                &original_request.input,
-                &final_request.input,
-                &original_request.id,
-            )
-            .await?;
-        }
-
-        if let Err(e) = self.update_message_history_with_formatted_tool(final_request) {
-            warn!(
-                "Failed to update message history after input modification: {}",
-                e
-            );
-        }
-        Ok(())
-    }
-
-    async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<bool> {
-        debug!(
-            "Executing tool request: {} (id: {})",
-            tool_request.name, tool_request.id
-        );
-
-        if let Some(result) = self.intercept_tool(tool_request) {
-            return result;
-        }
-
-        // Check if this is a hidden tool
-        let is_hidden = self
-            .registry
-            .as_ref()
-            .is_tool_hidden(&tool_request.name, self.tool_capability.as_str());
-
-        // Update status to Running before execution (skip for hidden tools)
-        if !is_hidden {
-            self.send_ui(AgentUiEvent::UpdateToolStatus {
-                tool_id: tool_request.id.clone(),
-                status: crate::ui::ToolStatus::Running,
-                message: None,
-                output: None,
-                duration_seconds: None,
-                images: vec![],
-            })
-            .await?;
-        }
-
-        // Get the tool - could fail with UnknownTool
-        let tool = match self.registry.as_ref().get(&tool_request.name) {
-            Some(tool) => tool,
-            None => return Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
-        };
-
-        // Verify the tool is allowed in the current scope.
-        // The scope filtering on the tool list offered to the LLM is not sufficient on its own,
-        // because models may hallucinate tool calls they know from training even when the tool
-        // is not in the provided tool list (e.g. a sub-agent calling write_file).
-        if !self
-            .registry
-            .as_ref()
-            .tool_has_capability(&tool_request.name, self.tool_capability.as_str())
-            || self.excluded_tool_capabilities.iter().any(|cap| {
-                self.registry
-                    .as_ref()
-                    .tool_has_capability(&tool_request.name, cap)
-            })
-        {
-            return Err(anyhow::anyhow!(
-                "Tool '{}' is not available in the current scope",
-                tool_request.name
-            ));
-        }
-
-        // Tier-based permission gate: ask the user before dispatching when
-        // the active tier requires it for this tool.
-        if let Err(e) = self
-            .permissions
-            .check(
-                self.permission_handler.as_deref(),
-                &tool.spec(),
-                Some(&tool_request.id),
-                &tool_request.input,
-            )
-            .await
-        {
-            let error_text = Self::format_error_for_user(&e);
-            if !is_hidden {
-                self.send_ui(AgentUiEvent::UpdateToolStatus {
-                    tool_id: tool_request.id.clone(),
-                    status: crate::ui::ToolStatus::Error,
-                    message: Some(error_text.clone()),
-                    output: Some(error_text.clone()),
-                    duration_seconds: None,
-                    images: vec![],
-                })
-                .await?;
-            }
-            self.tool_executions.push(ToolExecution::create_parse_error(
-                tool_request.id.clone(),
-                error_text,
-            ));
-            return Err(e);
-        }
-
-        // Create a tool context. The services provider builds the application
-        // extension for this invocation (state such as the plan may move in
-        // for the duration) and takes it back afterwards.
-        let mut services = self
-            .services_provider
-            .begin(self.extensions.as_mut(), &tool_request.id);
-        let mut context = ToolContext {
-            command_executor: self.command_executor.as_ref(),
-            tool_id: Some(tool_request.id.clone()),
-            session_id: self.session_id.clone(),
-            permission_handler: self.permission_handler.as_deref(),
-            extensions: Some(services.as_mut()),
-        };
-
-        // Execute the tool - could fail with ParseError or other errors
-        let mut input = tool_request.input.clone();
-        let execution_start = std::time::Instant::now();
-
-        let invoke_result = tool.invoke(&mut context, &mut input).await;
-        drop(context);
-        self.services_provider
-            .end(self.extensions.as_mut(), services);
-
-        match invoke_result {
-            Ok(result) => {
-                let execution_duration = Some(execution_start.elapsed().as_secs_f64());
-
-                // Tool executed successfully (but may have failed functionally)
-                let success = result.is_success();
-
-                // Check if input parameters were modified during execution
-                let input_modified = input != tool_request.input;
-
-                // Determine UI status based on result
-                let status = if success {
-                    crate::ui::ToolStatus::Success
-                } else {
-                    crate::ui::ToolStatus::Error
-                };
-
-                // Generate status string from result
-                let short_output = result.as_render().status();
-
-                // Generate output for UI display (may differ from LLM output for some tools)
-                let mut resources_tracker = ResourcesTracker::new();
-                let ui_output = result.as_render().render_for_ui(&mut resources_tracker);
-
-                // Collect image data from tools that produce visual output
-                let images = result.render_images();
-
-                // Update tool status with result (skip for hidden tools)
-                if !is_hidden {
-                    self.send_ui(AgentUiEvent::UpdateToolStatus {
-                        tool_id: tool_request.id.clone(),
-                        status,
-                        message: Some(short_output),
-                        output: Some(ui_output),
-                        duration_seconds: execution_duration,
-                        images,
-                    })
-                    .await?;
-                }
-
-                // Create the tool request with potentially updated input
-                let final_tool_request = if input_modified {
-                    debug!("Tool input was modified during execution");
-                    ToolRequest {
-                        id: tool_request.id.clone(),
-                        name: tool_request.name.clone(),
-                        input: input.clone(),
-                        start_offset: tool_request.start_offset,
-                        end_offset: tool_request.end_offset,
-                    }
-                } else {
-                    tool_request.clone()
-                };
-
-                // Create and store the ToolExecution record
-                let tool_execution = ToolExecution {
-                    tool_request: final_tool_request.clone(),
-                    result,
-                };
-
-                // Store the execution record
-                self.tool_executions.push(tool_execution);
-
-                if success {
-                    self.after_tool_success(tool_request);
-                }
-
-                if input_modified {
-                    self.propagate_modified_tool_input(
-                        tool_request,
-                        &final_tool_request,
-                        is_hidden,
-                    )
-                    .await?;
-                }
-
-                Ok(success)
-            }
-
-            Err(e) => {
-                let execution_duration = Some(execution_start.elapsed().as_secs_f64());
-
-                // Tool execution failed (parameter error, etc.)
-                let error_text = Self::format_error_for_user(&e);
-
-                // Update UI status to error (skip for hidden tools)
-                if !is_hidden {
-                    self.send_ui(AgentUiEvent::UpdateToolStatus {
-                        tool_id: tool_request.id.clone(),
-                        status: crate::ui::ToolStatus::Error,
-                        message: Some(error_text.clone()),
-                        output: Some(error_text.clone()),
-                        duration_seconds: execution_duration,
-                        images: vec![],
-                    })
-                    .await?;
-                }
-
-                // Create a ToolExecution record for the error
-                let tool_execution = if let Some(tool_error) = e.downcast_ref::<ToolError>() {
-                    match tool_error {
-                        ToolError::ParseError(_) => {
-                            // For parse errors, create a parse error execution
-                            ToolExecution::create_parse_error(tool_request.id.clone(), error_text)
-                        }
-                        ToolError::UnknownTool(_) => {
-                            // This shouldn't happen since we check above, but handle it
-                            ToolExecution::create_parse_error(tool_request.id.clone(), error_text)
-                        }
-                    }
-                } else {
-                    // For other error types, also create a parse error record
-                    ToolExecution::create_parse_error(tool_request.id.clone(), error_text)
-                };
-
-                // Store the execution record
-                self.tool_executions.push(tool_execution);
-
-                // Return the error to be handled by manage_tool_execution
-                Err(e)
-            }
         }
     }
 
@@ -2125,57 +1394,97 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Update message history to reflect formatted tool parameters
-    fn update_message_history_with_formatted_tool(
-        &mut self,
-        updated_request: &ToolRequest,
-    ) -> Result<()> {
+    /// Rewrite the originating tool call with the input the tool settled on
+    /// (e.g. format-on-save), so follow-up requests see the final input. The
+    /// caller checkpoints.
+    fn update_message_history_with_formatted_tool(&mut self, updated_request: &ToolRequest) {
         let dialect = self.dialect.clone();
         let registry = self.registry.clone();
-        // Find the most recent assistant message that contains the tool call
-        for message in self.message_history.iter_mut().rev() {
-            if message.role == MessageRole::Assistant {
-                match &mut message.content {
-                    MessageContent::Structured(blocks) => {
-                        // Look for the ToolUse block with matching ID
-                        for block in blocks {
-                            if let ContentBlock::ToolUse {
-                                id, name, input, ..
-                            } = block
-                                && *id == updated_request.id
-                                && *name == updated_request.name
-                            {
-                                *input = updated_request.input.clone();
-                                debug!("Updated tool call {} in message history", id);
-                                return Ok(());
-                            }
-                        }
+        let Some(node) = self.conversation.last_assistant_node_mut() else {
+            return;
+        };
+        let message = &mut node.message;
+        let request_id = message.request_id.unwrap_or(0);
+        let updated = match &mut message.content {
+            MessageContent::Structured(blocks) => {
+                let native_call = blocks.iter_mut().find_map(|block| match block {
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } if id == &updated_request.id && name == &updated_request.name => Some(input),
+                    _ => None,
+                });
+                match native_call {
+                    Some(input) => {
+                        *input = updated_request.input.clone();
+                        true
                     }
-                    MessageContent::Text(text) => {
-                        // For text content, we need to update the tool call in the text
-                        // This is more complex and depends on the tool syntax
-                        if let Ok(updated_text) = Self::update_tool_call_in_text_static(
-                            text,
-                            updated_request,
-                            dialect.as_ref(),
-                            registry.as_ref(),
-                        ) {
-                            *text = updated_text;
-                            debug!("Updated tool call {} in text message", updated_request.id);
-                            return Ok(());
-                        }
+                    None if !dialect.uses_native_tools() => Self::update_tool_call_in_text_blocks(
+                        blocks,
+                        updated_request,
+                        request_id,
+                        dialect.as_ref(),
+                        registry.as_ref(),
+                    ),
+                    None => false,
+                }
+            }
+            MessageContent::Text(text) => {
+                match Self::update_tool_call_in_text_static(
+                    text,
+                    updated_request,
+                    dialect.as_ref(),
+                    registry.as_ref(),
+                ) {
+                    Ok(replacement) => {
+                        *text = replacement;
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+        };
+        if !updated {
+            warn!("Could not find tool call {} to update", updated_request.id);
+        }
+    }
+
+    fn update_tool_call_in_text_blocks(
+        blocks: &mut [ContentBlock],
+        request: &ToolRequest,
+        request_id: u64,
+        dialect: &dyn ToolDialect,
+        registry: &ToolRegistry,
+    ) -> bool {
+        // XML/caret offsets are local to the Text block that was parsed.
+        // Reparse that block to find the id and current offsets: an earlier
+        // formatted call may have changed its length. Never rewrite preambles
+        // or thinking blocks merely because their offsets happen to fit.
+        for block in blocks {
+            if let ContentBlock::Text { text, .. } = block {
+                let response = llm::LLMResponse {
+                    content: vec![ContentBlock::new_text(text.clone())],
+                    usage: llm::Usage::zero(),
+                    rate_limit_info: None,
+                };
+                if let Ok((requests, _)) =
+                    dialect.extract_requests(&response, request_id, 0, registry)
+                    && let Some(current) = requests
+                        .iter()
+                        .find(|current| current.id == request.id && current.name == request.name)
+                {
+                    let mut corrected = request.clone();
+                    corrected.start_offset = current.start_offset;
+                    corrected.end_offset = current.end_offset;
+                    if let Ok(replacement) =
+                        Self::update_tool_call_in_text_static(text, &corrected, dialect, registry)
+                    {
+                        *text = replacement;
+                        return true;
                     }
                 }
-                // Only check the most recent assistant message
-                break;
             }
         }
-
-        warn!(
-            "Could not find tool call {} to update in message history",
-            updated_request.id
-        );
-        Ok(())
+        false
     }
 
     /// Static helper to update tool call in text (to avoid borrowing issues)
