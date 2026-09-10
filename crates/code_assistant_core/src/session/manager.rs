@@ -3,7 +3,6 @@ use llm::{ContentBlock, Message};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
@@ -13,7 +12,7 @@ use crate::persistence::{
 };
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
-use crate::session::{SessionConfig, SessionState};
+use crate::session::{SessionCheckpoint, SessionConfig};
 use crate::ui::ui_events::UiEvent;
 use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
@@ -1088,9 +1087,6 @@ impl SessionManager {
             )
         };
 
-        // Now save the session state with the user message (outside the borrow scope)
-        self.save_session_state(session_state.clone())?;
-
         // Broadcast the initial state change
         self.events.publish_ui(
             session_id,
@@ -1116,13 +1112,6 @@ impl SessionManager {
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
             session_manager_ref,
         ));
-        // Saves announce the refreshed session metadata to the UI
-        let state_storage = Box::new(
-            crate::agent::persistence::MetadataNotifyingPersistence::new(
-                state_storage,
-                publisher.clone(),
-            ),
-        );
 
         let sandbox_context_clone = sandbox_context.clone();
 
@@ -1854,46 +1843,24 @@ impl SessionManager {
             .save_chat_session(&session_instance.session)
     }
 
-    /// Save only run-owned conversation state. `state.config` and
-    /// `state.model_config` are restore/run inputs, never checkpoint writes.
-    pub fn save_session_state(&mut self, state: SessionState) -> Result<()> {
-        let session_id = state.session_id.clone();
-        let executions = state
-            .tool_executions
-            .into_iter()
-            .map(|te| te.serialize())
-            .collect::<Result<Vec<_>>>()?;
-        let session = self.persistence.update_entry(&session_id, |session| {
-            session.name = state.name;
-            // Retain branches not carried by this run. Active-path corrections
-            // replace nodes by id; concurrent conversation writers still require
-            // the existing single-agent/branch guards, not just this disk lock.
-            session.message_nodes.extend(state.message_nodes);
-            session.active_path = state.active_path;
-            session.next_node_id = session.next_node_id.max(state.next_node_id);
-            session.messages.clear();
-            for execution in executions {
-                if let Some(existing) = session
-                    .tool_executions
-                    .iter_mut()
-                    .find(|existing| existing.tool_request.id == execution.tool_request.id)
-                {
-                    *existing = execution;
-                } else {
-                    session.tool_executions.push(execution);
-                }
-            }
-            session.plan = state.plan;
-            session.active_skills = state.active_skills;
-            if let Some(next_id) = state.next_request_id {
-                session.next_request_id = session.next_request_id.max(next_id);
-            }
-            session.updated_at = SystemTime::now();
-            Ok(())
-        })?;
+    /// Merge a running agent's checkpoint into the stored session. Only the
+    /// conversation delta and run-owned fields are written; settings changed
+    /// meanwhile, by this or another process, stay untouched.
+    pub fn commit_checkpoint(&mut self, checkpoint: SessionCheckpoint<'_>) -> Result<()> {
+        let session = self
+            .persistence
+            .update_entry(checkpoint.session_id, |session| {
+                session.apply_checkpoint(&checkpoint);
+                Ok(())
+            })?;
 
-        if let Some(instance) = self.active_sessions.get_mut(&session_id) {
+        if let Some(instance) = self.active_sessions.get_mut(checkpoint.session_id) {
             instance.session = session;
+            let metadata = instance.metadata();
+            self.events.publish_ui(
+                checkpoint.session_id,
+                UiEvent::UpdateSessionMetadata { metadata },
+            );
         }
         Ok(())
     }
@@ -2059,13 +2026,46 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::{MessageNode, NodeId};
     use std::collections::HashMap;
+    use std::time::SystemTime;
     use tempfile::TempDir;
 
     fn temp_persistence() -> (FileSessionPersistence, TempDir) {
         let dir = TempDir::new().expect("temp dir");
         let persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
         (persistence, dir)
+    }
+
+    /// Commit `messages` as a linear conversation, the way a run's first
+    /// checkpoints would.
+    fn commit_messages(manager: &mut SessionManager, session_id: &str, messages: Vec<Message>) {
+        let nodes: Vec<MessageNode> = messages
+            .into_iter()
+            .enumerate()
+            .map(|(index, message)| MessageNode {
+                id: index as NodeId + 1,
+                message,
+                parent_id: (index > 0).then_some(index as NodeId),
+                created_at: SystemTime::now(),
+                extension: None,
+            })
+            .collect();
+        let changed_nodes: Vec<&MessageNode> = nodes.iter().collect();
+        let active_path: Vec<NodeId> = nodes.iter().map(|node| node.id).collect();
+        manager
+            .commit_checkpoint(SessionCheckpoint {
+                session_id,
+                name: "run",
+                changed_nodes: &changed_nodes,
+                active_path: &active_path,
+                next_node_id: nodes.len() as NodeId + 1,
+                changed_executions: Vec::new(),
+                plan: &crate::types::PlanState::default(),
+                active_skills: &[],
+                next_request_id: 1,
+            })
+            .unwrap();
     }
 
     fn build_manager(force_diff: bool) -> (SessionManager, TempDir) {
@@ -2088,14 +2088,8 @@ mod tests {
     fn checkpoint_preserves_all_session_settings_after_external_changes() {
         let (mut manager, dir) = build_manager(false);
         let id = manager.create_session(None).unwrap();
-        let captured = SessionState::from_messages(
-            id.clone(),
-            "run",
-            vec![Message::new_user("task")],
-            SessionConfig::default(),
-        );
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         // Another manager owns the settings, independently of the run's manager.
-        manager.save_session_state(captured.clone()).unwrap();
         let mut settings = SessionManager::new(
             FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
             SessionConfig::default(),
@@ -2132,7 +2126,7 @@ mod tests {
         expected.plan_collapsed = true;
         settings.persistence.save_chat_session(&expected).unwrap();
 
-        manager.save_session_state(captured).unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
         assert_eq!(
             serde_json::to_value(&saved.config).unwrap(),
@@ -2145,26 +2139,6 @@ mod tests {
             serde_json::to_value(&manager.get_session(&id).unwrap().session.config).unwrap(),
             serde_json::to_value(&expected.config).unwrap()
         );
-    }
-
-    #[test]
-    fn checkpoint_cannot_initialize_project_from_run_config() {
-        let (mut manager, _dir) = build_manager(false);
-        let id = manager.create_session(None).unwrap();
-        let config = SessionConfig {
-            initial_project: "run-only".into(),
-            ..Default::default()
-        };
-        manager
-            .save_session_state(SessionState::from_messages(
-                id.clone(),
-                "run",
-                vec![Message::new_user("task")],
-                config,
-            ))
-            .unwrap();
-        let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
-        assert!(saved.config.initial_project.is_empty());
     }
 
     #[test]
@@ -2236,14 +2210,7 @@ mod tests {
             )
             .unwrap();
         manager.initialize_session_project(&id, &projects).unwrap();
-        manager
-            .save_session_state(SessionState::from_messages(
-                id.clone(),
-                "run",
-                vec![Message::new_user("task")],
-                config,
-            ))
-            .unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
         assert_eq!(
             saved.config.initial_project,
@@ -2259,13 +2226,7 @@ mod tests {
     fn checkpoint_keeps_branches_and_execution_records_not_loaded_by_run() {
         let (mut manager, _dir) = build_manager(false);
         let id = manager.create_session(None).unwrap();
-        let captured = SessionState::from_messages(
-            id.clone(),
-            "run",
-            vec![Message::new_user("task")],
-            SessionConfig::default(),
-        );
-        manager.save_session_state(captured.clone()).unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let mut session = manager.persistence.load_chat_session(&id).unwrap().unwrap();
         let branch = session.add_message(Message::new_assistant("another branch"));
         session.message_nodes.get_mut(&branch).unwrap().extension =
@@ -2279,7 +2240,7 @@ mod tests {
             .unwrap(),
         );
         manager.persistence.save_chat_session(&session).unwrap();
-        manager.save_session_state(captured).unwrap();
+        commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
         assert_eq!(
             serde_json::to_value(&saved.message_nodes[&branch]).unwrap(),
@@ -2431,60 +2392,6 @@ mod tests {
                 .expect("compatibility check");
 
         assert!(check.allowed);
-    }
-
-    #[test]
-    fn save_session_state_preserves_model_switch_for_next_iteration() {
-        let (mut manager, _dir) = build_manager(false);
-        let session_id = manager
-            .create_session_with_config(
-                Some("test".to_string()),
-                None,
-                Some(SessionModelConfig::new("old-model".to_string())),
-            )
-            .expect("create session");
-
-        let mut persisted = manager
-            .persistence
-            .load_chat_session(&session_id)
-            .expect("load session")
-            .expect("session exists");
-        persisted.model_config = Some(SessionModelConfig::new("new-model".to_string()));
-        persisted.config.use_diff_blocks = true;
-        manager
-            .persistence
-            .save_chat_session(&persisted)
-            .expect("save switched session");
-
-        let captured_config = SessionConfig {
-            use_diff_blocks: false,
-            ..Default::default()
-        };
-        let mut captured_state = SessionState::from_messages(
-            session_id.clone(),
-            "test".to_string(),
-            vec![Message::new_user("hello")],
-            captured_config,
-        );
-        captured_state.model_config = Some(SessionModelConfig::new("old-model".to_string()));
-
-        manager
-            .save_session_state(captured_state)
-            .expect("save session state");
-
-        let saved = manager
-            .persistence
-            .load_chat_session(&session_id)
-            .expect("load saved session")
-            .expect("session exists");
-        assert_eq!(
-            saved
-                .model_config
-                .as_ref()
-                .map(|config| config.model_name.as_str()),
-            Some("new-model")
-        );
-        assert!(saved.config.use_diff_blocks);
     }
 
     /// CLI override (`--use-diff-format`) takes precedence regardless of

@@ -43,12 +43,12 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                 // Earlier requests and tools can have completed before a later
                 // request fails. Preserve their usage as well as their tool list.
                 sub_ui.set_usage(compute_sub_agent_usage(
-                    agent.message_history(),
+                    &agent.message_history(),
                     &self.model_name,
                 ));
                 iteration?;
                 child.token.check()?;
-                answer = extract_last_assistant_text(agent.message_history()).unwrap_or_default();
+                answer = extract_last_assistant_text(&agent.message_history()).unwrap_or_default();
                 if !require_file_references || has_file_references_with_line_ranges(&answer) {
                     break;
                 }

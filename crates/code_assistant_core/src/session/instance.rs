@@ -425,6 +425,24 @@ impl SessionInstance {
         llm::Usage::zero()
     }
 
+    /// The session-list entry describing the current state of this session.
+    pub fn metadata(&self) -> ChatMetadata {
+        ChatMetadata {
+            id: self.session.id.clone(),
+            name: self.session.name.clone(),
+            created_at: self.session.created_at,
+            updated_at: self.session.updated_at,
+            message_count: self.session.get_active_messages().len(),
+            total_usage: self.calculate_total_usage(),
+            last_usage: self.get_last_usage(),
+            tokens_limit: None, // Will be updated by persistence layer if available
+            tool_syntax: self.session.config.tool_syntax,
+            initial_project: self.session.config.initial_project.clone(),
+            plan_collapsed: self.session.plan_collapsed,
+            is_resumable: self.session.is_resumable(),
+        }
+    }
+
     /// Reload session data from persistence
     /// This ensures SessionInstance has the latest state even if agents have made changes
     pub fn reload_from_persistence(
@@ -510,22 +528,7 @@ impl SessionInstance {
             });
         }
 
-        let metadata = ChatMetadata {
-            id: self.session.id.clone(),
-            name: self.session.name.clone(),
-            created_at: self.session.created_at,
-            updated_at: self.session.updated_at,
-
-            message_count: self.session.get_active_messages().len(),
-            total_usage: self.calculate_total_usage(),
-            last_usage: self.get_last_usage(),
-
-            tokens_limit: None, // Will be updated by persistence layer if available
-            tool_syntax: self.session.config.tool_syntax,
-            initial_project: self.session.config.initial_project.clone(),
-            plan_collapsed: self.session.plan_collapsed,
-            is_resumable: self.session.is_resumable(),
-        };
+        let metadata = self.metadata();
 
         let pending_message = self.pending_message.lock().ok().and_then(|pending| {
             pending

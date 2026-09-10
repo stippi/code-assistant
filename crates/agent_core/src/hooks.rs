@@ -8,19 +8,19 @@
 //! same dyn-Any approach `ToolContext` uses.
 
 use crate::dialect::ToolDialect;
-use crate::tree::{ConversationPath, MessageNode, NodeId};
+use crate::tree::Conversation;
 use crate::types::ToolRequest;
 use anyhow::Result;
 use llm::Message;
 use std::any::Any;
-use std::collections::BTreeMap;
 use std::time::Duration;
 use tools_core::{AnyOutput, ToolRegistry};
 
 /// View of the agent state that hooks may read and act on.
 pub struct LoopCtx<'a> {
-    pub message_nodes: &'a mut BTreeMap<NodeId, MessageNode>,
-    pub active_path: &'a ConversationPath,
+    /// The conversation tree. Edits through it are part of the next
+    /// checkpoint.
+    pub conversation: &'a mut Conversation,
     /// The session this agent runs, `None` while no session is assigned yet.
     /// Lets shared hook state (built once per process) be keyed per session —
     /// same role `PromptCtx::session_id` plays for system-prompt providers.

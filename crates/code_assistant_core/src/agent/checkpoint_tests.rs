@@ -1,29 +1,45 @@
 use super::*;
 use crate::agent::persistence::AgentStatePersistence;
 use crate::persistence::{ChatSession, FileSessionPersistence, MessageNode};
+use crate::session::SessionCheckpoint;
 use std::sync::Mutex;
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Option<SessionState>>>);
+/// Applies checkpoints to an in-memory session exactly like the store does.
+#[derive(Clone)]
+struct Capture(Arc<Mutex<ChatSession>>);
+
+impl Capture {
+    fn new(session: ChatSession) -> Self {
+        Self(Arc::new(Mutex::new(session)))
+    }
+
+    fn session(&self) -> ChatSession {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 impl AgentStatePersistence for Capture {
-    fn save_agent_state(&mut self, state: SessionState) -> Result<()> {
-        *self.0.lock().unwrap() = Some(state);
+    fn commit_checkpoint(&mut self, checkpoint: SessionCheckpoint<'_>) -> Result<()> {
+        self.0.lock().unwrap().apply_checkpoint(&checkpoint);
         Ok(())
     }
 }
 
 /// Deterministic format-on-save without depending on an installed formatter.
 struct FormattingTool;
+
 #[async_trait::async_trait]
 impl tools_core::Tool for FormattingTool {
     type Input = serde_json::Value;
     type Output = agent_core::types::ParseError;
+
     fn spec(&self) -> tools_core::ToolSpec {
         crate::tools::test_registry()
             .get("write_file")
             .unwrap()
             .spec()
     }
+
     async fn execute<'a>(
         &self,
         _: &mut tools_core::ToolContext<'a>,
@@ -71,29 +87,12 @@ async fn formatted_roundtrip(syntax: ToolSyntax) -> Result<()> {
             rate_limit_info: None,
         }),
     ]);
-    let captured = Capture::default();
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(captured.clone()),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: registry.clone(),
-        sub_agent_runner: None,
-        wakeups: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
     let config = SessionConfig {
         tool_syntax: syntax,
         ..Default::default()
     };
-    let mut agent = Agent::new(components, config.clone());
+    // The stored session: one user message plus an inactive branch the run
+    // never touches.
     let mut initial = SessionState::from_messages(
         "checkpoint",
         "test",
@@ -111,20 +110,36 @@ async fn formatted_roundtrip(syntax: ToolSyntax) -> Result<()> {
         },
     );
     initial.next_node_id = 100;
+    let mut stored =
+        ChatSession::new_empty("checkpoint".into(), "test".into(), config.clone(), None);
+    stored.message_nodes = initial.message_nodes.clone();
+    stored.active_path = initial.active_path.clone();
+    stored.next_node_id = initial.next_node_id;
+    let captured = Capture::new(stored);
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(captured.clone()),
+        permission_handler: None,
+        permissions: Default::default(),
+        tool_registry: registry.clone(),
+        sub_agent_runner: None,
+        wakeups: None,
+        pty_sessions: None,
+        browser_sessions: None,
+        terminal_interrupts: None,
+        session_source: None,
+        hooks_factory: None,
+    };
+    let mut agent = Agent::new(components, config.clone());
     agent.load_from_session_state(initial).await?;
     agent.run_single_iteration().await?;
-    let state = captured.0.lock().unwrap().take().unwrap();
-    let mut session = ChatSession::new_empty("checkpoint".into(), "test".into(), config, None);
-    session.message_nodes = state.message_nodes;
-    session.active_path = state.active_path;
-    session.next_node_id = state.next_node_id;
-    session.tool_executions = state
-        .tool_executions
-        .iter()
-        .map(|e| e.serialize())
-        .collect::<Result<_>>()?;
+
     let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
-    persistence.save_chat_session(&session)?;
+    persistence.save_chat_session(&captured.session())?;
     let loaded = persistence.load_chat_session("checkpoint")?.unwrap();
     assert_eq!(
         loaded.message_nodes[&99].extension,
@@ -134,7 +149,7 @@ async fn formatted_roundtrip(syntax: ToolSyntax) -> Result<()> {
     let canonical = loaded.get_active_messages_cloned();
     assert_eq!(
         serde_json::to_value(&canonical)?,
-        serde_json::to_value(&state.messages)?
+        serde_json::to_value(agent.message_history())?
     );
     let tool_message = &canonical[1];
     let MessageContent::Structured(blocks) = &tool_message.content else {

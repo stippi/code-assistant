@@ -111,10 +111,7 @@ impl AgentRuntime {
                 request.id
             );
             anyhow::ensure!(
-                !self
-                    .tool_executions
-                    .iter()
-                    .any(|e| e.tool_request.id == request.id),
+                !self.journal.contains(&request.id),
                 "Tool call id has already been recorded: {}",
                 request.id
             );
@@ -122,12 +119,12 @@ impl AgentRuntime {
         // Write intent for the whole batch before any tool can have effects.
         // A restart can distinguish an unstarted sibling from an uncertain call.
         for request in requests {
-            self.store_execution(ToolExecution {
+            self.journal.record(ToolExecution {
                 tool_request: request.clone(),
                 result: Box::new(RuntimeToolOutput::not_started("No invocation was made.")),
             });
         }
-        self.save_state()?;
+        self.checkpoint()?;
 
         let mut parallel = vec![false; requests.len()];
         for index in self.hooks.dispatch.parallel_indices(requests) {
@@ -228,11 +225,11 @@ impl AgentRuntime {
                 RuntimeToolOutput::not_started(Self::format_error_for_user(&error)),
             )));
         }
-        self.store_execution(ToolExecution {
+        self.journal.record(ToolExecution {
             tool_request: request.clone(),
             result: Box::new(RuntimeToolOutput::started()),
         });
-        self.save_state()?;
+        self.checkpoint()?;
 
         // Interceptors execute on the state owner, even for a parallel group,
         // and only after scope/permission checks and the start checkpoint.
@@ -288,19 +285,6 @@ impl AgentRuntime {
         }))
     }
 
-    /// Replace the journal slot of this call, keeping request order.
-    fn store_execution(&mut self, execution: ToolExecution) {
-        let id = &execution.tool_request.id;
-        match self
-            .tool_executions
-            .iter()
-            .position(|entry| &entry.tool_request.id == id)
-        {
-            Some(index) => self.tool_executions[index] = execution,
-            None => self.tool_executions.push(execution),
-        }
-    }
-
     async fn commit_completion(&mut self, mut completed: Completion) -> Result<ContentBlock> {
         if let Some(services) = completed.services.take() {
             self.services_provider
@@ -313,22 +297,18 @@ impl AgentRuntime {
             || self
                 .registry
                 .is_tool_hidden(&request.name, &self.tool_capability);
-        self.store_execution(completed.execution);
+        self.journal.record(completed.execution);
         // Commit evidence before hooks/rendering/UI can fail. The active call's
         // Started record remains on disk if this commit itself fails.
-        self.save_state()?;
+        self.checkpoint()?;
         if changed {
             self.update_message_history_with_formatted_tool(&request)?;
         }
         if success {
             self.after_tool_success(&request);
-            self.save_state()?;
+            self.checkpoint()?;
         }
-        let execution = self
-            .tool_executions
-            .iter()
-            .find(|entry| entry.tool_request.id == request.id)
-            .expect("committed outcome");
+        let execution = self.journal.find(&request.id).expect("committed outcome");
         let content = execution
             .result
             .as_any()

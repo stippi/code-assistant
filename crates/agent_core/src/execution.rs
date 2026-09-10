@@ -1,7 +1,11 @@
-//! Self-describing journal entries for calls without a concrete tool result.
-//! Successful/functional-error tool outputs retain their existing codecs.
+//! The tool journal: every call's outcome record in request order, and the
+//! loop's own self-describing entries for calls without a concrete tool
+//! result. Successful and functionally failed tool outputs keep the codec
+//! of their tool.
 
+use crate::types::ToolExecution;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use tools_core::{Render, ResourcesTracker, ToolResult};
 
 pub(crate) const RUNTIME_OUTPUT_CODEC: &str = "__agent_runtime_outcome_v1";
@@ -68,5 +72,64 @@ impl Render for RuntimeToolOutput {
 impl ToolResult for RuntimeToolOutput {
     fn is_success(&self) -> bool {
         false
+    }
+}
+
+/// The run's record of tool calls in request order, plus which entries
+/// changed since the last checkpoint.
+#[derive(Default)]
+pub struct ToolJournal {
+    entries: Vec<ToolExecution>,
+    changed: BTreeSet<String>,
+}
+
+impl ToolJournal {
+    /// Restore the journal from persisted entries; nothing counts as changed.
+    pub fn restore(entries: Vec<ToolExecution>) -> Self {
+        Self {
+            entries,
+            changed: BTreeSet::new(),
+        }
+    }
+
+    pub fn entries(&self) -> &[ToolExecution] {
+        &self.entries
+    }
+
+    pub fn find(&self, id: &str) -> Option<&ToolExecution> {
+        self.entries
+            .iter()
+            .find(|entry| entry.tool_request.id == id)
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.find(id).is_some()
+    }
+
+    /// Record the entry for a call, replacing an earlier entry with the same
+    /// id in place so request order is preserved.
+    pub fn record(&mut self, execution: ToolExecution) {
+        let id = execution.tool_request.id.clone();
+        match self
+            .entries
+            .iter()
+            .position(|entry| entry.tool_request.id == id)
+        {
+            Some(index) => self.entries[index] = execution,
+            None => self.entries.push(execution),
+        }
+        self.changed.insert(id);
+    }
+
+    /// Entries recorded or updated since the last checkpoint, in journal order.
+    pub fn changed(&self) -> impl Iterator<Item = &ToolExecution> + '_ {
+        self.entries
+            .iter()
+            .filter(|entry| self.changed.contains(&entry.tool_request.id))
+    }
+
+    /// Forget the change marks after a successful checkpoint.
+    pub fn mark_checkpointed(&mut self) {
+        self.changed.clear();
     }
 }

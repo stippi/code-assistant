@@ -33,18 +33,13 @@ impl ToolInterceptor for SkillSnapshotHook {
         let active_skills = state.active_skills.clone();
 
         // Snapshot onto the last assistant node for branch reconstruction.
-        for &node_id in ctx.active_path.iter().rev() {
-            if let Some(node) = ctx.message_nodes.get(&node_id)
-                && node.message.role == llm::MessageRole::Assistant
-            {
-                if let Some(node_mut) = ctx.message_nodes.get_mut(&node_id) {
-                    node_mut.set_active_skills_snapshot(active_skills);
-                    trace!("Saved active-skills snapshot to assistant node {}", node_id);
-                }
-                return;
+        match ctx.conversation.last_assistant_node_mut() {
+            Some(node) => {
+                node.set_active_skills_snapshot(active_skills);
+                trace!("Saved active-skills snapshot to assistant node {}", node.id);
             }
+            None => trace!("No assistant message found to save active-skills snapshot"),
         }
-        trace!("No assistant message found to save active-skills snapshot");
     }
 }
 
@@ -53,6 +48,7 @@ mod tests {
     use super::*;
     use crate::persistence::MessageNode;
     use crate::session::SessionConfig;
+    use agent_core::Conversation;
     use agent_core::hooks::LoopCtx;
     use llm::Message;
     use serde_json::json;
@@ -83,13 +79,12 @@ mod tests {
                 extension: None,
             },
         );
-        let active_path = vec![1];
+        let mut conversation = Conversation::restore(message_nodes, vec![1], 2, Vec::new());
         let mut state = AgentAppState::new(SessionConfig::default());
 
         {
             let mut ctx = LoopCtx {
-                message_nodes: &mut message_nodes,
-                active_path: &active_path,
+                conversation: &mut conversation,
                 session_id: None,
                 registry: registry.as_ref(),
                 extensions: &mut state,
@@ -99,15 +94,14 @@ mod tests {
 
         assert_eq!(state.active_skills, vec!["alpha".to_string()]);
         assert_eq!(
-            message_nodes.get(&1).unwrap().active_skills_snapshot(),
+            conversation.node(1).unwrap().active_skills_snapshot(),
             Some(vec!["alpha".to_string()])
         );
 
         // Re-activating the same skill does not duplicate it.
         {
             let mut ctx = LoopCtx {
-                message_nodes: &mut message_nodes,
-                active_path: &active_path,
+                conversation: &mut conversation,
                 session_id: None,
                 registry: registry.as_ref(),
                 extensions: &mut state,
@@ -120,8 +114,7 @@ mod tests {
     #[test]
     fn ignores_other_tools() {
         let registry = crate::tools::test_registry();
-        let mut message_nodes = BTreeMap::new();
-        let active_path: Vec<u64> = Vec::new();
+        let mut conversation = Conversation::default();
         let mut state = AgentAppState::new(SessionConfig::default());
 
         let request = ToolRequest {
@@ -133,8 +126,7 @@ mod tests {
         };
         {
             let mut ctx = LoopCtx {
-                message_nodes: &mut message_nodes,
-                active_path: &active_path,
+                conversation: &mut conversation,
                 session_id: None,
                 registry: registry.as_ref(),
                 extensions: &mut state,

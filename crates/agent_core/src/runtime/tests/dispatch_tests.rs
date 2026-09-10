@@ -175,16 +175,15 @@ async fn dispatch_parallel_hooks_and_formatted_inputs_match_sequential_contract(
     let successes = successes.lock().unwrap();
     assert_eq!(successes.len(), 2);
     assert!(successes.iter().all(|r| r.input["formatted"] == true));
-    let saved = f.saved.0.lock().unwrap();
-    let snapshot = saved.as_ref().unwrap();
+    let saved = f.saved.saved();
     assert!(
-        snapshot
-            .tool_executions
+        saved
+            .executions
             .iter()
             .all(|e| e.tool_request.input["formatted"] == true)
     );
     assert!(
-        matches!(&snapshot.messages[0].content, MessageContent::Structured(blocks)
+        matches!(&saved.nodes[&1].message.content, MessageContent::Structured(blocks)
         if blocks.iter().all(|b| matches!(b, ContentBlock::ToolUse { input, .. } if input["formatted"] == true)))
     );
 }
@@ -202,12 +201,8 @@ async fn completion_is_checkpointed_while_sibling_waits(parallel: bool) {
     let checkpointed = tokio::time::timeout(Duration::from_millis(250), async {
         loop {
             if f.saved
-                .0
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .tool_executions
+                .saved()
+                .executions
                 .iter()
                 .any(|e| e.tool_request.id == "one" && e.result.is_success())
             {
@@ -243,15 +238,7 @@ async fn dispatch_journal_distinguishes_unstarted_from_uncertain_after_reload() 
     tokio::time::timeout(Duration::from_secs(2), f.entered.notified())
         .await
         .unwrap();
-    let journal = f
-        .saved
-        .0
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .tool_executions
-        .clone();
+    let journal = f.saved.saved().executions;
     f.release.notify_one();
     task.await.unwrap().unwrap();
     assert_eq!(
@@ -312,12 +299,10 @@ async fn dispatch_ui_failure_does_not_erase_successful_tool_evidence() {
     let mut f = fixture(&requests);
     f.agent.ui = Arc::new(FailingUi);
     let _ = f.agent.manage_tool_execution(&requests).await;
-    let snapshot = f.saved.0.lock().unwrap();
     assert!(
-        snapshot
-            .as_ref()
-            .unwrap()
-            .tool_executions
+        f.saved
+            .saved()
+            .executions
             .iter()
             .any(|e| e.tool_request.id == "one" && e.result.is_success())
     );
@@ -337,11 +322,11 @@ async fn dispatch_parallel_groups_do_not_cross_sequential_barriers() {
 }
 
 struct FailCompletionSave;
-impl SnapshotPersistence for FailCompletionSave {
-    fn save(&mut self, snapshot: AgentSnapshot, _: &(dyn Any + Send)) -> Result<()> {
+impl CheckpointPersistence for FailCompletionSave {
+    fn commit(&mut self, checkpoint: &AgentCheckpoint<'_>, _: &(dyn Any + Send)) -> Result<()> {
         anyhow::ensure!(
-            !snapshot
-                .tool_executions
+            !checkpoint
+                .changed_executions
                 .iter()
                 .any(|e| e.result.is_success()),
             "disk full"

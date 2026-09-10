@@ -6,8 +6,9 @@ mod tests;
 mod tool_execution;
 
 use crate::dialect::ToolDialect;
+use crate::execution::ToolJournal;
 use crate::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction, ToolServicesProvider};
-use crate::persistence::{AgentSnapshot, SnapshotPersistence};
+use crate::persistence::{AgentCheckpoint, CheckpointPersistence};
 use crate::tree::{Conversation, ConversationPath, MessageNode, NodeId};
 use crate::types::{ToolExecution, ToolRequest, text_summary_from_blocks, to_tool_definitions};
 use crate::ui::{AgentActivity, AgentUi, AgentUiEvent, DisplayFragment, HiddenTools, UIError};
@@ -49,7 +50,7 @@ pub struct AgentRuntimeComponents {
     pub permissions: ToolPermissions,
     /// Builds the application services handed to each tool invocation.
     pub services_provider: Arc<dyn ToolServicesProvider>,
-    pub state_persistence: Box<dyn SnapshotPersistence>,
+    pub state_persistence: Box<dyn CheckpointPersistence>,
     pub hooks: HookRegistry,
     /// Application-specific loop state, exposed to the hooks type-erased.
     /// `Sync` because the loop holds `&self` across awaits.
@@ -85,7 +86,7 @@ pub struct AgentRuntime {
     stream_hidden_tools: HiddenTools,
     command_executor: Arc<dyn CommandExecutor>,
     ui: Arc<dyn AgentUi>,
-    state_persistence: Box<dyn SnapshotPersistence>,
+    state_persistence: Box<dyn CheckpointPersistence>,
     /// Builds the application services handed to each tool invocation.
     services_provider: Arc<dyn ToolServicesProvider>,
 
@@ -97,8 +98,8 @@ pub struct AgentRuntime {
     /// Run-local LLM projection. Never included in a checkpoint.
     prompt_projection: PromptProjection,
 
-    // Store the history of tool executions
-    tool_executions: Vec<ToolExecution>,
+    /// Every tool call of the conversation with its outcome.
+    journal: ToolJournal,
     // Cached system prompts keyed by model hint
     cached_system_prompts: HashMap<String, String>,
     // Optional model identifier used for prompt selection
@@ -165,7 +166,7 @@ impl AgentRuntime {
             cancellation: tools_core::RunCancellation::default(),
             conversation: Conversation::default(),
             prompt_projection: PromptProjection::default(),
-            tool_executions: Vec::new(),
+            journal: ToolJournal::default(),
             cached_system_prompts: HashMap::new(),
             next_request_id: 1, // Start from 1
             session_id: None,
@@ -209,8 +210,9 @@ impl AgentRuntime {
         self.extensions.as_mut()
     }
 
-    /// Restore the conversation (tree, active path, id counter, linearized
-    /// history) from persisted state.
+    /// Restore the conversation (tree, active path, id counter) from
+    /// persisted state. `messages` is the legacy linear history, imported
+    /// only when the session has no tree yet.
     pub fn restore_conversation(
         &mut self,
         message_nodes: BTreeMap<NodeId, MessageNode>,
@@ -225,7 +227,7 @@ impl AgentRuntime {
 
     /// Restore the tool execution records from persisted state.
     pub fn set_tool_executions(&mut self, tool_executions: Vec<ToolExecution>) {
-        self.tool_executions = tool_executions;
+        self.journal = ToolJournal::restore(tool_executions);
     }
 
     /// Restore the request id counter from persisted state.
@@ -258,8 +260,8 @@ impl AgentRuntime {
         }
     }
 
-    /// Get a reference to the message history
-    pub fn message_history(&self) -> &[Message] {
+    /// The messages on the active path, in order.
+    pub fn message_history(&self) -> Vec<Message> {
         self.conversation.history()
     }
 
@@ -287,29 +289,30 @@ impl AgentRuntime {
         self.ui.send_event(event).await
     }
 
-    /// Save the current state (message history and tool executions)
-    fn save_state(&mut self) -> Result<()> {
-        trace!(
-            "saving {} messages to persistence (tree nodes: {})",
-            self.conversation.history().len(),
-            self.conversation.nodes().len()
-        );
-
-        let snapshot = AgentSnapshot {
-            session_id: self.session_id.clone(),
-            message_nodes: self.conversation.nodes().clone(),
-            active_path: self.conversation.path().clone(),
+    /// Persist everything that changed since the previous checkpoint. An
+    /// agent without a session keeps nothing.
+    fn checkpoint(&mut self) -> Result<()> {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return Ok(());
+        };
+        let checkpoint = AgentCheckpoint {
+            session_id,
+            changed_nodes: self.conversation.changed_nodes().collect(),
+            active_path: self.conversation.path(),
             next_node_id: self.conversation.next_id(),
-            messages: self.conversation.history().to_vec(),
-            tool_executions: self
-                .tool_executions
-                .iter()
-                .map(ToolExecution::try_clone)
-                .collect::<Result<_>>()?,
+            changed_executions: self.journal.changed().collect(),
             next_request_id: self.next_request_id,
         };
+        trace!(
+            "checkpoint: {} changed node(s), {} changed execution(s)",
+            checkpoint.changed_nodes.len(),
+            checkpoint.changed_executions.len()
+        );
         self.state_persistence
-            .save(snapshot, self.extensions.as_ref())
+            .commit(&checkpoint, self.extensions.as_ref())?;
+        self.conversation.mark_checkpointed();
+        self.journal.mark_checkpointed();
+        Ok(())
     }
 
     /// Pre-allocate the next node_id without creating a node.
@@ -329,7 +332,7 @@ impl AgentRuntime {
             observer.on_message(self.session_id.as_deref(), &message);
         }
 
-        self.save_state()?;
+        self.checkpoint()?;
         Ok(())
     }
 
@@ -458,7 +461,7 @@ impl AgentRuntime {
                         let flow = self.manage_tool_execution(&tool_requests).await?;
 
                         // Save state after tool executions
-                        self.save_state()?;
+                        self.checkpoint()?;
 
                         match flow {
                             LoopFlow::Continue => { /* Continue to the next iteration */ }
@@ -476,20 +479,18 @@ impl AgentRuntime {
         }
     }
 
-    /// Compatibility entry point. Restores no longer delete incomplete tool
-    /// calls: the tree/cache retain evidence, and prompt rendering supplies
-    /// missing outcomes without guessing that a user cancelled the operation.
-    pub fn normalize_loaded_message_history(&mut self) {}
-
+    /// Replace the last assistant message with the parser's corrected
+    /// version (e.g. text after the tool call truncated).
     fn correct_last_assistant_response(&mut self, response: &llm::LLMResponse) -> Result<()> {
-        if let Some(id) = self.conversation.path().last().copied() {
-            self.conversation.edit_message(id, |message| {
-                if message.role == MessageRole::Assistant {
-                    message.content = MessageContent::Structured(response.content.clone());
-                    message.usage = Some(response.usage.clone());
-                }
-            });
-            self.save_state()?;
+        let Some(id) = self.conversation.path().last().copied() else {
+            return Ok(());
+        };
+        if let Some(node) = self.conversation.node_mut(id)
+            && node.message.role == MessageRole::Assistant
+        {
+            node.message.content = MessageContent::Structured(response.content.clone());
+            node.message.usage = Some(response.usage.clone());
+            self.checkpoint()?;
         }
         Ok(())
     }
@@ -529,10 +530,10 @@ impl AgentRuntime {
                     // Generate normal tool ID for consistency with UI expectations
                     let tool_id = format!("tool-{request_counter}-1");
 
-                    // Create and store a ToolExecution for the parse error
-                    let tool_execution =
-                        ToolExecution::create_parse_error(tool_id.clone(), error_text.clone());
-                    self.tool_executions.push(tool_execution);
+                    self.journal.record(ToolExecution::create_parse_error(
+                        tool_id.clone(),
+                        error_text.clone(),
+                    ));
 
                     Message::new_user_content(vec![ContentBlock::ToolResult {
                         tool_use_id: tool_id,
@@ -615,21 +616,17 @@ impl AgentRuntime {
     /// Runs the iteration hooks over the rendered messages right before they
     /// are sent to the LLM (e.g. to inject system reminders).
     pub fn shape_request_messages(&mut self, mut messages: Vec<Message>) -> Vec<Message> {
-        self.conversation
-            .with_nodes_mut(|message_nodes, active_path| {
-                let ctx = LoopCtx {
-                    message_nodes,
-                    active_path,
-                    session_id: self.session_id.as_deref(),
-                    registry: self.registry.as_ref(),
-                    extensions: self.extensions.as_mut(),
-                };
-                for hook in &self.hooks.iteration_hooks {
-                    if let Err(e) = hook.shape_request(&mut messages, &ctx) {
-                        warn!("Iteration hook failed to shape the request: {}", e);
-                    }
-                }
-            });
+        let ctx = LoopCtx {
+            conversation: &mut self.conversation,
+            session_id: self.session_id.as_deref(),
+            registry: self.registry.as_ref(),
+            extensions: self.extensions.as_mut(),
+        };
+        for hook in &self.hooks.iteration_hooks {
+            if let Err(e) = hook.shape_request(&mut messages, &ctx) {
+                warn!("Iteration hook failed to shape the request: {}", e);
+            }
+        }
         messages
     }
 
@@ -881,13 +878,15 @@ impl AgentRuntime {
         }
     }
 
-    fn active_messages(&self) -> &[Message] {
-        let history = self.conversation.history();
-        let start = history
+    /// The active-path messages from the last compaction summary onwards.
+    fn active_messages(&self) -> Vec<&Message> {
+        let mut messages: Vec<&Message> = self.conversation.active_messages().collect();
+        let start = messages
             .iter()
             .rposition(|message| message.is_compaction_summary)
             .unwrap_or(0);
-        &history[start..]
+        messages.drain(..start);
+        messages
     }
 
     fn prompt_messages(&self) -> Vec<Message> {
@@ -1058,7 +1057,7 @@ impl AgentRuntime {
         // Render each current-turn tool output to measure its size
         let mut sizes: Vec<(usize, usize)> = Vec::new(); // (index, byte_size)
         let mut tracker = ResourcesTracker::new();
-        for (i, exec) in self.tool_executions.iter().enumerate() {
+        for (i, exec) in self.journal.entries().iter().enumerate() {
             if !current_turn_ids.contains(&exec.tool_request.id)
                 || self
                     .prompt_projection
@@ -1083,8 +1082,8 @@ impl AgentRuntime {
             if byte_size < MIN_REPLACE_THRESHOLD {
                 break;
             }
-            let tool_name = self.tool_executions[idx].tool_request.name.clone();
-            let tool_id = self.tool_executions[idx].tool_request.id.clone();
+            let request = &self.journal.entries()[idx].tool_request;
+            let (tool_name, tool_id) = (request.name.clone(), request.id.clone());
             warn!(
                 "Replacing tool result for '{}' ({}KB) with prompt-too-long error",
                 tool_name,
@@ -1230,7 +1229,7 @@ impl AgentRuntime {
                 ids
             })
             .collect();
-        for execution in self.tool_executions.iter().rev() {
+        for execution in self.journal.entries().iter().rev() {
             let id = &execution.tool_request.id;
             if !visible_ids.contains(id) || outputs.contains_key(id) {
                 continue;
@@ -1329,39 +1328,29 @@ impl AgentRuntime {
         &mut self,
         tool_request: &ToolRequest,
     ) -> Option<Result<Box<dyn tools_core::AnyOutput>>> {
-        self.conversation
-            .with_nodes_mut(|message_nodes, active_path| {
-                let mut ctx = LoopCtx {
-                    message_nodes,
-                    active_path,
-                    session_id: self.session_id.as_deref(),
-                    registry: self.registry.as_ref(),
-                    extensions: self.extensions.as_mut(),
-                };
-                for interceptor in &self.hooks.interceptors {
-                    if let Some(result) = interceptor.try_intercept(tool_request, &mut ctx) {
-                        return Some(result);
-                    }
-                }
-                None
-            })
+        let mut ctx = LoopCtx {
+            conversation: &mut self.conversation,
+            session_id: self.session_id.as_deref(),
+            registry: self.registry.as_ref(),
+            extensions: self.extensions.as_mut(),
+        };
+        self.hooks
+            .interceptors
+            .iter()
+            .find_map(|interceptor| interceptor.try_intercept(tool_request, &mut ctx))
     }
 
     /// Notifies the registered interceptors that a tool executed successfully.
     fn after_tool_success(&mut self, tool_request: &ToolRequest) {
-        self.conversation
-            .with_nodes_mut(|message_nodes, active_path| {
-                let mut ctx = LoopCtx {
-                    message_nodes,
-                    active_path,
-                    session_id: self.session_id.as_deref(),
-                    registry: self.registry.as_ref(),
-                    extensions: self.extensions.as_mut(),
-                };
-                for interceptor in &self.hooks.interceptors {
-                    interceptor.after_tool_success(tool_request, &mut ctx);
-                }
-            });
+        let mut ctx = LoopCtx {
+            conversation: &mut self.conversation,
+            session_id: self.session_id.as_deref(),
+            registry: self.registry.as_ref(),
+            extensions: self.extensions.as_mut(),
+        };
+        for interceptor in &self.hooks.interceptors {
+            interceptor.after_tool_success(tool_request, &mut ctx);
+        }
     }
 
     async fn notify_tool_parameter_updates(
@@ -1413,63 +1402,51 @@ impl AgentRuntime {
     ) -> Result<()> {
         let dialect = self.dialect.clone();
         let registry = self.registry.clone();
-        let Some(id) = self
-            .conversation
-            .path()
-            .iter()
-            .rev()
-            .find(|id| {
-                self.conversation
-                    .nodes()
-                    .get(id)
-                    .is_some_and(|node| node.message.role == MessageRole::Assistant)
-            })
-            .copied()
-        else {
+        let Some(node) = self.conversation.last_assistant_node_mut() else {
             return Ok(());
         };
-        let mut updated = false;
-        self.conversation.edit_message(id, |message| {
-            let request_id = message.request_id.unwrap_or(0);
-            match &mut message.content {
-                MessageContent::Structured(blocks) => {
-                    for block in blocks.iter_mut() {
-                        if let ContentBlock::ToolUse {
-                            id, name, input, ..
-                        } = block
-                            && id == &updated_request.id
-                            && name == &updated_request.name
-                        {
-                            *input = updated_request.input.clone();
-                            updated = true;
-                            return;
-                        }
+        let message = &mut node.message;
+        let request_id = message.request_id.unwrap_or(0);
+        let updated = match &mut message.content {
+            MessageContent::Structured(blocks) => {
+                let native_call = blocks.iter_mut().find_map(|block| match block {
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } if id == &updated_request.id && name == &updated_request.name => Some(input),
+                    _ => None,
+                });
+                match native_call {
+                    Some(input) => {
+                        *input = updated_request.input.clone();
+                        true
                     }
-                    if !dialect.uses_native_tools() {
-                        updated = Self::update_tool_call_in_text_blocks(
-                            blocks,
-                            updated_request,
-                            request_id,
-                            dialect.as_ref(),
-                            registry.as_ref(),
-                        );
-                    }
-                }
-                MessageContent::Text(text) => {
-                    if let Ok(replacement) = Self::update_tool_call_in_text_static(
-                        text,
+                    None if !dialect.uses_native_tools() => Self::update_tool_call_in_text_blocks(
+                        blocks,
                         updated_request,
+                        request_id,
                         dialect.as_ref(),
                         registry.as_ref(),
-                    ) {
-                        *text = replacement;
-                        updated = true;
-                    }
+                    ),
+                    None => false,
                 }
             }
-        });
+            MessageContent::Text(text) => {
+                match Self::update_tool_call_in_text_static(
+                    text,
+                    updated_request,
+                    dialect.as_ref(),
+                    registry.as_ref(),
+                ) {
+                    Ok(replacement) => {
+                        *text = replacement;
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+        };
         if updated {
-            self.save_state()?;
+            self.checkpoint()?;
         } else {
             warn!("Could not find tool call {} to update", updated_request.id);
         }

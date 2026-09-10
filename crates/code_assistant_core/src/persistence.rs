@@ -583,6 +583,35 @@ impl ChatSession {
         self.message_nodes.len()
     }
 
+    /// Merge a running agent's checkpoint. Nodes and journal entries are
+    /// replaced by id, so branches and records the run never touched
+    /// survive; counters only ever grow.
+    pub fn apply_checkpoint(&mut self, checkpoint: &crate::session::SessionCheckpoint<'_>) {
+        self.name = checkpoint.name.to_string();
+        for node in checkpoint.changed_nodes {
+            self.message_nodes.insert(node.id, (*node).clone());
+        }
+        self.active_path = checkpoint.active_path.to_vec();
+        self.next_node_id = self.next_node_id.max(checkpoint.next_node_id);
+        // The tree is authoritative once a checkpoint has been applied.
+        self.messages.clear();
+        for execution in &checkpoint.changed_executions {
+            let id = &execution.tool_request.id;
+            match self
+                .tool_executions
+                .iter()
+                .position(|entry| &entry.tool_request.id == id)
+            {
+                Some(index) => self.tool_executions[index] = execution.clone(),
+                None => self.tool_executions.push(execution.clone()),
+            }
+        }
+        self.plan = checkpoint.plan.clone();
+        self.active_skills = checkpoint.active_skills.to_vec();
+        self.next_request_id = self.next_request_id.max(checkpoint.next_request_id);
+        self.updated_at = SystemTime::now();
+    }
+
     /// Returns true if the session looks like it failed mid-flight and could
     /// usefully be "resumed" by re-running the agent against the existing
     /// message history.

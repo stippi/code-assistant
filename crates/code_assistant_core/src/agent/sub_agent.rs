@@ -2,7 +2,7 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-use crate::agent::persistence::AgentStatePersistence;
+use crate::agent::persistence::NoOpStatePersistence;
 use crate::agent::{Agent, AgentComponents};
 use crate::config::DefaultProjectManager;
 use crate::persistence::SessionModelConfig;
@@ -97,14 +97,6 @@ impl SubAgentCancellationRegistry {
     }
 }
 
-/// Minimal in-memory persistence used for sub-agents.
-struct NoOpStatePersistence;
-
-impl AgentStatePersistence for NoOpStatePersistence {
-    fn save_agent_state(&mut self, _state: crate::session::SessionState) -> Result<()> {
-        Ok(())
-    }
-}
 /// Aggregated token usage for a sub-agent run.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SubAgentUsage {
