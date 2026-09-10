@@ -14,86 +14,69 @@ use command_executor::{CommandExecutor, DefaultCommandExecutor, SandboxedCommand
 use llm::Message;
 use sandbox::{SandboxContext, SandboxPolicy};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
+use std::sync::{Arc, Mutex};
 use tools_core::permissions::{PermissionMediator, ToolPermissions};
 
-/// Cancellation registry keyed by the parent `spawn_agent` tool id.
+/// Cancellation tokens of the running sub-agents, keyed by the parent
+/// `spawn_agent` tool id, so a child can be cancelled from the UI.
 #[derive(Default)]
 pub struct SubAgentCancellationRegistry {
-    flags: Mutex<HashMap<String, ChildCancellation>>,
+    children: Mutex<HashMap<String, tools_core::RunCancellation>>,
 }
 
-#[derive(Clone)]
-struct ChildCancellation {
-    flag: Arc<AtomicBool>,
-    token: tools_core::RunCancellation,
-}
-
-impl ChildCancellation {
-    fn cancel(&self) {
-        self.flag.store(true, Ordering::SeqCst);
-        self.token.cancel();
-    }
-}
-
+/// A child's entry in the registry; removed when the run ends.
 struct ChildRegistration<'a> {
     registry: &'a SubAgentCancellationRegistry,
     tool_id: String,
-    cancellation: ChildCancellation,
+    token: tools_core::RunCancellation,
 }
 
 impl Drop for ChildRegistration<'_> {
     fn drop(&mut self) {
-        let mut entries = self.registry.flags.lock().unwrap();
+        let mut children = self.registry.children.lock().unwrap();
         // A delayed old task must not unregister a replacement with the same id.
-        if entries
+        if children
             .get(&self.tool_id)
-            .is_some_and(|entry| entry.token.same_run(&self.cancellation.token))
+            .is_some_and(|token| token.same_run(&self.token))
         {
-            entries.remove(&self.tool_id);
+            children.remove(&self.tool_id);
         }
     }
 }
 
 impl SubAgentCancellationRegistry {
-    fn insert(&self, tool_id: String) -> ChildCancellation {
-        let child = ChildCancellation {
-            flag: Arc::new(AtomicBool::new(false)),
-            token: tools_core::RunCancellation::default(),
-        };
-        if let Some(previous) = self.flags.lock().unwrap().insert(tool_id, child.clone()) {
+    /// Register a child of `parent`. An earlier child with the same id is
+    /// cancelled and replaced.
+    fn register_run(
+        &self,
+        tool_id: &str,
+        parent: &tools_core::RunCancellation,
+    ) -> ChildRegistration<'_> {
+        let token = parent.child();
+        if let Some(previous) = self
+            .children
+            .lock()
+            .unwrap()
+            .insert(tool_id.to_string(), token.clone())
+        {
             previous.cancel();
         }
-        child
-    }
-
-    /// Compatibility flag for callers that observe cancellation synchronously.
-    /// Use `cancel` to also wake asynchronous waiters.
-    pub fn register(&self, tool_id: String) -> Arc<AtomicBool> {
-        self.insert(tool_id).flag
-    }
-
-    fn register_run(&self, tool_id: &str) -> ChildRegistration<'_> {
         ChildRegistration {
             registry: self,
             tool_id: tool_id.to_string(),
-            cancellation: self.insert(tool_id.to_string()),
+            token,
         }
     }
 
+    /// Cancel the child running for `tool_id`. Returns `false` if none is.
     pub fn cancel(&self, tool_id: &str) -> bool {
-        let flags = self.flags.lock().unwrap();
-        if let Some(child) = flags.get(tool_id) {
-            child.cancel();
-            true
-        } else {
-            false
+        match self.children.lock().unwrap().get(tool_id) {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
         }
-    }
-
-    pub fn unregister(&self, tool_id: &str) {
-        let mut flags = self.flags.lock().unwrap();
-        flags.remove(tool_id);
     }
 }
 
@@ -280,12 +263,12 @@ impl DefaultSubAgentRunner {
         &self,
         parent_ui: Arc<dyn UserInterface>,
         parent_tool_id: String,
-        cancelled: Arc<AtomicBool>,
+        cancellation: tools_core::RunCancellation,
     ) -> Arc<SubAgentUiAdapter> {
         Arc::new(SubAgentUiAdapter::new(
             parent_ui,
             parent_tool_id,
-            cancelled,
+            cancellation,
             self.tool_registry.clone(),
         ))
     }
@@ -552,7 +535,7 @@ impl Default for SubAgentOutput {
 struct SubAgentUiAdapter {
     parent: Arc<dyn UserInterface>,
     parent_tool_id: String,
-    cancelled: Arc<AtomicBool>,
+    cancellation: tools_core::RunCancellation,
     output: Mutex<SubAgentOutput>,
     /// Map from tool_id to index in output.tools for fast lookup
     tool_id_to_index: Mutex<std::collections::HashMap<String, usize>>,
@@ -564,13 +547,13 @@ impl SubAgentUiAdapter {
     fn new(
         parent: Arc<dyn UserInterface>,
         parent_tool_id: String,
-        cancelled: Arc<AtomicBool>,
+        cancellation: tools_core::RunCancellation,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
     ) -> Self {
         Self {
             parent,
             parent_tool_id,
-            cancelled,
+            cancellation,
             output: Mutex::new(SubAgentOutput::new()),
             tool_id_to_index: Mutex::new(std::collections::HashMap::new()),
             tool_registry,
@@ -846,7 +829,7 @@ impl UserInterface for SubAgentUiAdapter {
     }
 
     fn should_streaming_continue(&self) -> bool {
-        !self.cancelled.load(Ordering::SeqCst) && self.parent.should_streaming_continue()
+        !self.cancellation.is_cancelled() && self.parent.should_streaming_continue()
     }
 
     fn notify_rate_limit(&self, _seconds_remaining: u64) {}

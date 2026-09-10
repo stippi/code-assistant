@@ -191,15 +191,20 @@ impl AgentRuntime {
             "Tool '{}' is not available in the current scope",
             request.name
         );
-        self.permissions
-            .check(
-                self.permission_handler.as_deref(),
-                &tool.spec(),
-                Some(&request.id),
-                &request.input,
-            )
-            .await?;
-        self.cancellation.check()
+        // A stop must not wait for the user to answer a permission prompt;
+        // dropping the mediator's future settles the prompt as denied.
+        let spec = tool.spec();
+        let check = self.permissions.check(
+            self.permission_handler.as_deref(),
+            &spec,
+            Some(&request.id),
+            &request.input,
+        );
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(tools_core::Cancelled.into()),
+            result = check => result,
+        }
     }
 
     /// Outer errors are infrastructure failures and abort dispatch. A rejected

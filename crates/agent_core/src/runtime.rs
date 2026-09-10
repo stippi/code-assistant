@@ -176,7 +176,6 @@ impl AgentRuntime {
     }
 
     pub fn set_cancellation(&mut self, cancellation: tools_core::RunCancellation) {
-        self.permissions.set_cancellation(cancellation.clone());
         self.cancellation = cancellation;
     }
 

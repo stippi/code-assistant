@@ -1711,8 +1711,7 @@ impl SessionManager {
                 self.events.clone(),
                 instance.pending_permission_requests.clone(),
                 self.permission_timeout,
-            )
-            .with_cancellation(instance.cancellation.clone()),
+            ),
         ))
     }
 

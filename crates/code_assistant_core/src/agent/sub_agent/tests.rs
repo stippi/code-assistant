@@ -337,7 +337,7 @@ fn sub_agent_success_clears_a_recovered_stream_error() {
     let ui = SubAgentUiAdapter::new(
         Arc::new(MockUI::default()),
         "child".into(),
-        Arc::new(AtomicBool::new(false)),
+        tools_core::RunCancellation::default(),
         crate::tools::test_registry(),
     );
     ui.set_error("temporary stream error".into());
@@ -353,12 +353,13 @@ fn sub_agent_success_clears_a_recovered_stream_error() {
 #[test]
 fn sub_agent_old_registration_cannot_remove_its_replacement() {
     let registry = SubAgentCancellationRegistry::default();
-    let old = registry.register_run("child");
-    let new = registry.register_run("child");
-    assert!(old.cancellation.token.is_cancelled());
+    let parent = tools_core::RunCancellation::default();
+    let old = registry.register_run("child", &parent);
+    let new = registry.register_run("child", &parent);
+    assert!(old.token.is_cancelled());
     drop(old);
     assert!(registry.cancel("child"));
-    assert!(new.cancellation.token.is_cancelled());
+    assert!(new.token.is_cancelled());
     drop(new);
     assert!(!registry.cancel("child"));
 }

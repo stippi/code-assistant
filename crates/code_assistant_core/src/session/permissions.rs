@@ -171,7 +171,6 @@ pub struct SessionPermissionMediator {
     /// on a prompt nobody is there to answer. `None` waits indefinitely (the
     /// right default for an interactive frontend with a human present).
     timeout: Option<std::time::Duration>,
-    cancellation: tools_core::RunCancellation,
 }
 
 impl SessionPermissionMediator {
@@ -186,13 +185,7 @@ impl SessionPermissionMediator {
             events,
             pending,
             timeout,
-            cancellation: tools_core::RunCancellation::default(),
         }
-    }
-
-    pub fn with_cancellation(mut self, cancellation: tools_core::RunCancellation) -> Self {
-        self.cancellation = cancellation;
-        self
     }
 
     fn next_request_id() -> String {
@@ -263,47 +256,34 @@ impl PermissionMediator for SessionPermissionMediator {
     ) -> Result<PermissionDecision> {
         let data = Self::request_data(&request);
         let request_id = data.request_id.clone();
-        let rx = self.cancellation.if_active(|| {
-            let rx = self.pending.insert(data.clone());
-            self.events.publish_ui(
-                &self.session_id,
-                UiEvent::RequestToolPermission { request: data },
-            );
-            rx
-        })?;
-        // Also clean up when an enclosing cancellation select drops this future.
-        let _guard = RequestGuard {
+        let rx = self.pending.insert(data.clone());
+        self.events.publish_ui(
+            &self.session_id,
+            UiEvent::RequestToolPermission { request: data },
+        );
+        // Settles the request on every exit, including a caller that drops
+        // this future because its run was cancelled.
+        let _settled = RequestGuard {
             mediator: self,
-            request_id: request_id.clone(),
+            request_id,
         };
 
         // A dropped responder (stop request, new agent run) counts as denial.
-        // With a timeout, an unanswered prompt also fails closed: drop the
-        // pending entry (so a late answer is a no-op) and deny, freeing the
+        // With a timeout, an unanswered prompt also fails closed, freeing the
         // lane's turn instead of blocking it forever.
-        let wait = async {
-            match self.timeout {
-                Some(dur) => match tokio::time::timeout(dur, rx).await {
-                    Ok(result) => result.unwrap_or(PermissionDecision::Denied),
-                    Err(_elapsed) => {
-                        self.pending
-                            .resolve(&request_id, PermissionDecision::Denied);
-                        PermissionDecision::Denied
-                    }
-                },
-                None => rx.await.unwrap_or(PermissionDecision::Denied),
-            }
+        let decision = match self.timeout {
+            Some(dur) => match tokio::time::timeout(dur, rx).await {
+                Ok(result) => result.unwrap_or(PermissionDecision::Denied),
+                Err(_elapsed) => PermissionDecision::Denied,
+            },
+            None => rx.await.unwrap_or(PermissionDecision::Denied),
         };
-        let decision = tokio::select! {
-            biased;
-            _ = self.cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
-            decision = wait => decision,
-        };
-        self.cancellation.check()?;
         Ok(decision)
     }
 }
 
+/// Removes the pending entry (so a late answer is a no-op) and tells every
+/// view the request is settled, whichever way the wait ended.
 struct RequestGuard<'a> {
     mediator: &'a SessionPermissionMediator,
     request_id: String,

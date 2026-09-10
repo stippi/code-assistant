@@ -10,23 +10,27 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         mode: SubAgentMode,
         require_file_references: bool,
     ) -> Result<SubAgentResult> {
-        let registration = self.cancellation_registry.register_run(parent_tool_id);
-        let child = registration.cancellation.clone();
+        // The child's token is cancelled with the parent run and on its own
+        // by the UI; its runtime stops new calls and wakes provider and
+        // permission waits. A tool already executing finishes or cooperates.
+        let registration = self
+            .cancellation_registry
+            .register_run(parent_tool_id, &self.parent_cancellation);
+        let cancellation = registration.token.clone();
         let sub_ui = self.build_sub_agent_ui(
             self.ui.clone(),
             parent_tool_id.to_string(),
-            child.flag.clone(),
+            cancellation.clone(),
         );
+
         let work = async {
-            self.parent_cancellation.check()?;
-            child.token.check()?;
+            cancellation.check()?;
             let mut agent = tokio::select! {
                 biased;
-                _ = self.parent_cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
-                _ = child.token.cancelled() => return Err(tools_core::Cancelled.into()),
+                _ = cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
                 agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone()) => agent?,
             };
-            agent.set_cancellation(child.token.clone());
+            agent.set_cancellation(cancellation.clone());
             let scope = match mode {
                 SubAgentMode::ReadOnly => ToolScope::SubAgentReadOnly,
                 SubAgentMode::Default if self.session_config.use_diff_blocks => {
@@ -36,9 +40,10 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             };
             agent.set_tool_scope(scope);
             agent.append_message(Message::new_user(instructions))?;
+
             let mut answer = String::new();
             for attempt in 0..=2 {
-                child.token.check()?;
+                cancellation.check()?;
                 let iteration = agent.run_single_iteration().await;
                 // Earlier requests and tools can have completed before a later
                 // request fails. Preserve their usage as well as their tool list.
@@ -47,7 +52,7 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                     &self.model_name,
                 ));
                 iteration?;
-                child.token.check()?;
+                cancellation.check()?;
                 answer = extract_last_assistant_text(&agent.message_history()).unwrap_or_default();
                 if !require_file_references || has_file_references_with_line_ranges(&answer) {
                     break;
@@ -64,28 +69,19 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             Ok::<_, anyhow::Error>(answer)
         };
 
-        // Propagate a parent stop without dropping an already executing child
-        // tool. The child's runtime stops new calls and wakes provider/permission
-        // waits; existing side effects finish or cooperate with cancellation.
-        let propagate_stop = async {
-            self.parent_cancellation.cancelled().await;
-            child.cancel();
-            std::future::pending::<()>().await;
-        };
-        let result = tokio::select! {
-            biased;
-            _ = propagate_stop => unreachable!("stop propagation never completes"),
-            result = std::panic::AssertUnwindSafe(work).catch_unwind() => {
-                result.unwrap_or_else(|_| Err(anyhow::anyhow!("Sub-agent panicked; partial work may have occurred")))
-            }
-        };
-        // Drop handles registration cleanup on every exit, including abort/panic.
-        // Explicitly unregister before publishing the terminal child status.
+        let result = std::panic::AssertUnwindSafe(work)
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Sub-agent panicked; partial work may have occurred"
+                ))
+            });
+        // Unregister before publishing the terminal child status.
         drop(registration);
+
         match result {
-            Ok(answer)
-                if !child.token.is_cancelled() && !self.parent_cancellation.is_cancelled() =>
-            {
+            Ok(answer) if !cancellation.is_cancelled() => {
                 sub_ui.set_response(answer.clone());
                 sub_ui.send_output_update().await;
                 Ok(SubAgentResult {
@@ -94,8 +90,7 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                 })
             }
             result => {
-                let cancelled =
-                    child.token.is_cancelled() || self.parent_cancellation.is_cancelled();
+                let cancelled = cancellation.is_cancelled();
                 let message = if cancelled {
                     "Sub-agent cancelled. Partial work may have occurred; verify side effects before restarting.".to_string()
                 } else {
