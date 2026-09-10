@@ -554,8 +554,8 @@ pub struct DiffLine {
 const MAX_WORD_DIFF_LINES: usize = 8;
 
 /// A line whose emphasized share of non-whitespace bytes exceeds this is
-/// mostly rewritten: word emphasis would light up most of it, so the line is
-/// shown as a plain change instead. Long prose paragraphs share enough
+/// mostly rewritten: word emphasis would light up most of it, so its whole
+/// replace block is shown as plain changes instead. Long prose paragraphs share enough
 /// common words ("the", "data", …) to pass `similar`'s similarity cutoff
 /// while every other word changed; this is what filters that out.
 const MAX_EMPHASIS_SHARE: f32 = 0.5;
@@ -596,6 +596,8 @@ fn collect_change_lines<'a>(
 ) {
     let block_lines = op.old_range().len().max(op.new_range().len());
     if block_lines <= MAX_WORD_DIFF_LINES {
+        let start = out.len();
+        let mut noisy = false;
         for change in diff.iter_inline_changes(op) {
             let mut text = String::new();
             let mut emphasis = Vec::new();
@@ -613,14 +615,20 @@ fn collect_change_lines<'a>(
                 r.start < r.end
             });
             merge_whitespace_gaps(&mut emphasis, &text);
-            if emphasis_is_noise(&emphasis, &text) {
-                emphasis.clear();
-            }
+            noisy |= emphasis_is_noise(&emphasis, &text);
             out.push(DiffLine {
                 tag: change.tag(),
                 text: text.into(),
                 emphasis,
             });
+        }
+        // The word diff pairs both sides of the block, so the noise verdict
+        // must too: emphasis on one side with none on the other would suggest
+        // a deletion without a counterpart.
+        if noisy {
+            for line in &mut out[start..] {
+                line.emphasis.clear();
+            }
         }
     } else {
         for change in diff.iter_changes(op) {
@@ -1258,6 +1266,21 @@ mod tests {
             &ins.text[ins.emphasis[0].clone()],
             "one or more jurisdictions"
         );
+    }
+
+    #[test]
+    fn word_diff_noise_decision_covers_both_sides_of_a_block() {
+        // The rewritten side crosses the noise threshold, the shorter deleted
+        // side does not. Emphasis on one side without a counterpart on the
+        // other misleads, so the whole block falls back to plain changes.
+        let lines = compute_diff_lines(
+            "- **Main Tenant** — AI Core's top-level tenant, mapped one-to-one to a service instance in a BTP subaccount.\n",
+            "- **Main Tenant** — AI Core's top-level tenant, identified by the BTP subaccount / zone ID. Multiple AI Core service instances in one subaccount reference the same Main Tenant and Resource Groups.\n",
+        );
+        let del = lines.iter().find(|l| l.tag == ChangeTag::Delete).unwrap();
+        let ins = lines.iter().find(|l| l.tag == ChangeTag::Insert).unwrap();
+        assert!(ins.emphasis.is_empty());
+        assert!(del.emphasis.is_empty());
     }
 
     #[test]
