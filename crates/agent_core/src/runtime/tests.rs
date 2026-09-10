@@ -137,9 +137,15 @@ fn checkpoint_legacy_history_is_imported_only_without_a_tree() {
 fn checkpoint_hook_message_corrections_rebuild_cache_even_on_early_return() {
     struct Correction;
     impl ToolInterceptor for Correction {
-        fn try_intercept(&self, _: &ToolRequest, ctx: &mut LoopCtx) -> Option<Result<bool>> {
+        fn try_intercept(
+            &self,
+            _: &ToolRequest,
+            ctx: &mut LoopCtx,
+        ) -> Option<Result<Box<dyn tools_core::AnyOutput>>> {
             ctx.message_nodes.get_mut(&1).unwrap().message = Message::new_user("corrected by hook");
-            Some(Ok(true))
+            Some(Ok(Box::new(crate::types::ParseError::new(
+                "handled".into(),
+            ))))
         }
     }
     let (mut agent, saved) = runtime();
@@ -149,7 +155,7 @@ fn checkpoint_hook_message_corrections_rebuild_cache_even_on_early_return() {
         agent
             .intercept_tool(&ToolRequest::from(&call("a")))
             .unwrap()
-            .unwrap()
+            .is_ok()
     );
     agent.save_state().unwrap();
     let snapshot = saved.0.lock().unwrap().take().unwrap();

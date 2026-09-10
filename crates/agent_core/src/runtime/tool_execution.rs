@@ -2,7 +2,7 @@
 //! which adjacent invocations may overlap; it does not change their hooks,
 //! permission checks, input correction or persistence semantics.
 use super::*;
-use crate::execution::{ExecutionState, RuntimeToolOutput};
+use crate::execution::RuntimeToolOutput;
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use std::time::Instant;
 use tools_core::AnyOutput;
@@ -237,36 +237,11 @@ impl AgentRuntime {
         // Interceptors execute on the state owner, even for a parallel group,
         // and only after scope/permission checks and the start checkpoint.
         if let Some(result) = self.intercept_tool(request) {
-            let output: Box<dyn AnyOutput> = match result {
-                Ok(success) => {
-                    let entry = self
-                        .tool_executions
-                        .iter()
-                        .rev()
-                        .find(|entry| entry.tool_request.id == request.id)
-                        .expect("journaled invocation");
-                    let still_started = entry
-                        .result
-                        .as_any()
-                        .and_then(|out| out.downcast_ref::<RuntimeToolOutput>())
-                        .is_some_and(|out| out.state == ExecutionState::Started);
-                    if still_started {
-                        Box::new(RuntimeToolOutput {
-                            state: if success {
-                                ExecutionState::Succeeded
-                            } else {
-                                ExecutionState::Failed
-                            },
-                            message: "Handled by the application's tool interceptor.".into(),
-                        })
-                    } else {
-                        entry.result.try_clone()?
-                    }
-                }
-                Err(error) => Box::new(RuntimeToolOutput::failed(Self::format_error_for_user(
+            let output = result.unwrap_or_else(|error| {
+                Box::new(RuntimeToolOutput::failed(Self::format_error_for_user(
                     &error,
-                ))),
-            };
+                )))
+            });
             return Ok(Err(Completion {
                 original: request.clone(),
                 execution: ToolExecution {
@@ -313,25 +288,16 @@ impl AgentRuntime {
         }))
     }
 
-    /// Replace the journal slot, retaining deterministic request order. Legacy
-    /// interceptors may append their own record; collapse that duplicate by id.
+    /// Replace the journal slot of this call, keeping request order.
     fn store_execution(&mut self, execution: ToolExecution) {
-        let id = execution.tool_request.id.clone();
-        if let Some(index) = self
+        let id = &execution.tool_request.id;
+        match self
             .tool_executions
             .iter()
-            .position(|entry| entry.tool_request.id == id)
+            .position(|entry| &entry.tool_request.id == id)
         {
-            self.tool_executions[index] = execution;
-            let mut first = true;
-            self.tool_executions.retain(|entry| {
-                if entry.tool_request.id != id {
-                    return true;
-                }
-                std::mem::replace(&mut first, false)
-            });
-        } else {
-            self.tool_executions.push(execution);
+            Some(index) => self.tool_executions[index] = execution,
+            None => self.tool_executions.push(execution),
         }
     }
 

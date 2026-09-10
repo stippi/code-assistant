@@ -618,7 +618,6 @@ impl AgentRuntime {
         self.conversation
             .with_nodes_mut(|message_nodes, active_path| {
                 let ctx = LoopCtx {
-                    tool_executions: &mut self.tool_executions,
                     message_nodes,
                     active_path,
                     session_id: self.session_id.as_deref(),
@@ -1324,14 +1323,15 @@ impl AgentRuntime {
         messages
     }
 
-    /// Executes a tool and catches all errors, returning them as Results
     /// Gives the registered interceptors a chance to handle the request
-    /// before the standard dispatch. Returns `Some(result)` when one did.
-    fn intercept_tool(&mut self, tool_request: &ToolRequest) -> Option<Result<bool>> {
+    /// instead of the registry. Returns the output one of them produced.
+    fn intercept_tool(
+        &mut self,
+        tool_request: &ToolRequest,
+    ) -> Option<Result<Box<dyn tools_core::AnyOutput>>> {
         self.conversation
             .with_nodes_mut(|message_nodes, active_path| {
                 let mut ctx = LoopCtx {
-                    tool_executions: &mut self.tool_executions,
                     message_nodes,
                     active_path,
                     session_id: self.session_id.as_deref(),
@@ -1352,7 +1352,6 @@ impl AgentRuntime {
         self.conversation
             .with_nodes_mut(|message_nodes, active_path| {
                 let mut ctx = LoopCtx {
-                    tool_executions: &mut self.tool_executions,
                     message_nodes,
                     active_path,
                     session_id: self.session_id.as_deref(),

@@ -84,12 +84,10 @@ mod tests {
             },
         );
         let active_path = vec![1];
-        let mut tool_executions = Vec::new();
         let mut state = AgentAppState::new(SessionConfig::default());
 
         {
             let mut ctx = LoopCtx {
-                tool_executions: &mut tool_executions,
                 message_nodes: &mut message_nodes,
                 active_path: &active_path,
                 session_id: None,
@@ -108,7 +106,6 @@ mod tests {
         // Re-activating the same skill does not duplicate it.
         {
             let mut ctx = LoopCtx {
-                tool_executions: &mut tool_executions,
                 message_nodes: &mut message_nodes,
                 active_path: &active_path,
                 session_id: None,
@@ -125,7 +122,6 @@ mod tests {
         let registry = crate::tools::test_registry();
         let mut message_nodes = BTreeMap::new();
         let active_path: Vec<u64> = Vec::new();
-        let mut tool_executions = Vec::new();
         let mut state = AgentAppState::new(SessionConfig::default());
 
         let request = ToolRequest {
@@ -137,7 +133,6 @@ mod tests {
         };
         {
             let mut ctx = LoopCtx {
-                tool_executions: &mut tool_executions,
                 message_nodes: &mut message_nodes,
                 active_path: &active_path,
                 session_id: None,

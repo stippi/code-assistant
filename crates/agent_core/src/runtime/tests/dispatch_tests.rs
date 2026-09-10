@@ -114,9 +114,14 @@ struct Observer {
     intercept: bool,
 }
 impl ToolInterceptor for Observer {
-    fn try_intercept(&self, _: &ToolRequest, _: &mut LoopCtx) -> Option<Result<bool>> {
+    fn try_intercept(
+        &self,
+        _: &ToolRequest,
+        _: &mut LoopCtx,
+    ) -> Option<Result<Box<dyn tools_core::AnyOutput>>> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
-        self.intercept.then_some(Ok(true))
+        self.intercept
+            .then(|| Ok(Box::new(Output("intercepted".into())) as Box<dyn tools_core::AnyOutput>))
     }
     fn after_tool_success(&self, request: &ToolRequest, _: &mut LoopCtx) {
         self.successes.lock().unwrap().push(request.clone());

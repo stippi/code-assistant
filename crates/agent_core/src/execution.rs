@@ -9,14 +9,18 @@ pub(crate) const RUNTIME_OUTPUT_CODEC: &str = "__agent_runtime_outcome_v1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionState {
+    /// The call was rejected or cancelled before anything ran.
     NotStarted,
     /// Persisted BEFORE invoking a tool. After interruption we cannot tell
     /// whether its effects happened, including the save/invoke crash window.
     Started,
-    Succeeded,
+    /// The invocation itself failed (as opposed to a tool reporting an error
+    /// through its own output type).
     Failed,
 }
 
+/// The loop's own outcome record for a call. Never a success: successful
+/// tools journal their real output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeToolOutput {
     pub state: ExecutionState,
@@ -51,7 +55,6 @@ impl Render for RuntimeToolOutput {
         match self.state {
             ExecutionState::NotStarted => "Not started",
             ExecutionState::Started => "Outcome unknown",
-            ExecutionState::Succeeded => "Success",
             ExecutionState::Failed => "Error",
         }
         .into()
@@ -64,6 +67,6 @@ impl Render for RuntimeToolOutput {
 
 impl ToolResult for RuntimeToolOutput {
     fn is_success(&self) -> bool {
-        self.state == ExecutionState::Succeeded
+        false
     }
 }

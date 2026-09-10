@@ -173,8 +173,8 @@ fn journal_outcomes_survive_disk_reload_without_the_original_tools() -> Result<(
     );
     let outputs = [
         RuntimeToolOutput {
-            state: ExecutionState::Succeeded,
-            message: "completed before interruption".into(),
+            state: ExecutionState::Failed,
+            message: "failed before interruption".into(),
         },
         RuntimeToolOutput::started(),
         RuntimeToolOutput::not_started("No invocation was made."),
@@ -216,8 +216,14 @@ fn journal_outcomes_survive_disk_reload_without_the_original_tools() -> Result<(
         assert_eq!(entry.tool_request.name, "unavailable-tool");
         assert_eq!(entry.tool_request.input["path"], "evidence.txt");
     }
-    assert!(restored[0].result.is_success());
     let mut tracker = tools_core::ResourcesTracker::new();
+    assert!(
+        restored[0]
+            .result
+            .as_render()
+            .render(&mut tracker)
+            .contains("failed before interruption")
+    );
     assert!(
         restored[1]
             .result

@@ -9,17 +9,16 @@
 
 use crate::dialect::ToolDialect;
 use crate::tree::{ConversationPath, MessageNode, NodeId};
-use crate::types::{ToolExecution, ToolRequest};
+use crate::types::ToolRequest;
 use anyhow::Result;
 use llm::Message;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tools_core::ToolRegistry;
+use tools_core::{AnyOutput, ToolRegistry};
 
 /// View of the agent state that hooks may read and act on.
 pub struct LoopCtx<'a> {
-    pub tool_executions: &'a mut Vec<ToolExecution>,
     pub message_nodes: &'a mut BTreeMap<NodeId, MessageNode>,
     pub active_path: &'a ConversationPath,
     /// The session this agent runs, `None` while no session is assigned yet.
@@ -36,11 +35,15 @@ pub struct LoopCtx<'a> {
 /// Intercepts tool requests that the application handles itself instead of
 /// dispatching them to the registry, and observes successful executions.
 pub trait ToolInterceptor: Send + Sync {
-    /// Returns `Some(result)` when the request was handled here. Scope and
-    /// permission checks and the start checkpoint always precede this hook,
-    /// including for parallel batches. Intercepted tools do not appear in the UI.
-    /// Hooks may append a ToolExecution; otherwise a generic outcome is recorded.
-    fn try_intercept(&self, _request: &ToolRequest, _ctx: &mut LoopCtx) -> Option<Result<bool>> {
+    /// Handles the request in the application instead of the registry and
+    /// returns the output the loop journals for it. Scope and permission
+    /// checks always precede this hook, for parallel batches as well.
+    /// Intercepted tools do not appear in the UI.
+    fn try_intercept(
+        &self,
+        _request: &ToolRequest,
+        _ctx: &mut LoopCtx,
+    ) -> Option<Result<Box<dyn AnyOutput>>> {
         None
     }
 
