@@ -1603,7 +1603,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
     assert!(matches!(history[1].role, MessageRole::Assistant));
     let prompt = agent.render_tool_results_in_messages();
     assert_eq!(prompt.len(), 3);
-    assert!(serde_json::to_string(&prompt[2])?.contains("unknown"));
+    assert!(serde_json::to_string(&prompt[2])?.contains("did not run"));
     assert!(matches!(history[0].role, MessageRole::User));
 
     Ok(())
@@ -1739,7 +1739,7 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
     assert!(matches!(history[1].role, MessageRole::Assistant));
     let prompt = agent.render_tool_results_in_messages();
     assert_eq!(prompt.len(), 3);
-    assert!(serde_json::to_string(&prompt[2])?.contains("unknown"));
+    assert!(serde_json::to_string(&prompt[2])?.contains("did not run"));
     assert!(matches!(history[0].role, MessageRole::User));
 
     Ok(())
@@ -1801,7 +1801,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
 }
 
 #[tokio::test]
-async fn test_render_tool_results_generates_unknown_results_for_missing_executions() -> Result<()> {
+async fn test_render_tool_results_generates_not_run_results_for_missing_executions() -> Result<()> {
     // This test verifies that when an assistant message contains ToolUse blocks
     // but no corresponding ToolResult, the prompt supplies an unknown outcome
     // rather than claiming cancellation or silently repeating side effects.
@@ -1891,7 +1891,7 @@ async fn test_render_tool_results_generates_unknown_results_for_missing_executio
         } = &blocks[0]
         {
             assert_eq!(tool_use_id, "tool-1-1");
-            assert!(content.contains("unknown"));
+            assert!(content.contains("did not run"));
             assert!(is_error.unwrap_or(false));
         } else {
             panic!("Expected ToolResult block");
@@ -2005,7 +2005,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
 }
 
 #[tokio::test]
-async fn test_render_tool_results_handles_multiple_unknown_tools() -> Result<()> {
+async fn test_render_tool_results_handles_multiple_missing_tools() -> Result<()> {
     // This test verifies that multiple unknown tool calls are all handled correctly.
 
     let mock_llm = MockLLMProvider::new(vec![]);
@@ -2093,7 +2093,7 @@ async fn test_render_tool_results_handles_multiple_unknown_tools() -> Result<()>
         } = &blocks[0]
         {
             assert_eq!(tool_use_id, "tool-1-1");
-            assert!(content.contains("unknown"));
+            assert!(content.contains("did not run"));
             assert!(is_error.unwrap_or(false));
         } else {
             panic!("Expected ToolResult block for first unknown tool");
@@ -2108,7 +2108,7 @@ async fn test_render_tool_results_handles_multiple_unknown_tools() -> Result<()>
         } = &blocks[1]
         {
             assert_eq!(tool_use_id, "tool-1-2");
-            assert!(content.contains("unknown"));
+            assert!(content.contains("did not run"));
             assert!(is_error.unwrap_or(false));
         } else {
             panic!("Expected ToolResult block for second unknown tool");

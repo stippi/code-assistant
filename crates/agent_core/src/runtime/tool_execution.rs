@@ -116,16 +116,6 @@ impl AgentRuntime {
                 request.id
             );
         }
-        // Write intent for the whole batch before any tool can have effects.
-        // A restart can distinguish an unstarted sibling from an uncertain call.
-        for request in requests {
-            self.journal.record(ToolExecution {
-                tool_request: request.clone(),
-                result: Box::new(RuntimeToolOutput::not_started("No invocation was made.")),
-            });
-        }
-        self.checkpoint()?;
-
         let mut parallel = vec![false; requests.len()];
         for index in self.hooks.dispatch.parallel_indices(requests) {
             anyhow::ensure!(
@@ -225,11 +215,20 @@ impl AgentRuntime {
                 RuntimeToolOutput::not_started(Self::format_error_for_user(&error)),
             )));
         }
-        self.journal.record(ToolExecution {
-            tool_request: request.clone(),
-            result: Box::new(RuntimeToolOutput::started()),
-        });
-        self.checkpoint()?;
+        // A tool with effects is journaled as started before it runs, so a
+        // crash mid-call leaves an "outcome unknown" record instead of
+        // nothing. Read-only tools skip this: a missing record means the
+        // call did not happen, and repeating it is harmless either way.
+        if !self
+            .registry
+            .tool_has_capability(&request.name, tools_core::spec::capabilities::READ_ONLY)
+        {
+            self.journal.record(ToolExecution {
+                tool_request: request.clone(),
+                result: Box::new(RuntimeToolOutput::started()),
+            });
+            self.checkpoint()?;
+        }
 
         // Interceptors execute on the state owner, even for a parallel group,
         // and only after scope/permission checks and the start checkpoint.
@@ -298,16 +297,15 @@ impl AgentRuntime {
                 .registry
                 .is_tool_hidden(&request.name, &self.tool_capability);
         self.journal.record(completed.execution);
-        // Commit evidence before hooks/rendering/UI can fail. The active call's
-        // Started record remains on disk if this commit itself fails.
-        self.checkpoint()?;
         if changed {
-            self.update_message_history_with_formatted_tool(&request)?;
+            self.update_message_history_with_formatted_tool(&request);
         }
         if success {
             self.after_tool_success(&request);
-            self.checkpoint()?;
         }
+        // One checkpoint commits the outcome together with everything the
+        // hooks derived from it; the UI is only told afterwards.
+        self.checkpoint()?;
         let execution = self.journal.find(&request.id).expect("committed outcome");
         let content = execution
             .result

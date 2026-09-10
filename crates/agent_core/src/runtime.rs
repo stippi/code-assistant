@@ -1268,7 +1268,7 @@ impl AgentRuntime {
                     })
                 }).map(|id| ContentBlock::ToolResult {
                     content: outputs.get(&id).map(|(content, _)| content.clone()).unwrap_or_else(|| {
-                        ToolResultContent::text("Tool result is missing; execution outcome is unknown. Verify the state before retrying any side effects.")
+                        ToolResultContent::text("No result was recorded for this tool call, so it did not run. Call it again if its result is still needed.")
                     }),
                     is_error: Some(outputs.get(&id).map(|(_, error)| *error).unwrap_or(true)),
                     tool_use_id: id,
@@ -1395,15 +1395,14 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Persist formatted inputs through the conversation mutation boundary.
-    fn update_message_history_with_formatted_tool(
-        &mut self,
-        updated_request: &ToolRequest,
-    ) -> Result<()> {
+    /// Rewrite the originating tool call with the input the tool settled on
+    /// (e.g. format-on-save), so follow-up requests see the final input. The
+    /// caller checkpoints.
+    fn update_message_history_with_formatted_tool(&mut self, updated_request: &ToolRequest) {
         let dialect = self.dialect.clone();
         let registry = self.registry.clone();
         let Some(node) = self.conversation.last_assistant_node_mut() else {
-            return Ok(());
+            return;
         };
         let message = &mut node.message;
         let request_id = message.request_id.unwrap_or(0);
@@ -1445,12 +1444,9 @@ impl AgentRuntime {
                 }
             }
         };
-        if updated {
-            self.checkpoint()?;
-        } else {
+        if !updated {
             warn!("Could not find tool call {} to update", updated_request.id);
         }
-        Ok(())
     }
 
     fn update_tool_call_in_text_blocks(

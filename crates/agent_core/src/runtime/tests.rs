@@ -303,9 +303,7 @@ fn checkpoint_formatted_input_survives_roundtrip() {
         .unwrap();
     let mut request = ToolRequest::from(&call("a"));
     request.input = json!({"content": "formatted"});
-    agent
-        .update_message_history_with_formatted_tool(&request)
-        .unwrap();
+    agent.update_message_history_with_formatted_tool(&request);
     agent
         .append_message(Message::new_user_content(vec![result("a")]))
         .unwrap();
@@ -316,7 +314,7 @@ fn checkpoint_formatted_input_survives_roundtrip() {
 }
 
 #[test]
-fn checkpoint_dangling_calls_survive_reload_with_unknown_prompt_outcome() {
+fn checkpoint_dangling_calls_without_a_record_render_as_not_run() {
     let (mut agent, saved) = runtime();
     agent
         .append_message(Message::new_assistant_content(vec![call("a"), call("b")]))
@@ -338,7 +336,7 @@ fn checkpoint_dangling_calls_survive_reload_with_unknown_prompt_outcome() {
         "partial tool results must be repaired by id"
     );
     assert!(blocks.iter().any(|block| matches!(block, ContentBlock::ToolResult { tool_use_id, content, .. }
-        if tool_use_id == "b" && content.contains("unknown") && !content.contains("cancelled by user"))));
+        if tool_use_id == "b" && content.contains("did not run") && !content.contains("cancelled by user"))));
     assert_eq!(
         before,
         serde_json::to_value(restored.message_history()).unwrap()

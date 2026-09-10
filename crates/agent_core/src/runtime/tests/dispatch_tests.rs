@@ -23,6 +23,7 @@ struct Probe {
     calls: Arc<Mutex<Vec<String>>>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+    capabilities: Vec<std::borrow::Cow<'static, str>>,
 }
 #[async_trait::async_trait]
 impl Tool for Probe {
@@ -34,7 +35,7 @@ impl Tool for Probe {
             description: "test".into(),
             parameters_schema: json!({"type":"object"}),
             annotations: None,
-            capabilities: ToolSpec::capabilities(&["test"]),
+            capabilities: self.capabilities.clone(),
             multiline_params: &[],
             hidden: false,
             title_template: None,
@@ -64,19 +65,29 @@ struct Fixture {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
 }
-fn fixture(requests: &[ToolRequest]) -> Fixture {
-    let (mut agent, saved) = runtime();
-    let calls = Arc::new(Mutex::new(vec![]));
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
+fn probe_registry(f: &Fixture, capabilities: &[&str]) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(Probe {
-        calls: calls.clone(),
-        entered: entered.clone(),
-        release: release.clone(),
+        calls: f.calls.clone(),
+        entered: f.entered.clone(),
+        release: f.release.clone(),
+        capabilities: capabilities.iter().map(|c| c.to_string().into()).collect(),
     }));
-    agent.registry = Arc::new(registry);
-    agent.tool_capability = "test".into();
+    registry
+}
+
+fn fixture(requests: &[ToolRequest]) -> Fixture {
+    let (agent, saved) = runtime();
+    let mut f = Fixture {
+        agent,
+        saved,
+        calls: Arc::new(Mutex::new(vec![])),
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    f.agent.registry = Arc::new(probe_registry(&f, &["test"]));
+    f.agent.tool_capability = "test".into();
+    let agent = &mut f.agent;
     agent
         .append_message(Message::new_assistant_content(
             requests
@@ -85,13 +96,7 @@ fn fixture(requests: &[ToolRequest]) -> Fixture {
                 .collect(),
         ))
         .unwrap();
-    Fixture {
-        agent,
-        saved,
-        calls,
-        entered,
-        release,
-    }
+    f
 }
 fn request(id: &str, wait: bool) -> ToolRequest {
     ToolRequest {
@@ -230,7 +235,7 @@ async fn dispatch_parallel_completions_are_saved_individually() {
 }
 
 #[tokio::test]
-async fn dispatch_journal_distinguishes_unstarted_from_uncertain_after_reload() {
+async fn dispatch_journals_an_effectful_call_before_it_runs() {
     let requests = vec![request("one", true), request("two", false)];
     let f = fixture(&requests);
     let mut agent = f.agent;
@@ -241,32 +246,55 @@ async fn dispatch_journal_distinguishes_unstarted_from_uncertain_after_reload() 
     let journal = f.saved.saved().executions;
     f.release.notify_one();
     task.await.unwrap().unwrap();
+
     assert_eq!(
-        journal.len(),
-        2,
-        "journal records must precede tool invocation"
+        journal
+            .iter()
+            .map(|e| e.tool_request.id.as_str())
+            .collect::<Vec<_>>(),
+        ["one"],
+        "the running call is journaled, its unstarted sibling is not"
     );
-    // Runtime records must be self-describing, even when the tool disappears.
-    let registry = ToolRegistry::new();
-    let restored: Vec<_> = journal
-        .iter()
-        .map(|entry| entry.serialize().unwrap().deserialize(&registry).unwrap())
-        .collect();
-    assert_eq!(restored[0].tool_request.name, "probe");
+    // The record must be self-describing, even when the tool disappears.
+    let restored = journal[0]
+        .serialize()
+        .unwrap()
+        .deserialize(&ToolRegistry::new())
+        .unwrap();
+    assert_eq!(restored.tool_request.name, "probe");
     assert!(
-        restored[0]
+        restored
             .result
             .as_render()
             .render(&mut ResourcesTracker::new())
             .contains("unknown")
     );
-    assert!(
-        restored[1]
-            .result
-            .as_render()
-            .render(&mut ResourcesTracker::new())
-            .contains("not started")
-    );
+}
+
+#[tokio::test]
+async fn dispatch_read_only_calls_checkpoint_once() {
+    let requests = vec![request("one", false)];
+    let mut effectful = fixture(&requests);
+    effectful
+        .agent
+        .manage_tool_execution(&requests)
+        .await
+        .unwrap();
+    // Assistant message, started record, outcome, result message.
+    assert_eq!(effectful.saved.saved().commits, 4);
+
+    let mut read_only = fixture(&requests);
+    read_only.agent.registry = Arc::new(probe_registry(
+        &read_only,
+        &["test", tools_core::spec::capabilities::READ_ONLY],
+    ));
+    read_only
+        .agent
+        .manage_tool_execution(&requests)
+        .await
+        .unwrap();
+    // No started record: the outcome is the first thing the journal sees.
+    assert_eq!(read_only.saved.saved().commits, 3);
 }
 
 struct FailingUi;
