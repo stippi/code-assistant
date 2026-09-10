@@ -220,14 +220,20 @@ impl Actions {
         });
     }
 
+    /// `/clear`: continue in a fresh session with the same settings. The
+    /// current session and its history stay available in the session list.
     fn clear_context(&self, session_id: String) {
         let this = self.clone();
         tokio::spawn(async move {
             if this.refuse_if_view_only().await {
                 return;
             }
-            if let Err(e) = this.service.clear_context(session_id).await {
-                this.display_error(format!("Failed to clear context: {e:#}"));
+            match this.service.start_fresh_session(session_id).await {
+                Ok(fresh) => {
+                    this.switch_session(fresh);
+                    this.refresh_chat_list();
+                }
+                Err(e) => this.display_error(format!("Failed to start a fresh session: {e:#}")),
             }
         });
     }

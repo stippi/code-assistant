@@ -609,23 +609,23 @@ impl SessionService {
         .await
     }
 
-    /// Clear the conversation context (messages) for a session. The session
-    /// itself is kept alive; only the message history is wiped.
-    pub async fn clear_context(&self, session_id: String) -> Result<()> {
-        self.call_session(session_id.clone(), move |ctx| async move {
-            {
-                let mut manager = ctx.manager.lock().await;
-                if let Some(session) = manager.get_session_mut(&session_id) {
-                    let chat = &mut session.session;
-                    chat.message_nodes.clear();
-                    chat.active_path.clear();
-                    chat.next_node_id = 1;
-                    chat.messages.clear();
-                    chat.plan = Default::default();
-                }
-            }
-            ctx.notify_session(&session_id, UiEvent::ClearMessages);
-            Ok(())
+    /// Start over in a new session that inherits this session's settings:
+    /// project, worktree, model, sandbox policy and permission tier. The
+    /// current session keeps its history untouched. Returns the new id.
+    pub async fn start_fresh_session(&self, session_id: String) -> Result<String> {
+        self.call(move |ctx| async move {
+            let mut manager = ctx.manager.lock().await;
+            manager.ensure_session_loaded(&session_id)?;
+            let (config, model) = {
+                let instance = manager
+                    .get_session(&session_id)
+                    .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
+                (
+                    instance.session.config.clone(),
+                    instance.session.model_config.clone(),
+                )
+            };
+            manager.create_session_with_config(None, Some(config), model)
         })
         .await
     }
@@ -2484,6 +2484,48 @@ mod tests {
         assert!(service.list_sessions().await.unwrap().is_empty());
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_fresh_session_keeps_the_history_and_copies_the_settings() {
+        use crate::session::{TurnDispatch, TurnRequest};
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) = test_service_with_llm(
+            tmp.path(),
+            Arc::new(|_| {
+                Ok(Box::new(StreamingScriptedProvider {
+                    text: "done".into(),
+                }))
+            }),
+        );
+        let id = service.create_session(None, None).await.unwrap();
+        service
+            .change_permission_tier(id.clone(), tools_core::PermissionTier::AllTools)
+            .await
+            .unwrap();
+        service
+            .change_sandbox_policy(id.clone(), SandboxPolicy::ReadOnly)
+            .await
+            .unwrap();
+        let TurnDispatch::Started(handle) = service
+            .start_turn_if_idle(id.clone(), TurnRequest::text("task"))
+            .await
+            .unwrap()
+        else {
+            panic!("busy")
+        };
+        handle.wait().await.unwrap();
+
+        let fresh = service.start_fresh_session(id.clone()).await.unwrap();
+        assert_ne!(fresh, id);
+
+        let old = service.load_session(id, None).await.unwrap();
+        assert_eq!(old.messages.len(), 2, "the old session keeps its history");
+        let new = service.load_session(fresh, None).await.unwrap();
+        assert!(new.messages.is_empty());
+        assert_eq!(new.permission_tier, tools_core::PermissionTier::AllTools);
+        assert_eq!(new.sandbox_policy, SandboxPolicy::ReadOnly);
+        assert_eq!(new.current_model, old.current_model);
+    }
+
     #[tokio::test]
     async fn load_session_returns_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2762,15 +2804,16 @@ mod tests {
         let id = service.create_session(None, None).await.unwrap();
 
         let mut subscription = service.subscribe();
-        service.clear_context(id.clone()).await.unwrap();
+        service.clear_session_error(id.clone()).await.unwrap();
 
-        // The ClearMessages notification arrives session-tagged on the
-        // broadcast stream.
+        // The notification arrives session-tagged on the broadcast stream.
         loop {
             let event = subscription.recv().await.unwrap();
             if matches!(
                 event.payload,
-                crate::session::event_stream::EventPayload::Ui(UiEvent::ClearMessages)
+                crate::session::event_stream::EventPayload::Ui(
+                    UiEvent::UpdateSessionActivityState { .. }
+                )
             ) {
                 assert_eq!(event.session_id.as_deref(), Some(id.as_str()));
                 break;
