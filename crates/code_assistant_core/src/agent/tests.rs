@@ -1547,7 +1547,7 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
+async fn test_load_keeps_native_dangling_tool_request_and_repairs_the_prompt() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
@@ -1610,7 +1610,7 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() -> Result<()> {
+async fn test_load_keeps_native_dangling_tool_request_before_a_followup_user_message() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
@@ -1685,7 +1685,7 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
 }
 
 #[tokio::test]
-async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
+async fn test_load_keeps_xml_dangling_tool_request_and_repairs_the_prompt() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
