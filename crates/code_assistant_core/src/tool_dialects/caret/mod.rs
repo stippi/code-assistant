@@ -13,16 +13,15 @@ mod tests;
 pub use parser::parse_caret_tool_invocations;
 pub use stream::CaretStreamProcessor;
 
-use crate::tool_dialects::{example_placeholder, is_multiline_param, message_text_segments};
+use crate::tool_dialects::{example_placeholder, is_multiline_param};
 use crate::tools::ToolRequest;
 use crate::tools::core::ToolRegistry;
 use crate::tools::tool_use_filter::SmartToolFilter;
 use agent_core::dialect::ToolDialect;
 use agent_core::ui::{AgentUi, HiddenTools, StreamProcessorTrait};
 use anyhow::Result;
-use llm::{ContentBlock, LLMResponse, Message};
+use llm::{ContentBlock, LLMResponse};
 use std::sync::Arc;
-use tracing::debug;
 
 /// Parse Caret tool requests from LLM response and return both requests and truncated response after first tool
 fn parse_and_truncate_caret_response(
@@ -130,29 +129,6 @@ impl ToolDialect for CaretDialect {
 
     fn render_format_section_for_prompt(&self) -> Option<String> {
         Some(self.generate_caret_syntax_documentation())
-    }
-
-    fn message_contains_invocation(&self, message: &Message, registry: &ToolRegistry) -> bool {
-        let request_id = message.request_id.unwrap_or(0);
-        for text in message_text_segments(message) {
-            if !text.contains("^^^") {
-                continue;
-            }
-            match parse_caret_tool_invocations(text, request_id, 0, None, registry) {
-                Ok((requests, _)) => {
-                    if !requests.is_empty() {
-                        return true;
-                    }
-                }
-                Err(error) => {
-                    debug!(
-                        "Failed to parse Caret tool invocation while inspecting message: {error}"
-                    );
-                    return true;
-                }
-            }
-        }
-        false
     }
 }
 

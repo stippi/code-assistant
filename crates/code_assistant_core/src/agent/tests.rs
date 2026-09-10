@@ -1610,7 +1610,8 @@ async fn test_load_keeps_native_dangling_tool_request_and_repairs_the_prompt() -
 }
 
 #[tokio::test]
-async fn test_load_keeps_native_dangling_tool_request_before_a_followup_user_message() -> Result<()> {
+async fn test_load_keeps_native_dangling_tool_request_before_a_followup_user_message() -> Result<()>
+{
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
