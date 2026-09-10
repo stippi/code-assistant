@@ -553,79 +553,114 @@ pub struct DiffLine {
 /// the word diff's cost grows with the block. Same cap as Zed.
 const MAX_WORD_DIFF_LINES: usize = 8;
 
-/// A line whose emphasized share of non-whitespace bytes exceeds this is
-/// mostly rewritten: word emphasis would light up most of it, so its whole
-/// replace block is shown as plain changes instead. Long prose paragraphs share enough
-/// common words ("the", "data", …) to pass `similar`'s similarity cutoff
-/// while every other word changed; this is what filters that out.
-const MAX_EMPHASIS_SHARE: f32 = 0.5;
+/// Unchanged text between two emphasis ranges with at most this many
+/// alphanumeric characters (a space, punctuation, "a", "the", "in") is not
+/// worth breaking the emphasis for — the ranges merge across it.
+const MAX_MERGED_ANCHOR_CHARS: usize = 3;
 
-/// Merge emphasis ranges whose gap is whitespace only: word tokens on either
-/// side of an unchanged space are one change to the eye.
-fn merge_whitespace_gaps(emphasis: &mut Vec<std::ops::Range<usize>>, text: &str) {
-    emphasis.dedup_by(|next, prev| {
-        let gap = &text[prev.end..next.start];
-        if gap.chars().all(char::is_whitespace) {
-            prev.end = next.end;
-            true
-        } else {
-            false
+/// A line with more emphasis ranges than this (after merging) is a rewrite,
+/// not an edit: highlighting would fragment the whole paragraph. The block
+/// then shows as plain changes. Counting ranges rather than characters keeps
+/// one long insertion, however large, emphasized.
+const MAX_EMPHASIS_SPANS: usize = 6;
+
+/// Byte ranges (per side) that a word-level diff of one replace block marks
+/// as changed, relative to each side's concatenated block text. Runs our own
+/// word diff instead of `similar`'s inline changes: those refuse blocks below
+/// a similarity ratio, which drops exactly the case of a few sentences
+/// inserted into a short paragraph.
+fn word_diff_ranges(
+    old: &str,
+    new: &str,
+) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    let diff = TextDiff::configure()
+        .algorithm(similar::Algorithm::Patience)
+        .diff_unicode_words(old, new);
+    let bytes = |slices: &[&str]| slices.iter().map(|s| s.len()).sum::<usize>();
+    let (mut old_ranges, mut new_ranges) = (Vec::new(), Vec::new());
+    let (mut old_pos, mut new_pos) = (0, 0);
+    for op in diff.ops() {
+        let old_len = bytes(&diff.old_slices()[op.old_range()]);
+        let new_len = bytes(&diff.new_slices()[op.new_range()]);
+        if op.tag() != similar::DiffTag::Equal {
+            if old_len > 0 {
+                old_ranges.push(old_pos..old_pos + old_len);
+            }
+            if new_len > 0 {
+                new_ranges.push(new_pos..new_pos + new_len);
+            }
         }
-    });
+        old_pos += old_len;
+        new_pos += new_len;
+    }
+    (old_ranges, new_ranges)
 }
 
-/// True if emphasizing `emphasis` would cover more than [`MAX_EMPHASIS_SHARE`]
-/// of the line's non-whitespace bytes.
-fn emphasis_is_noise(emphasis: &[std::ops::Range<usize>], text: &str) -> bool {
-    let non_ws = |s: &str| s.bytes().filter(|b| !b.is_ascii_whitespace()).count();
-    let total = non_ws(text);
-    if total == 0 {
-        return false;
+/// Build the [`DiffLine`]s of one side of a replace block from its line
+/// slices and the block-relative changed ranges. Each line's ranges are
+/// clipped to the trimmed line and merged across small anchors.
+fn emphasized_lines(
+    tag: ChangeTag,
+    slices: &[&str],
+    ranges: &[std::ops::Range<usize>],
+    out: &mut Vec<DiffLine>,
+) {
+    let mut line_start = 0;
+    for slice in slices {
+        let line_end = line_start + slice.len();
+        let text = slice.trim_end();
+        let mut emphasis: Vec<std::ops::Range<usize>> = ranges
+            .iter()
+            .filter(|r| r.start < line_end && r.end > line_start)
+            .map(|r| {
+                let start = r.start.max(line_start) - line_start;
+                let end = (r.end.min(line_end) - line_start).min(text.len());
+                start..end
+            })
+            .filter(|r| r.start < r.end)
+            .collect();
+        emphasis.dedup_by(|next, prev| {
+            let anchor = &text[prev.end..next.start];
+            if anchor.chars().filter(|c| c.is_alphanumeric()).count() <= MAX_MERGED_ANCHOR_CHARS {
+                prev.end = next.end;
+                true
+            } else {
+                false
+            }
+        });
+        out.push(DiffLine {
+            tag,
+            text: text.to_string().into(),
+            emphasis,
+        });
+        line_start = line_end;
     }
-    let emphasized: usize = emphasis.iter().map(|r| non_ws(&text[r.clone()])).sum();
-    emphasized as f32 / total as f32 > MAX_EMPHASIS_SHARE
 }
 
 /// Expand one diff op into [`DiffLine`]s, with word-level emphasis for small
-/// replace blocks. `iter_inline_changes` falls back to plain changes on its
-/// own when the block's similarity ratio is too low for a useful word diff.
+/// replace blocks.
 fn collect_change_lines<'a>(
     diff: &'a TextDiff<'a, 'a, 'a, str>,
     op: &similar::DiffOp,
     out: &mut Vec<DiffLine>,
 ) {
-    let block_lines = op.old_range().len().max(op.new_range().len());
-    if block_lines <= MAX_WORD_DIFF_LINES {
+    let old_slices = &diff.old_slices()[op.old_range()];
+    let new_slices = &diff.new_slices()[op.new_range()];
+    let is_replace = op.tag() == similar::DiffTag::Replace;
+    let block_lines = old_slices.len().max(new_slices.len());
+
+    if is_replace && block_lines <= MAX_WORD_DIFF_LINES {
+        let (old_ranges, new_ranges) = word_diff_ranges(&old_slices.concat(), &new_slices.concat());
         let start = out.len();
-        let mut noisy = false;
-        for change in diff.iter_inline_changes(op) {
-            let mut text = String::new();
-            let mut emphasis = Vec::new();
-            for (emphasized, piece) in change.iter_strings_lossy() {
-                let start = text.len();
-                text.push_str(&piece);
-                if emphasized {
-                    emphasis.push(start..text.len());
-                }
-            }
-            let trimmed_len = text.trim_end().len();
-            text.truncate(trimmed_len);
-            emphasis.retain_mut(|r| {
-                r.end = r.end.min(trimmed_len);
-                r.start < r.end
-            });
-            merge_whitespace_gaps(&mut emphasis, &text);
-            noisy |= emphasis_is_noise(&emphasis, &text);
-            out.push(DiffLine {
-                tag: change.tag(),
-                text: text.into(),
-                emphasis,
-            });
-        }
-        // The word diff pairs both sides of the block, so the noise verdict
-        // must too: emphasis on one side with none on the other would suggest
-        // a deletion without a counterpart.
-        if noisy {
+        emphasized_lines(ChangeTag::Delete, old_slices, &old_ranges, out);
+        emphasized_lines(ChangeTag::Insert, new_slices, &new_ranges, out);
+        // The word diff pairs both sides of the block, so the rewrite verdict
+        // covers both: emphasis on one side with none on the other would
+        // suggest a deletion without a counterpart.
+        let rewritten = out[start..]
+            .iter()
+            .any(|l| l.emphasis.len() > MAX_EMPHASIS_SPANS);
+        if rewritten {
             for line in &mut out[start..] {
                 line.emphasis.clear();
             }
@@ -1269,28 +1304,43 @@ mod tests {
     }
 
     #[test]
-    fn word_diff_noise_decision_covers_both_sides_of_a_block() {
-        // The rewritten side crosses the noise threshold, the shorter deleted
-        // side does not. Emphasis on one side without a counterpart on the
-        // other misleads, so the whole block falls back to plain changes.
+    fn word_diff_keeps_both_sides_of_a_partially_rewritten_paragraph() {
+        // Deleted and inserted passages both get emphasis; small anchors
+        // ("service", "in") do not fragment it. The counterpart of a
+        // highlighted deletion must be visible on the inserted side.
         let lines = compute_diff_lines(
             "- **Main Tenant** — AI Core's top-level tenant, mapped one-to-one to a service instance in a BTP subaccount.\n",
             "- **Main Tenant** — AI Core's top-level tenant, identified by the BTP subaccount / zone ID. Multiple AI Core service instances in one subaccount reference the same Main Tenant and Resource Groups.\n",
         );
         let del = lines.iter().find(|l| l.tag == ChangeTag::Delete).unwrap();
         let ins = lines.iter().find(|l| l.tag == ChangeTag::Insert).unwrap();
-        assert!(ins.emphasis.is_empty());
-        assert!(del.emphasis.is_empty());
+        assert!(!del.emphasis.is_empty());
+        assert!(!ins.emphasis.is_empty());
+        assert!(ins.emphasis.len() <= 3, "{:?}", ins.emphasis);
+        assert!(&ins.text[ins.emphasis[0].clone()].starts_with("identified by the BTP subaccount"));
     }
 
     #[test]
-    fn word_diff_dropped_when_most_of_the_line_changed() {
-        // Enough tokens (spaces, one word) match for `similar` to attempt a
-        // word diff, but nearly every word changed: emphasizing most of the
-        // line is noise, so the line is shown as a plain change instead.
+    fn word_diff_keeps_long_insertion_into_short_paragraph() {
+        // Two short sentences become five: the insertion dwarfs the original,
+        // yet it is one contiguous change and must be emphasized as such.
         let lines = compute_diff_lines(
-            "one two three four five six seven\n",
-            "uno dos tres four cinco seis siete\n",
+            "Traces stay local. Keys stay local.\n",
+            "Traces stay local. Every trace is written by the consumer that received it, and that consumer runs in the same jurisdiction as the deployment. Retention follows the jurisdiction's own schedule rather than a global default. Keys stay local.\n",
+        );
+        let ins = lines.iter().find(|l| l.tag == ChangeTag::Insert).unwrap();
+        assert_eq!(ins.emphasis.len(), 1, "{:?}", ins.emphasis);
+        assert!(&ins.text[ins.emphasis[0].clone()].starts_with("Every trace"));
+    }
+
+    #[test]
+    fn word_diff_dropped_for_fragmented_rewrite() {
+        // Every other word changed, with real words as anchors in between:
+        // more emphasis spans than a reader can follow, so both sides fall
+        // back to plain changes.
+        let lines = compute_diff_lines(
+            "alpha keep1 beta keep2 gamma keep3 delta keep4 epsilon keep5 zeta keep6 eta keep7 theta\n",
+            "one keep1 two keep2 three keep3 four keep4 five keep5 six keep6 seven keep7 eight\n",
         );
         assert!(
             lines
