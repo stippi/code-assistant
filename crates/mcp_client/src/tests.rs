@@ -6,8 +6,8 @@ use crate::client::McpServerConnection;
 use crate::config::McpServerConfig;
 use crate::registry::{MCP_CAPABILITY, register_connection_tools, server_scope_capability};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, ListToolsResult,
-    PaginatedRequestParams, Tool as McpToolDescriptor,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+    ListToolsResult, PaginatedRequestParams, Tool as McpToolDescriptor,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
@@ -53,7 +53,7 @@ impl ServerHandler for TestServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         match request.name.as_ref() {
             "echo" => {
                 let message = request
@@ -62,11 +62,12 @@ impl ServerHandler for TestServer {
                     .and_then(|arguments| arguments.get("message"))
                     .and_then(|value| value.as_str())
                     .unwrap_or_default();
-                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "echo: {message}"
-                ))]))
+                Ok(
+                    CallToolResult::success(vec![ContentBlock::text(format!("echo: {message}"))])
+                        .into(),
+                )
             }
-            "fail" => Ok(CallToolResult::error(vec![ContentBlock::text("it broke")])),
+            "fail" => Ok(CallToolResult::error(vec![ContentBlock::text("it broke")]).into()),
             other => Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
