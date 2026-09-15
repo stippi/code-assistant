@@ -29,8 +29,8 @@ pub use naming::is_mcp_tool_name;
 pub use output::deserialize_mcp_output;
 pub use registry::{
     ConnectionProvider, DiscoveredTool, MCP_CAPABILITY, McpServerStatus, discover_tools,
-    register_connection_tools, register_mcp_tools, register_mcp_tools_pooled,
-    server_scope_capability,
+    discover_tools_with_credentials, register_connection_tools, register_mcp_tools,
+    register_mcp_tools_pooled, server_scope_capability,
 };
 /// Re-exported so embedders can name the credential-store trait object type
 /// (`Arc<dyn CredentialStore>`) that [`McpServerConnection::connect_with_credentials`]

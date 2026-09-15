@@ -146,11 +146,26 @@ pub struct DiscoveredTool {
 
 /// Connect to a server, list everything it offers (ignoring the tool
 /// filter), and shut the connection down again. For configuration UIs.
+/// Unauthenticated — an HTTP server requiring OAuth fails with
+/// [`crate::AuthorizationRequired`]; use [`discover_tools_with_credentials`]
+/// to reuse a stored token.
 pub async fn discover_tools(
     server_name: &str,
     config: &McpServerConfig,
 ) -> Result<Vec<DiscoveredTool>> {
-    let connection = McpServerConnection::connect(server_name, config).await?;
+    discover_tools_with_credentials(server_name, config, None).await
+}
+
+/// Like [`discover_tools`], but reuses OAuth tokens from `credentials` for an
+/// HTTP server, so a configuration UI can list the tools of a server the user
+/// has already authenticated.
+pub async fn discover_tools_with_credentials(
+    server_name: &str,
+    config: &McpServerConfig,
+    credentials: Option<std::sync::Arc<dyn crate::CredentialStore>>,
+) -> Result<Vec<DiscoveredTool>> {
+    let connection =
+        McpServerConnection::connect_with_credentials(server_name, config, credentials).await?;
     let descriptors = connection.list_tools().await?;
     let _ = connection.shutdown().await;
     Ok(descriptors

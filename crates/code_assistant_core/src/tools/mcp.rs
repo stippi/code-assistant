@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub use mcp_client::{
-    AuthorizationOutcome, DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig,
-    McpTransport, OAuthAuthorizer, discover_tools, parse_local_mcp_json,
+    AuthorizationOutcome, AuthorizationRequired, DiscoveredTool, McpServerConfig, McpServerStatus,
+    McpServersConfig, McpTransport, OAuthAuthorizer, discover_tools, parse_local_mcp_json,
 };
 
 /// Scope tags every MCP tool carries in code-assistant: offered to the main
@@ -86,6 +86,22 @@ pub fn forget_mcp_oauth_tokens(server: &str) -> Result<bool> {
 /// logged in" signal for status output and UI; it does not check expiry.
 pub fn has_mcp_oauth_tokens(server: &str) -> bool {
     mcp_oauth_token_path(server).exists()
+}
+
+/// Discover a server's tools for a configuration UI, reusing stored OAuth
+/// tokens for HTTP servers so an authenticated server lists its tools. An
+/// HTTP server that still needs authorization fails with
+/// [`AuthorizationRequired`] (downcastable), which the UI turns into an
+/// "Authenticate" action.
+pub async fn discover_server_tools(
+    server_name: &str,
+    server: &McpServerConfig,
+) -> Result<Vec<DiscoveredTool>> {
+    let credentials = server
+        .transport
+        .is_http()
+        .then(|| mcp_oauth_credential_store(server_name));
+    mcp_client::discover_tools_with_credentials(server_name, server, credentials).await
 }
 
 /// Load the MCP servers configuration, substituting `${ENV_VAR}` patterns in
