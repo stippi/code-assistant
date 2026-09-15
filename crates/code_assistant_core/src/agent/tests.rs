@@ -1057,8 +1057,8 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
     };
 
     assert!(
-        !request_contains(old_user_text),
-        "Compaction request should skip messages before the previous summary",
+        request_contains(old_user_text),
+        "The hand-off carries user messages from before the previous summary verbatim",
     );
     assert!(
         !request_contains(old_assistant_text),

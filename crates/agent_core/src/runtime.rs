@@ -1,6 +1,7 @@
 //! The agent loop. Application behavior plugs in through the hook traits in
 //! [`crate::hooks`]; application state travels type-erased in `extensions`.
 
+mod handoff;
 #[cfg(test)]
 mod tests;
 mod tool_execution;
@@ -848,15 +849,6 @@ impl AgentRuntime {
         Ok((response, request_id))
     }
 
-    fn format_compaction_summary_for_prompt(summary: &str) -> String {
-        let trimmed = summary.trim();
-        if trimmed.is_empty() {
-            "Conversation summary: (empty)".to_string()
-        } else {
-            format!("Conversation summary:\n{trimmed}")
-        }
-    }
-
     fn extract_compaction_summary_text(blocks: &[ContentBlock]) -> String {
         let mut collected = Vec::new();
         for block in blocks {
@@ -888,23 +880,44 @@ impl AgentRuntime {
         messages
     }
 
+    /// The messages the next request is built from: everything from the last
+    /// compaction summary onwards, with the summary rendered as the hand-off
+    /// message that also carries the user's earlier messages verbatim.
     fn prompt_messages(&self) -> Vec<Message> {
         let path = self.conversation.path();
+        let nodes = self.conversation.nodes();
         let start = path
             .iter()
             .rposition(|id| {
-                self.conversation
-                    .nodes()
+                nodes
                     .get(id)
                     .is_some_and(|node| node.message.is_compaction_summary)
             })
             .unwrap_or(0);
-        path[start..]
+        let mut messages: Vec<Message> = path[start..]
             .iter()
             .filter(|id| !self.prompt_projection.omitted_nodes.contains(id))
-            .filter_map(|id| self.conversation.nodes().get(id))
+            .filter_map(|id| nodes.get(id))
             .map(|node| node.message.clone())
-            .collect()
+            .collect();
+        if let Some(summary) = messages
+            .first_mut()
+            .filter(|message| message.is_compaction_summary)
+        {
+            let user_messages = handoff::user_message_texts(
+                path[..start]
+                    .iter()
+                    .filter_map(|id| nodes.get(id))
+                    .map(|node| &node.message),
+            );
+            let summary_text = match &summary.content {
+                MessageContent::Text(text) => text.as_str(),
+                MessageContent::Structured(_) => "",
+            };
+            summary.content =
+                MessageContent::Text(handoff::render_handoff(&user_messages, summary_text));
+        }
+        messages
     }
 
     fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
@@ -1294,28 +1307,22 @@ impl AgentRuntime {
         }
 
         for message in &mut messages {
-            match &mut message.content {
-                MessageContent::Structured(blocks) => {
-                    for block in blocks {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            content,
-                            is_error,
-                            ..
-                        } = block
-                            && let Some((output, error)) = outputs.get(tool_use_id)
-                        {
-                            *content = output.clone();
-                            if *error {
-                                *is_error = Some(true);
-                            }
+            if let MessageContent::Structured(blocks) = &mut message.content {
+                for block in blocks {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                        ..
+                    } = block
+                        && let Some((output, error)) = outputs.get(tool_use_id)
+                    {
+                        *content = output.clone();
+                        if *error {
+                            *is_error = Some(true);
                         }
                     }
                 }
-                MessageContent::Text(text) if message.is_compaction_summary => {
-                    *text = Self::format_compaction_summary_for_prompt(text);
-                }
-                _ => {}
             }
         }
         messages
