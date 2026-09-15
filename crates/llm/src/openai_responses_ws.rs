@@ -22,6 +22,19 @@
 //! from closing the connection due to keepalive timeout. Application-level frames
 //! (Text, Close) are forwarded through an mpsc channel to `process_ws_stream`.
 //!
+//! ## Abandoned responses
+//!
+//! The socket carries at most one response at a time and there is no per-event
+//! correlation to a request, so a request abandoned mid-stream (the caller drops the
+//! future, e.g. a task abort on user interrupt) leaves the server streaming a response
+//! nobody reads. Reusing that socket would hand the dead response's tail to the next
+//! request as its answer and shift every later reply by one, until the server rejects
+//! the incremental chain with `previous_response_not_found`. Three guards prevent it:
+//! the connection is marked busy before a request goes out and only a terminal event
+//! clears the mark (`ensure_connection` retires a marked socket); output events before
+//! this request's `response.created` fail the request as stale; and a rejected chain or
+//! a stale stream is retried once on a fresh connection with the full input.
+//!
 //! ## Usage
 //!
 //! The provider is created via [`OpenAIResponsesWsClient::new`] (API-key auth) or
@@ -491,6 +504,54 @@ struct WsConnection {
     rx: mpsc::UnboundedReceiver<ReaderFrame>,
     /// Handle to the background reader task (aborted on drop).
     _reader_handle: tokio::task::JoinHandle<()>,
+    /// Set when a `response.create` goes out, cleared by that response's
+    /// terminal event. A request abandoned mid-stream — the caller dropped
+    /// the future, e.g. a task abort on user interrupt — leaves it set: the
+    /// server keeps streaming the dead response on this socket, and the
+    /// next request would read its tail as its own answer, shifting every
+    /// reply after it by one. Such a connection is never reused (see
+    /// [`OpenAIResponsesWsClient::ensure_connection`]).
+    unfinished_response: bool,
+}
+
+/// What the stream reader established about the response it read.
+#[derive(Debug, Default)]
+struct ResponseProgress {
+    /// `response.created` was seen: the events that follow are this request's.
+    created: bool,
+    /// A terminal event was consumed (`completed`, `failed`, `incomplete`):
+    /// the server sends nothing more for this response and the connection
+    /// is clean for the next request.
+    finished: bool,
+}
+
+/// Events that carry or close a response's output. One of these before this
+/// request's own `response.created` can only be the tail of a previous,
+/// abandoned response still arriving on the socket.
+fn is_response_output_event(event_type: &str) -> bool {
+    event_type.starts_with("response.output_")
+        || event_type.ends_with(".delta")
+        || matches!(
+            event_type,
+            "response.completed" | "response.failed" | "response.incomplete"
+        )
+}
+
+/// Request failures worth one more attempt on a fresh connection: the socket
+/// itself went bad, or the server's view of the conversation diverged from
+/// ours — it no longer knows the response our incremental input chains to
+/// (`previous_response_not_found`), or it delivered another response's
+/// events on our turn. Dropping the connection resets the incremental
+/// chain, so the retry sends the full input.
+fn is_retryable_request_error(err_msg: &str) -> bool {
+    err_msg.contains("WebSocket connection")
+        || err_msg.contains("connection limit")
+        || err_msg.contains("idle timeout")
+        || err_msg.contains("closed by server")
+        || err_msg.contains("reader task ended")
+        || err_msg.contains("Failed to send WebSocket")
+        || err_msg.contains("previous_response_not_found")
+        || err_msg.contains("Stale WebSocket response")
 }
 
 /// Spawn the background reader task.
@@ -679,6 +740,13 @@ impl OpenAIResponsesWsClient {
             if conn._reader_handle.is_finished() {
                 info!("WebSocket reader task has ended — connection is stale, reconnecting");
                 self.drop_connection();
+            } else if conn.unfinished_response {
+                warn!(
+                    "WebSocket connection still carries a response whose request was \
+                     abandoned mid-stream — dropping it so the next request cannot read \
+                     that response's tail as its own"
+                );
+                self.drop_connection();
             } else {
                 return Ok(());
             }
@@ -738,6 +806,7 @@ impl OpenAIResponsesWsClient {
             sink: shared_sink,
             rx,
             _reader_handle: reader_handle,
+            unfinished_response: false,
         });
         Ok(())
     }
@@ -970,8 +1039,13 @@ impl OpenAIResponsesWsClient {
         {
             let conn = self
                 .connection
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("WebSocket connection not established"))?;
+            // Marked before the frame goes out: from here on the server owns a
+            // response on this socket until its terminal event clears the mark.
+            // If this future is dropped before that, the mark stays and
+            // `ensure_connection` retires the socket instead of reusing it.
+            conn.unfinished_response = true;
             let mut sink_guard = conn.sink.lock().await;
             sink_guard
                 .send(WsMessage::Text(request_text.into()))
@@ -981,7 +1055,24 @@ impl OpenAIResponsesWsClient {
 
         // Process response events
         let request_start = SystemTime::now();
-        let result = self.process_ws_stream(streaming_callback).await;
+        let mut progress = ResponseProgress::default();
+        let result = {
+            let idle_timeout = self.idle_timeout;
+            let conn = self
+                .connection
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("No WebSocket connection"))?;
+            Self::process_ws_stream(
+                &mut conn.rx,
+                idle_timeout,
+                streaming_callback,
+                &mut progress,
+            )
+            .await
+        };
+        if let Some(conn) = self.connection.as_mut() {
+            conn.unfinished_response = !progress.finished;
+        }
 
         match result {
             Ok((mut response, response_id)) => {
@@ -1016,9 +1107,15 @@ impl OpenAIResponsesWsClient {
 
     /// Read events from the channel (fed by the background reader) until
     /// `response.completed` or error. Returns (LLMResponse, Option<response_id>).
+    ///
+    /// `progress` records what was established about the response even when
+    /// the result is an error: whether its terminal event was consumed
+    /// decides if the connection may serve the next request.
     async fn process_ws_stream(
-        &mut self,
+        rx: &mut mpsc::UnboundedReceiver<ReaderFrame>,
+        idle_timeout: Duration,
         streaming_callback: Option<CallbackRef<'_>>,
+        progress: &mut ResponseProgress,
     ) -> Result<(LLMResponse, Option<String>)> {
         let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut usage = Usage::zero();
@@ -1029,14 +1126,8 @@ impl OpenAIResponsesWsClient {
         let mut block_start_times: HashMap<String, SystemTime> = HashMap::new();
         let mut reasoning_state = ReasoningState::default();
 
-        let idle_timeout = self.idle_timeout;
-        let conn = self
-            .connection
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("No WebSocket connection"))?;
-
         loop {
-            let frame = tokio::time::timeout(idle_timeout, conn.rx.recv())
+            let frame = tokio::time::timeout(idle_timeout, rx.recv())
                 .await
                 .context("WebSocket idle timeout")?
                 .ok_or_else(|| anyhow::anyhow!("WebSocket reader task ended unexpectedly"))?;
@@ -1068,8 +1159,8 @@ impl OpenAIResponsesWsClient {
                             bail!("{}", ApiError::RateLimit(error_msg.to_string()));
                         }
                         if error_code == "websocket_connection_limit_reached" {
-                            // Reconnect on next request
-                            self.drop_connection();
+                            // The caller drops the connection on error and
+                            // reconnects on the retry.
                             bail!("WebSocket connection limit reached, will reconnect");
                         }
                         bail!(
@@ -1080,9 +1171,22 @@ impl OpenAIResponsesWsClient {
                         );
                     }
 
+                    // Output arriving before this request's own `response.created`
+                    // belongs to a previous response still draining on the
+                    // socket. Consuming it would answer this request with the
+                    // tail of another; fail instead, the caller retires the
+                    // connection and retries on a fresh one.
+                    if !progress.created && is_response_output_event(&event.event_type) {
+                        bail!(
+                            "Stale WebSocket response event '{}' before response.created \
+                             — the connection still carried a previous response",
+                            event.event_type
+                        );
+                    }
+
                     match event.event_type.as_str() {
                         "response.created" => {
-                            // Response started; nothing specific to do
+                            progress.created = true;
                         }
                         "response.output_item.added" => {
                             if let Some(item) = event.item {
@@ -1260,6 +1364,11 @@ impl OpenAIResponsesWsClient {
                                 });
                             }
 
+                            // Terminal: the socket is clean for the next
+                            // request, whatever the callback does with the
+                            // completion notice.
+                            progress.finished = true;
+
                             if let Some(cb) = streaming_callback {
                                 cb(&StreamingChunk::StreamingComplete)?;
                             }
@@ -1267,6 +1376,7 @@ impl OpenAIResponsesWsClient {
                             break; // Done with this response
                         }
                         "response.failed" => {
+                            progress.finished = true;
                             let error_msg = event
                                 .response
                                 .as_ref()
@@ -1298,6 +1408,7 @@ impl OpenAIResponsesWsClient {
                             }
                         }
                         "response.incomplete" => {
+                            progress.finished = true;
                             let reason = event
                                 .response
                                 .as_ref()
@@ -1628,15 +1739,9 @@ impl LLMProvider for OpenAIResponsesWsClient {
                 Err(e) => {
                     attempts += 1;
                     let err_msg = e.to_string();
-                    let is_connection_error = err_msg.contains("WebSocket connection")
-                        || err_msg.contains("connection limit")
-                        || err_msg.contains("idle timeout")
-                        || err_msg.contains("closed by server")
-                        || err_msg.contains("reader task ended")
-                        || err_msg.contains("Failed to send WebSocket");
 
                     if should_retry(
-                        is_connection_error,
+                        is_retryable_request_error(&err_msg),
                         attempts,
                         max_retries,
                         streamed_output.load(Ordering::Relaxed),
@@ -2218,5 +2323,125 @@ mod tests {
         }));
         assert!(!is_model_output(&StreamingChunk::RateLimitClear));
         assert!(!is_model_output(&StreamingChunk::StreamingComplete));
+    }
+
+    // -----------------------------------------------------------------------
+    // Abandoned responses: what the stream reader establishes about the
+    // response it read, with the event flow fed through the reader channel.
+    // -----------------------------------------------------------------------
+
+    fn created() -> serde_json::Value {
+        serde_json::json!({"type": "response.created", "response": {"id": "resp_1"}})
+    }
+
+    fn text_delta(text: &str) -> serde_json::Value {
+        serde_json::json!({"type": "response.output_text.delta", "item_id": "msg_1", "delta": text})
+    }
+
+    fn completed() -> serde_json::Value {
+        serde_json::json!({"type": "response.completed", "response": {"id": "resp_1", "output": []}})
+    }
+
+    /// Run the stream reader over `events`, keeping the sender alive so the
+    /// reader only ever sees frames, never a closed channel.
+    async fn read_stream(
+        events: Vec<serde_json::Value>,
+        callback: Option<CallbackRef<'_>>,
+    ) -> (Result<(LLMResponse, Option<String>)>, ResponseProgress) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for event in events {
+            tx.send(ReaderFrame::Text(event.to_string())).unwrap();
+        }
+        let mut progress = ResponseProgress::default();
+        let result = OpenAIResponsesWsClient::process_ws_stream(
+            &mut rx,
+            Duration::from_secs(1),
+            callback,
+            &mut progress,
+        )
+        .await;
+        (result, progress)
+    }
+
+    #[tokio::test]
+    async fn test_completed_response_leaves_the_connection_clean() {
+        let (result, progress) =
+            read_stream(vec![created(), text_delta("Hi"), completed()], None).await;
+        let (_, response_id) = result.unwrap();
+        assert_eq!(response_id.as_deref(), Some("resp_1"));
+        assert!(progress.created);
+        assert!(progress.finished, "completed is the terminal event");
+    }
+
+    #[tokio::test]
+    async fn test_callback_abort_leaves_the_response_unfinished() {
+        let interrupt: CallbackRef<'_> = &|_| bail!("Interrupted by user");
+        let (result, progress) = read_stream(
+            vec![created(), text_delta("Hi"), completed()],
+            Some(interrupt),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(progress.created);
+        assert!(
+            !progress.finished,
+            "the server is still streaming this response: the socket must not be reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_response_is_terminal() {
+        let failed = serde_json::json!({
+            "type": "response.failed",
+            "response": {"id": "resp_1", "error": {"code": "server_error", "message": "boom"}}
+        });
+        let (result, progress) = read_stream(vec![created(), failed], None).await;
+        assert!(result.is_err());
+        assert!(progress.finished, "a failed response sends nothing more");
+    }
+
+    #[tokio::test]
+    async fn test_output_before_created_is_rejected_as_stale() {
+        // The tail of a previous, abandoned response arrives before this
+        // request's own response.created.
+        let (result, progress) = read_stream(
+            vec![text_delta("…der alten Antwort."), created(), completed()],
+            None,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Stale WebSocket response"), "got: {err}");
+        assert!(!progress.created);
+        assert!(!progress.finished);
+        assert!(
+            is_retryable_request_error(&err),
+            "a stale stream is retried on a fresh connection"
+        );
+    }
+
+    #[test]
+    fn test_lifecycle_events_before_created_are_not_stale() {
+        assert!(!is_response_output_event("response.in_progress"));
+        assert!(!is_response_output_event("response.queued"));
+        assert!(is_response_output_event("response.output_item.added"));
+        assert!(is_response_output_event(
+            "response.function_call_arguments.delta"
+        ));
+        assert!(is_response_output_event("response.completed"));
+    }
+
+    #[test]
+    fn test_rejected_incremental_chain_is_retried() {
+        // The wrapped 400 exactly as the server words it.
+        let err = "WebSocket error (400): previous_response_not_found - Previous response \
+                   with id 'resp_00ad' not found.";
+        assert!(is_retryable_request_error(err));
+        // Other client errors stay final.
+        assert!(!is_retryable_request_error(
+            "WebSocket error (400): invalid_request - bad tool schema"
+        ));
+        assert!(!is_retryable_request_error(
+            "Context length exceeded: too long"
+        ));
     }
 }
