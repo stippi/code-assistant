@@ -132,10 +132,15 @@ impl ConfigToolRegistry {
         let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap_or_default();
         let tools = ToolsConfig::config_path().map(read).unwrap_or_default();
         let mcp = read(crate::tools::mcp::mcp_servers_config_path());
+        // Persisted OAuth tokens are an input to what an HTTP server
+        // contributes: completing a login writes a token file but touches
+        // none of the config files, so include it here or the cached
+        // (pre-auth, tool-less) registry would be reused until restart.
+        let oauth = crate::tools::mcp::mcp_oauth_fingerprint();
         let (dir, local) = local_mcp_dir
             .map(|dir| (dir.display().to_string(), read(dir.join(".mcp.json"))))
             .unwrap_or_default();
-        format!("{tools}\u{0}{mcp}\u{0}{dir}\u{0}{local}")
+        format!("{tools}\u{0}{mcp}\u{0}{oauth}\u{0}{dir}\u{0}{local}")
     }
 }
 
@@ -313,6 +318,32 @@ mod tests {
                     .unwrap();
                 let after = provider.current_for(project_request(project.path())).await;
                 assert!(!Arc::ptr_eq(&before, &after), "changed .mcp.json rebuilds");
+            },
+        )
+        .await;
+    }
+
+    /// Completing an OAuth login (a new/updated token file under the config
+    /// dir's `mcp-oauth/`) rebuilds the registry, so the authorized server's
+    /// tools appear on the next run without restarting the app.
+    #[tokio::test]
+    async fn oauth_token_change_rebuilds() {
+        let config = tempfile::tempdir().unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let before = provider.current().await;
+                // Simulate the interactive login writing a token file.
+                let oauth_dir = config.path().join("mcp-oauth");
+                std::fs::create_dir_all(&oauth_dir).unwrap();
+                std::fs::write(oauth_dir.join("sap_knowledge.json"), r#"{"client_id":"x"}"#)
+                    .unwrap();
+                let after = provider.current().await;
+                assert!(
+                    !Arc::ptr_eq(&before, &after),
+                    "a new OAuth token must invalidate the cached registry"
+                );
             },
         )
         .await;

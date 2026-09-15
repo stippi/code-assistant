@@ -41,6 +41,40 @@ pub fn mcp_oauth_token_path(server: &str) -> PathBuf {
     mcp_oauth_dir().join(format!("{stem}.json"))
 }
 
+/// A fingerprint of the persisted OAuth tokens (file names + sizes + modified
+/// times, sorted). Included in the tool-registry fingerprint so that
+/// completing an interactive login — which only writes a token file, none of
+/// the config files — invalidates the cached registry and the next agent run
+/// rebuilds it, reconnecting the now-authorized server so its tools appear
+/// without restarting the app.
+pub fn mcp_oauth_fingerprint() -> String {
+    let dir = mcp_oauth_dir();
+    let mut entries: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(read_dir) => read_dir
+            .filter_map(|entry| entry.ok())
+            .map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let (len, modified) = entry
+                    .metadata()
+                    .map(|meta| {
+                        let modified = meta
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos())
+                            .unwrap_or_default();
+                        (meta.len(), modified)
+                    })
+                    .unwrap_or_default();
+                format!("{name}:{len}:{modified}")
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    entries.sort();
+    entries.join("\u{0}")
+}
+
 /// A persistent credential store for one HTTP MCP server's OAuth tokens,
 /// backed by a file under [`mcp_oauth_dir`]. Passed to
 /// [`mcp_client::McpServerConnection::connect_with_credentials`] so a stored
