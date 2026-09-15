@@ -2619,3 +2619,193 @@ async fn test_granted_session_asks_only_once_per_tool() -> Result<()> {
 
     Ok(())
 }
+
+fn compaction_test_agent(
+    responses: Vec<Result<LLMResponse, anyhow::Error>>,
+) -> (Agent, MockLLMProvider) {
+    let mock_llm = MockLLMProvider::new(responses);
+    let mock_llm_ref = mock_llm.clone();
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(NoOpStatePersistence),
+        permission_handler: None,
+        permissions: Default::default(),
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+        wakeups: None,
+        pty_sessions: None,
+        browser_sessions: None,
+        terminal_interrupts: None,
+        session_source: None,
+        hooks_factory: None,
+    };
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        ..SessionConfig::default()
+    };
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+    (agent, mock_llm_ref)
+}
+
+fn text_response(text: &str) -> LLMResponse {
+    LLMResponse {
+        content: vec![ContentBlock::new_text(text)],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    }
+}
+
+fn idle_response() -> LLMResponse {
+    LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    }
+}
+
+fn over_threshold_assistant(text: &str) -> Message {
+    Message::new_assistant(text)
+        .with_request_id(1)
+        .with_usage(Usage {
+            input_tokens: 85,
+            output_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        })
+}
+
+fn message_text(message: &Message) -> String {
+    match &message.content {
+        MessageContent::Text(text) => text.clone(),
+        MessageContent::Structured(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[tokio::test]
+async fn test_pending_user_message_lands_after_the_compaction_handoff() -> Result<()> {
+    let (mut agent, mock_llm) = compaction_test_agent(vec![
+        Ok(idle_response()),
+        Ok(text_response("hand-off text")),
+    ]);
+    agent.append_message(Message::new_user("Original request"))?;
+    agent.append_message(over_threshold_assistant("Working on it"))?;
+    let pending = Arc::new(std::sync::Mutex::new(Some(vec![ContentBlock::new_text(
+        "Follow-up question",
+    )])));
+    agent.set_pending_message_ref(pending);
+
+    agent.run_single_iteration().await?;
+
+    let history = agent.message_history_for_tests();
+    let summary_at = history
+        .iter()
+        .position(|message| message.is_compaction_summary)
+        .expect("compaction summary in history");
+    assert_eq!(
+        message_text(&history[summary_at + 1]),
+        "Follow-up question",
+        "the pending message follows the summary instead of being folded into it"
+    );
+
+    let requests = mock_llm.get_requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        !requests[0]
+            .messages
+            .iter()
+            .any(|message| message_text(message).contains("Follow-up question")),
+        "the compaction request covers only the history before the pending message"
+    );
+    let follow_up = &requests[1].messages;
+    assert!(message_text(&follow_up[0]).starts_with("<handoff>"));
+    assert_eq!(message_text(&follow_up[1]), "Follow-up question");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -> Result<()> {
+    let tool_only = LLMResponse {
+        content: vec![ContentBlock::new_tool_use(
+            "t1",
+            "read_files",
+            serde_json::json!({"paths": ["x"]}),
+        )],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+    let (mut agent, mock_llm) = compaction_test_agent(vec![
+        Ok(idle_response()),
+        Ok(text_response("hand-off text")),
+        Ok(tool_only),
+    ]);
+    agent.append_message(Message::new_user("Original request"))?;
+    agent.append_message(over_threshold_assistant("Working on it"))?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm.get_requests();
+    assert_eq!(requests.len(), 3, "compaction, retry, follow-up");
+    let retry_prompt = message_text(requests[1].messages.last().unwrap());
+    assert!(
+        retry_prompt.contains("system-compaction")
+            && retry_prompt.contains("Reminder: this is a compaction request"),
+        "{retry_prompt}"
+    );
+    let summary = agent
+        .message_history_for_tests()
+        .into_iter()
+        .find(|message| message.is_compaction_summary)
+        .expect("compaction summary in history");
+    assert_eq!(message_text(&summary), "hand-off text");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_compaction_fails_when_the_model_never_answers_with_text() -> Result<()> {
+    let tool_only = || LLMResponse {
+        content: vec![ContentBlock::new_tool_use(
+            "t1",
+            "read_files",
+            serde_json::json!({"paths": ["x"]}),
+        )],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+    let (mut agent, _) = compaction_test_agent(vec![Ok(tool_only()), Ok(tool_only())]);
+    agent.append_message(Message::new_user("Original request"))?;
+    agent.append_message(over_threshold_assistant("Working on it"))?;
+
+    let error = agent
+        .run_single_iteration()
+        .await
+        .expect_err("a compaction without a hand-off text fails the turn");
+    assert!(error.to_string().contains("hand-off"), "{error}");
+    assert!(
+        !agent
+            .message_history_for_tests()
+            .iter()
+            .any(|message| message.is_compaction_summary),
+        "no empty summary is stored"
+    );
+    Ok(())
+}
