@@ -6,6 +6,7 @@
 //!
 //! Built on the official Rust MCP SDK (`rmcp`).
 
+pub mod auth;
 pub mod client;
 pub mod config;
 pub mod naming;
@@ -16,6 +17,7 @@ pub mod tool;
 #[cfg(test)]
 mod tests;
 
+pub use auth::{AuthorizationOutcome, FileCredentialStore, OAuthAuthorizer};
 pub use client::McpServerConnection;
 pub use config::{
     McpServerConfig, McpServersConfig, McpTransport, parse_local_mcp_json, substitute_variables,

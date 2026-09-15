@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 tools_core = { path = "../tools_core" }
 rmcp = { version = "3.3", default-features = false, features = [
+    "auth",
     "base64",
     "client",
     "transport-child-process",
@@ -22,6 +23,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 command_executor = { path = "../command_executor" }
+tempfile = "3"
 rmcp = { version = "3.3", default-features = false, features = [
     "base64",
     "client",
