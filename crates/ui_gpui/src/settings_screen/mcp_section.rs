@@ -35,6 +35,12 @@ enum DiscoveryState {
     Loading,
     Loaded(Vec<DiscoveredTool>),
     Failed(String),
+    /// The HTTP server requires OAuth and we have no (valid) token — offer an
+    /// Authenticate action instead of a bare retry.
+    NeedsAuth,
+    /// The interactive OAuth login is running (browser open, awaiting the
+    /// redirect callback).
+    Authenticating,
 }
 
 pub struct McpSection {
@@ -160,16 +166,55 @@ impl McpSection {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
-                    runtime.block_on(mcp::discover_tools(&server_name, server))
+                    runtime.block_on(mcp::discover_server_tools(&server_name, server))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 let state = match result {
                     Ok(tools) => DiscoveryState::Loaded(tools),
+                    // An HTTP server that demands OAuth gets an Authenticate
+                    // action instead of a plain failure.
+                    Err(error) if error.downcast_ref::<mcp::AuthorizationRequired>().is_some() => {
+                        DiscoveryState::NeedsAuth
+                    }
                     Err(error) => DiscoveryState::Failed(format!("{error:#}")),
                 };
                 this.discovered.insert(name, state);
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Run the interactive OAuth login for `name` on a background thread, then
+    /// re-run tool discovery so its tools appear on success (or the error
+    /// shows on failure).
+    fn start_authentication(&mut self, name: String, cx: &mut Context<Self>) {
+        self.discovered
+            .insert(name.clone(), DiscoveryState::Authenticating);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let server_name = name.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    runtime.block_on(code_assistant_core::tools::mcp_auth::login_mcp_server(
+                        &server_name,
+                    ))
+                })
+                .await;
+            this.update(cx, |this, cx| match result {
+                // On success re-discover: the stored token now lets us list
+                // the server's tools.
+                Ok(()) => this.start_discovery(name, cx),
+                Err(error) => {
+                    this.discovered
+                        .insert(name, DiscoveryState::Failed(format!("{error:#}")));
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -407,6 +452,7 @@ impl McpSection {
         let name_for_edit = name.to_string();
         let name_for_delete = name.to_string();
         let name_for_retry = name.to_string();
+        let name_for_auth = name.to_string();
 
         div()
             .flex()
@@ -474,6 +520,41 @@ impl McpSection {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child("Connecting to server…")
+                    .into_any_element(),
+                Some(DiscoveryState::Authenticating) => div()
+                    .py_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Authenticating… complete the login in your browser.")
+                    .into_any_element(),
+                Some(DiscoveryState::NeedsAuth) => div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .py_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("This server requires authorization."),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("mcp-auth-{name}")))
+                            .self_start()
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_xs()
+                            .bg(cx.theme().primary)
+                            .text_color(cx.theme().primary_foreground)
+                            .hover(|s| s.opacity(0.9))
+                            .child("Authenticate")
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.start_authentication(name_for_auth.clone(), cx);
+                            })),
+                    )
                     .into_any_element(),
                 Some(DiscoveryState::Failed(error)) => div()
                     .flex()

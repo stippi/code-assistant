@@ -6,6 +6,7 @@
 //!
 //! Built on the official Rust MCP SDK (`rmcp`).
 
+pub mod auth;
 pub mod client;
 pub mod config;
 pub mod naming;
@@ -16,7 +17,11 @@ pub mod tool;
 #[cfg(test)]
 mod tests;
 
-pub use client::McpServerConnection;
+pub use auth::{
+    AuthorizationOutcome, AuthorizationRequired, FileCredentialStore, OAuthAuthorizer,
+    SharedCredentialStore,
+};
+pub use client::{McpServerConnection, authenticate_http_server};
 pub use config::{
     McpServerConfig, McpServersConfig, McpTransport, parse_local_mcp_json, substitute_variables,
 };
@@ -27,4 +32,8 @@ pub use registry::{
     register_connection_tools, register_mcp_tools, register_mcp_tools_pooled,
     server_scope_capability,
 };
+/// Re-exported so embedders can name the credential-store trait object type
+/// (`Arc<dyn CredentialStore>`) that [`McpServerConnection::connect`] and
+/// [`authenticate_http_server`] take, without depending on `rmcp` directly.
+pub use rmcp::transport::auth::CredentialStore;
 pub use tool::McpTool;

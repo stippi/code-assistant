@@ -6,8 +6,8 @@ use crate::client::McpServerConnection;
 use crate::config::McpServerConfig;
 use crate::registry::{MCP_CAPABILITY, register_connection_tools, server_scope_capability};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, ListToolsResult,
-    PaginatedRequestParams, Tool as McpToolDescriptor,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+    ListToolsResult, PaginatedRequestParams, Tool as McpToolDescriptor,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
@@ -53,7 +53,7 @@ impl ServerHandler for TestServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         match request.name.as_ref() {
             "echo" => {
                 let message = request
@@ -62,11 +62,12 @@ impl ServerHandler for TestServer {
                     .and_then(|arguments| arguments.get("message"))
                     .and_then(|value| value.as_str())
                     .unwrap_or_default();
-                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "echo: {message}"
-                ))]))
+                Ok(
+                    CallToolResult::success(vec![ContentBlock::text(format!("echo: {message}"))])
+                        .into(),
+                )
             }
-            "fail" => Ok(CallToolResult::error(vec![ContentBlock::text("it broke")])),
+            "fail" => Ok(CallToolResult::error(vec![ContentBlock::text("it broke")]).into()),
             other => Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
@@ -241,7 +242,9 @@ async fn connects_to_a_real_stdio_server() {
         "command": binary.to_string_lossy(),
         "args": ["server"]
     }));
-    let connection = McpServerConnection::connect("self", &config).await.unwrap();
+    let connection = McpServerConnection::connect("self", &config, None)
+        .await
+        .unwrap();
     let tools = connection.list_tools().await.unwrap();
     assert!(
         tools.iter().any(|tool| tool.name == "read_files"),
@@ -299,7 +302,7 @@ async fn connects_and_calls_over_http() {
     let config = server_config(json!({ "url": url }));
 
     let connection = Arc::new(
-        McpServerConnection::connect("http-test", &config)
+        McpServerConnection::connect("http-test", &config, None)
             .await
             .expect("client failed to connect over HTTP"),
     );
@@ -315,4 +318,93 @@ async fn connects_and_calls_over_http() {
     assert!(output.is_success());
     let rendered = output.as_render().render(&mut ResourcesTracker::new());
     assert_eq!(rendered, "echo: over http");
+}
+
+/// Serve a minimal HTTP endpoint that answers every request with `401` and a
+/// `WWW-Authenticate` challenge — the reactive OAuth trigger. Returns its
+/// `/mcp` URL and the server task (aborted on drop).
+async fn spawn_auth_required_server() -> (String, tokio::task::JoinHandle<()>) {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    async fn unauthorized() -> impl IntoResponse {
+        (
+            StatusCode::UNAUTHORIZED,
+            [(
+                "WWW-Authenticate",
+                "Bearer resource_metadata=\"https://auth.example.com/.well-known/oauth-protected-resource\"",
+            )],
+            "authorization required",
+        )
+    }
+
+    let router = axum::Router::new().route("/mcp", axum::routing::any(unauthorized));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (format!("http://{addr}/mcp"), server)
+}
+
+/// A server that demands OAuth must fail the connect with a *typed*
+/// [`AuthorizationRequired`] (carrying the challenge and server name), not a
+/// generic error — that is what lets an embedder offer an "Authenticate"
+/// action instead of a plain retry.
+#[tokio::test]
+async fn http_server_requiring_auth_surfaces_authorization_required() {
+    let (url, _server) = spawn_auth_required_server().await;
+    let config = server_config(json!({ "url": url }));
+
+    let error = match McpServerConnection::connect("sap", &config, None).await {
+        Ok(_) => panic!("connect must fail when the server demands authorization"),
+        Err(error) => error,
+    };
+
+    let auth = error
+        .downcast_ref::<crate::auth::AuthorizationRequired>()
+        .unwrap_or_else(|| panic!("expected AuthorizationRequired, got: {error:#}"));
+    assert_eq!(auth.server, "sap");
+    assert!(
+        auth.challenge.contains("resource_metadata"),
+        "the WWW-Authenticate challenge is carried through: {}",
+        auth.challenge
+    );
+}
+
+/// OAuth authorization only applies to HTTP servers; asking to authenticate a
+/// stdio server is a configuration error, surfaced without touching the
+/// network.
+#[tokio::test]
+async fn authenticate_rejects_stdio_servers() {
+    use crate::auth::{AuthorizationOutcome, OAuthAuthorizer};
+
+    struct NeverCalled;
+    #[async_trait::async_trait]
+    impl OAuthAuthorizer for NeverCalled {
+        fn redirect_uri(&self) -> String {
+            "http://127.0.0.1:0/callback".to_string()
+        }
+        async fn authorize(&self, _url: String) -> anyhow::Result<AuthorizationOutcome> {
+            panic!("authorizer must not be invoked for a stdio server")
+        }
+    }
+
+    let config = server_config(json!({ "command": "npx" }));
+    let store: Arc<dyn rmcp::transport::auth::CredentialStore> =
+        Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new());
+
+    let error = crate::client::authenticate_http_server(
+        "stdio-srv",
+        &config,
+        store,
+        &NeverCalled,
+        "code-assistant",
+    )
+    .await
+    .expect_err("authenticating a stdio server must fail");
+    assert!(
+        error.to_string().contains("not an HTTP server"),
+        "unexpected error: {error:#}"
+    );
 }

@@ -61,6 +61,10 @@ dirs = "5.0"
 md5 = "0.7.0"
 async-channel = "2.5.0"
 
+# MCP OAuth interactive login: open the browser + decode the loopback redirect
+open = "5"
+urlencoding = "2"
+
 # Base64 encoding for images
 base64 = "0.22"
 

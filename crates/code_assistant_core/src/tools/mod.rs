@@ -10,6 +10,9 @@ pub mod config;
 // MCP client mode: mcp-servers.json + registration of MCP server tools
 pub mod mcp;
 
+// Interactive OAuth login for HTTP MCP servers (loopback callback authorizer)
+pub mod mcp_auth;
+
 // Persistent per-project trust for project-local `.mcp.json` files
 pub mod mcp_trust;
 

@@ -49,6 +49,13 @@ pub struct McpServerStatus {
 /// tools. Every registered tool carries [`MCP_CAPABILITY`], its server's
 /// scope tag, and the given extra capability tags (the embedder's scope
 /// vocabulary, e.g. `scope:agent`).
+///
+/// Connections are made without OAuth credentials, so this simple path
+/// supports stdio and static-header servers; an HTTP server that requires
+/// interactive OAuth reports an [`crate::AuthorizationRequired`] status and
+/// contributes no tools. Embedders that persist OAuth tokens should use
+/// [`register_mcp_tools_pooled`] with a [`ConnectionProvider`] that threads a
+/// credential store.
 pub async fn register_mcp_tools(
     registry: &mut ToolRegistry,
     config: &McpServersConfig,
@@ -57,7 +64,7 @@ pub async fn register_mcp_tools(
     let mut statuses = Vec::new();
     for (name, server_config) in config.enabled_servers() {
         let result = async {
-            let connection = McpServerConnection::connect(name, server_config).await?;
+            let connection = McpServerConnection::connect(name, server_config, None).await?;
             register_connection_tools(
                 registry,
                 Arc::new(connection),
@@ -146,11 +153,17 @@ pub struct DiscoveredTool {
 
 /// Connect to a server, list everything it offers (ignoring the tool
 /// filter), and shut the connection down again. For configuration UIs.
+/// Reuses OAuth tokens from `credentials` for an HTTP server; pass `None`
+/// when there is nothing to authenticate with (stdio, or a static-header
+/// server). An HTTP server that still needs authorization fails with
+/// [`crate::AuthorizationRequired`], which a UI can turn into an
+/// "Authenticate" action.
 pub async fn discover_tools(
     server_name: &str,
     config: &McpServerConfig,
+    credentials: Option<std::sync::Arc<dyn crate::CredentialStore>>,
 ) -> Result<Vec<DiscoveredTool>> {
-    let connection = McpServerConnection::connect(server_name, config).await?;
+    let connection = McpServerConnection::connect(server_name, config, credentials).await?;
     let descriptors = connection.list_tools().await?;
     let _ = connection.shutdown().await;
     Ok(descriptors

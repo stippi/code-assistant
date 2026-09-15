@@ -2,6 +2,7 @@ mod app;
 mod cli;
 mod codex_commands;
 mod logging;
+mod mcp_commands;
 
 // The domain layer lives in `code_assistant_core`; re-exported under the
 // historical module paths so call sites keep using `crate::session::…` etc.
@@ -45,6 +46,13 @@ async fn main() -> Result<()> {
         }
         Some(Mode::CodexStatus) => {
             return codex_commands::run_codex_status();
+        }
+        Some(Mode::McpLogin { server }) => {
+            setup_logging(1, true);
+            return mcp_commands::run_mcp_login(&server).await;
+        }
+        Some(Mode::McpLogout { server }) => {
+            return mcp_commands::run_mcp_logout(&server);
         }
         Some(Mode::Server { verbose }) => {
             #[cfg(feature = "mcp-server")]
