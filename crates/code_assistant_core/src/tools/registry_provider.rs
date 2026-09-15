@@ -176,9 +176,7 @@ impl ConnectionProvider for ConfigToolRegistry {
             .transport
             .is_http()
             .then(|| crate::tools::mcp::mcp_oauth_credential_store(name));
-        let connection = Arc::new(
-            McpServerConnection::connect_with_credentials(name, config, credentials).await?,
-        );
+        let connection = Arc::new(McpServerConnection::connect(name, config, credentials).await?);
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).
         let mut connections = self.connections.lock().await;

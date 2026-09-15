@@ -49,20 +49,18 @@ pub struct McpServerConnection {
 
 impl McpServerConnection {
     /// Connect to the configured server, running the MCP initialize handshake
-    /// over its transport. Unauthenticated: an HTTP server that requires OAuth
-    /// fails with an [`AuthorizationRequired`] error (see
-    /// [`Self::connect_with_credentials`] to reuse a stored token).
-    pub async fn connect(name: &str, config: &McpServerConfig) -> Result<Self> {
-        Self::connect_with_credentials(name, config, None).await
-    }
-
-    /// Connect, optionally reusing OAuth tokens from `credentials` for an HTTP
-    /// server. When a valid token is present the connection is authorized
-    /// silently; otherwise the unauthenticated attempt is made and, if the
-    /// server demands authorization, an [`AuthorizationRequired`] error is
-    /// returned. This never opens a browser — interactive login is
-    /// [`authenticate_http_server`].
-    pub async fn connect_with_credentials(
+    /// over its transport, reusing OAuth tokens from `credentials` for an HTTP
+    /// server when present.
+    ///
+    /// Pass `None` when there is nothing to authenticate with (stdio servers,
+    /// which have no OAuth; or a server reached purely via a static
+    /// `Authorization` header). With `None`, or when the store holds no valid
+    /// token, an HTTP server that demands OAuth fails with a typed
+    /// [`AuthorizationRequired`] error — this never opens a browser, so the
+    /// caller (or a UI) can offer the interactive login
+    /// ([`authenticate_http_server`]) instead. With a valid stored token the
+    /// connection is authorized silently (rmcp refreshes it transparently).
+    pub async fn connect(
         name: &str,
         config: &McpServerConfig,
         credentials: Option<Arc<dyn CredentialStore>>,
@@ -280,8 +278,7 @@ fn oauth_http_client() -> Result<reqwest::Client> {
 
 /// Run the interactive OAuth login for an HTTP MCP server and persist the
 /// resulting tokens into `credential_store`, so a later
-/// [`McpServerConnection::connect_with_credentials`] reuses them without any
-/// user interaction.
+/// [`McpServerConnection::connect`] reuses them without any user interaction.
 ///
 /// The flow: discover the authorization server from `config`'s URL, register
 /// (or select) an OAuth client, hand the authorization URL to `authorizer`

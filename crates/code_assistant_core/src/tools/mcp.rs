@@ -77,9 +77,9 @@ pub fn mcp_oauth_fingerprint() -> String {
 
 /// A persistent credential store for one HTTP MCP server's OAuth tokens,
 /// backed by a file under [`mcp_oauth_dir`]. Passed to
-/// [`mcp_client::McpServerConnection::connect_with_credentials`] so a stored
-/// token is reused without user interaction, and to
-/// [`mcp_client::authenticate_http_server`] so the interactive login persists.
+/// [`mcp_client::McpServerConnection::connect`] so a stored token is reused
+/// without user interaction, and to [`mcp_client::authenticate_http_server`]
+/// so the interactive login persists.
 pub fn mcp_oauth_credential_store(server: &str) -> std::sync::Arc<dyn mcp_client::CredentialStore> {
     std::sync::Arc::new(mcp_client::FileCredentialStore::new(mcp_oauth_token_path(
         server,
@@ -135,7 +135,7 @@ pub async fn discover_server_tools(
         .transport
         .is_http()
         .then(|| mcp_oauth_credential_store(server_name));
-    mcp_client::discover_tools_with_credentials(server_name, server, credentials).await
+    mcp_client::discover_tools(server_name, server, credentials).await
 }
 
 /// Load the MCP servers configuration, substituting `${ENV_VAR}` patterns in

@@ -242,7 +242,9 @@ async fn connects_to_a_real_stdio_server() {
         "command": binary.to_string_lossy(),
         "args": ["server"]
     }));
-    let connection = McpServerConnection::connect("self", &config).await.unwrap();
+    let connection = McpServerConnection::connect("self", &config, None)
+        .await
+        .unwrap();
     let tools = connection.list_tools().await.unwrap();
     assert!(
         tools.iter().any(|tool| tool.name == "read_files"),
@@ -300,7 +302,7 @@ async fn connects_and_calls_over_http() {
     let config = server_config(json!({ "url": url }));
 
     let connection = Arc::new(
-        McpServerConnection::connect("http-test", &config)
+        McpServerConnection::connect("http-test", &config, None)
             .await
             .expect("client failed to connect over HTTP"),
     );
@@ -354,7 +356,7 @@ async fn http_server_requiring_auth_surfaces_authorization_required() {
     let (url, _server) = spawn_auth_required_server().await;
     let config = server_config(json!({ "url": url }));
 
-    let error = match McpServerConnection::connect("sap", &config).await {
+    let error = match McpServerConnection::connect("sap", &config, None).await {
         Ok(_) => panic!("connect must fail when the server demands authorization"),
         Err(error) => error,
     };
