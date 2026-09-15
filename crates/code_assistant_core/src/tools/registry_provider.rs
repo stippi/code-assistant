@@ -164,7 +164,16 @@ impl ConnectionProvider for ConfigToolRegistry {
             }
         }
         // Connect outside the lock (slow: process launch / HTTP handshake).
-        let connection = Arc::new(McpServerConnection::connect(name, config).await?);
+        // HTTP servers get a persistent OAuth credential store so a token
+        // obtained via the interactive login is reused silently; stdio servers
+        // have no OAuth, so pass none.
+        let credentials = config
+            .transport
+            .is_http()
+            .then(|| crate::tools::mcp::mcp_oauth_credential_store(name));
+        let connection = Arc::new(
+            McpServerConnection::connect_with_credentials(name, config, credentials).await?,
+        );
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).
         let mut connections = self.connections.lock().await;

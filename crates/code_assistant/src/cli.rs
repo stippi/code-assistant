@@ -33,6 +33,18 @@ pub enum Mode {
     /// Show ChatGPT subscription auth status
     CodexStatus,
 
+    /// Log in to an HTTP MCP server that requires OAuth (opens browser)
+    McpLogin {
+        /// Name of the server as configured in mcp-servers.json
+        server: String,
+    },
+
+    /// Remove stored OAuth tokens for an HTTP MCP server
+    McpLogout {
+        /// Name of the server as configured in mcp-servers.json
+        server: String,
+    },
+
     /// Run as ACP (Agent Client Protocol) agent
     Acp {
         /// Enable verbose logging

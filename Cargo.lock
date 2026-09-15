@@ -1761,6 +1761,7 @@ name = "code-assistant"
 version = "0.2.16"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "code_assistant_core",
  "command_executor",
@@ -1775,6 +1776,7 @@ dependencies = [
  "ui_acp",
  "ui_gpui",
  "ui_terminal",
+ "urlencoding",
 ]
 
 [[package]]

@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub use mcp_client::{
-    DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig, McpTransport,
-    discover_tools, parse_local_mcp_json,
+    AuthorizationOutcome, DiscoveredTool, McpServerConfig, McpServerStatus, McpServersConfig,
+    McpTransport, OAuthAuthorizer, discover_tools, parse_local_mcp_json,
 };
 
 /// Scope tags every MCP tool carries in code-assistant: offered to the main
@@ -22,6 +22,70 @@ pub const MCP_TOOL_SCOPES: &[&str] = &[capabilities::SCOPE_AGENT, capabilities::
 /// Path of the MCP servers configuration file.
 pub fn mcp_servers_config_path() -> PathBuf {
     crate::config_dir::config_dir().join("mcp-servers.json")
+}
+
+/// Directory holding persisted OAuth tokens for HTTP MCP servers — one JSON
+/// file per server, written by the interactive login and reused silently on
+/// later connects.
+pub fn mcp_oauth_dir() -> PathBuf {
+    crate::config_dir::config_dir().join("mcp-oauth")
+}
+
+/// The OAuth token file for `server`. The server name is sanitized to a safe
+/// file stem so an unusual name cannot escape [`mcp_oauth_dir`].
+pub fn mcp_oauth_token_path(server: &str) -> PathBuf {
+    let stem: String = server
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    mcp_oauth_dir().join(format!("{stem}.json"))
+}
+
+/// A persistent credential store for one HTTP MCP server's OAuth tokens,
+/// backed by a file under [`mcp_oauth_dir`]. Passed to
+/// [`mcp_client::McpServerConnection::connect_with_credentials`] so a stored
+/// token is reused without user interaction, and to
+/// [`mcp_client::authenticate_http_server`] so the interactive login persists.
+pub fn mcp_oauth_credential_store(server: &str) -> std::sync::Arc<dyn mcp_client::CredentialStore> {
+    std::sync::Arc::new(mcp_client::FileCredentialStore::new(mcp_oauth_token_path(
+        server,
+    )))
+}
+
+/// Run the interactive OAuth login for a configured HTTP MCP server and
+/// persist its tokens, so later connects reuse them without user interaction.
+/// `authorizer` performs the browser round-trip (open the URL, capture the
+/// redirect). The server is looked up in the global `mcp-servers.json`;
+/// errors if it is unknown or not an HTTP server.
+pub async fn authenticate_mcp_server(name: &str, authorizer: &dyn OAuthAuthorizer) -> Result<()> {
+    let config = load_mcp_servers_config()?;
+    let server = config.servers.get(name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "No MCP server named '{name}' in {}",
+            mcp_servers_config_path().display()
+        )
+    })?;
+    let store = mcp_oauth_credential_store(name);
+    mcp_client::authenticate_http_server(name, server, store, authorizer, "code-assistant").await
+}
+
+/// Forget any stored OAuth tokens for `server` (e.g. to force a fresh login).
+/// Returns whether a token file was present.
+pub fn forget_mcp_oauth_tokens(server: &str) -> Result<bool> {
+    let path = mcp_oauth_token_path(server);
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("Failed to remove {}", path.display()))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Whether a persisted OAuth token file exists for `server`. A coarse "have we
+/// logged in" signal for status output and UI; it does not check expiry.
+pub fn has_mcp_oauth_tokens(server: &str) -> bool {
+    mcp_oauth_token_path(server).exists()
 }
 
 /// Load the MCP servers configuration, substituting `${ENV_VAR}` patterns in

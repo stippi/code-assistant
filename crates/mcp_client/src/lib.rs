@@ -32,4 +32,8 @@ pub use registry::{
     register_connection_tools, register_mcp_tools, register_mcp_tools_pooled,
     server_scope_capability,
 };
+/// Re-exported so embedders can name the credential-store trait object type
+/// (`Arc<dyn CredentialStore>`) that [`McpServerConnection::connect_with_credentials`]
+/// and [`authenticate_http_server`] take, without depending on `rmcp` directly.
+pub use rmcp::transport::auth::CredentialStore;
 pub use tool::McpTool;
