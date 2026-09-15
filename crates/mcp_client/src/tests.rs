@@ -317,3 +317,92 @@ async fn connects_and_calls_over_http() {
     let rendered = output.as_render().render(&mut ResourcesTracker::new());
     assert_eq!(rendered, "echo: over http");
 }
+
+/// Serve a minimal HTTP endpoint that answers every request with `401` and a
+/// `WWW-Authenticate` challenge — the reactive OAuth trigger. Returns its
+/// `/mcp` URL and the server task (aborted on drop).
+async fn spawn_auth_required_server() -> (String, tokio::task::JoinHandle<()>) {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    async fn unauthorized() -> impl IntoResponse {
+        (
+            StatusCode::UNAUTHORIZED,
+            [(
+                "WWW-Authenticate",
+                "Bearer resource_metadata=\"https://auth.example.com/.well-known/oauth-protected-resource\"",
+            )],
+            "authorization required",
+        )
+    }
+
+    let router = axum::Router::new().route("/mcp", axum::routing::any(unauthorized));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (format!("http://{addr}/mcp"), server)
+}
+
+/// A server that demands OAuth must fail the connect with a *typed*
+/// [`AuthorizationRequired`] (carrying the challenge and server name), not a
+/// generic error — that is what lets an embedder offer an "Authenticate"
+/// action instead of a plain retry.
+#[tokio::test]
+async fn http_server_requiring_auth_surfaces_authorization_required() {
+    let (url, _server) = spawn_auth_required_server().await;
+    let config = server_config(json!({ "url": url }));
+
+    let error = match McpServerConnection::connect("sap", &config).await {
+        Ok(_) => panic!("connect must fail when the server demands authorization"),
+        Err(error) => error,
+    };
+
+    let auth = error
+        .downcast_ref::<crate::auth::AuthorizationRequired>()
+        .unwrap_or_else(|| panic!("expected AuthorizationRequired, got: {error:#}"));
+    assert_eq!(auth.server, "sap");
+    assert!(
+        auth.challenge.contains("resource_metadata"),
+        "the WWW-Authenticate challenge is carried through: {}",
+        auth.challenge
+    );
+}
+
+/// OAuth authorization only applies to HTTP servers; asking to authenticate a
+/// stdio server is a configuration error, surfaced without touching the
+/// network.
+#[tokio::test]
+async fn authenticate_rejects_stdio_servers() {
+    use crate::auth::{AuthorizationOutcome, OAuthAuthorizer};
+
+    struct NeverCalled;
+    #[async_trait::async_trait]
+    impl OAuthAuthorizer for NeverCalled {
+        fn redirect_uri(&self) -> String {
+            "http://127.0.0.1:0/callback".to_string()
+        }
+        async fn authorize(&self, _url: String) -> anyhow::Result<AuthorizationOutcome> {
+            panic!("authorizer must not be invoked for a stdio server")
+        }
+    }
+
+    let config = server_config(json!({ "command": "npx" }));
+    let store: Arc<dyn rmcp::transport::auth::CredentialStore> =
+        Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new());
+
+    let error = crate::client::authenticate_http_server(
+        "stdio-srv",
+        &config,
+        store,
+        &NeverCalled,
+        "code-assistant",
+    )
+    .await
+    .expect_err("authenticating a stdio server must fail");
+    assert!(
+        error.to_string().contains("not an HTTP server"),
+        "unexpected error: {error:#}"
+    );
+}

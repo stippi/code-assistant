@@ -17,8 +17,11 @@ pub mod tool;
 #[cfg(test)]
 mod tests;
 
-pub use auth::{AuthorizationOutcome, FileCredentialStore, OAuthAuthorizer};
-pub use client::McpServerConnection;
+pub use auth::{
+    AuthorizationOutcome, AuthorizationRequired, FileCredentialStore, OAuthAuthorizer,
+    SharedCredentialStore,
+};
+pub use client::{McpServerConnection, authenticate_http_server};
 pub use config::{
     McpServerConfig, McpServersConfig, McpTransport, parse_local_mcp_json, substitute_variables,
 };

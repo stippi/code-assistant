@@ -23,6 +23,23 @@
 use async_trait::async_trait;
 use rmcp::transport::auth::{AuthError, CredentialStore, StoredCredentials};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// The error a connect attempt fails with when the server demands OAuth
+/// authorization we do not (yet) have. Distinct and downcastable so an
+/// embedder can tell "you must authenticate" apart from a generic connection
+/// failure and offer an *Authenticate* action instead of just a retry.
+///
+/// It carries the server's `WWW-Authenticate` challenge, which seeds OAuth
+/// discovery in the interactive flow ([`crate::client::authenticate_http_server`]).
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("MCP server '{server}' requires OAuth authorization")]
+pub struct AuthorizationRequired {
+    /// The configured server name.
+    pub server: String,
+    /// The raw `WWW-Authenticate` header from the server's 401/403.
+    pub challenge: String,
+}
 
 /// A [`CredentialStore`] that persists a single MCP server's OAuth tokens to a
 /// JSON file. Each server gets its own file (the embedder picks the path,
@@ -113,6 +130,35 @@ fn restrict_permissions(path: &Path) -> Result<(), AuthError> {
 #[cfg(not(unix))]
 fn restrict_permissions(_path: &Path) -> Result<(), AuthError> {
     Ok(())
+}
+
+/// Adapts a shared `Arc<dyn CredentialStore>` into an owned [`CredentialStore`]
+/// value. rmcp's `AuthorizationManager::set_credential_store` takes the store
+/// *by value*, but we want to hand the same underlying store to both the
+/// non-interactive reuse path and the interactive login — so we share one
+/// behind an `Arc` and clone this cheap adapter into each manager.
+#[derive(Clone)]
+pub struct SharedCredentialStore(pub Arc<dyn CredentialStore>);
+
+impl std::fmt::Debug for SharedCredentialStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedCredentialStore")
+    }
+}
+
+#[async_trait]
+impl CredentialStore for SharedCredentialStore {
+    async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
+        self.0.load().await
+    }
+
+    async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
+        self.0.save(credentials).await
+    }
+
+    async fn clear(&self) -> Result<(), AuthError> {
+        self.0.clear().await
+    }
 }
 
 /// The parameters an authorization server returns to the OAuth redirect URI
