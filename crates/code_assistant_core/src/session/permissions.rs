@@ -257,35 +257,49 @@ impl PermissionMediator for SessionPermissionMediator {
         let data = Self::request_data(&request);
         let request_id = data.request_id.clone();
         let rx = self.pending.insert(data.clone());
-
         self.events.publish_ui(
             &self.session_id,
             UiEvent::RequestToolPermission { request: data },
         );
+        // Settles the request on every exit, including a caller that drops
+        // this future because its run was cancelled.
+        let _settled = RequestGuard {
+            mediator: self,
+            request_id,
+        };
 
         // A dropped responder (stop request, new agent run) counts as denial.
-        // With a timeout, an unanswered prompt also fails closed: drop the
-        // pending entry (so a late answer is a no-op) and deny, freeing the
+        // With a timeout, an unanswered prompt also fails closed, freeing the
         // lane's turn instead of blocking it forever.
         let decision = match self.timeout {
             Some(dur) => match tokio::time::timeout(dur, rx).await {
                 Ok(result) => result.unwrap_or(PermissionDecision::Denied),
-                Err(_elapsed) => {
-                    self.pending
-                        .resolve(&request_id, PermissionDecision::Denied);
-                    PermissionDecision::Denied
-                }
+                Err(_elapsed) => PermissionDecision::Denied,
             },
             None => rx.await.unwrap_or(PermissionDecision::Denied),
         };
-
-        // Tell every view the request is settled so open prompts dismiss.
-        self.events.publish_ui(
-            &self.session_id,
-            UiEvent::ToolPermissionRequestResolved { request_id },
-        );
-
         Ok(decision)
+    }
+}
+
+/// Removes the pending entry (so a late answer is a no-op) and tells every
+/// view the request is settled, whichever way the wait ended.
+struct RequestGuard<'a> {
+    mediator: &'a SessionPermissionMediator,
+    request_id: String,
+}
+
+impl Drop for RequestGuard<'_> {
+    fn drop(&mut self) {
+        self.mediator
+            .pending
+            .resolve(&self.request_id, PermissionDecision::Denied);
+        self.mediator.events.publish_ui(
+            &self.mediator.session_id,
+            UiEvent::ToolPermissionRequestResolved {
+                request_id: self.request_id.clone(),
+            },
+        );
     }
 }
 

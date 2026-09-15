@@ -1,6 +1,5 @@
 //! Tests for the sub-agent feature (spawn_agent tool).
 
-use crate::agent::SubAgentCancellationRegistry;
 use crate::agent::SubAgentMode;
 use crate::agent::sub_agent::{SubAgentResult, SubAgentRunner};
 use crate::tools::core::ToolScope;
@@ -170,32 +169,6 @@ fn test_spawn_agent_input_parsing() {
     assert_eq!(input.instructions, "Search for patterns");
     assert!(!input.require_file_references);
     assert_eq!(input.mode, "read_only"); // default
-}
-
-#[test]
-fn test_cancellation_registry() {
-    let registry = SubAgentCancellationRegistry::default();
-
-    // Register a new tool
-    let flag1 = registry.register("tool-1".to_string());
-    assert!(!flag1.load(Ordering::SeqCst));
-
-    let flag2 = registry.register("tool-2".to_string());
-    assert!(!flag2.load(Ordering::SeqCst));
-
-    // Cancel tool-1
-    assert!(registry.cancel("tool-1"));
-    assert!(flag1.load(Ordering::SeqCst));
-    assert!(!flag2.load(Ordering::SeqCst));
-
-    // Cancel non-existent tool returns false
-    assert!(!registry.cancel("tool-3"));
-
-    // Unregister tool-1
-    registry.unregister("tool-1");
-
-    // Cancel after unregister returns false
-    assert!(!registry.cancel("tool-1"));
 }
 
 #[tokio::test]

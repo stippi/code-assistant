@@ -147,6 +147,10 @@ impl Agent {
         }
     }
 
+    pub fn set_cancellation(&mut self, cancellation: tools_core::RunCancellation) {
+        self.runtime.set_cancellation(cancellation);
+    }
+
     /// The application state riding on the loop.
     fn app_state(&self) -> &AgentAppState {
         AgentAppState::of_ref(self.runtime.extensions())
@@ -196,8 +200,8 @@ impl Agent {
         self.app_state_mut().session_name = session_name;
     }
 
-    /// Get a reference to the message history
-    pub fn message_history(&self) -> &[Message] {
+    /// The messages on the active path, in order.
+    pub fn message_history(&self) -> Vec<Message> {
         self.runtime.message_history()
     }
 
@@ -275,7 +279,6 @@ impl Agent {
             self.set_tool_scope(ToolScope::Agent);
             self.invalidate_system_message_cache();
         }
-        self.runtime.normalize_loaded_message_history();
         {
             let state = self.app_state_mut();
             state.session_name = session_state.name;
@@ -435,7 +438,7 @@ impl Agent {
     }
 
     #[cfg(test)]
-    pub fn message_history_for_tests(&self) -> &[Message] {
+    pub fn message_history_for_tests(&self) -> Vec<Message> {
         self.runtime.message_history()
     }
 

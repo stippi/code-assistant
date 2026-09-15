@@ -9,6 +9,12 @@ use serde_json::Value;
 
 /// Type-erased tool output that can be rendered and determined for success
 pub trait AnyOutput: Send + Sync {
+    /// Optional concrete-type access for runtime-owned, self-describing outcomes.
+    /// Custom implementations can keep the default; ordinary tool outputs
+    /// continue to be decoded by their tool's registry entry.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     /// Get a reference to the output as a Render trait object
     fn as_render(&self) -> &dyn Render;
 
@@ -33,6 +39,10 @@ impl<T> AnyOutput for T
 where
     T: Render + ToolResult + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn as_render(&self) -> &dyn Render {
         self
     }

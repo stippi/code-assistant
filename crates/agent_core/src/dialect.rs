@@ -11,7 +11,7 @@
 use crate::types::ToolRequest;
 use crate::ui::{AgentUi, HiddenTools, StreamProcessorTrait};
 use anyhow::Result;
-use llm::{LLMResponse, Message};
+use llm::LLMResponse;
 use std::sync::Arc;
 use tools_core::ToolRegistry;
 
@@ -65,8 +65,4 @@ pub trait ToolDialect: Send + Sync {
         registry: &ToolRegistry,
         capability: &str,
     ) -> Option<String>;
-
-    /// Whether an already stored message contains a tool invocation in this
-    /// dialect (used to normalize the history when loading a session).
-    fn message_contains_invocation(&self, message: &Message, registry: &ToolRegistry) -> bool;
 }

@@ -9,6 +9,8 @@
 //! [`ToolSpec`]; the crate prescribes no scoping vocabulary beyond the
 //! generic tags in [`spec::capabilities`].
 
+pub mod cancellation;
+pub use cancellation::{Cancelled, RunCancellation};
 pub mod coerce;
 pub mod dyn_tool;
 pub mod image;

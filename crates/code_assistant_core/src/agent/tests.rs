@@ -1,5 +1,8 @@
+#[path = "checkpoint_tests.rs"]
+mod checkpoint_tests;
+
 use super::*;
-use crate::agent::persistence::MockStatePersistence;
+use crate::agent::persistence::NoOpStatePersistence;
 use crate::mocks::MockLLMProvider;
 use crate::mocks::{
     MockProjectManager, MockUI, create_command_executor_mock, create_test_response,
@@ -49,7 +52,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -180,7 +183,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -315,7 +318,7 @@ async fn test_parse_error_handling() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -463,7 +466,7 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         project_manager: Arc::new(project_manager),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -572,7 +575,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: ui.clone(),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -734,7 +737,7 @@ async fn test_compaction_reminds_about_active_skills() -> Result<()> {
         project_manager: Arc::new(project_manager),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: ui.clone(),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -828,7 +831,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: ui.clone(),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -964,7 +967,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: ui.clone(),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -1170,7 +1173,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let project_manager = Arc::new(MockProjectManager::default());
     let command_executor = Arc::new(create_command_executor_mock());
     let ui = Arc::new(MockUI::default());
-    let state_persistence = Box::new(MockStatePersistence::new());
+    let state_persistence = Box::new(NoOpStatePersistence);
 
     let components = AgentComponents {
         llm_provider,
@@ -1544,14 +1547,14 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
+async fn test_load_keeps_native_dangling_tool_request_and_repairs_the_prompt() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -1596,21 +1599,26 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
     agent.load_from_session_state(session_state).await?;
 
     let history = agent.message_history_for_tests();
-    assert_eq!(history.len(), 1);
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[1].role, MessageRole::Assistant));
+    let prompt = agent.render_tool_results_in_messages();
+    assert_eq!(prompt.len(), 3);
+    assert!(serde_json::to_string(&prompt[2])?.contains("did not run"));
     assert!(matches!(history[0].role, MessageRole::User));
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() -> Result<()> {
+async fn test_load_keeps_native_dangling_tool_request_before_a_followup_user_message() -> Result<()>
+{
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -1660,14 +1668,16 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
     agent.load_from_session_state(session_state).await?;
 
     let history = agent.message_history_for_tests();
-    assert_eq!(history.len(), 2);
+    assert_eq!(history.len(), 3);
     assert!(matches!(history[0].role, MessageRole::User));
-    assert!(matches!(history[1].role, MessageRole::User));
+    assert!(matches!(history[1].role, MessageRole::Assistant));
+    assert!(matches!(history[2].role, MessageRole::User));
+    assert_eq!(agent.render_tool_results_in_messages().len(), 4);
     match &history[0].content {
         MessageContent::Text(content) => assert_eq!(content, "Please inspect the project."),
         _ => panic!("Expected initial user message to be preserved"),
     }
-    match &history[1].content {
+    match &history[2].content {
         MessageContent::Text(content) => assert_eq!(content, "Also check the contributing guide."),
         _ => panic!("Expected follow-up user message to be preserved"),
     }
@@ -1676,14 +1686,14 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
 }
 
 #[tokio::test]
-async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
+async fn test_load_keeps_xml_dangling_tool_request_and_repairs_the_prompt() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -1726,7 +1736,11 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
     agent.load_from_session_state(session_state).await?;
 
     let history = agent.message_history_for_tests();
-    assert_eq!(history.len(), 1);
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[1].role, MessageRole::Assistant));
+    let prompt = agent.render_tool_results_in_messages();
+    assert_eq!(prompt.len(), 3);
+    assert!(serde_json::to_string(&prompt[2])?.contains("did not run"));
     assert!(matches!(history[0].role, MessageRole::User));
 
     Ok(())
@@ -1740,7 +1754,7 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -1788,12 +1802,10 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
 }
 
 #[tokio::test]
-async fn test_render_tool_results_generates_cancelled_results_for_missing_executions() -> Result<()>
-{
+async fn test_render_tool_results_generates_not_run_results_for_missing_executions() -> Result<()> {
     // This test verifies that when an assistant message contains ToolUse blocks
-    // but there's no corresponding ToolResult in the message history (because the
-    // user cancelled the tool execution), we generate synthetic "user cancelled"
-    // ToolResult blocks to satisfy the API requirement.
+    // but no corresponding ToolResult, the prompt supplies an unknown outcome
+    // rather than claiming cancellation or silently repeating side effects.
 
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
@@ -1801,7 +1813,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -1825,7 +1837,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
     // Simulate a scenario where:
     // 1. User asks a question
     // 2. Assistant responds with a tool call
-    // 3. User cancels the tool execution (no ToolResult message added)
+    // 3. User interrupts the tool execution (no ToolResult message added)
     // 4. User asks a follow-up question
 
     // Add user message
@@ -1847,7 +1859,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
         .with_request_id(1),
     )?;
 
-    // Note: We do NOT add a ToolResult message - simulating user cancellation
+    // Note: We do NOT add a ToolResult message - simulating user interruption
 
     // Add another user message (user continues the conversation)
     agent.append_message(Message::new_user("Never mind, let's do something else."))?;
@@ -1858,19 +1870,19 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
     // We should have:
     // 1. Original user message
     // 2. Assistant message with tool call
-    // 3. Synthetic user message with cancelled tool result
+    // 3. Synthetic user message with unknown tool result
     // 4. Follow-up user message
     assert_eq!(
         rendered_messages.len(),
         4,
-        "Expected 4 messages: user, assistant, cancelled tool result, follow-up user"
+        "Expected 4 messages: user, assistant, unknown tool result, follow-up user"
     );
 
-    // Verify the synthetic cancelled tool result was inserted
-    let cancelled_message = &rendered_messages[2];
-    assert_eq!(cancelled_message.role, MessageRole::User);
+    // Verify the synthetic unknown tool result was inserted
+    let unknown_message = &rendered_messages[2];
+    assert_eq!(unknown_message.role, MessageRole::User);
 
-    if let MessageContent::Structured(blocks) = &cancelled_message.content {
+    if let MessageContent::Structured(blocks) = &unknown_message.content {
         assert_eq!(blocks.len(), 1);
         if let ContentBlock::ToolResult {
             tool_use_id,
@@ -1880,13 +1892,13 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
         } = &blocks[0]
         {
             assert_eq!(tool_use_id, "tool-1-1");
-            assert!(content.contains("cancelled"));
+            assert!(content.contains("did not run"));
             assert!(is_error.unwrap_or(false));
         } else {
             panic!("Expected ToolResult block");
         }
     } else {
-        panic!("Expected Structured content for cancelled tool result");
+        panic!("Expected Structured content for unknown tool result");
     }
 
     // Verify the follow-up user message is still present
@@ -1904,7 +1916,7 @@ async fn test_render_tool_results_generates_cancelled_results_for_missing_execut
 #[tokio::test]
 async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()> {
     // This test verifies that when tool results already exist, we don't add
-    // synthetic cancelled results for them.
+    // synthetic unknown results for them.
 
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
@@ -1912,7 +1924,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -1966,14 +1978,14 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
     // Now call render_tool_results_in_messages
     let rendered_messages = agent.render_tool_results_in_messages();
 
-    // We should have exactly 3 messages - no synthetic cancelled results added
+    // We should have exactly 3 messages - no synthetic unknown results added
     assert_eq!(
         rendered_messages.len(),
         3,
         "Expected 3 messages: user, assistant, tool result"
     );
 
-    // Verify the tool result is the original one (not a cancelled one)
+    // Verify the tool result is the original one (not a unknown one)
     let result_message = &rendered_messages[2];
     if let MessageContent::Structured(blocks) = &result_message.content
         && let ContentBlock::ToolResult {
@@ -1984,7 +1996,7 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
         } = &blocks[0]
     {
         assert_eq!(tool_use_id, "tool-1-1");
-        // Content should be the original, not "cancelled"
+        // Content should be the original, not "unknown"
         assert!(content.contains("File contents") || content.is_empty());
         // Should not be marked as error
         assert!(!is_error.unwrap_or(false));
@@ -1994,8 +2006,8 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
 }
 
 #[tokio::test]
-async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<()> {
-    // This test verifies that multiple cancelled tool calls are all handled correctly.
+async fn test_render_tool_results_handles_multiple_missing_tools() -> Result<()> {
+    // This test verifies that multiple unknown tool calls are all handled correctly.
 
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
@@ -2003,7 +2015,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -2027,7 +2039,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
     // Add user message
     agent.append_message(Message::new_user("Check the project."))?;
 
-    // Add assistant message with multiple tool calls (all cancelled)
+    // Add assistant message with multiple tool calls (all unknown)
     agent.append_message(
         Message::new_assistant_content(vec![
             ContentBlock::new_text("I'll check multiple things."),
@@ -2051,7 +2063,7 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         .with_request_id(1),
     )?;
 
-    // No tool results added - both cancelled
+    // No tool results added - both unknown
 
     // Now call render_tool_results_in_messages
     let rendered_messages = agent.render_tool_results_in_messages();
@@ -2059,21 +2071,21 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
     // We should have:
     // 1. Original user message
     // 2. Assistant message with tool calls
-    // 3. Synthetic user message with both cancelled tool results
+    // 3. Synthetic user message with both unknown tool results
     assert_eq!(
         rendered_messages.len(),
         3,
-        "Expected 3 messages: user, assistant, cancelled tool results"
+        "Expected 3 messages: user, assistant, unknown tool results"
     );
 
-    // Verify the synthetic cancelled results
-    let cancelled_message = &rendered_messages[2];
-    assert_eq!(cancelled_message.role, MessageRole::User);
+    // Verify the synthetic unknown results
+    let unknown_message = &rendered_messages[2];
+    assert_eq!(unknown_message.role, MessageRole::User);
 
-    if let MessageContent::Structured(blocks) = &cancelled_message.content {
-        assert_eq!(blocks.len(), 2, "Should have 2 cancelled tool results");
+    if let MessageContent::Structured(blocks) = &unknown_message.content {
+        assert_eq!(blocks.len(), 2, "Should have 2 unknown tool results");
 
-        // Check first cancelled result
+        // Check first unknown result
         if let ContentBlock::ToolResult {
             tool_use_id,
             content,
@@ -2082,13 +2094,13 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         } = &blocks[0]
         {
             assert_eq!(tool_use_id, "tool-1-1");
-            assert!(content.contains("cancelled"));
+            assert!(content.contains("did not run"));
             assert!(is_error.unwrap_or(false));
         } else {
-            panic!("Expected ToolResult block for first cancelled tool");
+            panic!("Expected ToolResult block for first unknown tool");
         }
 
-        // Check second cancelled result
+        // Check second unknown result
         if let ContentBlock::ToolResult {
             tool_use_id,
             content,
@@ -2097,13 +2109,13 @@ async fn test_render_tool_results_handles_multiple_cancelled_tools() -> Result<(
         } = &blocks[1]
         {
             assert_eq!(tool_use_id, "tool-1-2");
-            assert!(content.contains("cancelled"));
+            assert!(content.contains("did not run"));
             assert!(is_error.unwrap_or(false));
         } else {
-            panic!("Expected ToolResult block for second cancelled tool");
+            panic!("Expected ToolResult block for second unknown tool");
         }
     } else {
-        panic!("Expected Structured content for cancelled tool results");
+        panic!("Expected Structured content for unknown tool results");
     }
 
     Ok(())
@@ -2165,7 +2177,7 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
         project_manager: Arc::new(project_manager),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: ui.clone(),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -2301,7 +2313,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         project_manager: Arc::new(mock_project_manager),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: ui.clone(),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: None,
         permissions: Default::default(),
         tool_registry: crate::tools::test_registry(),
@@ -2360,8 +2372,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         "Expected compaction summary in message history"
     );
 
-    // The dropped exchange (assistant tool_use + user tool_result) should no longer
-    // be in the message history
+    // Compaction omits the exchange from the prompt, not from canonical history.
     let has_tool_result = agent.message_history_for_tests().iter().any(|msg| {
         if let MessageContent::Structured(blocks) = &msg.content {
             blocks.iter().any(|b| {
@@ -2378,8 +2389,8 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
         }
     });
     assert!(
-        !has_tool_result,
-        "Expected the dropped tool result to be removed from message history"
+        has_tool_result,
+        "The prompt projection must retain canonical tool evidence"
     );
 
     // Verify UI received compaction divider
@@ -2465,7 +2476,7 @@ async fn test_write_tier_denied_tool_reports_error_to_llm() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: Some(mediator.clone()),
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
         tool_registry: crate::tools::test_registry(),
@@ -2531,7 +2542,7 @@ async fn test_write_tier_does_not_ask_for_read_only_tools() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: Some(mediator.clone()),
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
         tool_registry: crate::tools::test_registry(),
@@ -2586,7 +2597,7 @@ async fn test_granted_session_asks_only_once_per_tool() -> Result<()> {
         project_manager: Arc::new(MockProjectManager::new()),
         command_executor: Arc::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(MockStatePersistence::new()),
+        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: Some(mediator.clone()),
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::AllTools),
         tool_registry: crate::tools::test_registry(),

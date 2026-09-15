@@ -1,5 +1,6 @@
 use crate::persistence::{ConversationPath, MessageNode, NodeId, SessionModelConfig};
 use crate::types::{PlanState, ToolSyntax};
+use agent_core::types::SerializedToolExecution;
 use agent_core::types::ToolExecution;
 use llm::Message;
 use sandbox::SandboxPolicy;
@@ -217,58 +218,21 @@ pub struct SessionState {
     pub model_config: Option<SessionModelConfig>,
 }
 
-impl SessionState {
-    /// Build the chat metadata that describes this state, as shown in the
-    /// session list. `created_at`/`updated_at` and the token limit are
-    /// placeholders the persistence layer overrides.
-    pub fn build_metadata(&self) -> crate::persistence::ChatMetadata {
-        use std::time::SystemTime;
-
-        // Calculate total usage and find last usage across all messages
-        let mut total_usage = llm::Usage::zero();
-        let mut last_usage = llm::Usage::zero();
-
-        for message in &self.messages {
-            if let Some(usage) = &message.usage {
-                total_usage.input_tokens += usage.input_tokens;
-                total_usage.output_tokens += usage.output_tokens;
-                total_usage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
-                total_usage.cache_read_input_tokens += usage.cache_read_input_tokens;
-
-                // For assistant messages, update last usage (most recent wins)
-                if matches!(message.role, llm::MessageRole::Assistant) {
-                    last_usage = usage.clone();
-                }
-            }
-        }
-
-        // Compute resumability from the current in-memory history.
-        // While the agent is running this is largely cosmetic — the UI
-        // only acts on it once the session is idle — but we still want
-        // it to reflect the truth as soon as a save runs after the
-        // agent finishes.
-        let messages_ref: Vec<&llm::Message> = self.messages.iter().collect();
-        let is_resumable = crate::persistence::is_resumable_from_messages(messages_ref.as_slice());
-
-        crate::persistence::ChatMetadata {
-            id: self.session_id.clone(),
-            name: self.name.clone(),       // Empty string if not named yet
-            created_at: SystemTime::now(), // Will be overridden by persistence
-            updated_at: SystemTime::now(),
-            message_count: self.messages.len(),
-            total_usage,
-            last_usage,
-            tokens_limit: None, // Will be updated by the persistence layer
-            tool_syntax: self.config.tool_syntax,
-            initial_project: if self.config.initial_project.is_empty() {
-                "unknown".to_string()
-            } else {
-                self.config.initial_project.clone()
-            },
-            plan_collapsed: false, // Agent doesn't track UI state
-            is_resumable,
-        }
-    }
+/// What a running agent commits after each change: the conversation delta
+/// since its previous checkpoint plus the run-owned fields. Session settings
+/// are never part of it; the session manager owns those.
+pub struct SessionCheckpoint<'a> {
+    pub session_id: &'a str,
+    pub name: &'a str,
+    /// Nodes appended or edited since the previous checkpoint.
+    pub changed_nodes: &'a [&'a MessageNode],
+    pub active_path: &'a [NodeId],
+    pub next_node_id: NodeId,
+    /// Journal entries recorded or updated since the previous checkpoint.
+    pub changed_executions: Vec<SerializedToolExecution>,
+    pub plan: &'a PlanState,
+    pub active_skills: &'a [String],
+    pub next_request_id: u64,
 }
 
 #[cfg(test)]

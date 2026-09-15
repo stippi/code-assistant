@@ -8,20 +8,19 @@
 //! same dyn-Any approach `ToolContext` uses.
 
 use crate::dialect::ToolDialect;
-use crate::tree::{ConversationPath, MessageNode, NodeId};
-use crate::types::{ToolExecution, ToolRequest};
+use crate::tree::Conversation;
+use crate::types::ToolRequest;
 use anyhow::Result;
 use llm::Message;
 use std::any::Any;
-use std::collections::BTreeMap;
 use std::time::Duration;
-use tools_core::ToolRegistry;
+use tools_core::{AnyOutput, ToolRegistry};
 
 /// View of the agent state that hooks may read and act on.
 pub struct LoopCtx<'a> {
-    pub tool_executions: &'a mut Vec<ToolExecution>,
-    pub message_nodes: &'a mut BTreeMap<NodeId, MessageNode>,
-    pub active_path: &'a ConversationPath,
+    /// The conversation tree. Edits through it are part of the next
+    /// checkpoint.
+    pub conversation: &'a mut Conversation,
     /// The session this agent runs, `None` while no session is assigned yet.
     /// Lets shared hook state (built once per process) be keyed per session —
     /// same role `PromptCtx::session_id` plays for system-prompt providers.
@@ -36,13 +35,20 @@ pub struct LoopCtx<'a> {
 /// Intercepts tool requests that the application handles itself instead of
 /// dispatching them to the registry, and observes successful executions.
 pub trait ToolInterceptor: Send + Sync {
-    /// Returns `Some(result)` when the request was handled here. Intercepted
-    /// tools do not appear in the UI.
-    fn try_intercept(&self, _request: &ToolRequest, _ctx: &mut LoopCtx) -> Option<Result<bool>> {
+    /// Handles the request in the application instead of the registry and
+    /// returns the output the loop journals for it. Scope and permission
+    /// checks always precede this hook, for parallel batches as well.
+    /// Intercepted tools do not appear in the UI.
+    fn try_intercept(
+        &self,
+        _request: &ToolRequest,
+        _ctx: &mut LoopCtx,
+    ) -> Option<Result<Box<dyn AnyOutput>>> {
         None
     }
 
-    /// Invoked after any tool executed successfully (standard path included).
+    /// Invoked on the state owner after any successful tool (including
+    /// intercepted and parallel calls), with its final, possibly rewritten input.
     fn after_tool_success(&self, _request: &ToolRequest, _ctx: &mut LoopCtx) {}
 }
 
@@ -74,7 +80,9 @@ pub trait IterationHook: Send + Sync {
 
 /// Decides which tool requests of a turn may execute concurrently.
 pub trait ToolDispatchPolicy: Send + Sync {
-    /// Indices of the requests that may execute concurrently with each other.
+    /// Indices of requests that support detached services and may overlap.
+    /// Only adjacent selected requests overlap: unselected calls are ordering
+    /// barriers. Authorization and completion hooks still run on the state owner.
     fn parallel_indices(&self, requests: &[ToolRequest]) -> Vec<usize>;
 }
 

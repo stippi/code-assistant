@@ -879,16 +879,19 @@ mod tests {
         let mut fixture = session_mode_fixture(dir.path());
         let mut context = fixture.context();
 
-        let mut input = session_mode_input("echo started; sleep 30", 500);
-        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+        // Do not assume the login shell prints within the first yield window.
+        // Gate output on stdin so a silent first response is exercised on every
+        // run, not just when a loaded CI runner starts the shell slowly.
+        let mut input = session_mode_input("read -r release; echo started; read -r finish", 500);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            ExecuteCommandTool.execute(&mut context, &mut input),
+        )
+        .await
+        .expect("session mode must yield without waiting for command output")?;
 
         assert!(result.running, "process should still be running");
         assert!(result.success, "a running session is not a failure");
-        assert!(
-            result.output.contains("started"),
-            "output: {}",
-            result.output
-        );
         let session_id = result
             .pty_session_id
             .expect("session id for running process");
@@ -897,7 +900,25 @@ mod tests {
         drop(context);
         let manager = fixture.pty_sessions().unwrap();
         let session = manager.get(session_id).expect("session should be tracked");
+        session.write(b"go\n")?;
+        let mut output = result.output;
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !output.contains("started") {
+                let chunk = session
+                    .collect_output(std::time::Duration::from_millis(100))
+                    .await;
+                output.push_str(&chunk.output);
+                if matches!(chunk.status, pty_session::PtySessionStatus::Exited(_)) {
+                    break;
+                }
+            }
+        })
+        .await;
         session.terminate();
+        assert!(
+            observed.is_ok() && output.contains("started"),
+            "output should arrive after releasing the command: {output:?}"
+        );
         Ok(())
     }
 

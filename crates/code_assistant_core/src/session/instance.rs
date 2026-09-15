@@ -146,6 +146,10 @@ pub struct SessionInstance {
     // We only track the task handle, not the agent itself
     /// Task handle for the running agent (None if not running)
     pub task_handle: Option<JoinHandle<Result<()>>>,
+    /// Owned preparation (LLM construction, MCP trust and registry). Never detached.
+    pub(crate) setup_task: Option<JoinHandle<()>>,
+    pub(crate) sleep_guard: Option<super::sleep_inhibitor::AgentSleepGuard>,
+    pub(crate) cancellation: tools_core::RunCancellation,
 
     /// In-flight DisplayFragments of the currently streaming response.
     /// Written by the [`SessionEventPublisher`]; included in snapshots so a
@@ -226,6 +230,12 @@ pub struct SessionInstance {
     pub tool_registry: Arc<crate::tools::core::ToolRegistry>,
 }
 
+impl Drop for SessionInstance {
+    fn drop(&mut self) {
+        self.terminate_agent();
+    }
+}
+
 impl SessionInstance {
     /// Create a new session instance
     pub fn new(session: ChatSession, tool_registry: Arc<crate::tools::core::ToolRegistry>) -> Self {
@@ -240,6 +250,9 @@ impl SessionInstance {
         Self {
             session,
             task_handle: None,
+            setup_task: None,
+            sleep_guard: None,
+            cancellation: tools_core::RunCancellation::default(),
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             tool_status_buffer: Arc::new(Mutex::new(HashMap::new())),
             in_flight_node_id: Arc::new(Mutex::new(None)),
@@ -272,6 +285,7 @@ impl SessionInstance {
     /// Pending permission requests resolve as denied so the agent does not
     /// stay blocked waiting for an answer.
     pub fn request_stop(&self) {
+        self.cancellation.cancel();
         self.stop_requested
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.pending_permission_requests.deny_all();
@@ -280,9 +294,10 @@ impl SessionInstance {
     /// Reset per-run state when a new agent starts: clears a previous stop
     /// request, the live tool-status map of the prior run, and any stale
     /// permission requests.
-    pub fn begin_agent_run(&self) {
-        self.stop_requested
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+    pub fn begin_agent_run(&mut self) {
+        self.cancellation = tools_core::RunCancellation::default();
+        self.activity = SessionActivity::default();
+        self.stop_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Ok(mut buf) = self.tool_status_buffer.lock() {
             buf.clear();
         }
@@ -321,12 +336,18 @@ impl SessionInstance {
 
     /// Terminate the running agent and release the cross-process agent lock.
     pub fn terminate_agent(&mut self) {
+        self.request_stop();
+        if let Some(handle) = self.setup_task.take() {
+            handle.abort();
+        }
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
             self.clear_fragment_buffer();
         }
         // Release the cross-process agent lock
         self.agent_lock = None;
+        self.sleep_guard = None;
+        self.set_activity_state(SessionActivityState::Idle);
     }
 
     /// Add a message with optional branching support.
@@ -402,6 +423,24 @@ impl SessionInstance {
             }
         }
         llm::Usage::zero()
+    }
+
+    /// The session-list entry describing the current state of this session.
+    pub fn metadata(&self) -> ChatMetadata {
+        ChatMetadata {
+            id: self.session.id.clone(),
+            name: self.session.name.clone(),
+            created_at: self.session.created_at,
+            updated_at: self.session.updated_at,
+            message_count: self.session.get_active_messages().len(),
+            total_usage: self.calculate_total_usage(),
+            last_usage: self.get_last_usage(),
+            tokens_limit: None, // Will be updated by persistence layer if available
+            tool_syntax: self.session.config.tool_syntax,
+            initial_project: self.session.config.initial_project.clone(),
+            plan_collapsed: self.session.plan_collapsed,
+            is_resumable: self.session.is_resumable(),
+        }
     }
 
     /// Reload session data from persistence
@@ -489,22 +528,7 @@ impl SessionInstance {
             });
         }
 
-        let metadata = ChatMetadata {
-            id: self.session.id.clone(),
-            name: self.session.name.clone(),
-            created_at: self.session.created_at,
-            updated_at: self.session.updated_at,
-
-            message_count: self.session.get_active_messages().len(),
-            total_usage: self.calculate_total_usage(),
-            last_usage: self.get_last_usage(),
-
-            tokens_limit: None, // Will be updated by persistence layer if available
-            tool_syntax: self.session.config.tool_syntax,
-            initial_project: self.session.config.initial_project.clone(),
-            plan_collapsed: self.session.plan_collapsed,
-            is_resumable: self.session.is_resumable(),
-        };
+        let metadata = self.metadata();
 
         let pending_message = self.pending_message.lock().ok().and_then(|pending| {
             pending

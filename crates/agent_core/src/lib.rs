@@ -3,7 +3,7 @@
 //! Applications embed [`runtime::AgentRuntime`] and bring their own tools
 //! (via a `tools_core::ToolRegistry`), their own behavior plugins (the hook
 //! traits in [`hooks`]), their own UI adapter ([`ui::AgentUi`]), their own
-//! persistence ([`persistence::SnapshotPersistence`]), and — optionally —
+//! persistence ([`persistence::CheckpointPersistence`]), and — optionally —
 //! their own tool invocation format ([`dialect::ToolDialect`]; the built-in
 //! default is native tool calling, [`native::NativeDialect`]).
 //!
@@ -11,6 +11,7 @@
 //! dyn-Any approach) — no generics infect the embedding application.
 
 pub mod dialect;
+pub mod execution;
 pub mod hooks;
 pub mod native;
 pub mod persistence;
@@ -20,9 +21,9 @@ pub mod types;
 pub mod ui;
 
 pub use dialect::ToolDialect;
-pub use persistence::{AgentSnapshot, SnapshotPersistence};
+pub use persistence::{AgentCheckpoint, CheckpointPersistence};
 pub use runtime::{AgentRuntime, AgentRuntimeComponents};
-pub use tree::{ConversationPath, MessageNode, NodeId};
+pub use tree::{Conversation, ConversationPath, MessageNode, NodeId};
 pub use types::{
     ParseError, PromptTooLongError, SerializedToolExecution, ToolExecution, ToolRequest,
     text_summary_from_blocks, to_tool_definition, to_tool_definitions,

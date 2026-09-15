@@ -147,7 +147,7 @@ pub struct TurnOutcome {
 pub struct TurnHandle {
     session_id: String,
     turn_id: u64,
-    service: crate::session::SessionService,
+    cancellation: tools_core::RunCancellation,
     outcome: oneshot::Receiver<TurnOutcome>,
 }
 
@@ -155,13 +155,13 @@ impl TurnHandle {
     pub(crate) fn new(
         session_id: String,
         turn_id: u64,
-        service: crate::session::SessionService,
+        cancellation: tools_core::RunCancellation,
         outcome: oneshot::Receiver<TurnOutcome>,
     ) -> Self {
         Self {
             session_id,
             turn_id,
-            service,
+            cancellation,
             outcome,
         }
     }
@@ -186,7 +186,8 @@ impl TurnHandle {
     /// Ask the running agent to stop at its next checkpoint. The outcome
     /// still resolves (normally as [`TurnStatus::Cancelled`]).
     pub async fn cancel(&self) -> Result<()> {
-        self.service.request_stop(self.session_id.clone()).await
+        self.cancellation.cancel();
+        Ok(())
     }
 }
 
@@ -197,6 +198,7 @@ impl TurnHandle {
 ///
 /// [`SessionService::start_turn_if_idle`]: crate::session::SessionService::start_turn_if_idle
 pub struct TurnRecorder {
+    pub(crate) cancellation: tools_core::RunCancellation,
     turn_id: u64,
     started: Instant,
     inner: Mutex<RecorderInner>,
@@ -223,7 +225,9 @@ impl TurnRecorder {
     pub(crate) fn arm(baseline_usage: llm::Usage) -> (std::sync::Arc<Self>, TurnParts) {
         let (tx, rx) = oneshot::channel();
         let turn_id = NEXT_TURN_ID.fetch_add(1, Ordering::Relaxed);
+        let cancellation = tools_core::RunCancellation::default();
         let recorder = std::sync::Arc::new(Self {
+            cancellation: cancellation.clone(),
             turn_id,
             started: Instant::now(),
             inner: Mutex::new(RecorderInner {
@@ -242,6 +246,7 @@ impl TurnRecorder {
         (
             recorder,
             TurnParts {
+                cancellation,
                 turn_id,
                 outcome: rx,
             },
@@ -348,6 +353,7 @@ impl TurnRecorder {
             return;
         };
         let status = match error {
+            _ if self.cancellation.is_cancelled() => TurnStatus::Cancelled,
             Some(error) => TurnStatus::Failed { error },
             None if inner.cancelled => TurnStatus::Cancelled,
             None => TurnStatus::Completed,
@@ -405,6 +411,7 @@ impl Drop for TurnRecorder {
 
 /// The handle-side parts produced by [`TurnRecorder::arm`].
 pub(crate) struct TurnParts {
+    pub(crate) cancellation: tools_core::RunCancellation,
     pub(crate) turn_id: u64,
     pub(crate) outcome: oneshot::Receiver<TurnOutcome>,
 }

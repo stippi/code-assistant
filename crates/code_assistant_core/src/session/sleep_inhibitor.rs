@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, warn};
 
 /// Prevents the system from going to idle sleep while any agent is running.
@@ -17,7 +17,24 @@ pub struct SleepInhibitor {
     wake_lock: Mutex<Option<keepawake::KeepAwake>>,
 }
 
+/// One run's wake-lock ownership. Released on every exit, including task abort.
+pub(crate) struct AgentSleepGuard(Arc<SleepInhibitor>);
+
+impl Drop for AgentSleepGuard {
+    fn drop(&mut self) {
+        self.0.agent_stopped();
+    }
+}
+
 impl SleepInhibitor {
+    pub(crate) fn agent_guard(self: &Arc<Self>) -> AgentSleepGuard {
+        self.agent_started();
+        AgentSleepGuard(self.clone())
+    }
+    #[cfg(test)]
+    pub(crate) fn running_count(&self) -> usize {
+        self.running_count.load(Ordering::SeqCst)
+    }
     /// Called when an agent starts running. Acquires the system wake lock
     /// if this is the first active agent.
     pub fn agent_started(&self) {

@@ -598,12 +598,36 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn long_running_command_yields_while_running() {
-        let session = PtySession::spawn(shell("echo started; sleep 30", true)).unwrap();
-        let out = session.collect_output(Duration::from_millis(500)).await;
-        assert!(out.output.contains("started"), "output: {}", out.output);
+        // A yield window is not a shell-startup deadline. Gate the first output
+        // on stdin so the initial collect must work even with no output yet.
+        let session =
+            PtySession::spawn(shell("read -r release; echo started; read -r finish", true))
+                .unwrap();
+        let out = tokio::time::timeout(
+            Duration::from_secs(10),
+            session.collect_output(Duration::from_millis(500)),
+        )
+        .await
+        .expect("collect must yield without waiting for command output");
         assert_eq!(out.status, PtySessionStatus::Running);
 
+        session.write(b"go\n").unwrap();
+        let mut output = out.output;
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            while !output.contains("started") {
+                let chunk = session.collect_output(Duration::from_millis(100)).await;
+                output.push_str(&chunk.output);
+                if matches!(chunk.status, PtySessionStatus::Exited(_)) {
+                    break;
+                }
+            }
+        })
+        .await;
         session.terminate();
+        assert!(
+            observed.is_ok() && output.contains("started"),
+            "output should arrive after releasing the command: {output:?}"
+        );
         let out = session.collect_output(Duration::from_secs(10)).await;
         assert!(matches!(out.status, PtySessionStatus::Exited(_)));
     }

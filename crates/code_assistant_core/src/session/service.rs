@@ -6,13 +6,13 @@
 //! caller gets *its* answer or *its* error — no correlation over shared
 //! channels.
 //!
-//! Internally the service is an actor: methods enqueue a closure onto a
-//! command channel and await a oneshot reply. A single worker future (see
-//! [`SessionService::new`]) executes commands strictly in order on the
-//! backend's tokio runtime, preserving the serialization of session
-//! mutations and keeping the caller's executor (e.g. GPUI) decoupled from
-//! tokio. Core→UI notifications keep flowing through [`UiEvent`] and are
-//! not part of this API.
+//! Internally each method hands a command to a worker on the backend tokio
+//! runtime, which keeps the caller's executor (e.g. GPUI) decoupled from
+//! tokio. Commands that mutate a session run in that session's lane, one
+//! after the other; read-only queries run as independent tasks; and a
+//! separate control mailbox takes stop requests and permission replies so
+//! they never wait behind queued work. Core→UI notifications keep flowing
+//! through [`UiEvent`] and are not part of this API.
 
 use crate::config::{DefaultProjectManager, ProjectManager, save_project};
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
@@ -227,10 +227,26 @@ impl ServiceCtx {
 type BoxedCommandFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 type Command = Box<dyn FnOnce(ServiceCtx) -> BoxedCommandFuture + Send>;
 
+/// A command on its way to the worker, holding its admission permit until
+/// it has run.
+struct Dispatch {
+    /// Commands in the same lane run one after the other, in arrival order.
+    /// `None` runs the command on its own.
+    lane: Option<String>,
+    command: Command,
+    permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// At most this many commands are admitted at once, queued or running.
+/// Callers beyond that wait before their command is even accepted.
+const COMMAND_CAPACITY: usize = 64;
+
 /// Cloneable handle to the session command worker. See module docs.
 #[derive(Clone)]
 pub struct SessionService {
-    tx: async_channel::Sender<Command>,
+    tx: async_channel::Sender<Dispatch>,
+    control_tx: async_channel::Sender<Command>,
+    admission: Arc<tokio::sync::Semaphore>,
     events: EventStream,
 }
 
@@ -247,20 +263,51 @@ impl SessionService {
         runtime: Arc<AgentRuntimeOptions>,
         events: EventStream,
     ) -> (Self, impl Future<Output = ()>) {
-        let (tx, rx) = async_channel::unbounded::<Command>();
+        let (tx, rx) = async_channel::bounded::<Dispatch>(COMMAND_CAPACITY);
+        let (control_tx, control_rx) = async_channel::bounded::<Command>(16);
+        let admission = Arc::new(tokio::sync::Semaphore::new(COMMAND_CAPACITY));
         let ctx = ServiceCtx {
             manager,
             runtime,
             events: events.clone(),
         };
         let worker = async move {
-            debug!("Session service worker started");
-            while let Ok(command) = rx.recv().await {
-                command(ctx.clone()).await;
-            }
-            debug!("Session service worker stopped");
+            let control = {
+                let ctx = ctx.clone();
+                async move {
+                    while let Ok(command) = control_rx.recv().await {
+                        command(ctx.clone()).await;
+                    }
+                }
+            };
+            let dispatch = async move {
+                let mut lanes = std::collections::HashMap::new();
+                while let Ok(dispatch) = rx.recv().await {
+                    match dispatch.lane {
+                        None => {
+                            let ctx = ctx.clone();
+                            tokio::spawn(run_command(ctx, dispatch.command, dispatch.permit));
+                        }
+                        Some(name) => {
+                            let lane = lanes.entry(name).or_insert_with(|| spawn_lane(ctx.clone()));
+                            // Only fails once the lane task is gone, which
+                            // takes the reply channel with it.
+                            let _ = lane.send((dispatch.command, dispatch.permit));
+                        }
+                    }
+                }
+            };
+            tokio::join!(dispatch, control);
         };
-        (Self { tx, events }, worker)
+        (
+            Self {
+                tx,
+                control_tx,
+                admission,
+                events,
+            },
+            worker,
+        )
     }
 
     /// Subscribe to the core→UI broadcast stream.
@@ -271,7 +318,7 @@ impl SessionService {
     /// Request that the running agent of a session stops at the next
     /// opportunity (streaming checkpoint). No-op if no agent is running.
     pub async fn request_stop(&self, session_id: String) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_control(move |ctx| async move {
             let manager = ctx.manager.lock().await;
             let session = manager
                 .get_session(&session_id)
@@ -289,7 +336,7 @@ impl SessionService {
     /// command. Returns `Ok(())` regardless of whether a match was found
     /// (the process may have already finished).
     pub async fn interrupt_terminal(&self, session_id: String, tool_id: String) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_control(move |ctx| async move {
             let manager = ctx.manager.lock().await;
             let session = manager
                 .get_session(&session_id)
@@ -305,15 +352,74 @@ impl SessionService {
         .await
     }
 
-    /// Enqueue a command and await its typed reply.
+    /// Run a mutation that is not tied to one session, after earlier ones.
     async fn call<T, F, Fut>(&self, f: F) -> Result<T>
     where
         F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
+        self.dispatch(Some("global".into()), f).await
+    }
+
+    /// Run a mutation of one session, after that session's earlier ones.
+    async fn call_session<T, F, Fut>(&self, session_id: String, f: F) -> Result<T>
+    where
+        F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.dispatch(Some(format!("session:{session_id}")), f)
+            .await
+    }
+
+    /// Run a read-only query on its own, so slow git or filesystem work
+    /// never holds up session commands.
+    async fn call_io<T, F, Fut>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.dispatch(None, f).await
+    }
+
+    async fn dispatch<T, F, Fut>(&self, lane: Option<String>, f: F) -> Result<T>
+    where
+        F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let permit = self.admission.clone().acquire_owned().await?;
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
+            .send(Dispatch {
+                lane,
+                permit,
+                command: Box::new(move |ctx| {
+                    Box::pin(async move {
+                        let _ = reply_tx.send(f(ctx).await);
+                    })
+                }),
+            })
+            .await
+            .map_err(|_| anyhow!("session service is not running"))?;
+        reply_rx
+            .await
+            .map_err(|_| anyhow!("session service dropped the request"))?
+    }
+
+    /// Control commands (stop, permission replies) bypass admission and the
+    /// lanes: they must reach the manager even while it is busy. They still
+    /// take the manager lock like everything else.
+    async fn call_control<T, F, Fut>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(ServiceCtx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.control_tx
             .send(Box::new(move |ctx| {
                 Box::pin(async move {
                     let _ = reply_tx.send(f(ctx).await);
@@ -404,7 +510,7 @@ impl SessionService {
     /// system-initiated turn — such as an isolated supervised-delegation child —
     /// is cancelled from the outside.
     pub async fn terminate_agent(&self, session_id: String) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_control(move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
             manager.terminate_session_agent(&session_id);
             Ok(())
@@ -420,7 +526,7 @@ impl SessionService {
         session_id: String,
         edit_until_node_id: Option<NodeId>,
     ) -> Result<crate::session::SessionSnapshot> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let snapshot = {
                 let mut manager = ctx.manager.lock().await;
                 manager
@@ -433,7 +539,7 @@ impl SessionService {
     }
 
     pub async fn delete_session(&self, session_id: String) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
             manager.delete_session(&session_id)
         })
@@ -453,7 +559,7 @@ impl SessionService {
     /// as [`UiEvent`]s; falls back to a full reload if that fails.
     pub async fn refresh_session(&self, session_id: String) -> Result<()> {
         let refreshed = self
-            .call({
+            .call_session(session_id.clone(), {
                 let session_id = session_id.clone();
                 move |ctx| async move {
                     let ui_events = {
@@ -478,7 +584,7 @@ impl SessionService {
 
     /// Clear the Errored state on a session (user dismissed the error banner).
     pub async fn clear_session_error(&self, session_id: String) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             {
                 let mut manager = ctx.manager.lock().await;
                 if let Some(session) = manager.get_session_mut(&session_id) {
@@ -503,23 +609,23 @@ impl SessionService {
         .await
     }
 
-    /// Clear the conversation context (messages) for a session. The session
-    /// itself is kept alive; only the message history is wiped.
-    pub async fn clear_context(&self, session_id: String) -> Result<()> {
+    /// Start over in a new session that inherits this session's settings:
+    /// project, worktree, model, sandbox policy and permission tier. The
+    /// current session keeps its history untouched. Returns the new id.
+    pub async fn start_fresh_session(&self, session_id: String) -> Result<String> {
         self.call(move |ctx| async move {
-            {
-                let mut manager = ctx.manager.lock().await;
-                if let Some(session) = manager.get_session_mut(&session_id) {
-                    let chat = &mut session.session;
-                    chat.message_nodes.clear();
-                    chat.active_path.clear();
-                    chat.next_node_id = 1;
-                    chat.messages.clear();
-                    chat.plan = Default::default();
-                }
-            }
-            ctx.notify_session(&session_id, UiEvent::ClearMessages);
-            Ok(())
+            let mut manager = ctx.manager.lock().await;
+            manager.ensure_session_loaded(&session_id)?;
+            let (config, model) = {
+                let instance = manager
+                    .get_session(&session_id)
+                    .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
+                (
+                    instance.session.config.clone(),
+                    instance.session.model_config.clone(),
+                )
+            };
+            manager.create_session_with_config(None, Some(config), model)
         })
         .await
     }
@@ -551,7 +657,7 @@ impl SessionService {
         attachments: Vec<DraftAttachment>,
         branch_parent_id: Option<NodeId>,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             send_user_message_impl(
                 &ctx,
                 &session_id,
@@ -577,7 +683,7 @@ impl SessionService {
         attachments: Vec<DraftAttachment>,
         tool_scope: crate::tools::core::ToolScope,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             send_user_message_impl(
                 &ctx,
                 &session_id,
@@ -604,7 +710,7 @@ impl SessionService {
         message: String,
         attachments: Vec<DraftAttachment>,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             send_or_queue_user_message_impl(&ctx, &session_id, &message, &attachments).await
         })
         .await
@@ -621,7 +727,7 @@ impl SessionService {
         message: String,
         attachments: Vec<DraftAttachment>,
     ) -> Result<bool> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             try_send_user_message_if_idle_impl(&ctx, &session_id, &message, &attachments).await
         })
         .await
@@ -644,9 +750,8 @@ impl SessionService {
         session_id: String,
         request: crate::session::TurnRequest,
     ) -> Result<crate::session::TurnDispatch> {
-        let service = self.clone();
-        self.call(move |ctx| async move {
-            start_turn_if_idle_impl(&ctx, service, session_id, request).await
+        self.call_session(session_id.clone(), move |ctx| async move {
+            start_turn_if_idle_impl(&ctx, session_id, request).await
         })
         .await
     }
@@ -663,7 +768,7 @@ impl SessionService {
     /// this rather than a mirror, or it will act on a session the atomic send
     /// then refuses. Loads the session on demand, like the send paths.
     pub async fn is_session_busy(&self, session_id: String) -> Result<bool> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
             manager.ensure_session_loaded(&session_id)?;
             let instance = manager
@@ -682,7 +787,7 @@ impl SessionService {
         message: String,
         attachments: Vec<DraftAttachment>,
     ) -> Result<Option<String>> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let content_blocks = content_blocks_from(&message, &attachments);
             let mut manager = ctx.manager.lock().await;
             manager.queue_structured_user_message(&session_id, content_blocks)?;
@@ -694,7 +799,7 @@ impl SessionService {
     /// Take the pending message out of the queue for editing. Returns its
     /// text, or `None` if nothing was queued.
     pub async fn take_pending_message(&self, session_id: String) -> Result<Option<String>> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
             manager.request_pending_message_for_edit(&session_id)
         })
@@ -704,8 +809,10 @@ impl SessionService {
     /// Resume a session that ended in a state where the agent should run
     /// against the existing message history (no new user message is added).
     pub async fn resume_session(&self, session_id: String) -> Result<()> {
-        self.call(move |ctx| async move { resume_session_impl(&ctx, &session_id).await })
-            .await
+        self.call_session(session_id.clone(), move |ctx| async move {
+            resume_session_impl(&ctx, &session_id).await
+        })
+        .await
     }
 
     /// Deliver a fired wakeup (see [`crate::session::wakeup`]): inject
@@ -714,14 +821,16 @@ impl SessionService {
     /// when an agent is currently running. A session that no longer exists
     /// swallows the wakeup silently.
     pub async fn inject_wakeup(&self, session_id: String, message: String) -> Result<()> {
-        self.call(move |ctx| async move { inject_wakeup_impl(&ctx, &session_id, &message).await })
-            .await
+        self.call_session(session_id.clone(), move |ctx| async move {
+            inject_wakeup_impl(&ctx, &session_id, &message).await
+        })
+        .await
     }
 
     /// Cancel a running sub-agent by its tool id. Returns `true` if a
     /// sub-agent was actually cancelled, `false` if it had already finished.
     pub async fn cancel_sub_agent(&self, session_id: String, tool_id: String) -> Result<bool> {
-        self.call(move |ctx| async move {
+        self.call_control(move |ctx| async move {
             let manager = ctx.manager.lock().await;
             manager.cancel_sub_agent(&session_id, &tool_id)
         })
@@ -735,7 +844,7 @@ impl SessionService {
     /// List the skills available to a session (across project / user /
     /// system scopes), for the input-area skill picker.
     pub async fn list_skills(&self, session_id: String) -> Result<Vec<SkillCatalogEntry>> {
-        self.call(move |ctx| async move {
+        self.call_io(move |ctx| async move {
             let project_name = {
                 let manager = ctx.manager.lock().await;
                 manager
@@ -769,7 +878,7 @@ impl SessionService {
         scope: String,
         name: String,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let config = SkillsConfig::load();
             let pm = (ctx.runtime.project_manager_factory)();
             let payload = load_skill_payload(pm.as_ref(), &scope, &name, &config)
@@ -804,7 +913,7 @@ impl SessionService {
         session_id: String,
         model_name: String,
     ) -> Result<ModelSwitchResult> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let config_system =
                 ConfigurationSystem::load().context("Failed to load model configuration")?;
             if config_system.get_model(&model_name).is_none() {
@@ -852,7 +961,7 @@ impl SessionService {
         session_id: String,
         policy: SandboxPolicy,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             {
                 let mut manager = ctx.manager.lock().await;
                 manager.set_session_sandbox_policy(&session_id, policy.clone())?;
@@ -871,7 +980,7 @@ impl SessionService {
         session_id: String,
         tier: tools_core::PermissionTier,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             {
                 let mut manager = ctx.manager.lock().await;
                 manager.set_session_permission_tier(&session_id, tier)?;
@@ -892,7 +1001,7 @@ impl SessionService {
         session_id: String,
         disabled: Vec<String>,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let servers = {
                 let mut manager = ctx.manager.lock().await;
                 manager.set_session_disabled_mcp_servers(&session_id, disabled)?
@@ -912,7 +1021,7 @@ impl SessionService {
         request_id: String,
         decision: tools_core::PermissionDecision,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_control(move |ctx| async move {
             let manager = ctx.manager.lock().await;
             manager.resolve_permission_request(&session_id, &request_id, decision)?;
             Ok(())
@@ -931,7 +1040,7 @@ impl SessionService {
         session_id: String,
         node_id: NodeId,
     ) -> Result<MessageEditContext> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let manager = ctx.manager.lock().await;
             let session_instance = manager
                 .get_session(&session_id)
@@ -1003,7 +1112,7 @@ impl SessionService {
         session_id: String,
         new_node_id: NodeId,
     ) -> Result<BranchSwitchData> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
             let session_instance = manager
                 .get_session_mut(&session_id)
@@ -1034,7 +1143,7 @@ impl SessionService {
     /// Abort a message edit and return the full transcript of the active
     /// path.
     pub async fn cancel_message_edit(&self, session_id: String) -> Result<TranscriptData> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let manager = ctx.manager.lock().await;
             let session_instance = manager
                 .get_session(&session_id)
@@ -1049,7 +1158,7 @@ impl SessionService {
     // ========================================================================
 
     pub async fn list_branches_and_worktrees(&self, session_id: String) -> Result<WorktreeListing> {
-        self.call(move |ctx| async move {
+        self.call_io(move |ctx| async move {
             let project_root = {
                 let manager = ctx.manager.lock().await;
                 session_project_root(&manager, &session_id)?
@@ -1092,12 +1201,14 @@ impl SessionService {
     /// Resolves the session's on-disk directory with `effective_project_path`
     /// (worktree-aware). An empty result means "not a git project".
     pub async fn list_review_repos(&self, session_id: String) -> Result<Vec<(PathBuf, String)>> {
-        self.call(move |ctx| async move {
+        self.call_io(move |ctx| async move {
             let project_root = {
                 let manager = ctx.manager.lock().await;
                 session_effective_path(&manager, &session_id)?
             };
-            Ok(discover_review_repos(&project_root))
+            tokio::task::spawn_blocking(move || discover_review_repos(&project_root))
+                .await
+                .context("Review repo scan was aborted")
         })
         .await
     }
@@ -1113,7 +1224,7 @@ impl SessionService {
         mode: ReviewMode,
         base_override: Option<String>,
     ) -> Result<RepoReview> {
-        self.call(move |_ctx| async move {
+        self.call_io(move |_ctx| async move {
             let repo =
                 git::GitRepository::open(&repo_root).context("Failed to open git repository")?;
             let current_branch = repo.current_branch();
@@ -1168,7 +1279,7 @@ impl SessionService {
         base: Option<String>,
         file: git::ChangedFile,
     ) -> Result<git::FileDiffContent> {
-        self.call(move |_ctx| async move {
+        self.call_io(move |_ctx| async move {
             let repo =
                 git::GitRepository::open(&repo_root).context("Failed to open git repository")?;
 
@@ -1196,7 +1307,7 @@ impl SessionService {
         worktree_path: Option<PathBuf>,
         branch: Option<String>,
     ) -> Result<()> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
             manager.set_session_worktree(&session_id, worktree_path, branch)
         })
@@ -1211,7 +1322,7 @@ impl SessionService {
         branch_name: String,
         base_branch: Option<String>,
     ) -> Result<CreatedWorktree> {
-        self.call(move |ctx| async move {
+        self.call_session(session_id.clone(), move |ctx| async move {
             let project_root = {
                 let manager = ctx.manager.lock().await;
                 session_project_root(&manager, &session_id)?
@@ -1560,16 +1671,35 @@ async fn send_user_message_impl(
         // Headless dispatch (channel adapters, schedulers) reaches sessions
         // no frontend has opened since the restart — load on demand.
         manager.ensure_session_loaded(session_id)?;
-        let node_id = manager
-            .add_user_message(session_id, content_blocks, branch_parent_id)
-            .context("Failed to add user message")?;
-        // If we created a branch, get branch info updates for all siblings.
-        let updates = if branch_parent_id.is_some() {
-            manager.get_sibling_branch_infos(session_id, node_id)
-        } else {
-            Vec::new()
-        };
-        (node_id, updates)
+        let cancellation = turn_recorder
+            .as_ref()
+            .map(|recorder| recorder.cancellation.clone())
+            .unwrap_or_default();
+        // Claim the cross-process writer before touching the conversation.
+        manager.reserve_agent_run(session_id, cancellation.clone())?;
+        let prepared: Result<_> = (|| {
+            let node_id = manager
+                .add_user_message(session_id, content_blocks, branch_parent_id)
+                .context("Failed to add user message")?;
+            let updates = if branch_parent_id.is_some() {
+                manager.get_sibling_branch_infos(session_id, node_id)
+            } else {
+                Vec::new()
+            };
+            schedule_agent_impl(
+                ctx,
+                &mut manager,
+                session_id,
+                tool_scope_override,
+                turn_recorder,
+                cancellation.clone(),
+            )?;
+            Ok((node_id, updates))
+        })();
+        if let Err(error) = &prepared {
+            manager.finish_failed_setup(session_id, &cancellation, format!("{error:#}"));
+        }
+        prepared?
     };
 
     // Now display the user message with the correct node_id.
@@ -1594,7 +1724,7 @@ async fn send_user_message_impl(
         );
     }
 
-    start_agent_impl(ctx, session_id, tool_scope_override, turn_recorder).await
+    Ok(())
 }
 
 /// Shared by [`SessionService::send_or_queue_user_message`] and the wakeup
@@ -1658,7 +1788,6 @@ async fn try_send_user_message_if_idle_impl(
 
 async fn start_turn_if_idle_impl(
     ctx: &ServiceCtx,
-    service: SessionService,
     session_id: String,
     request: crate::session::TurnRequest,
 ) -> Result<crate::session::TurnDispatch> {
@@ -1694,7 +1823,7 @@ async fn start_turn_if_idle_impl(
     Ok(TurnDispatch::Started(TurnHandle::new(
         session_id,
         parts.turn_id,
-        service,
+        parts.cancellation,
         parts.outcome,
     )))
 }
@@ -1765,139 +1894,216 @@ async fn start_agent_impl(
     tool_scope_override: Option<crate::tools::core::ToolScope>,
     turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
 ) -> Result<()> {
-    let (session_config, default_model_name) = {
-        let manager = ctx.manager.lock().await;
-        (
-            manager.get_session_model_config(session_id).unwrap_or(None),
-            manager.default_model_name().to_string(),
-        )
-    };
-    let Some(mut session_config) = session_config else {
-        bail!(
-            "Session has no model configuration. Please ensure all sessions are created with a model."
-        );
-    };
-
-    // Validation is fail-soft: without a loadable configuration the client
-    // construction below reports the error.
-    if let Ok(config_system) = ConfigurationSystem::load() {
-        session_config = runnable_model_config(session_config, &default_model_name, |model| {
-            config_system.get_model(model).is_some()
-        });
+    let mut manager = ctx.manager.lock().await;
+    let cancellation = turn_recorder
+        .as_ref()
+        .map(|recorder| recorder.cancellation.clone())
+        .unwrap_or_default();
+    manager.reserve_agent_run(session_id, cancellation.clone())?;
+    let result = schedule_agent_impl(
+        ctx,
+        &mut manager,
+        session_id,
+        tool_scope_override,
+        turn_recorder,
+        cancellation.clone(),
+    );
+    if let Err(error) = &result {
+        manager.finish_failed_setup(session_id, &cancellation, format!("{error:#}"));
     }
-
-    let llm_client = match &ctx.runtime.llm_client_factory {
-        Some(factory) => factory(&session_config.model_name)
-            .context("Failed to create LLM client from injected factory")?,
-        None => create_llm_client_from_model(
-            &session_config.model_name,
-            ctx.runtime.playback_path.clone(),
-            ctx.runtime.fast_playback,
-            ctx.runtime.record_path.clone(),
-        )
-        .await
-        .context("Failed to create LLM client")?,
-    };
-
-    let project_manager = (ctx.runtime.project_manager_factory)();
-    let command_executor = (ctx.runtime.command_executor_factory)(session_id);
-
-    // Resolve local-`.mcp.json` trust, then start the run. The trust prompt is
-    // answered via `respond_permission` — another command on this service's
-    // single-threaded worker — so when a prompt is actually needed we must not
-    // block the worker awaiting it (that would starve the response and hang the
-    // prompt forever). In that case the whole resolve+start runs on a detached
-    // task; the common no-prompt case stays inline and synchronous.
-    let (project_dir, disabled_mcp_servers, permission_handler) = {
-        let manager = ctx.manager.lock().await;
-        let (project_dir, disabled) = manager
-            .get_session(session_id)
-            .map(|instance| {
-                (
-                    instance.session.config.effective_project_path().cloned(),
-                    instance.session.config.disabled_mcp_servers.clone(),
-                )
-            })
-            .unwrap_or((None, Vec::new()));
-        (
-            project_dir,
-            disabled,
-            manager.permission_mediator(session_id).ok(),
-        )
-    };
-    let needs_prompt = project_dir
-        .as_deref()
-        .is_some_and(crate::tools::mcp_trust::needs_prompt);
-
-    let events = ctx.events.clone();
-    let ctx = ctx.clone();
-    let session_id = session_id.to_string();
-    let err_session_id = session_id.clone();
-    let run = async move {
-        let include_local_mcp = SessionManager::resolve_local_mcp_trust(
-            project_dir.as_deref(),
-            permission_handler.as_deref(),
-        )
-        .await;
-        // Trust for this project is now resolved; refresh the input-bar MCP
-        // list so a project's `.mcp.json` servers appear once trusted (the
-        // session snapshot was computed before the trust prompt).
-        ctx.notify_session(
-            &session_id,
-            UiEvent::UpdateMcpServers {
-                servers: crate::tools::mcp::session_mcp_servers(
-                    project_dir.as_deref(),
-                    &disabled_mcp_servers,
-                ),
-            },
-        );
-        let registry_request = crate::session::manager::RegistryRequest {
-            project_dir,
-            include_local_mcp,
-        };
-        let mut manager = ctx.manager.lock().await;
-        manager
-            .set_session_model_config(&session_id, Some(session_config))
-            .context("Failed to persist model config")?;
-        manager
-            .start_agent_for_session(
-                &session_id,
-                llm_client,
-                project_manager,
-                command_executor,
-                permission_handler,
-                tool_scope_override,
-                turn_recorder,
-                registry_request,
-            )
-            .await
-            .context("Failed to start agent")?;
-        debug!("Agent started for session {}", session_id);
-        Ok(())
-    };
-
-    if needs_prompt {
-        // Detach so the worker is free to process the prompt's response.
-        tokio::spawn(async move {
-            if let Err(error) = run.await {
-                let message = format!("Failed to start agent: {error:#}");
-                error!("{message}");
-                events.publish_ui(&err_session_id, UiEvent::DisplayError { message });
-            }
-        });
-        Ok(())
-    } else {
-        run.await
-    }
+    result
 }
+
+fn schedule_agent_impl(
+    ctx: &ServiceCtx,
+    manager: &mut SessionManager,
+    session_id: &str,
+    tool_scope_override: Option<crate::tools::core::ToolScope>,
+    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+    cancellation: tools_core::RunCancellation,
+) -> Result<()> {
+    // Caller owns the reservation and handles synchronous setup failures.
+    let loader = manager.registry_loader();
+    let session_config = manager.get_session_model_config(session_id)?;
+    let default_model_name = manager.default_model_name().to_string();
+    let instance = manager.get_session(session_id).unwrap();
+    let run_session_config = instance.session.config.clone();
+    let project_dir = run_session_config.effective_project_path().cloned();
+    let disabled = run_session_config.disabled_mcp_servers.clone();
+    let permission_handler = manager.permission_mediator(session_id)?;
+    // The manager owns setup_task; the task must not own the manager back.
+    let owner = Arc::downgrade(&ctx.manager);
+    let runtime = ctx.runtime.clone();
+    let events = ctx.events.clone();
+    let session_id = session_id.to_string();
+    let task_session = session_id.clone();
+    let task = tokio::spawn(async move {
+        use futures::FutureExt;
+
+        // Everything that may take long or wait for the user: the LLM
+        // client, the MCP trust prompt, the tool registry. Abandoned the
+        // moment the run is cancelled.
+        let prepare = async {
+            let mut session_config =
+                session_config.ok_or_else(|| anyhow!("Session has no model configuration"))?;
+            let original_model = session_config.model_name.clone();
+            if let Ok(config) = ConfigurationSystem::load() {
+                session_config =
+                    runnable_model_config(session_config, &default_model_name, |model| {
+                        config.get_model(model).is_some()
+                    });
+            }
+            let llm_client = match &runtime.llm_client_factory {
+                Some(factory) => {
+                    let factory = factory.clone();
+                    let model = session_config.model_name.clone();
+                    // A synchronous injected constructor must not stall the backend.
+                    tokio::task::spawn_blocking(move || factory(&model)).await??
+                }
+                None => {
+                    create_llm_client_from_model(
+                        &session_config.model_name,
+                        runtime.playback_path.clone(),
+                        runtime.fast_playback,
+                        runtime.record_path.clone(),
+                    )
+                    .await?
+                }
+            };
+            let include_local_mcp = SessionManager::resolve_local_mcp_trust(
+                project_dir.as_deref(),
+                Some(permission_handler.as_ref()),
+            )
+            .await;
+            let registry = loader(crate::session::manager::RegistryRequest {
+                project_dir: project_dir.clone(),
+                include_local_mcp,
+            })
+            .await;
+            Ok::<_, anyhow::Error>((llm_client, registry, session_config, original_model))
+        };
+        let prepared = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(tools_core::Cancelled.into()),
+            result = std::panic::AssertUnwindSafe(prepare).catch_unwind() => {
+                result.unwrap_or_else(|_| Err(anyhow!("Run preparation panicked")))
+            }
+        };
+
+        // Committing the run mutates the manager and therefore runs to
+        // completion once started; it checks for cancellation itself.
+        let commit = |(llm_client, registry, session_config, original_model): (
+            Box<dyn llm::LLMProvider>,
+            Arc<crate::tools::core::ToolRegistry>,
+            SessionModelConfig,
+            String,
+        )| {
+            let owner = owner.clone();
+            let cancellation = cancellation.clone();
+            let turn_recorder = turn_recorder.clone();
+            let task_session = task_session.clone();
+            let events = events.clone();
+            async move {
+                let owner = owner
+                    .upgrade()
+                    .ok_or_else(|| anyhow!("Session service shut down"))?;
+                let mut manager = owner.lock().await;
+                // Stop/delete may have won while preparation was in flight.
+                cancellation.check()?;
+                // Persist a fallback only while the selection still matches the
+                // one captured at reservation. A newer selection belongs to the next run.
+                if session_config.model_name != original_model {
+                    manager.persist_model_fallback(
+                        &task_session,
+                        &original_model,
+                        &session_config,
+                    )?;
+                }
+                events.publish_ui(
+                    &task_session,
+                    UiEvent::UpdateMcpServers {
+                        servers: crate::tools::mcp::session_mcp_servers(
+                            project_dir.as_deref(),
+                            &disabled,
+                        ),
+                    },
+                );
+                manager
+                    .start_reserved_agent_for_session(
+                        &task_session,
+                        llm_client,
+                        (runtime.project_manager_factory)(),
+                        (runtime.command_executor_factory)(&task_session),
+                        Some(permission_handler.clone()),
+                        tool_scope_override,
+                        turn_recorder,
+                        registry,
+                        cancellation,
+                        crate::session::manager::RunConfig {
+                            session: run_session_config,
+                            model: Some(session_config),
+                        },
+                    )
+                    .await
+            }
+        };
+        let result = match prepared {
+            Ok(prepared) => commit(prepared).await,
+            Err(error) => Err(error),
+        };
+
+        if let Err(error) = result {
+            let message = format!("Failed to start agent: {error:#}");
+            if let Some(owner) = owner.upgrade() {
+                owner.lock().await.finish_failed_setup(
+                    &task_session,
+                    &cancellation,
+                    message.clone(),
+                );
+            }
+            if let Some(recorder) = turn_recorder {
+                recorder.finish(Some(message), None);
+            }
+        }
+    });
+    manager.get_session_mut(&session_id).unwrap().setup_task = Some(task);
+    Ok(())
+}
+
+type LaneSender = tokio::sync::mpsc::UnboundedSender<(Command, tokio::sync::OwnedSemaphorePermit)>;
+
+/// A lane: one task that runs its commands strictly in arrival order. Lives
+/// until the worker shuts down; a lane per session id is cheap.
+fn spawn_lane(ctx: ServiceCtx) -> LaneSender {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some((command, permit)) = rx.recv().await {
+            run_command(ctx.clone(), command, permit).await;
+        }
+    });
+    tx
+}
+
+/// Run one command, containing a panic so it fails only its own caller.
+async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::OwnedSemaphorePermit) {
+    use futures::FutureExt;
+    let _ = std::panic::AssertUnwindSafe(command(ctx))
+        .catch_unwind()
+        .await;
+    drop(permit);
+}
+
+#[cfg(test)]
+mod recovery_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mocks::{MockLLMProvider, PendingLLMProvider, create_test_response_text};
     use crate::persistence::FileSessionPersistence;
     use crate::session::SessionConfig;
 
-    fn test_service_with_manager(
+    pub(super) fn test_service_with_manager(
         root: &std::path::Path,
     ) -> (SessionService, Arc<Mutex<SessionManager>>) {
         let events = EventStream::new();
@@ -1928,26 +2134,12 @@ mod tests {
         test_service_with_manager(root).0
     }
 
-    /// A provider that streams its scripted text through the callback (like
-    /// a real provider) and returns it as the response — enough to drive a
-    /// complete agent turn without any network.
-    struct StreamingScriptedProvider {
-        text: String,
-    }
-
-    #[async_trait::async_trait]
-    impl llm::LLMProvider for StreamingScriptedProvider {
-        async fn send_message(
-            &mut self,
-            _request: llm::LLMRequest,
-            streaming_callback: Option<&llm::StreamingCallback>,
-        ) -> Result<llm::LLMResponse> {
-            if let Some(callback) = streaming_callback {
-                callback(&llm::StreamingChunk::Text(self.text.clone()))?;
-                callback(&llm::StreamingChunk::StreamingComplete)?;
-            }
-            Ok(llm::LLMResponse {
-                content: vec![llm::ContentBlock::new_text(&self.text)],
+    /// One scripted turn per run: the text is streamed like a real provider
+    /// would, with a small token usage so outcomes can be checked.
+    pub(super) fn scripted_turn(text: &'static str) -> LlmClientFactory {
+        Arc::new(move |_| {
+            let response = llm::LLMResponse {
+                content: vec![llm::ContentBlock::new_text(text)],
                 usage: llm::Usage {
                     input_tokens: 10,
                     output_tokens: 5,
@@ -1955,13 +2147,16 @@ mod tests {
                     cache_read_input_tokens: 0,
                 },
                 rate_limit_info: None,
-            })
-        }
+            };
+            Ok(Box::new(
+                MockLLMProvider::new(vec![Ok(response)]).streaming(),
+            ))
+        })
     }
 
     /// Service whose agent runs use the injected LLM factory instead of the
     /// configured providers.
-    fn test_service_with_llm(
+    pub(super) fn test_service_with_llm(
         root: &std::path::Path,
         factory: LlmClientFactory,
     ) -> (SessionService, Arc<Mutex<SessionManager>>) {
@@ -1990,16 +2185,154 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn start_turn_if_idle_resolves_the_exact_outcome() {
+    async fn setup_is_reserved_and_control_stays_responsive() {
+        use crate::session::{TurnDispatch, TurnRequest, TurnStatus};
+        use std::time::Duration;
         let tmp = tempfile::tempdir().unwrap();
-        let (service, _) = test_service_with_llm(
+        let (service, manager) = test_service_with_llm(tmp.path(), scripted_turn("done"));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        manager.lock().await.set_tool_registry_provider({
+            let entered = entered.clone();
+            let release = release.clone();
+            Arc::new(move |_| {
+                let entered = entered.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    crate::tools::test_registry()
+                })
+            })
+        });
+        let id = service.create_session(None, None).await.unwrap();
+        let other = service.create_session(None, None).await.unwrap();
+        let first = tokio::spawn({
+            let service = service.clone();
+            let id = id.clone();
+            async move {
+                service
+                    .start_turn_if_idle(id, TurnRequest::text("first"))
+                    .await
+            }
+        });
+        entered.notified().await;
+        // Every check is bounded; release the fixture even on RED so no task hangs.
+        let second = tokio::time::timeout(
+            Duration::from_millis(500),
+            service.start_turn_if_idle(id.clone(), TurnRequest::text("second")),
+        )
+        .await;
+        let unrelated = tokio::time::timeout(
+            Duration::from_millis(500),
+            service.queue_user_message(other, "unrelated".into(), vec![]),
+        )
+        .await;
+        let stopped =
+            tokio::time::timeout(Duration::from_millis(500), service.request_stop(id.clone()))
+                .await;
+        release.notify_waiters();
+        assert!(
+            matches!(second, Ok(Ok(TurnDispatch::Busy))),
+            "pending setup must reserve the run, without blocking dispatch"
+        );
+        assert!(unrelated.is_ok(), "setup blocked another session");
+        assert!(stopped.is_ok(), "setup blocked stop");
+        let TurnDispatch::Started(handle) = first.await.unwrap().unwrap() else {
+            panic!("first busy")
+        };
+        let outcome = tokio::time::timeout(Duration::from_secs(2), handle.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.status, TurnStatus::Cancelled);
+        assert!(!service.is_session_busy(id).await.unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_interrupts_a_provider_without_chunks() {
+        use crate::session::{TurnDispatch, TurnRequest, TurnStatus};
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) =
+            test_service_with_llm(tmp.path(), PendingLLMProvider::default().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let TurnDispatch::Started(handle) = service
+            .start_turn_if_idle(id.clone(), TurnRequest::text("wait"))
+            .await
+            .unwrap()
+        else {
+            panic!("busy")
+        };
+        service.request_stop(id.clone()).await.unwrap();
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_millis(500), handle.wait()).await;
+        service.terminate_agent(id).await.unwrap();
+        assert_eq!(
+            outcome
+                .expect("stop must wake a pending provider")
+                .unwrap()
+                .status,
+            TurnStatus::Cancelled
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_old_turn_handle_does_not_stop_a_new_run() {
+        use crate::session::{TurnDispatch, TurnRequest};
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (service, manager) = test_service_with_llm(
             tmp.path(),
-            Arc::new(|_model| {
-                Ok(Box::new(StreamingScriptedProvider {
-                    text: "Considered it carefully; done.".to_string(),
-                }))
+            Arc::new(move |_| {
+                if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Ok(Box::new(
+                        MockLLMProvider::new(vec![Ok(create_test_response_text("first done"))])
+                            .streaming(),
+                    ))
+                } else {
+                    Ok(Box::new(PendingLLMProvider::default()))
+                }
             }),
         );
+        let id = service.create_session(None, None).await.unwrap();
+        let TurnDispatch::Started(old) = service
+            .start_turn_if_idle(id.clone(), TurnRequest::text("first"))
+            .await
+            .unwrap()
+        else {
+            panic!("busy")
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while service.is_session_busy(id.clone()).await.unwrap() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let TurnDispatch::Started(_new) = service
+            .start_turn_if_idle(id.clone(), TurnRequest::text("second"))
+            .await
+            .unwrap()
+        else {
+            panic!("busy")
+        };
+        old.cancel().await.unwrap();
+        let stopped = manager
+            .lock()
+            .await
+            .get_session(&id)
+            .unwrap()
+            .stop_requested
+            .load(std::sync::atomic::Ordering::Relaxed);
+        service.terminate_agent(id).await.unwrap();
+        assert!(!stopped, "an old turn handle cancelled its successor");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_turn_if_idle_resolves_the_exact_outcome() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) =
+            test_service_with_llm(tmp.path(), scripted_turn("Considered it carefully; done."));
         let id = service.create_session(None, None).await.unwrap();
 
         let dispatch = service
@@ -2115,6 +2448,41 @@ mod tests {
 
         service.delete_session(id).await.unwrap();
         assert!(service.list_sessions().await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_fresh_session_keeps_the_history_and_copies_the_settings() {
+        use crate::session::{TurnDispatch, TurnRequest};
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) = test_service_with_llm(tmp.path(), scripted_turn("done"));
+        let id = service.create_session(None, None).await.unwrap();
+        service
+            .change_permission_tier(id.clone(), tools_core::PermissionTier::AllTools)
+            .await
+            .unwrap();
+        service
+            .change_sandbox_policy(id.clone(), SandboxPolicy::ReadOnly)
+            .await
+            .unwrap();
+        let TurnDispatch::Started(handle) = service
+            .start_turn_if_idle(id.clone(), TurnRequest::text("task"))
+            .await
+            .unwrap()
+        else {
+            panic!("busy")
+        };
+        handle.wait().await.unwrap();
+
+        let fresh = service.start_fresh_session(id.clone()).await.unwrap();
+        assert_ne!(fresh, id);
+
+        let old = service.load_session(id, None).await.unwrap();
+        assert_eq!(old.messages.len(), 2, "the old session keeps its history");
+        let new = service.load_session(fresh, None).await.unwrap();
+        assert!(new.messages.is_empty());
+        assert_eq!(new.permission_tier, tools_core::PermissionTier::AllTools);
+        assert_eq!(new.sandbox_policy, SandboxPolicy::ReadOnly);
+        assert_eq!(new.current_model, old.current_model);
     }
 
     #[tokio::test]
@@ -2395,15 +2763,16 @@ mod tests {
         let id = service.create_session(None, None).await.unwrap();
 
         let mut subscription = service.subscribe();
-        service.clear_context(id.clone()).await.unwrap();
+        service.clear_session_error(id.clone()).await.unwrap();
 
-        // The ClearMessages notification arrives session-tagged on the
-        // broadcast stream.
+        // The notification arrives session-tagged on the broadcast stream.
         loop {
             let event = subscription.recv().await.unwrap();
             if matches!(
                 event.payload,
-                crate::session::event_stream::EventPayload::Ui(UiEvent::ClearMessages)
+                crate::session::event_stream::EventPayload::Ui(
+                    UiEvent::UpdateSessionActivityState { .. }
+                )
             ) {
                 assert_eq!(event.session_id.as_deref(), Some(id.as_str()));
                 break;
