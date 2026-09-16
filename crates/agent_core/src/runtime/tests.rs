@@ -406,3 +406,66 @@ fn checkpoint_recovery_keeps_canonical_messages_and_tool_evidence() {
             > 50 * 1024
     );
 }
+
+fn summary(text: &str) -> Message {
+    Message {
+        content: MessageContent::Text(text.into()),
+        is_compaction_summary: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn prompt_after_compaction_opens_with_a_handoff_carrying_the_user_messages() {
+    let (mut runtime, _) = runtime();
+    runtime
+        .append_message(Message::new_user("Explain how compaction works"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_assistant_content(vec![call("t1")]))
+        .unwrap();
+    runtime
+        .append_message(Message::new_user_content(vec![result("t1")]))
+        .unwrap();
+    runtime
+        .append_message(summary("Read runtime.rs; nothing edited"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_assistant("Continuing"))
+        .unwrap();
+
+    let prompt = runtime.render_tool_results_in_messages();
+
+    assert_eq!(prompt.len(), 2);
+    let handoff = text(&prompt[0]);
+    assert!(handoff.starts_with("<handoff>"), "{handoff}");
+    assert!(handoff.contains("Explain how compaction works"));
+    assert!(
+        !handoff.contains("evidence"),
+        "tool results are not user messages"
+    );
+    assert!(handoff.contains("<summary>\nRead runtime.rs; nothing edited\n</summary>"));
+    assert_eq!(text(&prompt[1]), "Continuing");
+}
+
+#[test]
+fn prompt_after_a_second_compaction_carries_user_messages_from_before_the_first() {
+    let (mut runtime, _) = runtime();
+    runtime
+        .append_message(Message::new_user("First ask"))
+        .unwrap();
+    runtime.append_message(summary("summary one")).unwrap();
+    runtime
+        .append_message(Message::new_user("Second ask"))
+        .unwrap();
+    runtime.append_message(summary("summary two")).unwrap();
+
+    let prompt = runtime.render_tool_results_in_messages();
+
+    assert_eq!(prompt.len(), 1);
+    let handoff = text(&prompt[0]);
+    assert!(handoff.contains("<message index=\"1\">\nFirst ask\n</message>"));
+    assert!(handoff.contains("<message index=\"2\">\nSecond ask\n</message>"));
+    assert!(!handoff.contains("summary one"));
+    assert!(handoff.contains("<summary>\nsummary two\n</summary>"));
+}

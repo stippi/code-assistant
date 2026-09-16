@@ -1,6 +1,7 @@
 //! The agent loop. Application behavior plugs in through the hook traits in
 //! [`crate::hooks`]; application state travels type-erased in `extensions`.
 
+mod handoff;
 #[cfg(test)]
 mod tests;
 mod tool_execution;
@@ -26,6 +27,11 @@ use tools_core::{
     PermissionMediator, ResourcesTracker, ToolContext, ToolError, ToolPermissions, ToolRegistry,
 };
 use tracing::{debug, trace, warn};
+
+/// Appended to the compaction prompt when the model answered it with tool
+/// calls instead of text.
+const HANDOFF_TOOL_CALL_REMINDER: &str = "Reminder: this is a compaction request. Do not call any \
+tools; reply with the hand-off text only.";
 
 /// Everything an [`AgentRuntime`] is built from.
 pub struct AgentRuntimeComponents {
@@ -357,6 +363,13 @@ impl AgentRuntime {
 
         loop {
             self.cancellation.check()?;
+            // Compact before a pending user message is appended: the hand-off
+            // covers the history so far and the new request follows it.
+            if self.should_trigger_compaction()? {
+                self.perform_compaction().await?;
+                continue;
+            }
+
             // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_blocks) = self.get_and_clear_pending_message() {
                 let text_summary = text_summary_from_blocks(&pending_blocks);
@@ -369,11 +382,6 @@ impl AgentRuntime {
                     node_id: None, // Pending messages don't have node_id yet
                 })
                 .await?;
-            }
-
-            if self.should_trigger_compaction()? {
-                self.perform_compaction().await?;
-                continue;
             }
 
             let messages = self.render_tool_results_in_messages();
@@ -848,33 +856,43 @@ impl AgentRuntime {
         Ok((response, request_id))
     }
 
-    fn format_compaction_summary_for_prompt(summary: &str) -> String {
-        let trimmed = summary.trim();
-        if trimmed.is_empty() {
-            "Conversation summary: (empty)".to_string()
-        } else {
-            format!("Conversation summary:\n{trimmed}")
-        }
+    fn handoff_text(blocks: &[ContentBlock]) -> Option<String> {
+        let text = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
     }
 
-    fn extract_compaction_summary_text(blocks: &[ContentBlock]) -> String {
-        let mut collected = Vec::new();
-        for block in blocks {
-            match block {
-                ContentBlock::Text { text, .. } => collected.push(text.as_str()),
-                ContentBlock::Thinking { thinking, .. } => {
-                    collected.push(thinking.as_str());
-                }
-                _ => {}
+    /// Asks the model for the hand-off text. The request keeps the tool
+    /// definitions so the cached prompt prefix stays valid; a model that
+    /// answers with tool calls instead of text is asked once more.
+    async fn request_handoff(&mut self) -> Result<String> {
+        let prompt = self.hooks.compaction.compaction_prompt().to_string();
+        let messages = self.render_tool_results_in_messages();
+        for reminder in [None, Some(HANDOFF_TOOL_CALL_REMINDER)] {
+            let text = match reminder {
+                None => prompt.to_string(),
+                Some(reminder) => format!("{prompt}\n\n{reminder}"),
+            };
+            let mut request = messages.clone();
+            request.push(Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(text),
+                ..Default::default()
+            });
+            let (response, _) = self.get_non_streaming_response(request).await?;
+            if let Some(text) = Self::handoff_text(&response.content) {
+                return Ok(text);
             }
+            warn!("Compaction response contained no text; asking once more");
         }
-
-        let merged = collected.join("\n").trim().to_string();
-        if merged.is_empty() {
-            "No summary was generated.".to_string()
-        } else {
-            merged
-        }
+        anyhow::bail!("The model did not produce a hand-off text for compaction")
     }
 
     /// The active-path messages from the last compaction summary onwards.
@@ -888,23 +906,44 @@ impl AgentRuntime {
         messages
     }
 
+    /// The messages the next request is built from: everything from the last
+    /// compaction summary onwards, with the summary rendered as the hand-off
+    /// message that also carries the user's earlier messages verbatim.
     fn prompt_messages(&self) -> Vec<Message> {
         let path = self.conversation.path();
+        let nodes = self.conversation.nodes();
         let start = path
             .iter()
             .rposition(|id| {
-                self.conversation
-                    .nodes()
+                nodes
                     .get(id)
                     .is_some_and(|node| node.message.is_compaction_summary)
             })
             .unwrap_or(0);
-        path[start..]
+        let mut messages: Vec<Message> = path[start..]
             .iter()
             .filter(|id| !self.prompt_projection.omitted_nodes.contains(id))
-            .filter_map(|id| self.conversation.nodes().get(id))
+            .filter_map(|id| nodes.get(id))
             .map(|node| node.message.clone())
-            .collect()
+            .collect();
+        if let Some(summary) = messages
+            .first_mut()
+            .filter(|message| message.is_compaction_summary)
+        {
+            let user_messages = handoff::user_message_texts(
+                path[..start]
+                    .iter()
+                    .filter_map(|id| nodes.get(id))
+                    .map(|node| &node.message),
+            );
+            let summary_text = match &summary.content {
+                MessageContent::Text(text) => text.as_str(),
+                MessageContent::Structured(_) => "",
+            };
+            summary.content =
+                MessageContent::Text(handoff::render_handoff(&user_messages, summary_text));
+        }
+        messages
     }
 
     fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
@@ -1129,26 +1168,16 @@ impl AgentRuntime {
     async fn perform_compaction(&mut self) -> Result<()> {
         debug!("Starting context compaction");
 
-        let compaction_message = Message {
-            role: MessageRole::User,
-            content: MessageContent::Text(self.hooks.compaction.compaction_prompt().to_string()),
-            ..Default::default()
-        };
-
-        let mut messages = self.render_tool_results_in_messages();
-        messages.push(compaction_message);
         self.send_ui(AgentUiEvent::ActivityChanged {
             activity: AgentActivity::WaitingForResponse,
         })
         .await?;
-        let response_result = self.get_non_streaming_response(messages).await;
+        let summary_result = self.request_handoff().await;
         self.send_ui(AgentUiEvent::ActivityChanged {
             activity: AgentActivity::Running,
         })
         .await?;
-        let (response, _) = response_result?;
-
-        let summary_text = Self::extract_compaction_summary_text(&response.content);
+        let summary_text = summary_result?;
 
         // The compaction policy may contribute an addendum to the summary
         // message — e.g. reminding the model which skills it had loaded, since
@@ -1294,28 +1323,22 @@ impl AgentRuntime {
         }
 
         for message in &mut messages {
-            match &mut message.content {
-                MessageContent::Structured(blocks) => {
-                    for block in blocks {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            content,
-                            is_error,
-                            ..
-                        } = block
-                            && let Some((output, error)) = outputs.get(tool_use_id)
-                        {
-                            *content = output.clone();
-                            if *error {
-                                *is_error = Some(true);
-                            }
+            if let MessageContent::Structured(blocks) = &mut message.content {
+                for block in blocks {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                        ..
+                    } = block
+                        && let Some((output, error)) = outputs.get(tool_use_id)
+                    {
+                        *content = output.clone();
+                        if *error {
+                            *is_error = Some(true);
                         }
                     }
                 }
-                MessageContent::Text(text) if message.is_compaction_summary => {
-                    *text = Self::format_compaction_summary_for_prompt(text);
-                }
-                _ => {}
             }
         }
         messages
