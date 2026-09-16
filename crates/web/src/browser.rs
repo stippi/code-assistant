@@ -101,10 +101,12 @@ impl LaunchedBrowser {
 
         let (browser, mut handler) = Browser::launch(browser_config).await?;
         // Drain the handler stream to drive the CDP connection. We do not log
-        // per-event errors: chromiumoxide already emits them via `tracing`, and
-        // recent Chrome versions send CDP messages this version can't
-        // deserialize ("data did not match any variant of untagged enum
-        // Message") — benign noise we must not duplicate to stderr.
+        // per-event errors: chromiumoxide already emits them via `tracing`
+        // (unparseable frames are `debug` on `chromiumoxide::conn` plus one
+        // `warn` on `chromiumoxide::handler`), and recent Chrome versions send
+        // CDP events whose shape drifted from the bundled protocol
+        // (`Network.requestWillBeSentExtraInfo` as of chromiumoxide 0.9 /
+        // Chrome 152) — benign noise we must not duplicate to stderr.
         let handler = tokio::spawn(async move { while handler.next().await.is_some() {} });
 
         Ok(Self {
