@@ -809,11 +809,15 @@ impl FileSessionPersistence {
         Ok(session)
     }
 
-    /// Full replacement, retained for creation and legacy callers. The lock
-    /// serializes writes but cannot make a stale supplied snapshot current;
-    /// read-modify-write callers must use `update_entry` instead.
-    pub fn save_chat_session(&mut self, session: &ChatSession) -> Result<()> {
+    /// Store a new session. An existing entry is never replaced: a supplied
+    /// snapshot may be stale, so changes go through `update_entry`.
+    pub fn create_chat_session(&mut self, session: &ChatSession) -> Result<()> {
         let _lock = lock_exclusive(&self.entry_lock_path(&session.id)?)?;
+        anyhow::ensure!(
+            !self.chat_file_path(&session.id)?.exists(),
+            "Session already exists: {}",
+            session.id
+        );
         self.save_chat_session_unlocked(session)
     }
 
@@ -1320,7 +1324,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
         persistence
-            .save_chat_session(&ChatSession::new_empty(
+            .create_chat_session(&ChatSession::new_empty(
                 "shared".into(),
                 "shared".into(),
                 SessionConfig::default(),
@@ -1370,7 +1374,7 @@ mod tests {
         assert!(persistence.update_entry("missing", |_| Ok(())).is_err());
         assert!(persistence.load_chat_session("missing").unwrap().is_none());
         persistence
-            .save_chat_session(&ChatSession::new_empty(
+            .create_chat_session(&ChatSession::new_empty(
                 "existing".into(),
                 "original".into(),
                 SessionConfig::default(),

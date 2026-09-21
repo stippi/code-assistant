@@ -474,7 +474,7 @@ impl SessionManager {
             ChatSession::new_empty(session_id.clone(), session_name, config, model_config);
 
         // Save to persistence
-        self.persistence.save_chat_session(&session)?;
+        self.persistence.create_chat_session(&session)?;
 
         // Create session instance
         let instance = SessionInstance::new(session, self.tool_registry.clone());
@@ -776,17 +776,21 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        // Make sure the session instance is not stale
-        session_instance.reload_from_persistence(&self.persistence)?;
-
-        // Add structured user message to session, optionally creating a branch
+        // Add the structured user message to the stored entry, as a new
+        // branch below `branch_parent_id` or at the end of the active path.
         let message = Message::new_user_content(content_blocks);
-        let node_id =
-            session_instance.add_message_with_branch(message.clone(), branch_parent_id)?;
-
-        // Save the session state with the new message
-        self.persistence
-            .save_chat_session(&session_instance.session)?;
+        let mut node_id = None;
+        session_instance.session = self.persistence.update_entry(session_id, |session| {
+            node_id = Some(match branch_parent_id {
+                Some(parent_id) => {
+                    debug!("Creating new branch from parent {parent_id} in session {session_id}");
+                    session.add_message_with_parent(message.clone(), Some(parent_id))
+                }
+                None => session.add_message(message.clone()),
+            });
+            Ok(())
+        })?;
+        let node_id = node_id.expect("update_entry ran the closure");
 
         // Notify message observers. Messages added here enter the agent later
         // via `restore_conversation`, which deliberately does not re-notify —
@@ -2158,6 +2162,21 @@ mod tests {
     }
 
     #[test]
+    fn adding_a_user_message_appends_to_messages_the_instance_has_not_seen() {
+        let (mut owner, id, _dir) = owner_with_stale_instance();
+
+        let node_id = owner
+            .add_user_message(&id, vec![llm::ContentBlock::new_text("next")], None)
+            .unwrap();
+
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_path, vec![1, 2, node_id]);
+        let instance = owner.get_session(&id).unwrap();
+        assert_eq!(instance.session.active_path, stored.active_path);
+        assert_eq!(instance.last_ui_synced_path, stored.active_path);
+    }
+
+    #[test]
     fn activating_a_skill_keeps_messages_the_instance_has_not_seen() {
         let (mut owner, id, _dir) = owner_with_stale_instance();
 
@@ -2228,7 +2247,13 @@ mod tests {
         expected.config.use_diff_blocks = true;
         expected.model_config = Some(SessionModelConfig::new("new-model".into()));
         expected.plan_collapsed = true;
-        settings.persistence.save_chat_session(&expected).unwrap();
+        settings
+            .persistence
+            .update_entry(&id, |stored| {
+                *stored = expected.clone();
+                Ok(())
+            })
+            .unwrap();
 
         commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
@@ -2339,7 +2364,13 @@ mod tests {
             .serialize()
             .unwrap(),
         );
-        manager.persistence.save_chat_session(&session).unwrap();
+        manager
+            .persistence
+            .update_entry(&id, |stored| {
+                *stored = session.clone();
+                Ok(())
+            })
+            .unwrap();
         commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
         assert_eq!(
