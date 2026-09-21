@@ -740,15 +740,18 @@ impl Gpui {
             // Hunks are computed HERE, on the background executor — the UI
             // thread only ever renders prepared hunks (never runs a diff).
             let prepared = match &result {
-                Ok(diff) => crate::PreparedReviewDiff::from_content(diff),
+                Ok(diff) => crate::PreparedReviewDiff::from_content(&path, diff),
                 // An empty prepared diff still completes the view's one-at-a-
                 // time request pipeline; the error itself is surfaced below.
-                Err(_) => crate::PreparedReviewDiff::from_content(&git::FileDiffContent {
-                    old_text: None,
-                    new_text: None,
-                    is_binary: false,
-                    too_large: false,
-                }),
+                Err(_) => crate::PreparedReviewDiff::from_content(
+                    &path,
+                    &git::FileDiffContent {
+                        old_text: None,
+                        new_text: None,
+                        is_binary: false,
+                        too_large: false,
+                    },
+                ),
             };
             if let Err(e) = &result {
                 gpui.display_error(format!("Failed to load diff: {e:#}"));

@@ -1886,7 +1886,10 @@ impl Render for MainScreen {
                         } else {
                             cx.theme().border
                         };
-                        let sidebar_width = self.right_sidebar_width * right_sidebar_scale;
+                        // The clip animates; the content keeps its full width and
+                        // slides in, so text does not re-wrap on every frame.
+                        let content_width = self.right_sidebar_width;
+                        let sidebar_width = content_width * right_sidebar_scale;
                         let resizing = self.right_sidebar_resizing;
                         let handle_mouse_down =
                             cx.listener(|this, ev: &gpui::MouseDownEvent, _window, cx| {
@@ -1902,10 +1905,15 @@ impl Render for MainScreen {
                                     .flex_none()
                                     .h_full()
                                     .overflow_hidden()
-                                    .border_l_1()
-                                    .border_color(border)
                                     .w(sidebar_width)
-                                    .child(right_panel)
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(content_width)
+                                            .border_l_1()
+                                            .border_color(border)
+                                            .child(right_panel),
+                                    )
                                     // Left-edge drag handle to resize the sidebar.
                                     .child(
                                         div()

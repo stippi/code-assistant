@@ -17,7 +17,7 @@ tools_core = { path = "../tools_core" }
 # GPUI related
 gpui = "0.2.2"
 gpui_platform = { version = "0.1", features = ["font-kit"] }
-gpui-component = "0.5.2"
+gpui-component = { version = "0.5.2", features = ["tree-sitter-languages"] }
 # Must match the version gpui-component uses so CompletionProvider trait types
 # (CompletionItem, CompletionResponse, …) are identical.
 lsp-types = "0.97"
