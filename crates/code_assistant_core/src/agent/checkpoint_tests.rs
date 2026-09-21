@@ -139,7 +139,7 @@ async fn formatted_roundtrip(syntax: ToolSyntax) -> Result<()> {
     agent.run_single_iteration().await?;
 
     let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
-    persistence.save_chat_session(&captured.session())?;
+    persistence.create_chat_session(&captured.session())?;
     let loaded = persistence.load_chat_session("checkpoint")?.unwrap();
     assert_eq!(
         loaded.message_nodes[&99].extension,
@@ -215,7 +215,7 @@ fn journal_outcomes_survive_disk_reload_without_the_original_tools() -> Result<(
         );
     }
     let mut store = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
-    store.save_chat_session(&session)?;
+    store.create_chat_session(&session)?;
     let loaded = store.load_chat_session("journal")?.unwrap();
     let registry = tools_core::ToolRegistry::new();
     let restored: Vec<_> = loaded

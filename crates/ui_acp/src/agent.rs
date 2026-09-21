@@ -1016,16 +1016,8 @@ impl AgentState {
                         content_blocks = vec![llm::ContentBlock::new_text(message)];
                         // Record the activation so compaction can remind the model.
                         let mut manager = self.session_manager.lock().await;
-                        if let Some(session) = manager.get_session_mut(&arguments.session_id.0)
-                            && !session
-                                .session
-                                .active_skills
-                                .iter()
-                                .any(|s| s == &skill.name)
-                        {
-                            session.session.active_skills.push(skill.name.clone());
-                        }
-                        let _ = manager.save_session(&arguments.session_id.0);
+                        let _ =
+                            manager.activate_session_skill(&arguments.session_id.0, &skill.name);
                     }
                     Err(e) => {
                         tracing::warn!("ACP: failed to load skill `{name}`: {e}");

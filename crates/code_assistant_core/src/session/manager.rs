@@ -154,28 +154,13 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Create a new SessionManager.
-    ///
-    /// On creation, this will clean up any empty sessions from previous runs.
-    /// This handles the case where a client (e.g., Zed) starts code-assistant
-    /// and creates a session, but the user never sends a message before closing.
     pub fn new(
-        mut persistence: FileSessionPersistence,
+        persistence: FileSessionPersistence,
         session_config_template: SessionConfig,
         default_model_name: String,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
         events: crate::session::event_stream::EventStream,
     ) -> Self {
-        // Clean up empty sessions from previous runs at startup
-        match persistence.delete_empty_sessions() {
-            Ok(count) if count > 0 => {
-                info!("Cleaned up {} empty session(s) from previous runs", count);
-            }
-            Ok(_) => {}
-            Err(e) => {
-                warn!("Failed to clean up empty sessions at startup: {}", e);
-            }
-        }
-
         // The CLI's `--use-diff-format` flag is plumbed through the template's
         // `use_diff_blocks` field. Capture it as the override and reset the
         // template so subsequent per-session resolution from `models.json`
@@ -489,7 +474,7 @@ impl SessionManager {
             ChatSession::new_empty(session_id.clone(), session_name, config, model_config);
 
         // Save to persistence
-        self.persistence.save_chat_session(&session)?;
+        self.persistence.create_chat_session(&session)?;
 
         // Create session instance
         let instance = SessionInstance::new(session, self.tool_registry.clone());
@@ -791,17 +776,21 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        // Make sure the session instance is not stale
-        session_instance.reload_from_persistence(&self.persistence)?;
-
-        // Add structured user message to session, optionally creating a branch
+        // Add the structured user message to the stored entry, as a new
+        // branch below `branch_parent_id` or at the end of the active path.
         let message = Message::new_user_content(content_blocks);
-        let node_id =
-            session_instance.add_message_with_branch(message.clone(), branch_parent_id)?;
-
-        // Save the session state with the new message
-        self.persistence
-            .save_chat_session(&session_instance.session)?;
+        let mut node_id = None;
+        session_instance.session = self.persistence.update_entry(session_id, |session| {
+            node_id = Some(match branch_parent_id {
+                Some(parent_id) => {
+                    debug!("Creating new branch from parent {parent_id} in session {session_id}");
+                    session.add_message_with_parent(message.clone(), Some(parent_id))
+                }
+                None => session.add_message(message.clone()),
+            });
+            Ok(())
+        })?;
+        let node_id = node_id.expect("update_entry ran the closure");
 
         // Notify message observers. Messages added here enter the agent later
         // via `restore_conversation`, which deliberately does not re-notify —
@@ -1831,15 +1820,37 @@ impl SessionManager {
         self.persistence.get_chat_session_metadata(session_id)
     }
 
-    /// Save the current state of an active session to persistence
-    pub fn save_session(&mut self, session_id: &str) -> Result<()> {
-        let session_instance = self
-            .active_sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+    /// Record a skill activation (deduped) so compaction can remind the
+    /// model if the injected body is summarised away.
+    pub fn activate_session_skill(&mut self, session_id: &str, name: &str) -> Result<()> {
+        let session = self.persistence.update_entry(session_id, |session| {
+            if !session.active_skills.iter().any(|s| s == name) {
+                session.active_skills.push(name.to_string());
+            }
+            Ok(())
+        })?;
+        self.replace_instance_session(session);
+        Ok(())
+    }
 
-        self.persistence
-            .save_chat_session(&session_instance.session)
+    /// Switch the active path of a session to a sibling branch.
+    pub fn switch_session_branch(
+        &mut self,
+        session_id: &str,
+        new_node_id: crate::persistence::NodeId,
+    ) -> Result<()> {
+        let session = self
+            .persistence
+            .update_entry(session_id, |session| session.switch_branch(new_node_id))?;
+        self.replace_instance_session(session);
+        Ok(())
+    }
+
+    /// Bring the active instance, if any, up to the entry just stored.
+    fn replace_instance_session(&mut self, session: ChatSession) {
+        if let Some(instance) = self.active_sessions.get_mut(&session.id) {
+            instance.session = session;
+        }
     }
 
     /// Merge a running agent's checkpoint into the stored session. Only the
@@ -1853,14 +1864,14 @@ impl SessionManager {
                 Ok(())
             })?;
 
-        if let Some(instance) = self.active_sessions.get_mut(checkpoint.session_id) {
-            instance.session = session;
-            let metadata = instance.metadata();
-            self.events.publish_ui(
-                checkpoint.session_id,
-                UiEvent::UpdateSessionMetadata { metadata },
-            );
-        }
+        // A run commits through a manager of its own that holds no active
+        // instance, so the notification must not depend on one.
+        self.events.publish_ui(
+            checkpoint.session_id,
+            UiEvent::UpdateSessionMetadata {
+                metadata: session.metadata(),
+            },
+        );
         Ok(())
     }
 
@@ -2083,6 +2094,119 @@ mod tests {
         (manager, dir)
     }
 
+    /// A run commits through its own manager, which never loads the session
+    /// as an active instance. Frontends still need the fresh usage numbers.
+    #[tokio::test]
+    async fn checkpoint_publishes_metadata_without_active_instance() {
+        let (mut owner, dir) = build_manager(false);
+        let id = owner.create_session(None).unwrap();
+
+        let events = crate::session::event_stream::EventStream::new();
+        let mut subscription = events.subscribe();
+        let mut run_manager = SessionManager::new(
+            FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
+            SessionConfig::default(),
+            "test-model".into(),
+            crate::tools::test_registry(),
+            events,
+        );
+        let usage = llm::Usage {
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 40,
+        };
+        commit_messages(
+            &mut run_manager,
+            &id,
+            vec![
+                Message::new_user("task"),
+                Message::new_assistant("done").with_usage(usage.clone()),
+            ],
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+            .await
+            .expect("checkpoint published no event")
+            .unwrap();
+        assert_eq!(event.session_id.as_deref(), Some(id.as_str()));
+        match event.payload {
+            crate::session::EventPayload::Ui(UiEvent::UpdateSessionMetadata { metadata }) => {
+                assert_eq!(metadata.id, id);
+                assert_eq!(metadata.last_usage, usage);
+                assert_eq!(metadata.total_usage, usage);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    /// A run commits through a manager of its own, so the owner's instance
+    /// lags behind the stored entry. Session-level writes must build on the
+    /// stored entry, not replace it with that stale copy.
+    fn owner_with_stale_instance() -> (SessionManager, String, TempDir) {
+        let (mut owner, dir) = build_manager(false);
+        let id = owner.create_session(None).unwrap();
+        let mut run_manager = SessionManager::new(
+            FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
+            SessionConfig::default(),
+            "test-model".into(),
+            crate::tools::test_registry(),
+            crate::session::event_stream::EventStream::new(),
+        );
+        commit_messages(
+            &mut run_manager,
+            &id,
+            vec![Message::new_user("task"), Message::new_assistant("done")],
+        );
+        (owner, id, dir)
+    }
+
+    #[test]
+    fn adding_a_user_message_appends_to_messages_the_instance_has_not_seen() {
+        let (mut owner, id, _dir) = owner_with_stale_instance();
+
+        let node_id = owner
+            .add_user_message(&id, vec![llm::ContentBlock::new_text("next")], None)
+            .unwrap();
+
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_path, vec![1, 2, node_id]);
+        let instance = owner.get_session(&id).unwrap();
+        assert_eq!(instance.session.active_path, stored.active_path);
+        assert_eq!(instance.last_ui_synced_path, stored.active_path);
+    }
+
+    #[test]
+    fn activating_a_skill_keeps_messages_the_instance_has_not_seen() {
+        let (mut owner, id, _dir) = owner_with_stale_instance();
+
+        owner.activate_session_skill(&id, "review").unwrap();
+
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_skills, vec!["review".to_string()]);
+        assert_eq!(stored.get_active_messages().len(), 2);
+        let instance = owner.get_session(&id).unwrap();
+        assert_eq!(instance.session.get_active_messages().len(), 2);
+
+        // Activating twice records the skill once.
+        owner.activate_session_skill(&id, "review").unwrap();
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_skills, vec!["review".to_string()]);
+    }
+
+    #[test]
+    fn switching_branch_keeps_messages_the_instance_has_not_seen() {
+        let (mut owner, id, _dir) = owner_with_stale_instance();
+
+        owner.switch_session_branch(&id, 1).unwrap();
+
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_path, vec![1, 2]);
+        assert_eq!(stored.message_count(), 2);
+        let instance = owner.get_session(&id).unwrap();
+        assert_eq!(instance.session.active_path, vec![1, 2]);
+    }
+
     #[test]
     fn checkpoint_preserves_all_session_settings_after_external_changes() {
         let (mut manager, dir) = build_manager(false);
@@ -2123,7 +2247,13 @@ mod tests {
         expected.config.use_diff_blocks = true;
         expected.model_config = Some(SessionModelConfig::new("new-model".into()));
         expected.plan_collapsed = true;
-        settings.persistence.save_chat_session(&expected).unwrap();
+        settings
+            .persistence
+            .update_entry(&id, |stored| {
+                *stored = expected.clone();
+                Ok(())
+            })
+            .unwrap();
 
         commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
@@ -2134,10 +2264,6 @@ mod tests {
         assert_eq!(saved.model_config.as_ref().unwrap().model_name, "new-model");
         assert!(saved.plan_collapsed);
         assert_eq!(saved.get_active_messages().len(), 1);
-        assert_eq!(
-            serde_json::to_value(&manager.get_session(&id).unwrap().session.config).unwrap(),
-            serde_json::to_value(&expected.config).unwrap()
-        );
     }
 
     #[test]
@@ -2238,7 +2364,13 @@ mod tests {
             .serialize()
             .unwrap(),
         );
-        manager.persistence.save_chat_session(&session).unwrap();
+        manager
+            .persistence
+            .update_entry(&id, |stored| {
+                *stored = session.clone();
+                Ok(())
+            })
+            .unwrap();
         commit_messages(&mut manager, &id, vec![Message::new_user("task")]);
         let saved = manager.persistence.load_chat_session(&id).unwrap().unwrap();
         assert_eq!(

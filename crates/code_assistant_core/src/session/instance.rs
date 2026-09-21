@@ -1,5 +1,5 @@
 use anyhow::Result;
-use llm::{ContentBlock, Message};
+use llm::ContentBlock;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
@@ -348,30 +348,6 @@ impl SessionInstance {
         self.agent_lock = None;
         self.sleep_guard = None;
         self.set_activity_state(SessionActivityState::Idle);
-    }
-
-    /// Add a message with optional branching support.
-    /// If `branch_parent_id` is Some, creates a new branch from that parent.
-    /// If `branch_parent_id` is None, appends to the end of the active path.
-    pub fn add_message_with_branch(
-        &mut self,
-        message: Message,
-        branch_parent_id: Option<NodeId>,
-    ) -> Result<NodeId> {
-        let node_id = if let Some(parent_id) = branch_parent_id {
-            // Branching: create new message as child of specified parent
-            debug!(
-                "Creating new branch from parent {} in session {}",
-                parent_id, self.session.id
-            );
-            self.session
-                .add_message_with_parent(message, Some(parent_id))
-        } else {
-            // Normal append: add to end of active path
-            self.session.add_message(message)
-        };
-
-        Ok(node_id)
     }
 
     /// Get the current context size occupied by the most recent assistant
