@@ -143,6 +143,8 @@ pub struct PreparedReviewDiff {
     pub too_large: bool,
     pub hunks: Vec<tool_cards::diff_card::DiffHunk>,
     pub chunked: tool_cards::diff_card::ChunkedHunks,
+    /// Both sides parsed for syntax highlighting; `None` without a grammar.
+    pub syntax: Option<Arc<tool_cards::diff_syntax::DiffSyntax>>,
     pub additions: usize,
     pub deletions: usize,
 }
@@ -150,13 +152,14 @@ pub struct PreparedReviewDiff {
 impl PreparedReviewDiff {
     /// Compute hunks (changed lines + context) from raw diff content.
     /// CPU-heavy for large files — call on a background thread.
-    pub fn from_content(diff: &git::FileDiffContent) -> Self {
+    pub fn from_content(path: &str, diff: &git::FileDiffContent) -> Self {
         if diff.is_binary || diff.too_large {
             return Self {
                 is_binary: diff.is_binary,
                 too_large: diff.too_large,
                 hunks: Vec::new(),
                 chunked: Default::default(),
+                syntax: None,
                 additions: 0,
                 deletions: 0,
             };
@@ -189,6 +192,11 @@ impl PreparedReviewDiff {
             is_binary: false,
             too_large: false,
             chunked: tool_cards::diff_card::chunk_hunks(&hunks, REVIEW_CHUNK_MAX_LINES),
+            // Nothing to show means nothing to parse.
+            syntax: (!hunks.is_empty())
+                .then(|| tool_cards::diff_syntax::DiffSyntax::parse(path, old, new))
+                .flatten()
+                .map(Arc::new),
             hunks,
             additions,
             deletions,

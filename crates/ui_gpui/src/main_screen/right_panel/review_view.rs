@@ -1054,6 +1054,7 @@ impl ReviewView {
                 &prepared.hunks,
                 chunk,
                 prepared.chunked.gutter_width,
+                prepared.syntax.as_deref(),
                 theme,
                 rem_size,
             ))
@@ -1166,17 +1167,22 @@ mod tests {
     /// A pure-add diff of `lines` lines.
     fn prepared(lines: usize) -> PreparedReviewDiff {
         let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
-        PreparedReviewDiff::from_content(&git::FileDiffContent {
-            old_text: None,
-            new_text: Some(text),
-            is_binary: false,
-            too_large: false,
-        })
+        PreparedReviewDiff::from_content(
+            "a.rs",
+            &git::FileDiffContent {
+                old_text: None,
+                new_text: Some(text),
+                is_binary: false,
+                too_large: false,
+            },
+        )
     }
 
-    #[gpui::test]
-    fn list_items_follow_loaded_diffs_and_collapse_state(cx: &mut TestAppContext) {
-        let root = PathBuf::from("/repo");
+    /// A window with a `ReviewView` showing one expanded repo with `files`.
+    fn view_with_files(
+        files: Vec<ChangedFile>,
+        cx: &mut TestAppContext,
+    ) -> (Entity<ReviewView>, &mut VisualTestContext) {
         let window = cx.update(|cx| {
             gpui_component::init(cx);
             file_icons::init(cx);
@@ -1186,16 +1192,15 @@ mod tests {
             .unwrap()
         });
         let view = window.root(cx).unwrap();
-        let cx = &mut VisualTestContext::from_window(window.into(), cx);
-
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
         view.update_in(cx, |view, window, cx| {
             let data = RepoReviewData {
-                repo_root: root.clone(),
+                repo_root: PathBuf::from("/repo"),
                 label: "repo".into(),
                 current_branch: None,
                 base_candidates: Vec::new(),
                 base: None,
-                files: vec![added_file("a.rs"), added_file("b.rs")],
+                files,
                 stats: git::DiffStats::default(),
                 scan_state: ReviewScanState::Done,
             };
@@ -1204,6 +1209,52 @@ mod tests {
             view.repos = vec![section];
             view.has_listing = true;
             view.is_git_repo = true;
+        });
+        (view, cx)
+    }
+
+    #[gpui::test]
+    fn highlighted_rows_with_word_emphasis_render(cx: &mut TestAppContext) {
+        let (view, cx) = view_with_files(vec![added_file("a.rs")], cx);
+        let prepared = PreparedReviewDiff::from_content(
+            "a.rs",
+            &git::FileDiffContent {
+                old_text: Some("fn grüße() -> &'static str { \"hallo wält\" }\n".into()),
+                new_text: Some("fn grüße() -> &'static str { \"hallo wörld\" }\n".into()),
+                is_binary: false,
+                too_large: false,
+            },
+        );
+        assert!(prepared.syntax.is_some());
+        assert!(
+            prepared.hunks[0]
+                .lines
+                .iter()
+                .any(|l| !l.emphasis.is_empty())
+        );
+
+        view.update(cx, |view, cx| {
+            view.file_diffs.insert(
+                (PathBuf::from("/repo"), "a.rs".into()),
+                LoadedDiff {
+                    file: added_file("a.rs"),
+                    prepared,
+                    stamp: 1,
+                },
+            );
+            cx.notify();
+        });
+        // Drawing must cope with syntax and emphasis ranges overlapping.
+        cx.run_until_parked();
+        view.update(cx, |view, _| assert_eq!(view.list_state.item_count(), 3));
+    }
+
+    #[gpui::test]
+    fn list_items_follow_loaded_diffs_and_collapse_state(cx: &mut TestAppContext) {
+        let root = PathBuf::from("/repo");
+        let (view, cx) = view_with_files(vec![added_file("a.rs"), added_file("b.rs")], cx);
+
+        view.update(cx, |view, cx| {
             // Three chunks' worth of lines for a.rs; b.rs has no diff yet.
             view.file_diffs.insert(
                 (root.clone(), "a.rs".into()),

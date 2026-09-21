@@ -8,6 +8,7 @@
 //!
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
+use super::diff_syntax::DiffSyntax;
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
@@ -531,7 +532,7 @@ fn render_delete_body(
 /// then ensure both end with exactly one `\n` so `TextDiff` with
 /// `newline_terminated(true)` treats the last line consistently.  Interior blank
 /// lines (intentional insertions) are preserved.
-fn normalize_for_diff(text: &str) -> String {
+pub(super) fn normalize_for_diff(text: &str) -> String {
     let trimmed = text.strip_prefix('\n').unwrap_or(text);
     let trimmed = trimmed.strip_suffix('\n').unwrap_or(trimmed);
     format!("{trimmed}\n")
@@ -696,9 +697,11 @@ pub(crate) fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine
 }
 
 /// One hunk of a unified diff: a run of changed lines plus surrounding
-/// context, positioned at `new_start` (1-based) in the new file.
+/// context, positioned at `old_start` / `new_start` (1-based) in the old and
+/// new file.
 #[derive(Debug, Clone)]
 pub struct DiffHunk {
+    pub old_start: usize,
     pub new_start: usize,
     pub lines: Vec<DiffLine>,
 }
@@ -723,6 +726,7 @@ pub fn compute_diff_hunks(old_text: &str, new_text: &str, context: usize) -> Vec
                 collect_change_lines(&diff, op, &mut lines);
             }
             DiffHunk {
+                old_start: ops.first().map(|op| op.old_range().start + 1).unwrap_or(1),
                 new_start: ops.first().map(|op| op.new_range().start + 1).unwrap_or(1),
                 lines,
             }
@@ -747,17 +751,20 @@ pub fn single_sided_hunk(text: &str, tag: ChangeTag) -> Vec<DiffHunk> {
         return Vec::new();
     }
     vec![DiffHunk {
+        old_start: 1,
         new_start: 1,
         lines,
     }]
 }
 
 /// A slice of one hunk, small enough to be a cheap item of a virtualized
-/// list. `new_start` is the new-file line number of the slice's first line.
+/// list. `old_start` / `new_start` are the old- and new-file line numbers at
+/// the slice's first line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffChunk {
     pub hunk: usize,
     pub lines: std::ops::Range<usize>,
+    pub old_start: usize,
     pub new_start: usize,
 }
 
@@ -784,14 +791,17 @@ pub fn chunk_hunks(hunks: &[DiffHunk], max_lines: usize) -> ChunkedHunks {
     let mut chunks = Vec::new();
     let mut max_line = 1;
     for (hunk_ix, hunk) in hunks.iter().enumerate() {
+        let mut old_line = hunk.old_start;
         let mut new_line = hunk.new_start;
         for (chunk_ix, lines) in hunk.lines.chunks(max_lines.max(1)).enumerate() {
             let start = chunk_ix * max_lines.max(1);
             chunks.push(DiffChunk {
                 hunk: hunk_ix,
                 lines: start..start + lines.len(),
+                old_start: old_line,
                 new_start: new_line,
             });
+            old_line += lines.iter().filter(|l| l.tag != ChangeTag::Insert).count();
             new_line += lines.iter().filter(|l| l.tag != ChangeTag::Delete).count();
         }
         max_line = max_line.max(new_line);
@@ -804,10 +814,12 @@ pub fn chunk_hunks(hunks: &[DiffHunk], max_lines: usize) -> ChunkedHunks {
 
 /// Render one chunk of already-computed hunks with real new-file line
 /// numbers, preceded by a slim "⋯" separator where a later hunk begins.
+/// With `syntax`, rows are syntax highlighted.
 pub(crate) fn render_diff_chunk(
     hunks: &[DiffHunk],
     chunk: &DiffChunk,
     gutter_width: usize,
+    syntax: Option<&DiffSyntax>,
     theme: &gpui_component::theme::Theme,
     rem_size: gpui::Pixels,
 ) -> gpui::AnyElement {
@@ -817,7 +829,17 @@ pub(crate) fn render_diff_chunk(
     else {
         return div().into_any();
     };
-    let rows = render_diff_rows(lines, theme, Some(chunk.new_start), gutter_width, rem_size);
+    let rows = render_diff_rows(
+        lines,
+        theme,
+        Some(chunk.new_start),
+        gutter_width,
+        rem_size,
+        syntax.map(|syntax| RowSyntax {
+            syntax,
+            old_start: chunk.old_start,
+        }),
+    );
     if !chunk.starts_later_hunk() {
         return rows;
     }
@@ -873,7 +895,14 @@ pub(crate) fn render_diff_lines(
     } else {
         0
     };
-    render_diff_rows(diff_lines, theme, start_line, gutter_width, rem_size)
+    render_diff_rows(diff_lines, theme, start_line, gutter_width, rem_size, None)
+}
+
+/// Syntax source for [`render_diff_rows`]. New-file numbering comes from the
+/// rows' `start_line`; the old side needs its own start.
+struct RowSyntax<'a> {
+    syntax: &'a DiffSyntax,
+    old_start: usize,
 }
 
 /// Shared row builder: renders diff rows with numbering from `start_line`
@@ -884,9 +913,10 @@ fn render_diff_rows(
     start_line: Option<usize>,
     gutter_width: usize,
     rem_size: gpui::Pixels,
+    syntax: Option<RowSyntax>,
 ) -> gpui::AnyElement {
     // Track both old and new line numbers
-    let mut old_line_num = start_line.unwrap_or(1);
+    let mut old_line_num = syntax.as_ref().map_or(1, |s| s.old_start);
     let mut new_line_num = start_line.unwrap_or(1);
 
     // Gutter width: compute in rems (~0.5rem per digit + 0.75rem padding),
@@ -910,24 +940,23 @@ fn render_diff_rows(
                 row = row.bg(bg);
             }
 
+            // This row's line number in its own side (old file for
+            // deletions), then advance the counters past it.
+            let (old_num, new_num) = (old_line_num, new_line_num);
+            if dl.tag != ChangeTag::Insert {
+                old_line_num += 1;
+            }
+            if dl.tag != ChangeTag::Delete {
+                new_line_num += 1;
+            }
+
             // Gutter with line number (shows new-file line numbers)
             if start_line.is_some() {
                 let gutter_text = match dl.tag {
-                    ChangeTag::Equal => {
-                        let num = new_line_num;
-                        old_line_num += 1;
-                        new_line_num += 1;
-                        format!("{:>width$}", num, width = gutter_width)
+                    ChangeTag::Equal | ChangeTag::Insert => {
+                        format!("{:>width$}", new_num, width = gutter_width)
                     }
-                    ChangeTag::Delete => {
-                        old_line_num += 1;
-                        format!("{:>width$}", "", width = gutter_width)
-                    }
-                    ChangeTag::Insert => {
-                        let num = new_line_num;
-                        new_line_num += 1;
-                        format!("{:>width$}", num, width = gutter_width)
-                    }
+                    ChangeTag::Delete => format!("{:>width$}", "", width = gutter_width),
                 };
                 let gutter_color = match dl.tag {
                     ChangeTag::Equal => unchanged_row_colors(theme).1.opacity(0.5),
@@ -949,20 +978,31 @@ fn render_diff_rows(
             // wraps instead of pushing the row wider than the card. Word-level
             // changes get a stronger background via text-run highlights, which
             // wrap with the text (unlike per-span elements).
-            let content: gpui::AnyElement = if dl.emphasis.is_empty() {
+            // Syntax colors come first, the word emphasis layers on top.
+            let syntax_styles = syntax.as_ref().map_or_else(Vec::new, |s| {
+                let line_no = if dl.tag == ChangeTag::Delete {
+                    old_num
+                } else {
+                    new_num
+                };
+                s.syntax
+                    .line_styles(dl.tag, line_no, &dl.text, &theme.highlight_theme)
+            });
+            let content: gpui::AnyElement = if dl.emphasis.is_empty() && syntax_styles.is_empty() {
                 dl.text.clone().into_any_element()
             } else {
                 let word_bg = word_emphasis_bg(dl.tag, theme);
+                let emphasis = dl.emphasis.iter().map(|range| {
+                    (
+                        range.clone(),
+                        gpui::HighlightStyle {
+                            background_color: Some(word_bg),
+                            ..Default::default()
+                        },
+                    )
+                });
                 gpui::StyledText::new(dl.text.clone())
-                    .with_highlights(dl.emphasis.iter().map(|range| {
-                        (
-                            range.clone(),
-                            gpui::HighlightStyle {
-                                background_color: Some(word_bg),
-                                ..Default::default()
-                            },
-                        )
-                    }))
+                    .with_highlights(gpui::combine_highlights(syntax_styles, emphasis))
                     .into_any_element()
             };
             row = row.child(
@@ -1273,8 +1313,8 @@ mod tests {
 
         let hunks = compute_diff_hunks(&old, &new, 3);
         assert_eq!(hunks.len(), 2, "two distant changes → two hunks");
-        assert_eq!(hunks[0].new_start, 1);
-        assert_eq!(hunks[1].new_start, 13);
+        assert_eq!((hunks[0].old_start, hunks[0].new_start), (1, 1));
+        assert_eq!((hunks[1].old_start, hunks[1].new_start), (13, 13));
         for hunk in &hunks {
             let deletes = hunk
                 .lines
@@ -1296,8 +1336,9 @@ mod tests {
         }
     }
 
-    fn hunk_of(new_start: usize, tags: &[ChangeTag]) -> DiffHunk {
+    fn hunk_of(old_start: usize, new_start: usize, tags: &[ChangeTag]) -> DiffHunk {
         DiffHunk {
+            old_start,
             new_start,
             lines: tags
                 .iter()
@@ -1314,8 +1355,8 @@ mod tests {
     fn chunk_hunks_keeps_small_hunks_whole() {
         use ChangeTag::*;
         let hunks = vec![
-            hunk_of(1, &[Equal, Delete, Insert, Equal]),
-            hunk_of(98, &[Equal, Insert, Insert]),
+            hunk_of(1, 1, &[Equal, Delete, Insert, Equal]),
+            hunk_of(97, 98, &[Equal, Insert, Insert]),
         ];
         let chunked = chunk_hunks(&hunks, 40);
         assert_eq!(
@@ -1324,11 +1365,13 @@ mod tests {
                 DiffChunk {
                     hunk: 0,
                     lines: 0..4,
+                    old_start: 1,
                     new_start: 1
                 },
                 DiffChunk {
                     hunk: 1,
                     lines: 0..3,
+                    old_start: 97,
                     new_start: 98
                 },
             ]
@@ -1342,26 +1385,29 @@ mod tests {
     #[test]
     fn chunk_hunks_splits_large_hunks_with_continuous_numbering() {
         use ChangeTag::*;
-        // 2 deletes first: they must not advance the new-file numbering.
+        // 2 deletes first: they advance only the old-file numbering.
         let mut tags = vec![Delete, Delete];
         tags.extend(std::iter::repeat_n(Insert, 8));
-        let chunked = chunk_hunks(&[hunk_of(10, &tags)], 4);
+        let chunked = chunk_hunks(&[hunk_of(20, 10, &tags)], 4);
         assert_eq!(
             chunked.chunks,
             vec![
                 DiffChunk {
                     hunk: 0,
                     lines: 0..4,
+                    old_start: 20,
                     new_start: 10
                 },
                 DiffChunk {
                     hunk: 0,
                     lines: 4..8,
+                    old_start: 22,
                     new_start: 12
                 },
                 DiffChunk {
                     hunk: 0,
                     lines: 8..10,
+                    old_start: 22,
                     new_start: 16
                 },
             ]

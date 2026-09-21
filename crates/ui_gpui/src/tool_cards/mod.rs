@@ -18,6 +18,7 @@ pub mod animated_card;
 pub mod browser_card;
 pub mod code_card;
 pub mod diff_card;
+pub mod diff_syntax;
 pub mod inline_renderer;
 pub mod mcp_tool;
 pub mod session_card;
