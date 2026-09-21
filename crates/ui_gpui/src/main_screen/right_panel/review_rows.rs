@@ -107,6 +107,41 @@ pub(super) fn changed_span(old: &[ReviewRow], new: &[ReviewRow]) -> Option<(Rang
     Some((prefix..old.len() - suffix, new.len() - suffix - prefix))
 }
 
+/// The listed files as `(repo, file)`, in the order their diffs should load
+/// when `top_row` is the first row in view: from the file at the top of the
+/// viewport downwards, then the ones above it, nearest first.
+pub(super) fn files_by_proximity(rows: &[ReviewRow], top_row: usize) -> Vec<(usize, usize)> {
+    let headers: Vec<(usize, (usize, usize))> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, row)| match row {
+            ReviewRow::FileHeader { repo, file } => Some((ix, (*repo, *file))),
+            _ => None,
+        })
+        .collect();
+
+    // A file's rows follow its header, so the file in view at `top_row` is
+    // the last header at or before it — unless that row belongs to a repo
+    // header, where the first file in view is the next one.
+    let in_file = matches!(
+        rows.get(top_row),
+        Some(ReviewRow::FileHeader { .. } | ReviewRow::NoChanges { .. } | ReviewRow::Chunk { .. })
+    );
+    let after = headers.partition_point(|(ix, _)| *ix <= top_row);
+    let first = if in_file {
+        after.saturating_sub(1)
+    } else {
+        after
+    };
+
+    let (above, below) = headers.split_at(first.min(headers.len()));
+    below
+        .iter()
+        .chain(above.iter().rev())
+        .map(|(_, file)| *file)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +283,47 @@ mod tests {
         let two = vec![RepoHeader { repo: 0 }, RepoHeader { repo: 0 }];
         assert_eq!(changed_span(&one, &two), Some((1..1, 1)));
         assert_eq!(changed_span(&two, &one), Some((1..2, 0)));
+    }
+
+    #[test]
+    fn files_load_from_the_top_of_the_viewport_outwards() {
+        let rows = flatten(&[
+            RepoOutline {
+                collapsed: false,
+                base_selector: true,
+                files: vec![
+                    file(false, Some((1, DiffBody::Chunks(2)))),
+                    file(false, None),
+                ],
+            },
+            RepoOutline {
+                collapsed: false,
+                base_selector: false,
+                files: vec![file(false, None), file(true, None)],
+            },
+        ]);
+        // 0 repo, 1 base, 2 file 0/0, 3+4 chunks, 5 file 0/1, 6 repo,
+        // 7 file 1/0, 8 file 1/1
+        assert_eq!(rows.len(), 9);
+
+        let listing_order = vec![(0, 0), (0, 1), (1, 0), (1, 1)];
+        assert_eq!(files_by_proximity(&rows, 0), listing_order);
+        // Inside the first file's chunks: that file first.
+        assert_eq!(files_by_proximity(&rows, 4), listing_order);
+        assert_eq!(
+            files_by_proximity(&rows, 5),
+            vec![(0, 1), (1, 0), (1, 1), (0, 0)]
+        );
+        // A repo header on top: its first file is the first in view.
+        assert_eq!(
+            files_by_proximity(&rows, 6),
+            vec![(1, 0), (1, 1), (0, 1), (0, 0)]
+        );
+        // Past the end (stale scroll position): nearest first from the bottom.
+        assert_eq!(
+            files_by_proximity(&rows, 99),
+            vec![(1, 1), (1, 0), (0, 1), (0, 0)]
+        );
+        assert!(files_by_proximity(&[], 0).is_empty());
     }
 }
