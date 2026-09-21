@@ -127,15 +127,22 @@ pub struct ReviewDiff {
 /// Context lines around each review diff hunk (matches `git diff`'s default).
 const REVIEW_HUNK_CONTEXT_LINES: usize = 3;
 
+/// Upper bound for the lines of one review list item. A hunk above it (a
+/// newly added file is a single hunk) is split, so the virtualized list only
+/// builds what is in view.
+const REVIEW_CHUNK_MAX_LINES: usize = 40;
+
 /// A file diff reduced to renderable hunks. The expensive line diff runs once
 /// on a background thread (in the command layer) — the UI only builds elements
 /// from the prepared hunks, so element counts scale with changed lines and the
-/// UI thread never runs a Myers diff.
+/// UI thread never runs a Myers diff. `chunked` cuts the hunks into the items
+/// the Review panel's virtualized list renders.
 #[derive(Debug, Clone)]
 pub struct PreparedReviewDiff {
     pub is_binary: bool,
     pub too_large: bool,
     pub hunks: Vec<tool_cards::diff_card::DiffHunk>,
+    pub chunked: tool_cards::diff_card::ChunkedHunks,
     pub additions: usize,
     pub deletions: usize,
 }
@@ -149,6 +156,7 @@ impl PreparedReviewDiff {
                 is_binary: diff.is_binary,
                 too_large: diff.too_large,
                 hunks: Vec::new(),
+                chunked: Default::default(),
                 additions: 0,
                 deletions: 0,
             };
@@ -180,6 +188,7 @@ impl PreparedReviewDiff {
         Self {
             is_binary: false,
             too_large: false,
+            chunked: tool_cards::diff_card::chunk_hunks(&hunks, REVIEW_CHUNK_MAX_LINES),
             hunks,
             additions,
             deletions,

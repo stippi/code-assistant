@@ -752,48 +752,89 @@ pub fn single_sided_hunk(text: &str, tag: ChangeTag) -> Vec<DiffHunk> {
     }]
 }
 
-/// Render already-computed hunks with real new-file line numbers, a shared
-/// gutter width, and a slim "⋯" separator between hunks.
-pub(crate) fn render_diff_hunks(
+/// A slice of one hunk, small enough to be a cheap item of a virtualized
+/// list. `new_start` is the new-file line number of the slice's first line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffChunk {
+    pub hunk: usize,
+    pub lines: std::ops::Range<usize>,
+    pub new_start: usize,
+}
+
+impl DiffChunk {
+    /// Whether this chunk opens a hunk other than the first — the place for
+    /// the "⋯" separator.
+    pub fn starts_later_hunk(&self) -> bool {
+        self.hunk > 0 && self.lines.start == 0
+    }
+}
+
+/// Hunks cut into list-item-sized chunks, plus the gutter width (in digits)
+/// all chunks of the file share.
+#[derive(Debug, Clone, Default)]
+pub struct ChunkedHunks {
+    pub chunks: Vec<DiffChunk>,
+    pub gutter_width: usize,
+}
+
+/// Cut `hunks` into chunks of at most `max_lines` lines. Small hunks stay
+/// whole; a big one (a newly added file is a single hunk) is split so a list
+/// only builds the chunks in view.
+pub fn chunk_hunks(hunks: &[DiffHunk], max_lines: usize) -> ChunkedHunks {
+    let mut chunks = Vec::new();
+    let mut max_line = 1;
+    for (hunk_ix, hunk) in hunks.iter().enumerate() {
+        let mut new_line = hunk.new_start;
+        for (chunk_ix, lines) in hunk.lines.chunks(max_lines.max(1)).enumerate() {
+            let start = chunk_ix * max_lines.max(1);
+            chunks.push(DiffChunk {
+                hunk: hunk_ix,
+                lines: start..start + lines.len(),
+                new_start: new_line,
+            });
+            new_line += lines.iter().filter(|l| l.tag != ChangeTag::Delete).count();
+        }
+        max_line = max_line.max(new_line);
+    }
+    ChunkedHunks {
+        chunks,
+        gutter_width: max_line.to_string().len(),
+    }
+}
+
+/// Render one chunk of already-computed hunks with real new-file line
+/// numbers, preceded by a slim "⋯" separator where a later hunk begins.
+pub(crate) fn render_diff_chunk(
     hunks: &[DiffHunk],
+    chunk: &DiffChunk,
+    gutter_width: usize,
     theme: &gpui_component::theme::Theme,
     rem_size: gpui::Pixels,
 ) -> gpui::AnyElement {
-    let max_line = hunks
-        .iter()
-        .map(|h| {
-            h.new_start
-                + h.lines
-                    .iter()
-                    .filter(|l| l.tag != ChangeTag::Delete)
-                    .count()
-        })
-        .max()
-        .unwrap_or(1);
-    let gutter_width = max_line.to_string().len();
-
-    let mut column = div().flex().flex_col();
-    for (ix, hunk) in hunks.iter().enumerate() {
-        if ix > 0 {
-            let (_, ctx_color) = unchanged_row_colors(theme);
-            column = column.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .text_color(ctx_color.opacity(0.5))
-                    .child("⋯"),
-            );
-        }
-        column = column.child(render_diff_rows(
-            &hunk.lines,
-            theme,
-            Some(hunk.new_start),
-            gutter_width,
-            rem_size,
-        ));
+    let Some(lines) = hunks
+        .get(chunk.hunk)
+        .and_then(|h| h.lines.get(chunk.lines.clone()))
+    else {
+        return div().into_any();
+    };
+    let rows = render_diff_rows(lines, theme, Some(chunk.new_start), gutter_width, rem_size);
+    if !chunk.starts_later_hunk() {
+        return rows;
     }
-    column.into_any()
+    let (_, ctx_color) = unchanged_row_colors(theme);
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .text_color(ctx_color.opacity(0.5))
+                .child("⋯"),
+        )
+        .child(rows)
+        .into_any()
 }
 
 /// Compute and render a unified diff in one go. For per-frame rendering of
@@ -1253,6 +1294,85 @@ mod tests {
             assert_eq!((deletes, inserts), (1, 1));
             assert!(equals <= 6, "at most 3 context lines per side");
         }
+    }
+
+    fn hunk_of(new_start: usize, tags: &[ChangeTag]) -> DiffHunk {
+        DiffHunk {
+            new_start,
+            lines: tags
+                .iter()
+                .map(|&tag| DiffLine {
+                    tag,
+                    text: "x".into(),
+                    emphasis: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn chunk_hunks_keeps_small_hunks_whole() {
+        use ChangeTag::*;
+        let hunks = vec![
+            hunk_of(1, &[Equal, Delete, Insert, Equal]),
+            hunk_of(98, &[Equal, Insert, Insert]),
+        ];
+        let chunked = chunk_hunks(&hunks, 40);
+        assert_eq!(
+            chunked.chunks,
+            vec![
+                DiffChunk {
+                    hunk: 0,
+                    lines: 0..4,
+                    new_start: 1
+                },
+                DiffChunk {
+                    hunk: 1,
+                    lines: 0..3,
+                    new_start: 98
+                },
+            ]
+        );
+        // Last new-file line is 98 + 3 = 101 → three digits.
+        assert_eq!(chunked.gutter_width, 3);
+        assert!(!chunked.chunks[0].starts_later_hunk());
+        assert!(chunked.chunks[1].starts_later_hunk());
+    }
+
+    #[test]
+    fn chunk_hunks_splits_large_hunks_with_continuous_numbering() {
+        use ChangeTag::*;
+        // 2 deletes first: they must not advance the new-file numbering.
+        let mut tags = vec![Delete, Delete];
+        tags.extend(std::iter::repeat_n(Insert, 8));
+        let chunked = chunk_hunks(&[hunk_of(10, &tags)], 4);
+        assert_eq!(
+            chunked.chunks,
+            vec![
+                DiffChunk {
+                    hunk: 0,
+                    lines: 0..4,
+                    new_start: 10
+                },
+                DiffChunk {
+                    hunk: 0,
+                    lines: 4..8,
+                    new_start: 12
+                },
+                DiffChunk {
+                    hunk: 0,
+                    lines: 8..10,
+                    new_start: 16
+                },
+            ]
+        );
+        assert!(chunked.chunks.iter().all(|c| !c.starts_later_hunk()));
+    }
+
+    #[test]
+    fn chunk_hunks_of_nothing_is_empty() {
+        let chunked = chunk_hunks(&[], 40);
+        assert!(chunked.chunks.is_empty());
     }
 
     #[test]

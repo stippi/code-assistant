@@ -5,6 +5,7 @@
 //! terminal) can be added without reworking the [`crate::main_screen::MainScreen`]
 //! shell that owns it.
 
+mod review_rows;
 pub mod review_view;
 
 use gpui::{Context, Entity, FocusHandle, Focusable, Render, Window, div, prelude::*};

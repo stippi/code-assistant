@@ -9,6 +9,11 @@
 //! technique the worktree selector uses). Change detection is generation-based:
 //! the per-frame unchanged case costs an integer compare.
 //!
+//! The column is a virtualized `list()` over flat rows (see
+//! [`super::review_rows`]): headers and diff chunks are separate items, so a
+//! frame only builds what is in view. State changes reach the list as one
+//! splice, which keeps measured heights and the scroll position.
+//!
 //! Diffs load lazily, one file at a time: after each arrival the next visible
 //! file without a diff is requested. Hunks (changed lines + a few context
 //! lines) are computed once on arrival and cached — rendering never diffs, and
@@ -21,14 +26,15 @@
 //! listing entry changed is stale and re-requested, but keeps rendering until
 //! its replacement arrives, so nothing flickers.
 
+use super::review_rows::{DiffBody, FileOutline, RepoOutline, ReviewRow, changed_span, flatten};
 use crate::shared::file_icons;
-use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_hunks};
+use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_chunk};
 use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
 use gpui::{
-    AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Render,
-    Subscription, Task, Window, div, prelude::*, px, rems,
+    AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ListAlignment,
+    ListState, Render, Subscription, Task, Window, div, list, prelude::*, px, rems,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable, Size,
@@ -143,12 +149,18 @@ const GENERATION_UNSEEN: u64 = u64::MAX;
 /// filesystem events, so an edit (or a build) costs one scan.
 const REVIEW_WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// How far beyond the viewport the list builds rows, so scrolling reveals
+/// finished content.
+const REVIEW_LIST_OVERDRAW: gpui::Pixels = px(512.);
+
 /// A prepared diff together with the listing entry it was loaded for. When a
 /// later listing carries a different entry for the same path (new
 /// fingerprint or status), the diff is stale.
 struct LoadedDiff {
     file: ChangedFile,
     prepared: PreparedReviewDiff,
+    /// Unique per arrival; tells the list rows of a reloaded diff apart.
+    stamp: u64,
 }
 
 pub struct ReviewView {
@@ -178,6 +190,12 @@ pub struct ReviewView {
     /// made for; arrivals for anything else are stale (e.g. from before a
     /// mode/base change) and dropped.
     in_flight: Option<(FileKey, ChangedFile)>,
+    next_diff_stamp: u64,
+
+    /// The rows the list currently shows, and the list's state. `sync_rows`
+    /// keeps both in step with the fields above.
+    rows: Vec<ReviewRow>,
+    list_state: ListState,
 
     /// Filesystem watcher on the listed repos (keyed by their roots so a
     /// changed set restarts it). Dropping it stops watching.
@@ -223,6 +241,9 @@ impl ReviewView {
             file_diffs: HashMap::new(),
             collapsed_files: HashSet::new(),
             in_flight: None,
+            next_diff_stamp: 0,
+            rows: Vec::new(),
+            list_state: ListState::new(0, ListAlignment::Top, REVIEW_LIST_OVERDRAW).measure_all(),
             watcher: None,
             watch_task: None,
             listing_generation: GENERATION_UNSEEN,
@@ -244,6 +265,9 @@ impl ReviewView {
         self.file_diffs.clear();
         self.collapsed_files.clear();
         self.in_flight = None;
+        // Start the new session scrolled to the top.
+        self.rows.clear();
+        self.list_state.reset(0);
         // A new session lists its own repos; the watcher follows the listing.
         self.watcher = None;
         self.watch_task = None;
@@ -525,11 +549,13 @@ impl ReviewView {
         if let Some(d) = diff {
             let key = (d.repo_root, d.path);
             if let Some((_, file)) = self.in_flight.take_if(|(k, _)| *k == key) {
+                self.next_diff_stamp += 1;
                 self.file_diffs.insert(
                     key,
                     LoadedDiff {
                         file,
                         prepared: d.prepared,
+                        stamp: self.next_diff_stamp,
                     },
                 );
             }
@@ -706,13 +732,186 @@ impl ReviewView {
             .into_any_element()
     }
 
-    /// One stacked file: collapsible header (icon, path, status, `+/−`) with
-    /// the file's diff hunks directly below.
-    fn render_file_entry(
+    /// Bring `rows` and the list in step with the current state. Only the
+    /// span that changed is spliced, so everything else keeps its measured
+    /// height and the scroll position holds.
+    fn sync_rows(&mut self) {
+        let base_selector = matches!(self.mode, ReviewMode::BranchVsBase);
+        let outline: Vec<RepoOutline> = self
+            .repos
+            .iter()
+            .map(|section| RepoOutline {
+                collapsed: section.collapsed,
+                base_selector,
+                files: section
+                    .files
+                    .iter()
+                    .map(|file| {
+                        let key = (section.repo_root.clone(), file.path.clone());
+                        FileOutline {
+                            collapsed: self.collapsed_files.contains(&key),
+                            diff: self.file_diffs.get(&key).map(|loaded| {
+                                let prepared = &loaded.prepared;
+                                let body = if prepared.is_binary || prepared.too_large {
+                                    DiffBody::Nothing
+                                } else if prepared.hunks.is_empty() {
+                                    DiffBody::NoChanges
+                                } else {
+                                    DiffBody::Chunks(prepared.chunked.chunks.len())
+                                };
+                                (loaded.stamp, body)
+                            }),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let rows = flatten(&outline);
+        if let Some((old_range, count)) = changed_span(&self.rows, &rows) {
+            self.list_state.splice(old_range, count);
+        }
+        self.rows = rows;
+    }
+
+    /// Build the list item at `ix`.
+    fn render_row(&self, ix: usize, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let empty = || div().into_any_element();
+        let Some(row) = self.rows.get(ix) else {
+            return empty();
+        };
+        match *row {
+            ReviewRow::RepoHeader { repo } => match self.repos.get(repo) {
+                Some(section) => self.render_repo_header(repo, section, cx),
+                None => empty(),
+            },
+            ReviewRow::BaseSelector { repo } => match self.repos.get(repo) {
+                Some(section) => self.render_base_selector(section, cx),
+                None => empty(),
+            },
+            ReviewRow::FileHeader { repo, file } => {
+                match self
+                    .repos
+                    .get(repo)
+                    .and_then(|s| Some((s, s.files.get(file)?)))
+                {
+                    Some((section, file)) => self.render_file_header(&section.repo_root, file, cx),
+                    None => empty(),
+                }
+            }
+            ReviewRow::NoChanges { .. } => div()
+                .px_3()
+                .py_1()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("No content changes")
+                .into_any_element(),
+            ReviewRow::Chunk {
+                repo, file, chunk, ..
+            } => {
+                let prepared = self.repos.get(repo).and_then(|section| {
+                    let file = section.files.get(file)?;
+                    let key = (section.repo_root.clone(), file.path.clone());
+                    Some(&self.file_diffs.get(&key)?.prepared)
+                });
+                match prepared {
+                    Some(prepared) => Self::render_chunk(prepared, chunk, window, cx),
+                    None => empty(),
+                }
+            }
+        }
+    }
+
+    /// A repo's collapsible header. Sections are separated by a line ABOVE
+    /// each header (not by a line between a header and its content).
+    fn render_repo_header(
+        &self,
+        ix: usize,
+        section: &RepoSection,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let chevron = if section.collapsed {
+            "icons/chevron_right.svg"
+        } else {
+            "icons/chevron_down.svg"
+        };
+        let toggle_root = section.repo_root.clone();
+        div()
+            .id(gpui::SharedString::from(format!("repo-header-{ix}")))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .when(ix > 0, |s| s.border_t_1().border_color(theme.border))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.muted))
+            .child(gpui::svg().size(px(12.)).path(chevron).text_color(muted))
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.foreground)
+                    .child(section.label.clone()),
+            )
+            .child(self.render_scan_indicator(section, cx))
+            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == toggle_root) else {
+                    return;
+                };
+                s.collapsed = !s.collapsed;
+                let expanded = !s.collapsed;
+
+                // Persist per repo root (sections default to collapsed).
+                let root = toggle_root.clone();
+                crate::update_ui_settings(cx, move |settings| {
+                    if expanded {
+                        if !settings.review_expanded_repos.contains(&root) {
+                            settings.review_expanded_repos.push(root);
+                        }
+                    } else {
+                        settings.review_expanded_repos.retain(|r| r != &root);
+                    }
+                });
+
+                // Expanding may unlock diffs skipped while collapsed.
+                this.ensure_diff_request(cx);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// The per-repo base selector (branch mode only).
+    fn render_base_selector(&self, section: &RepoSection, cx: &Context<Self>) -> gpui::AnyElement {
+        div()
+            .px_2()
+            .py_1()
+            .child(
+                Select::new(&section.base_state)
+                    .placeholder("Base")
+                    .with_size(Size::XSmall)
+                    .icon(
+                        Icon::default()
+                            .path("icons/chevron_up_down.svg")
+                            .with_size(Size::XSmall)
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .w_full(),
+            )
+            .into_any_element()
+    }
+
+    /// One file's collapsible header (icon, path, status, `+/−`); its diff
+    /// chunks follow as separate rows.
+    fn render_file_header(
         &self,
         repo_root: &std::path::Path,
         file: &ChangedFile,
-        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme();
@@ -770,12 +969,13 @@ impl ReviewView {
         let icon = file_icons::get().get_icon_for_filename(file_name);
 
         let toggle_key = key.clone();
-        let header = div()
+        div()
             .id(gpui::SharedString::from(format!(
                 "review-file-{}:{}",
                 repo_root.display(),
                 file.path
             )))
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
@@ -814,166 +1014,50 @@ impl ReviewView {
                 // Expanding may unlock a diff that was skipped while collapsed.
                 this.ensure_diff_request(cx);
                 cx.notify();
-            }));
-
-        let mut container = v_flex().w_full().child(header);
-
-        if !collapsed && let Some(entry) = entry {
-            let body: Option<gpui::AnyElement> = if entry.is_binary || entry.too_large {
-                None // The header badge already says why there is no diff.
-            } else if entry.hunks.is_empty() {
-                Some(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .text_color(muted)
-                        .child("No content changes")
-                        .into_any_element(),
-                )
-            } else {
-                let rem_size = window.rem_size();
-                let is_dark = theme.background.l < 0.5;
-                let body_bg = if is_dark {
-                    gpui::hsla(0.0, 0.0, 0.08, 1.0)
-                } else {
-                    gpui::hsla(0.0, 0.0, 0.97, 1.0)
-                };
-                let line_height_px = rems(1.25).to_pixels(rem_size).round();
-                Some(
-                    div()
-                        .w_full()
-                        .py_1()
-                        .bg(body_bg)
-                        .flex()
-                        .flex_col()
-                        .text_size(rems(0.78125))
-                        .line_height(line_height_px)
-                        .font_family("Menlo")
-                        .font_weight(FontWeight(400.0))
-                        .child(render_diff_hunks(&entry.hunks, theme, rem_size))
-                        .into_any_element(),
-                )
-            };
-            if let Some(body) = body {
-                container = container.child(body);
-            }
-        }
-
-        container.into_any_element()
+            }))
+            .into_any_element()
     }
 
-    /// The scrollable stack of per-repo sections with their stacked files.
-    fn render_sections(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let muted = cx.theme().muted_foreground;
-        let fg = cx.theme().foreground;
-        let border = cx.theme().border;
-        let branch_mode = matches!(self.mode, ReviewMode::BranchVsBase);
-
-        let mut column = v_flex().size_full().overflow_y_scrollbar();
-
-        // Snapshot the per-section data needed while building children, so the
-        // listener closures (which borrow `this`) don't fight the loop borrow.
-        let section_count = self.repos.len();
-        for ix in 0..section_count {
-            let (repo_root, label, collapsed, scan_state) = {
-                let s = &self.repos[ix];
-                (
-                    s.repo_root.clone(),
-                    s.label.clone(),
-                    s.collapsed,
-                    s.scan_state,
-                )
-            };
-            let _ = scan_state;
-
-            // Sections are separated by a line ABOVE each section (not by a
-            // line between a section's header and its content).
-            let mut section_el = v_flex()
-                .w_full()
-                .when(ix > 0, |s| s.border_t_1().border_color(border));
-
-            let chevron = if collapsed {
-                "icons/chevron_right.svg"
-            } else {
-                "icons/chevron_down.svg"
-            };
-            let toggle_root = repo_root.clone();
-            let header = div()
-                .id(gpui::SharedString::from(format!("repo-header-{ix}")))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1p5()
-                .px_2()
-                .py_1()
-                .cursor_pointer()
-                .hover(|s| s.bg(cx.theme().muted))
-                .child(gpui::svg().size(px(12.)).path(chevron).text_color(muted))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(fg)
-                        .child(label),
-                )
-                .child(self.render_scan_indicator(&self.repos[ix], cx))
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    let Some(s) = this.repos.iter_mut().find(|s| s.repo_root == toggle_root) else {
-                        return;
-                    };
-                    s.collapsed = !s.collapsed;
-                    let expanded = !s.collapsed;
-
-                    // Persist per repo root (sections default to collapsed).
-                    let root = toggle_root.clone();
-                    crate::update_ui_settings(cx, move |settings| {
-                        if expanded {
-                            if !settings.review_expanded_repos.contains(&root) {
-                                settings.review_expanded_repos.push(root);
-                            }
-                        } else {
-                            settings.review_expanded_repos.retain(|r| r != &root);
-                        }
-                    });
-
-                    // Expanding may unlock diffs skipped while collapsed.
-                    this.ensure_diff_request(cx);
-                    cx.notify();
-                }));
-            section_el = section_el.child(header);
-
-            if !collapsed {
-                if branch_mode {
-                    section_el = section_el.child(
-                        div().px_2().py_1().child(
-                            Select::new(&self.repos[ix].base_state)
-                                .placeholder("Base")
-                                .with_size(Size::XSmall)
-                                .icon(
-                                    Icon::default()
-                                        .path("icons/chevron_up_down.svg")
-                                        .with_size(Size::XSmall)
-                                        .text_color(muted),
-                                )
-                                .w_full(),
-                        ),
-                    );
-                }
-                // A repo without changes shows just its header — the missing
-                // +/− badge already says "clean".
-                let files = self.repos[ix].files.clone();
-                for file in &files {
-                    section_el =
-                        section_el.child(self.render_file_entry(&repo_root, file, window, cx));
-                }
-            }
-
-            column = column.child(section_el);
-        }
-
-        column.into_any_element()
+    /// One chunk of a file's diff body. The first and last chunk carry the
+    /// body's vertical padding, so the chunks read as one block.
+    fn render_chunk(
+        prepared: &PreparedReviewDiff,
+        chunk_ix: usize,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::AnyElement {
+        let chunks = &prepared.chunked.chunks;
+        let Some(chunk) = chunks.get(chunk_ix) else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        let rem_size = window.rem_size();
+        let is_dark = theme.background.l < 0.5;
+        let body_bg = if is_dark {
+            gpui::hsla(0.0, 0.0, 0.08, 1.0)
+        } else {
+            gpui::hsla(0.0, 0.0, 0.97, 1.0)
+        };
+        let line_height_px = rems(1.25).to_pixels(rem_size).round();
+        div()
+            .w_full()
+            .when(chunk_ix == 0, |d| d.pt_1())
+            .when(chunk_ix + 1 == chunks.len(), |d| d.pb_1())
+            .bg(body_bg)
+            .flex()
+            .flex_col()
+            .text_size(rems(0.78125))
+            .line_height(line_height_px)
+            .font_family("Menlo")
+            .font_weight(FontWeight(400.0))
+            .child(render_diff_chunk(
+                &prepared.hunks,
+                chunk,
+                prepared.chunked.gutter_width,
+                theme,
+                rem_size,
+            ))
+            .into_any_element()
     }
 }
 
@@ -1043,12 +1127,118 @@ impl Render for ReviewView {
                     .min_w(px(130.)),
             );
 
-        let body = self.render_sections(window, cx);
+        // The render callback only runs for rows in (or near) the viewport.
+        self.sync_rows();
+        let body = list(
+            self.list_state.clone(),
+            cx.processor(|this: &mut Self, ix: usize, window, cx| this.render_row(ix, window, cx)),
+        )
+        .size_full();
 
         v_flex()
             .size_full()
             .child(header)
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(body)
+                    .vertical_scrollbar(&self.list_state),
+            )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+
+    fn added_file(path: &str) -> ChangedFile {
+        ChangedFile {
+            path: path.into(),
+            orig_path: None,
+            status: ChangeStatus::Added,
+            fingerprint: None,
+        }
+    }
+
+    /// A pure-add diff of `lines` lines.
+    fn prepared(lines: usize) -> PreparedReviewDiff {
+        let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        PreparedReviewDiff::from_content(&git::FileDiffContent {
+            old_text: None,
+            new_text: Some(text),
+            is_binary: false,
+            too_large: false,
+        })
+    }
+
+    #[gpui::test]
+    fn list_items_follow_loaded_diffs_and_collapse_state(cx: &mut TestAppContext) {
+        let root = PathBuf::from("/repo");
+        let window = cx.update(|cx| {
+            gpui_component::init(cx);
+            file_icons::init(cx);
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| ReviewView::new(window, cx))
+            })
+            .unwrap()
+        });
+        let view = window.root(cx).unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        view.update_in(cx, |view, window, cx| {
+            let data = RepoReviewData {
+                repo_root: root.clone(),
+                label: "repo".into(),
+                current_branch: None,
+                base_candidates: Vec::new(),
+                base: None,
+                files: vec![added_file("a.rs"), added_file("b.rs")],
+                stats: git::DiffStats::default(),
+                scan_state: ReviewScanState::Done,
+            };
+            let mut section = view.build_section(&data, window, cx);
+            section.collapsed = false;
+            view.repos = vec![section];
+            view.has_listing = true;
+            view.is_git_repo = true;
+            // Three chunks' worth of lines for a.rs; b.rs has no diff yet.
+            view.file_diffs.insert(
+                (root.clone(), "a.rs".into()),
+                LoadedDiff {
+                    file: added_file("a.rs"),
+                    prepared: prepared(100),
+                    stamp: 1,
+                },
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        // Repo header + 2 file headers + 3 chunks.
+        view.update(cx, |view, _| {
+            assert_eq!(view.rows.len(), 6);
+            assert_eq!(view.list_state.item_count(), 6);
+        });
+
+        view.update(cx, |view, cx| {
+            view.collapsed_files.insert((root.clone(), "a.rs".into()));
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        view.update(cx, |view, _| {
+            assert_eq!(view.list_state.item_count(), 3);
+            assert_eq!(
+                view.rows,
+                vec![
+                    ReviewRow::RepoHeader { repo: 0 },
+                    ReviewRow::FileHeader { repo: 0, file: 0 },
+                    ReviewRow::FileHeader { repo: 0, file: 1 },
+                ]
+            );
+        });
     }
 }
