@@ -6,7 +6,7 @@
 use super::diff_card::normalize_for_diff;
 use gpui::HighlightStyle;
 use gpui_component::Rope;
-use gpui_component::highlighter::{HighlightTheme, Language, SyntaxHighlighter};
+use gpui_component::highlighter::{HighlightTheme, Language, LanguageRegistry, SyntaxHighlighter};
 use similar::ChangeTag;
 use std::ops::Range;
 
@@ -53,6 +53,37 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
     };
     // Grammars are feature-gated in gpui-component; only claim what is built in.
     (Language::from_str(name) != Language::Plain).then_some(name)
+}
+
+/// Fence tags LLMs commonly write that gpui-component does not know, mapped to
+/// a grammar that highlights them well enough.
+const LANGUAGE_ALIASES: &[(&str, &str)] = &[
+    ("shell", "bash"),
+    ("zsh", "bash"),
+    ("console", "bash"),
+    ("shellscript", "bash"),
+    ("dockerfile", "bash"),
+    ("jsx", "javascript"),
+    ("mjs", "javascript"),
+    ("golang", "go"),
+    ("h", "c"),
+    ("hpp", "cpp"),
+    ("cc", "cpp"),
+    ("cxx", "cpp"),
+    ("py3", "python"),
+    ("python3", "python"),
+    ("htm", "html"),
+    ("json5", "json"),
+];
+
+/// Make Markdown code blocks tagged with one of [`LANGUAGE_ALIASES`] highlight.
+pub fn register_language_aliases() {
+    let registry = LanguageRegistry::singleton();
+    for (alias, language) in LANGUAGE_ALIASES {
+        if let Some(config) = registry.language(language) {
+            registry.register(alias, &config);
+        }
+    }
 }
 
 /// One parsed side of a diff. `line_starts[n]` is the byte offset of line
@@ -162,6 +193,35 @@ mod tests {
         assert_eq!(language_for_path("build/Makefile"), Some("make"));
         assert_eq!(language_for_path("notes.txt"), None);
         assert_eq!(language_for_path("LICENSE"), None);
+    }
+
+    #[test]
+    fn common_fence_tags_resolve_to_a_grammar() {
+        register_language_aliases();
+        let registry = LanguageRegistry::singleton();
+        for (tag, language) in [
+            ("shell", "bash"),
+            ("zsh", "bash"),
+            ("console", "bash"),
+            ("jsx", "javascript"),
+            ("golang", "go"),
+            ("h", "c"),
+            ("hpp", "cpp"),
+            ("dockerfile", "bash"),
+            // Built into gpui-component already.
+            ("rs", "rust"),
+            ("py", "python"),
+            ("yml", "yaml"),
+        ] {
+            let config = registry.language(tag);
+            assert_eq!(
+                config.as_ref().map(|c| c.name.as_ref()),
+                Some(language),
+                "fence tag {tag}"
+            );
+            assert!(config.unwrap().has_grammar());
+        }
+        assert!(registry.language("no-such-language").is_none());
     }
 
     #[test]

@@ -140,11 +140,56 @@ enum AnimationState {
     },
 }
 
+/// How a text differs from the one last given to a [`TextViewState`].
+#[derive(Debug, PartialEq, Eq)]
+enum TextUpdate<'a> {
+    Unchanged,
+    /// The old text plus this suffix — the common case while streaming.
+    Append(&'a str),
+    Replace,
+}
+
+/// Remembers (as length and hash, not a copy) the text last given to a
+/// [`TextViewState`], to tell appends from rewrites. Appends go through
+/// `push_str`, which re-parses only the last Markdown block and so keeps the
+/// highlighted code blocks before it; `set_text` rebuilds them all.
+struct MarkdownSync {
+    len: usize,
+    hash: u64,
+}
+
+impl MarkdownSync {
+    fn new(text: &str) -> Self {
+        Self {
+            len: text.len(),
+            hash: Self::hash(text),
+        }
+    }
+
+    fn hash(text: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn update<'a>(&mut self, text: &'a str) -> TextUpdate<'a> {
+        let update = match text.split_at_checked(self.len) {
+            Some((old, "")) if Self::hash(old) == self.hash => return TextUpdate::Unchanged,
+            Some((old, suffix)) if Self::hash(old) == self.hash => TextUpdate::Append(suffix),
+            _ => TextUpdate::Replace,
+        };
+        *self = Self::new(text);
+        update
+    }
+}
+
 /// Entity view for a block
 pub struct BlockView {
     block: BlockData,
     request_id: u64,
     markdown_state: Option<Entity<TextViewState>>,
+    markdown_sync: MarkdownSync,
     is_generating: bool, // Universal generating state for all block types
     // Animation state
     animation_state: AnimationState,
@@ -196,6 +241,7 @@ impl BlockView {
             BlockData::CompactionSummary(block) => Some(block.summary.clone()),
             BlockData::ToolUse(_) | BlockData::ImageBlock(_) => None,
         };
+        let markdown_sync = MarkdownSync::new(initial_markdown.as_deref().unwrap_or(""));
         let markdown_state =
             initial_markdown.map(|text| _cx.new(|cx| TextViewState::markdown(&text, cx)));
 
@@ -203,6 +249,7 @@ impl BlockView {
             block,
             request_id,
             markdown_state,
+            markdown_sync,
             is_generating: true, // Default to generating when first created
             animation_state: AnimationState::Idle,
             content_height: Rc::new(Cell::new(px(0.0))),
@@ -215,19 +262,22 @@ impl BlockView {
         }
     }
 
+    /// The block's Markdown state, created empty on first use. Tool cards
+    /// that render Markdown fill it themselves.
+    pub(crate) fn markdown_entity(&mut self, cx: &mut Context<Self>) -> Entity<TextViewState> {
+        self.markdown_state
+            .get_or_insert_with(|| cx.new(|cx| TextViewState::markdown("", cx)))
+            .clone()
+    }
+
+    /// The block's Markdown state, brought up to date with `text`.
     fn markdown_state(&mut self, text: &str, cx: &mut Context<Self>) -> Entity<TextViewState> {
-        let state = if let Some(state) = &self.markdown_state {
-            state.clone()
-        } else {
-            let state = cx.new(|cx| TextViewState::markdown(text, cx));
-            self.markdown_state = Some(state.clone());
-            state
-        };
-
-        state.update(cx, |state, cx| {
-            state.set_text(text, cx);
-        });
-
+        let state = self.markdown_entity(cx);
+        match self.markdown_sync.update(text) {
+            TextUpdate::Unchanged => {}
+            TextUpdate::Append(suffix) => state.update(cx, |state, cx| state.push_str(suffix, cx)),
+            TextUpdate::Replace => state.update(cx, |state, cx| state.set_text(text, cx)),
+        }
         state
     }
 
@@ -856,5 +906,55 @@ mod tests {
             assert!(thinking.current_generating_content.is_none());
             assert_eq!(thinking.reasoning_summary_items.len(), 1);
         });
+    }
+
+    #[test]
+    fn markdown_sync_tells_appends_from_rewrites() {
+        let mut sync = MarkdownSync::new("Hello");
+        assert_eq!(sync.update("Hello"), TextUpdate::Unchanged);
+        assert_eq!(sync.update("Hello, wörld"), TextUpdate::Append(", wörld"));
+        assert_eq!(sync.update("Hello, wörld!"), TextUpdate::Append("!"));
+        // Same length, different content.
+        assert_eq!(sync.update("Hello, wörld?"), TextUpdate::Replace);
+        // Shorter, and longer without the old text as prefix.
+        assert_eq!(sync.update("Hello"), TextUpdate::Replace);
+        assert_eq!(sync.update("Jello, world"), TextUpdate::Replace);
+        // An old length inside a multi-byte character of the new text.
+        let mut sync = MarkdownSync::new("a");
+        assert_eq!(sync.update("ö"), TextUpdate::Replace);
+    }
+
+    #[gpui::test]
+    fn tool_card_markdown_entity_keeps_its_text(cx: &mut TestAppContext) {
+        cx.update(init_test_globals);
+        let view = cx.update(|cx| {
+            cx.new(|cx| {
+                BlockView::new(
+                    BlockData::ThinkingBlock(ThinkingBlock::new(String::new())),
+                    0,
+                    0,
+                    Arc::new(Mutex::new(String::new())),
+                    None,
+                    cx,
+                )
+            })
+        });
+        let state = view.update(cx, |view, cx| view.markdown_entity(cx));
+        state.update(cx, |state, cx| state.set_text("sub-agent answer", cx));
+        cx.run_until_parked();
+
+        let changes = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let changes = changes.clone();
+            cx.observe(&state, move |_, _| changes.set(changes.get() + 1))
+                .detach();
+        });
+
+        // Fetching the entity again (as every card render does) must not
+        // reset what the card put in.
+        let again = view.update(cx, |view, cx| view.markdown_entity(cx));
+        cx.run_until_parked();
+        assert_eq!(again, state);
+        assert_eq!(changes.get(), 0);
     }
 }
