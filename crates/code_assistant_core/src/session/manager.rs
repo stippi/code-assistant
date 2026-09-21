@@ -1816,15 +1816,37 @@ impl SessionManager {
         self.persistence.get_chat_session_metadata(session_id)
     }
 
-    /// Save the current state of an active session to persistence
-    pub fn save_session(&mut self, session_id: &str) -> Result<()> {
-        let session_instance = self
-            .active_sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+    /// Record a skill activation (deduped) so compaction can remind the
+    /// model if the injected body is summarised away.
+    pub fn activate_session_skill(&mut self, session_id: &str, name: &str) -> Result<()> {
+        let session = self.persistence.update_entry(session_id, |session| {
+            if !session.active_skills.iter().any(|s| s == name) {
+                session.active_skills.push(name.to_string());
+            }
+            Ok(())
+        })?;
+        self.replace_instance_session(session);
+        Ok(())
+    }
 
-        self.persistence
-            .save_chat_session(&session_instance.session)
+    /// Switch the active path of a session to a sibling branch.
+    pub fn switch_session_branch(
+        &mut self,
+        session_id: &str,
+        new_node_id: crate::persistence::NodeId,
+    ) -> Result<()> {
+        let session = self
+            .persistence
+            .update_entry(session_id, |session| session.switch_branch(new_node_id))?;
+        self.replace_instance_session(session);
+        Ok(())
+    }
+
+    /// Bring the active instance, if any, up to the entry just stored.
+    fn replace_instance_session(&mut self, session: ChatSession) {
+        if let Some(instance) = self.active_sessions.get_mut(&session.id) {
+            instance.session = session;
+        }
     }
 
     /// Merge a running agent's checkpoint into the stored session. Only the
@@ -1846,9 +1868,6 @@ impl SessionManager {
                 metadata: session.metadata(),
             },
         );
-        if let Some(instance) = self.active_sessions.get_mut(checkpoint.session_id) {
-            instance.session = session;
-        }
         Ok(())
     }
 
@@ -2117,6 +2136,58 @@ mod tests {
         }
     }
 
+    /// A run commits through a manager of its own, so the owner's instance
+    /// lags behind the stored entry. Session-level writes must build on the
+    /// stored entry, not replace it with that stale copy.
+    fn owner_with_stale_instance() -> (SessionManager, String, TempDir) {
+        let (mut owner, dir) = build_manager(false);
+        let id = owner.create_session(None).unwrap();
+        let mut run_manager = SessionManager::new(
+            FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
+            SessionConfig::default(),
+            "test-model".into(),
+            crate::tools::test_registry(),
+            crate::session::event_stream::EventStream::new(),
+        );
+        commit_messages(
+            &mut run_manager,
+            &id,
+            vec![Message::new_user("task"), Message::new_assistant("done")],
+        );
+        (owner, id, dir)
+    }
+
+    #[test]
+    fn activating_a_skill_keeps_messages_the_instance_has_not_seen() {
+        let (mut owner, id, _dir) = owner_with_stale_instance();
+
+        owner.activate_session_skill(&id, "review").unwrap();
+
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_skills, vec!["review".to_string()]);
+        assert_eq!(stored.get_active_messages().len(), 2);
+        let instance = owner.get_session(&id).unwrap();
+        assert_eq!(instance.session.get_active_messages().len(), 2);
+
+        // Activating twice records the skill once.
+        owner.activate_session_skill(&id, "review").unwrap();
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_skills, vec!["review".to_string()]);
+    }
+
+    #[test]
+    fn switching_branch_keeps_messages_the_instance_has_not_seen() {
+        let (mut owner, id, _dir) = owner_with_stale_instance();
+
+        owner.switch_session_branch(&id, 1).unwrap();
+
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.active_path, vec![1, 2]);
+        assert_eq!(stored.message_count(), 2);
+        let instance = owner.get_session(&id).unwrap();
+        assert_eq!(instance.session.active_path, vec![1, 2]);
+    }
+
     #[test]
     fn checkpoint_preserves_all_session_settings_after_external_changes() {
         let (mut manager, dir) = build_manager(false);
@@ -2168,10 +2239,6 @@ mod tests {
         assert_eq!(saved.model_config.as_ref().unwrap().model_name, "new-model");
         assert!(saved.plan_collapsed);
         assert_eq!(saved.get_active_messages().len(), 1);
-        assert_eq!(
-            serde_json::to_value(&manager.get_session(&id).unwrap().session.config).unwrap(),
-            serde_json::to_value(&expected.config).unwrap()
-        );
     }
 
     #[test]

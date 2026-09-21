@@ -889,12 +889,7 @@ impl SessionService {
             // model if the injected body is summarised away.
             {
                 let mut manager = ctx.manager.lock().await;
-                if let Some(session) = manager.get_session_mut(&session_id)
-                    && !session.session.active_skills.iter().any(|s| s == &name)
-                {
-                    session.session.active_skills.push(name.clone());
-                }
-                if let Err(e) = manager.save_session(&session_id) {
+                if let Err(e) = manager.activate_session_skill(&session_id, &name) {
                     warn!("Failed to persist active_skills for {session_id}: {e}");
                 }
             }
@@ -1114,19 +1109,9 @@ impl SessionService {
     ) -> Result<BranchSwitchData> {
         self.call_session(session_id.clone(), move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
-            let session_instance = manager
-                .get_session_mut(&session_id)
-                .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
-            session_instance
-                .session
-                .switch_branch(new_node_id)
+            manager
+                .switch_session_branch(&session_id, new_node_id)
                 .context("Failed to switch branch")?;
-
-            // Persist the updated active_path. Continue on failure — the
-            // switch worked in memory.
-            if let Err(e) = manager.save_session(&session_id) {
-                error!("Failed to save session after branch switch: {}", e);
-            }
 
             let session_instance = manager
                 .get_session(&session_id)
