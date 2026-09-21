@@ -154,28 +154,13 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Create a new SessionManager.
-    ///
-    /// On creation, this will clean up any empty sessions from previous runs.
-    /// This handles the case where a client (e.g., Zed) starts code-assistant
-    /// and creates a session, but the user never sends a message before closing.
     pub fn new(
-        mut persistence: FileSessionPersistence,
+        persistence: FileSessionPersistence,
         session_config_template: SessionConfig,
         default_model_name: String,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
         events: crate::session::event_stream::EventStream,
     ) -> Self {
-        // Clean up empty sessions from previous runs at startup
-        match persistence.delete_empty_sessions() {
-            Ok(count) if count > 0 => {
-                info!("Cleaned up {} empty session(s) from previous runs", count);
-            }
-            Ok(_) => {}
-            Err(e) => {
-                warn!("Failed to clean up empty sessions at startup: {}", e);
-            }
-        }
-
         // The CLI's `--use-diff-format` flag is plumbed through the template's
         // `use_diff_blocks` field. Capture it as the override and reset the
         // template so subsequent per-session resolution from `models.json`
@@ -2092,8 +2077,6 @@ mod tests {
     async fn checkpoint_publishes_metadata_without_active_instance() {
         let (mut owner, dir) = build_manager(false);
         let id = owner.create_session(None).unwrap();
-        // A manager discards empty sessions on construction.
-        commit_messages(&mut owner, &id, vec![Message::new_user("task")]);
 
         let events = crate::session::event_stream::EventStream::new();
         let mut subscription = events.subscribe();
