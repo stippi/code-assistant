@@ -201,7 +201,10 @@ struct DiffCache {
 
 /// Entity view for a block
 pub struct BlockView {
-    block: BlockData,
+    /// Shared so `render` can hold the block (text, tool output and images
+    /// can be large) while calling `&mut self` methods, without copying it;
+    /// mutation goes through [`Self::block_mut`].
+    block: Rc<BlockData>,
     request_id: u64,
     markdown_state: Option<Entity<TextViewState>>,
     markdown_sync: MarkdownSync,
@@ -262,7 +265,7 @@ impl BlockView {
             initial_markdown.map(|text| _cx.new(|cx| TextViewState::markdown(&text, cx)));
 
         Self {
-            block,
+            block: Rc::new(block),
             request_id,
             markdown_state,
             markdown_sync,
@@ -277,6 +280,12 @@ impl BlockView {
             copied_feedback_until: None,
             copied_feedback_task: None,
         }
+    }
+
+    /// Mutable access to the block. `render` has dropped its handle by the
+    /// time anything mutates, so this does not copy.
+    fn block_mut(&mut self) -> &mut BlockData {
+        Rc::make_mut(&mut self.block)
     }
 
     /// The block's Markdown state, created empty on first use. Tool cards
@@ -392,9 +401,13 @@ impl BlockView {
 
     /// Copy the given markdown source to the clipboard and show a short-lived
     /// checkmark on the copy button.
-    pub(super) fn copy_source_to_clipboard(&mut self, source: String, cx: &mut Context<Self>) {
+    pub(super) fn copy_source_to_clipboard(&mut self, cx: &mut Context<Self>) {
         use gpui::ClipboardItem;
 
+        let source = self
+            .block
+            .copy_source(self.is_generating)
+            .unwrap_or_default();
         let source = source.trim_end().to_string();
         if source.is_empty() {
             return;
@@ -420,7 +433,7 @@ impl BlockView {
 
     /// Check if this block is an image block
     pub fn is_image_block(&self) -> bool {
-        matches!(self.block, BlockData::ImageBlock(_))
+        matches!(*self.block, BlockData::ImageBlock(_))
     }
 
     /// Set the generating state of this block
@@ -430,7 +443,7 @@ impl BlockView {
 
     /// Check if this block can toggle expansion
     pub fn can_toggle_expansion(&self) -> bool {
-        match &self.block {
+        match &*self.block {
             BlockData::ToolUse(_) => true, // Tools can always toggle, even while generating
             BlockData::ThinkingBlock(_) => true,
             BlockData::CompactionSummary(_) => true,
@@ -439,7 +452,7 @@ impl BlockView {
     }
 
     fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
-        let should_expand = if let Some(thinking) = self.block.as_thinking_mut() {
+        let should_expand = if let Some(thinking) = self.block_mut().as_thinking_mut() {
             thinking.is_collapsed = !thinking.is_collapsed;
             !thinking.is_collapsed
         } else {
@@ -454,7 +467,7 @@ impl BlockView {
             return;
         }
 
-        let should_expand = if let Some(tool) = self.block.as_tool_mut() {
+        let should_expand = if let Some(tool) = self.block_mut().as_tool_mut() {
             match tool.state {
                 ToolBlockState::Collapsed => {
                     tool.state = ToolBlockState::Expanded;
@@ -472,7 +485,7 @@ impl BlockView {
         // Persist the new state in the global UI state store (in-memory +
         // debounced write to disk) so it survives session reconnects and app
         // restarts.
-        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool_mut())
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool())
             && ToolCollapseState::set(session_id, &tool.id, tool.state.clone())
         {
             // Schedule a debounced save
@@ -506,7 +519,7 @@ impl BlockView {
     }
 
     fn toggle_compaction(&mut self, cx: &mut Context<Self>) {
-        if let Some(summary) = self.block.as_compaction_mut() {
+        if let Some(summary) = self.block_mut().as_compaction_mut() {
             let should_expand = !summary.is_expanded;
             summary.is_expanded = should_expand;
             self.start_expand_collapse_animation(should_expand, cx);
@@ -679,7 +692,7 @@ mod tests {
                 // Verify content was appended
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::TextBlock(text) = &block.block {
+                if let BlockData::TextBlock(text) = &*block.block {
                     assert_eq!(text.content, "Hello world");
                 } else {
                     panic!("Expected TextBlock");
@@ -704,7 +717,7 @@ mod tests {
                 // Verify content
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                if let BlockData::ThinkingBlock(thinking) = &*block.block {
                     assert_eq!(thinking.content, "Thinking... more thoughts");
                     assert!(!thinking.is_completed);
                 } else {
@@ -725,7 +738,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.name, "read_files");
                     assert_eq!(tool.id, "tool-1");
                     assert_eq!(tool.status, ToolStatus::Pending);
@@ -759,7 +772,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.status, ToolStatus::Success);
                     assert_eq!(tool.status_message, Some("Done".to_string()));
                     assert_eq!(tool.output, Some("output text".to_string()));
@@ -808,7 +821,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.parameters.len(), 1);
                     assert_eq!(tool.parameters[0].name, "path");
                     assert_eq!(tool.parameters[0].value, "src/main.rs");
@@ -821,7 +834,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.parameters.len(), 1);
                     assert_eq!(tool.parameters[0].value, "src/main.rs/extra");
                 } else {
@@ -853,7 +866,7 @@ mod tests {
                 // Verify remaining block is from request 1
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::TextBlock(text) = &block.block {
+                if let BlockData::TextBlock(text) = &*block.block {
                     assert_eq!(text.content, "First");
                 } else {
                     panic!("Expected TextBlock");
@@ -874,7 +887,7 @@ mod tests {
                 // Verify it's not completed
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                if let BlockData::ThinkingBlock(thinking) = &*block.block {
                     assert!(!thinking.is_completed);
                 } else {
                     panic!("Expected ThinkingBlock");
@@ -886,7 +899,7 @@ mod tests {
                 // Verify thinking block is now completed
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                if let BlockData::ThinkingBlock(thinking) = &*block.block {
                     assert!(thinking.is_completed);
                 } else {
                     panic!("Expected ThinkingBlock");
@@ -909,7 +922,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.output, Some("line 1\nline 2\n".to_string()));
                 } else {
                     panic!("Expected ToolUse block");
@@ -1051,7 +1064,7 @@ mod tests {
         cx.update(|cx| {
             cx.new(|cx| {
                 let mut view = BlockView::new(
-                    BlockData::ToolUse(Rc::new(tool)),
+                    BlockData::ToolUse(tool),
                     0,
                     0,
                     Arc::new(Mutex::new(String::new())),
@@ -1093,7 +1106,7 @@ mod tests {
 
         // Collapsing goes through `as_tool_mut` without changing the content.
         let touched = view.update(cx, |view, cx| {
-            view.block.as_tool_mut().unwrap().state = ToolBlockState::Collapsed;
+            view.block_mut().as_tool_mut().unwrap().state = ToolBlockState::Collapsed;
             view.prepared_diff(cx)
         });
         assert!(Rc::ptr_eq(
@@ -1104,7 +1117,8 @@ mod tests {
 
         // Format-on-save rewrites a parameter.
         let changed = view.update(cx, |view, cx| {
-            view.block.as_tool_mut().unwrap().parameters[2].value = "fn b() {}\nfn c() {}".into();
+            view.block_mut().as_tool_mut().unwrap().parameters[2].value =
+                "fn b() {}\nfn c() {}".into();
             view.prepared_diff(cx)
         });
         assert_eq!(changed.sections.unwrap()[0].lines.len(), 3);
@@ -1141,5 +1155,23 @@ mod tests {
         assert!(prepared.sections.is_none());
         cx.run_until_parked();
         assert!(view.update(cx, |view, _| view.diff_cache.is_none()));
+    }
+
+    #[test]
+    fn copy_source_is_the_markdown_a_block_shows() {
+        let text = BlockData::TextBlock(TextBlock {
+            content: "**hi**".into(),
+        });
+        assert_eq!(text.copy_source(false).as_deref(), Some("**hi**"));
+
+        // A thinking block copies what it displays: the item being generated
+        // while streaming, the full content afterwards.
+        let mut thinking = ThinkingBlock::new("all of it".into());
+        thinking.current_generating_content = Some("current item".into());
+        let thinking = BlockData::ThinkingBlock(thinking);
+        assert_eq!(thinking.copy_source(true).as_deref(), Some("current item"));
+
+        let tool = crate::tool_cards::diff_prepare::tests::tool("edit", &[], None);
+        assert!(BlockData::ToolUse(tool).copy_source(false).is_none());
     }
 }

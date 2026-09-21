@@ -17,6 +17,7 @@ use gpui::{
 };
 use gpui::{FontWeight, prelude::*};
 use gpui_component::ActiveTheme;
+use std::rc::Rc;
 use std::time::Duration;
 
 impl BlockView {
@@ -33,7 +34,6 @@ impl BlockView {
     pub(super) fn with_copy_button(
         &self,
         group_name: SharedString,
-        source: String,
         body: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -69,11 +69,8 @@ impl BlockView {
                     .border_color(theme.border)
                     .cursor(gpui::CursorStyle::PointingHand)
                     .hover(|s| s.bg(theme.muted))
-                    .on_click(cx.listener({
-                        let source = source.clone();
-                        move |view, _event: &ClickEvent, _window, cx| {
-                            view.copy_source_to_clipboard(source.clone(), cx);
-                        }
+                    .on_click(cx.listener(|view, _event: &ClickEvent, _window, cx| {
+                        view.copy_source_to_clipboard(cx);
                     }))
                     .child(
                         gpui::svg()
@@ -396,9 +393,9 @@ impl BlockView {
 
 impl gpui::Render for BlockView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.block.clone() {
+        let block = Rc::clone(&self.block);
+        match &*block {
             BlockData::TextBlock(block) => {
-                let source = block.content.clone();
                 let group_name = SharedString::from(format!("text-block-{}", cx.entity_id()));
                 let body = div()
                     .text_color(cx.theme().foreground)
@@ -406,7 +403,7 @@ impl gpui::Render for BlockView {
                     .into_any_element();
                 div()
                     .mt_3()
-                    .child(self.with_copy_button(group_name, source, body, cx))
+                    .child(self.with_copy_button(group_name, body, cx))
                     .into_any_element()
             }
             BlockData::ThinkingBlock(block) => {
@@ -550,7 +547,7 @@ impl gpui::Render for BlockView {
                                     .text_color(text_color)
                                     .child(self.markdown_view(&content, false, cx))
                                     .into_any_element();
-                                self.with_copy_button(group_name, content, inner, cx)
+                                self.with_copy_button(group_name, inner, cx)
                             } else {
                                 div().into_any()
                             };
@@ -572,7 +569,7 @@ impl gpui::Render for BlockView {
                         match renderer.style() {
                             crate::tool_cards::ToolBlockStyle::Inline => {
                                 return self
-                                    .render_inline_tool(&block, renderer.as_ref(), window, cx)
+                                    .render_inline_tool(block, renderer.as_ref(), window, cx)
                                     .into_any_element();
                             }
 
@@ -603,7 +600,7 @@ impl gpui::Render for BlockView {
                                 };
 
                                 if let Some(element) = renderer.render(
-                                    &block,
+                                    block,
                                     self.is_generating,
                                     &theme,
                                     Some(&card_ctx),
@@ -619,7 +616,7 @@ impl gpui::Render for BlockView {
                                 return div()
                                     .mt_2()
                                     .child(self.render_card_skeleton(
-                                        &block,
+                                        block,
                                         renderer.as_ref(),
                                         &theme,
                                     ))
@@ -744,14 +741,13 @@ impl gpui::Render for BlockView {
                 if is_expanded || animation_scale > 0.0 {
                     let group_name =
                         SharedString::from(format!("compaction-block-{}", cx.entity_id()));
-                    let summary_source = block.summary.clone();
                     let body = div()
                         .px_3()
                         .pb_2()
                         .text_color(cx.theme().foreground)
                         .child(self.markdown_view(&block.summary, true, cx))
                         .into_any_element();
-                    let body = self.with_copy_button(group_name, summary_source, body, cx);
+                    let body = self.with_copy_button(group_name, body, cx);
 
                     container = container.child(crate::tool_cards::animated_card_body(
                         body,

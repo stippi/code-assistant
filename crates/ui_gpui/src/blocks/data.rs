@@ -5,7 +5,7 @@
 //! them during streaming) and `BlockView` (which renders them).
 
 use code_assistant_core::ui::ToolStatus;
-use std::rc::Rc;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 /// Regular text block
@@ -188,14 +188,14 @@ impl ThinkingBlock {
     }
 
     /// Get expanded content based on generating state
-    pub fn get_expanded_content(&self, is_generating: bool) -> String {
+    pub fn get_expanded_content(&self, is_generating: bool) -> Cow<'_, str> {
         if is_generating {
             // While generating, show current item content
 
             self.current_generating_content
                 .as_deref()
                 .unwrap_or(&self.content)
-                .to_string()
+                .into()
         } else if self.is_reasoning_block() {
             // When completed with reasoning, show all summary items as raw content
             let reasoning_content = self
@@ -210,13 +210,13 @@ impl ThinkingBlock {
             // Fallback: if reasoning_summary_items is empty but we had content,
             // there might have been a timing issue during completion
             if reasoning_content.is_empty() && !self.content.is_empty() {
-                self.content.clone()
+                Cow::Borrowed(&self.content)
             } else {
-                reasoning_content
+                reasoning_content.into()
             }
         } else {
             // Traditional thinking block
-            self.content.clone()
+            Cow::Borrowed(&self.content)
         }
     }
 
@@ -258,9 +258,7 @@ impl ThinkingBlock {
 pub enum BlockData {
     TextBlock(TextBlock),
     ThinkingBlock(ThinkingBlock),
-    /// Shared so rendering can hold the block (parameters and output can be
-    /// large) without copying it; mutation goes through [`Self::as_tool_mut`].
-    ToolUse(Rc<ToolUseBlock>),
+    ToolUse(ToolUseBlock),
     ImageBlock(ImageBlock),
     CompactionSummary(CompactionSummaryBlock),
 }
@@ -280,6 +278,16 @@ impl BlockData {
         }
     }
 
+    /// The Markdown source the block's copy button puts on the clipboard.
+    pub(super) fn copy_source(&self, is_generating: bool) -> Option<Cow<'_, str>> {
+        match self {
+            BlockData::TextBlock(b) => Some(Cow::Borrowed(&b.content)),
+            BlockData::ThinkingBlock(b) => Some(b.get_expanded_content(is_generating)),
+            BlockData::CompactionSummary(b) => Some(Cow::Borrowed(&b.summary)),
+            BlockData::ToolUse(_) | BlockData::ImageBlock(_) => None,
+        }
+    }
+
     pub(super) fn as_tool(&self) -> Option<&ToolUseBlock> {
         match self {
             BlockData::ToolUse(b) => Some(b),
@@ -290,7 +298,6 @@ impl BlockData {
     pub(super) fn as_tool_mut(&mut self) -> Option<&mut ToolUseBlock> {
         match self {
             BlockData::ToolUse(b) => {
-                let b = Rc::make_mut(b);
                 b.revision += 1;
                 Some(b)
             }
