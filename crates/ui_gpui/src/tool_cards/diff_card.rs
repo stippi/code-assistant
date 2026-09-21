@@ -1301,7 +1301,7 @@ mod tests {
     fn highlighted_rows_use_the_neutral_syntax_foreground() {
         use gpui_component::theme::{Theme, ThemeColor};
         let mut theme = Theme::from(&*ThemeColor::light());
-        theme.highlight_theme = crate::shared::theme::syntax_theme(Default::default(), theme.mode);
+        theme.highlight_theme = crate::shared::theme::syntax_theme(theme.mode);
         let foreground = theme.highlight_theme.style.editor_foreground.unwrap();
 
         for tag in [ChangeTag::Equal, ChangeTag::Delete, ChangeTag::Insert] {

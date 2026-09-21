@@ -1,4 +1,4 @@
-use gpui::{App, Global, rgb, rgba};
+use gpui::{App, rgb, rgba};
 use gpui_component::highlighter::{HighlightTheme, HighlightThemeStyle};
 use gpui_component::theme::{Theme, ThemeMode};
 use std::collections::HashMap;
@@ -82,99 +82,41 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
     colors
 }
 
-/// Syntax color sets to choose from; all are tuned for contrast on the
-/// diff rows' red/green backgrounds (see the tests).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum SyntaxVariant {
-    /// Few hues: red keywords, blue functions, green strings (after the
-    /// GitBook/Shiki theme of the Slate docs).
-    #[default]
-    Slate,
-    /// GitHub-like: blue strings, so nothing but keywords competes with the
-    /// diff colors.
-    GitHub,
-    /// Around our own palette, avoiding red and green altogether.
-    Palette,
-}
+/// Our syntax colors per mode: few hues (red keywords, blue functions, green
+/// strings, after the GitBook/Shiki theme of the Slate docs), tuned for
+/// contrast on the diff rows' red/green backgrounds (see the tests).
+static SYNTAX_THEMES: LazyLock<HashMap<ThemeMode, Arc<HighlightTheme>>> = LazyLock::new(|| {
+    let styles: HashMap<ThemeMode, HighlightThemeStyle> =
+        serde_json::from_str(include_str!("syntax_theme.json"))
+            .expect("syntax_theme.json is valid");
+    styles
+        .into_iter()
+        .map(|(mode, style)| {
+            let theme = HighlightTheme {
+                name: format!("code-assistant {}", mode.name()),
+                appearance: mode,
+                style,
+            };
+            (mode, Arc::new(theme))
+        })
+        .collect()
+});
 
-impl SyntaxVariant {
-    pub const ALL: [Self; 3] = [Self::Slate, Self::GitHub, Self::Palette];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Slate => "slate",
-            Self::GitHub => "github",
-            Self::Palette => "palette",
-        }
-    }
-
-    fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|v| v.name() == name)
-    }
-
-    fn next(self) -> Self {
-        let ix = Self::ALL.iter().position(|v| *v == self).unwrap_or(0);
-        Self::ALL[(ix + 1) % Self::ALL.len()]
-    }
-}
-
-struct ActiveSyntaxVariant(SyntaxVariant);
-
-impl Global for ActiveSyntaxVariant {}
-
-/// Environment variable selecting the [`SyntaxVariant`] at startup.
-const SYNTAX_THEME_ENV: &str = "CODE_ASSISTANT_SYNTAX_THEME";
-
-static SYNTAX_THEMES: LazyLock<HashMap<(SyntaxVariant, ThemeMode), Arc<HighlightTheme>>> =
-    LazyLock::new(|| {
-        let styles: HashMap<String, HashMap<ThemeMode, HighlightThemeStyle>> =
-            serde_json::from_str(include_str!("syntax_themes.json"))
-                .expect("syntax_themes.json is valid");
-        SyntaxVariant::ALL
-            .into_iter()
-            .flat_map(|variant| [(variant, ThemeMode::Light), (variant, ThemeMode::Dark)])
-            .map(|(variant, mode)| {
-                let theme = HighlightTheme {
-                    name: format!("{} {}", variant.name(), mode.name()),
-                    appearance: mode,
-                    style: styles[variant.name()][&mode].clone(),
-                };
-                ((variant, mode), Arc::new(theme))
-            })
-            .collect()
-    });
-
-/// The highlight theme of a variant. Always the same `Arc` per variant and
-/// mode, so style caches keyed on the theme stay valid.
-pub fn syntax_theme(variant: SyntaxVariant, mode: ThemeMode) -> Arc<HighlightTheme> {
-    SYNTAX_THEMES[&(variant, mode)].clone()
-}
-
-pub fn syntax_variant(cx: &App) -> SyntaxVariant {
-    cx.try_global::<ActiveSyntaxVariant>()
-        .map(|v| v.0)
-        .unwrap_or_default()
-}
-
-/// Switch to the next syntax color variant, for comparing them in the app.
-pub fn cycle_syntax_variant(cx: &mut App) -> SyntaxVariant {
-    let next = syntax_variant(cx).next();
-    cx.set_global(ActiveSyntaxVariant(next));
-    apply_custom_theme(cx);
-    cx.refresh_windows();
-    next
+/// The highlight theme of a mode. Always the same `Arc` per mode, so style
+/// caches keyed on the theme stay valid.
+pub fn syntax_theme(mode: ThemeMode) -> Arc<HighlightTheme> {
+    SYNTAX_THEMES[&mode].clone()
 }
 
 /// Put our colors and syntax theme over whatever gpui-component set up for
 /// the current mode.
 fn apply_custom_theme(cx: &mut App) {
-    let variant = syntax_variant(cx);
     let theme = cx.global_mut::<Theme>();
     theme.colors = match theme.mode {
         ThemeMode::Dark => custom_dark_theme(),
         ThemeMode::Light => custom_light_theme(),
     };
-    theme.highlight_theme = syntax_theme(variant, theme.mode);
+    theme.highlight_theme = syntax_theme(theme.mode);
 }
 
 /// Initialize the themes in the app, optionally restoring a saved mode.
@@ -185,13 +127,6 @@ pub fn init_themes(cx: &mut App, mode: Option<ThemeMode>) {
     // If a saved mode was provided, apply it; otherwise use whatever default was set.
     if let Some(mode) = mode {
         Theme::change(mode, None, cx);
-    }
-
-    if let Some(variant) = std::env::var(SYNTAX_THEME_ENV)
-        .ok()
-        .and_then(|name| SyntaxVariant::from_name(&name))
-    {
-        cx.set_global(ActiveSyntaxVariant(variant));
     }
 
     apply_custom_theme(cx);
@@ -308,86 +243,67 @@ mod tests {
     }
 
     #[test]
-    fn every_variant_styles_the_core_captures_in_both_modes() {
-        for variant in SyntaxVariant::ALL {
-            for mode in [ThemeMode::Light, ThemeMode::Dark] {
-                let syntax = syntax_theme(variant, mode);
-                assert_eq!(syntax.appearance, mode);
-                assert!(syntax.style.editor_foreground.is_some());
-                for capture in ["keyword", "string", "comment", "function", "type"] {
-                    assert!(
-                        syntax.style(capture).and_then(|s| s.color).is_some(),
-                        "{variant:?}/{mode:?} lacks a color for {capture}"
-                    );
-                }
+    fn syntax_theme_styles_the_core_captures_in_both_modes() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let syntax = syntax_theme(mode);
+            assert_eq!(syntax.appearance, mode);
+            assert!(syntax.style.editor_foreground.is_some());
+            for capture in ["keyword", "string", "comment", "function", "type"] {
+                assert!(
+                    syntax.style(capture).and_then(|s| s.color).is_some(),
+                    "{mode:?} lacks a color for {capture}"
+                );
             }
         }
     }
 
     #[test]
     fn syntax_colors_stay_readable_on_diff_rows() {
-        for variant in SyntaxVariant::ALL {
-            for mode in [ThemeMode::Light, ThemeMode::Dark] {
-                let theme = theme_for(mode);
-                let syntax = syntax_theme(variant, mode);
-                let body = Rgba::from(diff_body_bg(&theme));
-                let added = over(added_row_colors(&theme).0.unwrap(), body);
-                let deleted = over(deleted_row_colors(&theme).0.unwrap(), body);
-                let added_word = over(word_emphasis_bg(ChangeTag::Insert, &theme), added);
-                let deleted_word = over(word_emphasis_bg(ChangeTag::Delete, &theme), deleted);
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let theme = theme_for(mode);
+            let syntax = syntax_theme(mode);
+            let body = Rgba::from(diff_body_bg(&theme));
+            let added = over(added_row_colors(&theme).0.unwrap(), body);
+            let deleted = over(deleted_row_colors(&theme).0.unwrap(), body);
+            let added_word = over(word_emphasis_bg(ChangeTag::Insert, &theme), added);
+            let deleted_word = over(word_emphasis_bg(ChangeTag::Delete, &theme), deleted);
 
-                let colors = CAPTURES
-                    .iter()
-                    .filter_map(|name| Some((*name, syntax.style(name)?.color?)))
-                    .chain([("foreground", syntax.style.editor_foreground.unwrap())]);
-                for (name, color) in colors {
-                    let color = Rgba::from(color);
-                    for (bg_name, bg, min) in [
-                        ("body", body, 4.5),
-                        ("added row", added, 4.5),
-                        ("deleted row", deleted, 4.5),
-                        ("added word", added_word, 3.0),
-                        ("deleted word", deleted_word, 3.0),
-                    ] {
-                        let ratio = contrast(color, bg);
-                        assert!(
-                            ratio >= min,
-                            "{variant:?}/{mode:?}: {name} on {bg_name} has contrast {ratio:.2}"
-                        );
-                    }
+            let colors = CAPTURES
+                .iter()
+                .filter_map(|name| Some((*name, syntax.style(name)?.color?)))
+                .chain([("foreground", syntax.style.editor_foreground.unwrap())]);
+            for (name, color) in colors {
+                let color = Rgba::from(color);
+                for (bg_name, bg, min) in [
+                    ("body", body, 4.5),
+                    ("added row", added, 4.5),
+                    ("deleted row", deleted, 4.5),
+                    ("added word", added_word, 3.0),
+                    ("deleted word", deleted_word, 3.0),
+                ] {
+                    let ratio = contrast(color, bg);
+                    assert!(
+                        ratio >= min,
+                        "{mode:?}: {name} on {bg_name} has contrast {ratio:.2}"
+                    );
                 }
             }
         }
     }
 
     #[gpui::test]
-    fn highlight_theme_follows_mode_and_variant(cx: &mut TestAppContext) {
+    fn highlight_theme_follows_the_mode(cx: &mut TestAppContext) {
         cx.update(|cx| {
             init_themes(cx, Some(ThemeMode::Dark));
-            let variant = syntax_variant(cx);
             assert_eq!(
                 cx.global::<Theme>().highlight_theme,
-                syntax_theme(variant, ThemeMode::Dark)
+                syntax_theme(ThemeMode::Dark)
             );
 
             assert_eq!(toggle_theme(None, cx), ThemeMode::Light);
             assert_eq!(
                 cx.global::<Theme>().highlight_theme,
-                syntax_theme(variant, ThemeMode::Light)
-            );
-
-            let next = cycle_syntax_variant(cx);
-            assert_ne!(next, variant);
-            assert_eq!(
-                cx.global::<Theme>().highlight_theme,
-                syntax_theme(next, ThemeMode::Light)
-            );
-
-            // The variant survives switching the mode.
-            toggle_theme(None, cx);
-            assert_eq!(
-                cx.global::<Theme>().highlight_theme,
-                syntax_theme(next, ThemeMode::Dark)
+                syntax_theme(ThemeMode::Light)
             );
         });
     }
