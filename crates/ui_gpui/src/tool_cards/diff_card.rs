@@ -219,11 +219,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
 
         // --- Body (animated) ---
         if scale > 0.0 {
-            let body_bg = if is_dark {
-                gpui::hsla(0.0, 0.0, 0.08, 1.0)
-            } else {
-                gpui::hsla(0.0, 0.0, 0.97, 1.0)
-            };
+            let body_bg = diff_body_bg(theme);
 
             let body_content = match tool.name.as_str() {
                 "edit" => render_edit_body(tool, is_generating, theme, rem_size),
@@ -929,11 +925,8 @@ fn render_diff_rows(
         .flex()
         .flex_col()
         .children(diff_lines.iter().map(|dl| {
-            let (row_bg, text_color) = match dl.tag {
-                ChangeTag::Equal => unchanged_row_colors(theme),
-                ChangeTag::Delete => deleted_row_colors(theme),
-                ChangeTag::Insert => added_row_colors(theme),
-            };
+            let (row_bg, _) = row_colors(dl.tag, theme);
+            let text_color = row_text_color(dl.tag, syntax.is_some(), theme);
 
             let mut row = div().w_full().flex().flex_row().items_start();
             if let Some(bg) = row_bg {
@@ -958,11 +951,7 @@ fn render_diff_rows(
                     }
                     ChangeTag::Delete => format!("{:>width$}", "", width = gutter_width),
                 };
-                let gutter_color = match dl.tag {
-                    ChangeTag::Equal => unchanged_row_colors(theme).1.opacity(0.5),
-                    ChangeTag::Delete => deleted_row_colors(theme).1.opacity(0.5),
-                    ChangeTag::Insert => added_row_colors(theme).1.opacity(0.5),
-                };
+                let gutter_color = row_colors(dl.tag, theme).1.opacity(0.5);
                 row = row.child(
                     div()
                         .flex_none()
@@ -1245,6 +1234,15 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
     .into()
 }
 
+/// Background of a diff card's body, behind the rows.
+pub(crate) fn diff_body_bg(theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+    if theme.is_dark() {
+        gpui::hsla(0.0, 0.0, 0.08, 1.0)
+    } else {
+        gpui::hsla(0.0, 0.0, 0.97, 1.0)
+    }
+}
+
 pub(crate) fn deleted_row_colors(
     theme: &gpui_component::theme::Theme,
 ) -> (Option<gpui::Hsla>, gpui::Hsla) {
@@ -1277,9 +1275,34 @@ pub(crate) fn added_row_colors(
     }
 }
 
+fn row_colors(
+    tag: ChangeTag,
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
+    match tag {
+        ChangeTag::Equal => unchanged_row_colors(theme),
+        ChangeTag::Delete => deleted_row_colors(theme),
+        ChangeTag::Insert => added_row_colors(theme),
+    }
+}
+
+/// Text color of a row. Syntax highlighted rows use the syntax theme's neutral
+/// foreground, since red/green tinted text fights with the syntax colors; the
+/// row background still tells the change.
+fn row_text_color(
+    tag: ChangeTag,
+    highlighted: bool,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::Hsla {
+    highlighted
+        .then_some(theme.highlight_theme.style.editor_foreground)
+        .flatten()
+        .unwrap_or_else(|| row_colors(tag, theme).1)
+}
+
 /// Background for word-level (intra-line) changes: a stronger tint layered on
 /// top of the row's add/delete background.
-fn word_emphasis_bg(tag: ChangeTag, theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+pub(crate) fn word_emphasis_bg(tag: ChangeTag, theme: &gpui_component::theme::Theme) -> gpui::Hsla {
     match (tag, theme.is_dark()) {
         (ChangeTag::Delete, true) => rgba_color(0xC0, 0x38, 0x38, 0x70),
         (ChangeTag::Delete, false) => rgba_color(0xE0, 0x60, 0x60, 0x60),
@@ -1302,6 +1325,23 @@ pub(crate) fn unchanged_row_colors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn highlighted_rows_use_the_neutral_syntax_foreground() {
+        use gpui_component::theme::{Theme, ThemeColor};
+        let mut theme = Theme::from(&*ThemeColor::light());
+        theme.highlight_theme = crate::shared::theme::syntax_theme(Default::default(), theme.mode);
+        let foreground = theme.highlight_theme.style.editor_foreground.unwrap();
+
+        for tag in [ChangeTag::Equal, ChangeTag::Delete, ChangeTag::Insert] {
+            assert_eq!(row_text_color(tag, true, &theme), foreground);
+        }
+        // Without syntax the rows keep their tinted text.
+        assert_eq!(
+            row_text_color(ChangeTag::Insert, false, &theme),
+            added_row_colors(&theme).1
+        );
+    }
 
     #[test]
     fn compute_diff_hunks_groups_changes_with_context() {

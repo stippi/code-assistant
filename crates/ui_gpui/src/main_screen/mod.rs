@@ -496,10 +496,17 @@ impl MainScreen {
 
     fn on_toggle_theme(
         &mut self,
-        _: &ClickEvent,
+        event: &ClickEvent,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        // Shift-click steps through the syntax color variants instead.
+        if event.modifiers().shift {
+            let variant = theme::cycle_syntax_variant(cx);
+            tracing::info!("Syntax theme: {}", variant.name());
+            return;
+        }
+
         let new_mode = theme::toggle_theme(Some(window), cx);
 
         // Persist the new theme choice
