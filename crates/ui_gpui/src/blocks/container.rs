@@ -10,6 +10,7 @@ use code_assistant_core::persistence::{BranchInfo, NodeId};
 use crate::shared::image;
 use code_assistant_core::ui::ToolStatus;
 use gpui::{Context, Entity, prelude::*};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
 
@@ -343,7 +344,7 @@ impl MessageContainer {
             }
         };
 
-        let block = BlockData::ToolUse(ToolUseBlock {
+        let block = BlockData::ToolUse(Rc::new(ToolUseBlock {
             name,
             id,
             parameters: Vec::new(),
@@ -355,7 +356,7 @@ impl MessageContainer {
             duration_seconds,
             images: Vec::new(),
             revision: 0,
-        });
+        }));
         let view = cx.new(|cx| {
             BlockView::new(
                 block,
@@ -682,7 +683,7 @@ impl MessageContainer {
                 value: value.clone(),
             });
 
-            let block = BlockData::ToolUse(tool);
+            let block = BlockData::ToolUse(Rc::new(tool));
             let block_id = self.allocate_block_id();
             let view = cx.new(|cx| {
                 BlockView::new(

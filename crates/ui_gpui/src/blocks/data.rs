@@ -5,6 +5,7 @@
 //! them during streaming) and `BlockView` (which renders them).
 
 use code_assistant_core::ui::ToolStatus;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// Regular text block
@@ -257,7 +258,9 @@ impl ThinkingBlock {
 pub enum BlockData {
     TextBlock(TextBlock),
     ThinkingBlock(ThinkingBlock),
-    ToolUse(ToolUseBlock),
+    /// Shared so rendering can hold the block (parameters and output can be
+    /// large) without copying it; mutation goes through [`Self::as_tool_mut`].
+    ToolUse(Rc<ToolUseBlock>),
     ImageBlock(ImageBlock),
     CompactionSummary(CompactionSummaryBlock),
 }
@@ -287,6 +290,7 @@ impl BlockData {
     pub(super) fn as_tool_mut(&mut self) -> Option<&mut ToolUseBlock> {
         match self {
             BlockData::ToolUse(b) => {
+                let b = Rc::make_mut(b);
                 b.revision += 1;
                 Some(b)
             }

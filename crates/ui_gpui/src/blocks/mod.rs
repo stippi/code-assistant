@@ -1051,7 +1051,7 @@ mod tests {
         cx.update(|cx| {
             cx.new(|cx| {
                 let mut view = BlockView::new(
-                    BlockData::ToolUse(tool),
+                    BlockData::ToolUse(Rc::new(tool)),
                     0,
                     0,
                     Arc::new(Mutex::new(String::new())),

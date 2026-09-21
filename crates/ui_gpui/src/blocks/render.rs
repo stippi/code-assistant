@@ -571,14 +571,12 @@ impl gpui::Render for BlockView {
                     if let Some(renderer) = registry.resolve(&block.name) {
                         match renderer.style() {
                             crate::tool_cards::ToolBlockStyle::Inline => {
-                                let block_clone = block.clone();
                                 return self
-                                    .render_inline_tool(&block_clone, renderer.as_ref(), window, cx)
+                                    .render_inline_tool(&block, renderer.as_ref(), window, cx)
                                     .into_any_element();
                             }
 
                             crate::tool_cards::ToolBlockStyle::Card => {
-                                let block_clone = block.clone();
                                 let theme = cx.theme().clone();
 
                                 // Build animation context from BlockView state
@@ -605,7 +603,7 @@ impl gpui::Render for BlockView {
                                 };
 
                                 if let Some(element) = renderer.render(
-                                    &block_clone,
+                                    &block,
                                     self.is_generating,
                                     &theme,
                                     Some(&card_ctx),
