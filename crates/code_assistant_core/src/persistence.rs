@@ -583,6 +583,25 @@ impl ChatSession {
         self.message_nodes.len()
     }
 
+    /// The session-list entry describing the current state of this session.
+    pub fn metadata(&self) -> ChatMetadata {
+        let (total_usage, last_usage, tokens_limit) = calculate_session_usage(self);
+        ChatMetadata {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            message_count: self.message_count(),
+            total_usage,
+            last_usage,
+            tokens_limit,
+            tool_syntax: self.tool_syntax(),
+            initial_project: self.initial_project().to_string(),
+            plan_collapsed: self.plan_collapsed,
+            is_resumable: self.is_resumable(),
+        }
+    }
+
     /// Merge a running agent's checkpoint. Nodes and journal entries are
     /// replaced by id, so branches and records the run never touched
     /// survive; counters only ever grow.
@@ -819,24 +838,8 @@ impl FileSessionPersistence {
             Vec::new()
         };
 
-        // Calculate usage information
-        let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
-
         // Update or add metadata for this session
-        let new_metadata = ChatMetadata {
-            id: session.id.clone(),
-            name: session.name.clone(),
-            created_at: session.created_at,
-            updated_at: session.updated_at,
-            message_count: session.message_count(),
-            total_usage,
-            last_usage,
-            tokens_limit,
-            tool_syntax: session.tool_syntax(),
-            initial_project: session.initial_project().to_string(),
-            plan_collapsed: session.plan_collapsed,
-            is_resumable: session.is_resumable(),
-        };
+        let new_metadata = session.metadata();
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
             *existing = new_metadata;

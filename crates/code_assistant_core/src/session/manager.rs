@@ -1853,13 +1853,16 @@ impl SessionManager {
                 Ok(())
             })?;
 
+        // A run commits through a manager of its own that holds no active
+        // instance, so the notification must not depend on one.
+        self.events.publish_ui(
+            checkpoint.session_id,
+            UiEvent::UpdateSessionMetadata {
+                metadata: session.metadata(),
+            },
+        );
         if let Some(instance) = self.active_sessions.get_mut(checkpoint.session_id) {
             instance.session = session;
-            let metadata = instance.metadata();
-            self.events.publish_ui(
-                checkpoint.session_id,
-                UiEvent::UpdateSessionMetadata { metadata },
-            );
         }
         Ok(())
     }
@@ -2081,6 +2084,54 @@ mod tests {
             crate::session::event_stream::EventStream::new(),
         );
         (manager, dir)
+    }
+
+    /// A run commits through its own manager, which never loads the session
+    /// as an active instance. Frontends still need the fresh usage numbers.
+    #[tokio::test]
+    async fn checkpoint_publishes_metadata_without_active_instance() {
+        let (mut owner, dir) = build_manager(false);
+        let id = owner.create_session(None).unwrap();
+        // A manager discards empty sessions on construction.
+        commit_messages(&mut owner, &id, vec![Message::new_user("task")]);
+
+        let events = crate::session::event_stream::EventStream::new();
+        let mut subscription = events.subscribe();
+        let mut run_manager = SessionManager::new(
+            FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
+            SessionConfig::default(),
+            "test-model".into(),
+            crate::tools::test_registry(),
+            events,
+        );
+        let usage = llm::Usage {
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 40,
+        };
+        commit_messages(
+            &mut run_manager,
+            &id,
+            vec![
+                Message::new_user("task"),
+                Message::new_assistant("done").with_usage(usage.clone()),
+            ],
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+            .await
+            .expect("checkpoint published no event")
+            .unwrap();
+        assert_eq!(event.session_id.as_deref(), Some(id.as_str()));
+        match event.payload {
+            crate::session::EventPayload::Ui(UiEvent::UpdateSessionMetadata { metadata }) => {
+                assert_eq!(metadata.id, id);
+                assert_eq!(metadata.last_usage, usage);
+                assert_eq!(metadata.total_usage, usage);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]
