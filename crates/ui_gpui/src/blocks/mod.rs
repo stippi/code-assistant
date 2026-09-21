@@ -9,6 +9,9 @@ use gpui::prelude::*;
 use gpui::{Context, Entity, Pixels, Task, px};
 use gpui_component::text::{SelectionFormat, TextView, TextViewState};
 
+use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
+use crate::tool_cards::diff_syntax::language_for_path;
+
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -184,12 +187,25 @@ impl MarkdownSync {
     }
 }
 
+/// A diff card's [`PreparedDiff`] and what it was computed from.
+struct DiffCache {
+    /// [`ToolUseBlock::revision`] last seen; the per-frame check.
+    revision: u64,
+    diff_mode: bool,
+    /// [`DiffInput::content_hash`], looked at only when the revision moved.
+    hash: u64,
+    prepared: PreparedDiff,
+    /// Background work filling in `prepared`; dropped (cancelled) with the cache.
+    _task: Option<Task<()>>,
+}
+
 /// Entity view for a block
 pub struct BlockView {
     block: BlockData,
     request_id: u64,
     markdown_state: Option<Entity<TextViewState>>,
     markdown_sync: MarkdownSync,
+    diff_cache: Option<DiffCache>,
     is_generating: bool, // Universal generating state for all block types
     // Animation state
     animation_state: AnimationState,
@@ -250,6 +266,7 @@ impl BlockView {
             request_id,
             markdown_state,
             markdown_sync,
+            diff_cache: None,
             is_generating: true, // Default to generating when first created
             animation_state: AnimationState::Idle,
             content_height: Rc::new(Cell::new(px(0.0))),
@@ -279,6 +296,76 @@ impl BlockView {
             TextUpdate::Replace => state.update(cx, |state, cx| state.set_text(text, cx)),
         }
         state
+    }
+
+    /// The diff a finished file-editing tool block shows, computed once per
+    /// content change. Empty while the block streams (the card shows raw
+    /// blocks then, and nothing is parsed per chunk) and for other tools;
+    /// parts computed in the background arrive with a later notify.
+    pub(crate) fn prepared_diff(&mut self, cx: &mut Context<Self>) -> PreparedDiff {
+        let diff_mode = self.write_file_diff_mode;
+        let Some(tool) = self.block.as_tool().filter(|_| !self.is_generating) else {
+            self.diff_cache = None;
+            return PreparedDiff::default();
+        };
+        if let Some(cache) = &self.diff_cache
+            && cache.revision == tool.revision
+            && cache.diff_mode == diff_mode
+        {
+            return cache.prepared.clone();
+        }
+
+        let revision = tool.revision;
+        let Some(input) = DiffInput::for_tool(tool, diff_mode) else {
+            self.diff_cache = None;
+            return PreparedDiff::default();
+        };
+        let hash = input.content_hash();
+        if let Some(cache) = &mut self.diff_cache
+            && cache.hash == hash
+        {
+            // Touched (collapsed, status update, ...) but showing the same.
+            cache.revision = revision;
+            cache.diff_mode = diff_mode;
+            return cache.prepared.clone();
+        }
+
+        let diff_now = input.byte_len() <= SYNC_DIFF_MAX_BYTES;
+        let prepared = PreparedDiff {
+            sections: diff_now.then(|| Rc::new(input.diff())),
+            syntax: None,
+            has_original: input.has_original,
+        };
+        let has_grammar = language_for_path(&input.path).is_some();
+        let task = (!diff_now || has_grammar).then(|| {
+            cx.spawn(async move |this, cx| {
+                let (sections, syntax) = cx
+                    .background_spawn(async move {
+                        let sections = (!diff_now).then(|| input.diff());
+                        (sections, input.parse_syntax())
+                    })
+                    .await;
+                _ = this.update(cx, |view, cx| {
+                    if let Some(cache) = &mut view.diff_cache
+                        && cache.hash == hash
+                    {
+                        if let Some(sections) = sections {
+                            cache.prepared.sections = Some(Rc::new(sections));
+                        }
+                        cache.prepared.syntax = syntax.map(Rc::new);
+                        cx.notify();
+                    }
+                });
+            })
+        });
+        self.diff_cache = Some(DiffCache {
+            revision,
+            diff_mode,
+            hash,
+            prepared: prepared.clone(),
+            _task: task,
+        });
+        prepared
     }
 
     fn markdown_view(&mut self, text: &str, selectable: bool, cx: &mut Context<Self>) -> TextView {
@@ -956,5 +1043,103 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(again, state);
         assert_eq!(changes.get(), 0);
+    }
+
+    fn diff_tool_view(params: &[(&str, &str)], cx: &mut TestAppContext) -> Entity<BlockView> {
+        cx.update(init_test_globals);
+        let tool = crate::tool_cards::diff_prepare::tests::tool("edit", params, None);
+        cx.update(|cx| {
+            cx.new(|cx| {
+                let mut view = BlockView::new(
+                    BlockData::ToolUse(tool),
+                    0,
+                    0,
+                    Arc::new(Mutex::new(String::new())),
+                    None,
+                    cx,
+                );
+                view.set_generating(false);
+                view
+            })
+        })
+    }
+
+    const RUST_EDIT: &[(&str, &str)] = &[
+        ("path", "src/a.rs"),
+        ("old_text", "fn a() {}"),
+        ("new_text", "fn b() {}"),
+    ];
+
+    #[gpui::test]
+    fn small_diffs_are_ready_at_once_and_syntax_follows(cx: &mut TestAppContext) {
+        let view = diff_tool_view(RUST_EDIT, cx);
+
+        let first = view.update(cx, |view, cx| view.prepared_diff(cx));
+        let sections = first.sections.expect("diffed synchronously");
+        assert_eq!(sections[0].lines.len(), 2);
+        assert!(first.syntax.is_none());
+
+        cx.run_until_parked();
+        let second = view.update(cx, |view, cx| view.prepared_diff(cx));
+        assert!(Rc::ptr_eq(&sections, second.sections.as_ref().unwrap()));
+        assert_eq!(second.syntax.map(|s| s.len()), Some(1));
+    }
+
+    #[gpui::test]
+    fn diff_cache_survives_touches_but_not_content_changes(cx: &mut TestAppContext) {
+        let view = diff_tool_view(RUST_EDIT, cx);
+        let first = view.update(cx, |view, cx| view.prepared_diff(cx));
+        cx.run_until_parked();
+
+        // Collapsing goes through `as_tool_mut` without changing the content.
+        let touched = view.update(cx, |view, cx| {
+            view.block.as_tool_mut().unwrap().state = ToolBlockState::Collapsed;
+            view.prepared_diff(cx)
+        });
+        assert!(Rc::ptr_eq(
+            first.sections.as_ref().unwrap(),
+            touched.sections.as_ref().unwrap()
+        ));
+        assert!(touched.syntax.is_some(), "the parsed syntax is kept too");
+
+        // Format-on-save rewrites a parameter.
+        let changed = view.update(cx, |view, cx| {
+            view.block.as_tool_mut().unwrap().parameters[2].value = "fn b() {}\nfn c() {}".into();
+            view.prepared_diff(cx)
+        });
+        assert_eq!(changed.sections.unwrap()[0].lines.len(), 3);
+        assert!(changed.syntax.is_none(), "stale syntax must not be reused");
+    }
+
+    #[gpui::test]
+    fn large_diffs_are_computed_in_the_background(cx: &mut TestAppContext) {
+        let new_text = "let x = 1;\n".repeat(SYNC_DIFF_MAX_BYTES / 10);
+        let view = diff_tool_view(
+            &[
+                ("path", "notes.txt"),
+                ("old_text", "old"),
+                ("new_text", &new_text),
+            ],
+            cx,
+        );
+        let first = view.update(cx, |view, cx| view.prepared_diff(cx));
+        assert!(first.sections.is_none());
+
+        cx.run_until_parked();
+        let second = view.update(cx, |view, cx| view.prepared_diff(cx));
+        assert!(second.sections.is_some());
+        assert!(second.syntax.is_none(), "no grammar for .txt");
+    }
+
+    #[gpui::test]
+    fn streaming_blocks_prepare_nothing(cx: &mut TestAppContext) {
+        let view = diff_tool_view(RUST_EDIT, cx);
+        let prepared = view.update(cx, |view, cx| {
+            view.set_generating(true);
+            view.prepared_diff(cx)
+        });
+        assert!(prepared.sections.is_none());
+        cx.run_until_parked();
+        assert!(view.update(cx, |view, _| view.diff_cache.is_none()));
     }
 }

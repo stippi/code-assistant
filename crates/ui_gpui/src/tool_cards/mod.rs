@@ -18,6 +18,7 @@ pub mod animated_card;
 pub mod browser_card;
 pub mod code_card;
 pub mod diff_card;
+pub mod diff_prepare;
 pub mod diff_syntax;
 pub mod inline_renderer;
 pub mod mcp_tool;
@@ -69,6 +70,9 @@ pub struct CardRenderContext {
     /// renderers that show markdown should use this instead of `TextView::markdown`
     /// so virtualized rows do not recreate parsed markdown state on remount.
     pub markdown_state: Option<Entity<TextViewState>>,
+    /// The block's cached diff; empty unless this is a finished file-editing
+    /// tool (see `BlockView::prepared_diff`).
+    pub diff: diff_prepare::PreparedDiff,
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +233,7 @@ mod tests {
             state: crate::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,
             images: Vec::new(),
+            revision: 0,
         }
     }
 

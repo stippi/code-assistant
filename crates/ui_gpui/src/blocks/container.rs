@@ -354,6 +354,7 @@ impl MessageContainer {
             state: initial_state,
             duration_seconds,
             images: Vec::new(),
+            revision: 0,
         });
         let view = cx.new(|cx| {
             BlockView::new(
@@ -673,6 +674,7 @@ impl MessageContainer {
                 state: initial_state,
                 duration_seconds: None,
                 images: Vec::new(),
+                revision: 0,
             };
 
             tool.parameters.push(ParameterBlock {

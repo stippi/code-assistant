@@ -592,6 +592,7 @@ impl gpui::Render for BlockView {
 
                                 let current_project = self.current_project.lock().unwrap().clone();
                                 let markdown_state = self.markdown_entity(cx);
+                                let diff = self.prepared_diff(cx);
 
                                 let card_ctx = crate::tool_cards::CardRenderContext {
                                     animation_scale: scale,
@@ -600,6 +601,7 @@ impl gpui::Render for BlockView {
                                     current_project,
                                     write_file_diff_mode: self.write_file_diff_mode,
                                     markdown_state: Some(markdown_state),
+                                    diff,
                                 };
 
                                 if let Some(element) = renderer.render(

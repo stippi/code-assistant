@@ -64,6 +64,9 @@ pub struct ToolUseBlock {
     /// Image data from tools that produce visual output (e.g. view_images).
     /// Stored as (media_type, base64_data) pairs; rendered when the tool block is expanded.
     pub images: Vec<(String, String)>,
+    /// Counts mutable accesses (see [`BlockData::as_tool_mut`]), so caches
+    /// derived from the block can tell cheaply that nothing changed.
+    pub revision: u64,
 }
 
 /// Parameter for a tool
@@ -283,7 +286,10 @@ impl BlockData {
 
     pub(super) fn as_tool_mut(&mut self) -> Option<&mut ToolUseBlock> {
         match self {
-            BlockData::ToolUse(b) => Some(b),
+            BlockData::ToolUse(b) => {
+                b.revision += 1;
+                Some(b)
+            }
             _ => None,
         }
     }
