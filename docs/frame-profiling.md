@@ -124,11 +124,20 @@ Main-thread self time by phase (`sample`, innermost known frame wins, four
 | event dispatch (wheel run) | 1-3 % |
 | markdown element build, diff card build, list bookkeeping | 1-2 % each |
 
-Where the taffy time comes from: 56-65 % is the list rows' `layout_as_root`
-(one root per visible row, every frame), 33-40 % is gpui-component's
-`InlineFlow::prepaint`, which lays every wrapped text fragment out as its
-own taffy root; the window root tree (sidebars, input) is 2-4 %.
-`Theme::clone` per block does not show up in the samples.
+Where the taffy time comes from: the list rows' `layout_as_root` (one root
+per visible row, every frame) and the row trees below it; the window root
+tree (sidebars, input) is 2-4 %. `Theme::clone` per block does not show up
+in the samples.
+
+An earlier version of this section attributed a third of the taffy time to
+gpui-component's `InlineFlow::prepaint`. That was a mis-attribution by the
+sample classifier (every nested `prepaint_as_root` under the list was
+counted as a flow fragment). The gpui-component revision this workspace
+pins (fork branch `pin-zed-cc053a4a`, upstream ~#2670) uses `InlineFlow`
+only for paragraphs that mix inline images and text; the session above has
+five of those and 457 paragraphs with code spans, and code spans render as
+one `Inline` there. `InlineFlow` does not appear in any `sample` of this
+session at all. The nested roots in the samples are the list rows.
 
 ## Optimizations and their effect
 
@@ -149,6 +158,43 @@ counts do).
    `edit` time.
 
 What is left is text: `block.text` (markdown) is now the largest block
-cost, and gpui-component's `InlineFlow` still lays every wrapped fragment
-out as its own taffy root in `prepaint` (a third of the remaining taffy
-time). That is the next candidate, as a contribution to gpui-component.
+cost. In the pinned gpui-component revision its per-frame work is the
+`Inline` paragraph's `StyledText` measurement (line wrapper plus a
+shaping-cache lookup per paragraph per frame, `TextLayout::layout` is
+16 % of the draw time inclusive) and the paragraph's `Div`s. Upstream
+gpui-component has since addressed both (#3090, retained layouts and fewer
+elements per paragraph), but that upstream is on gpui 0.3.x from crates.io
+(`gpui-pre`) while this workspace pins gpui 0.2.2 from the zed git repo, so
+it cannot be consumed without a gpui migration.
+
+## InlineFlow (upstream contribution, 2026-09-22)
+
+Upstream `main` (gpui-kit 0.6.5, `crates/base/src/text/inline_flow.rs`)
+lays every paragraph with a code span out as an `InlineFlow`: the measure
+callback wraps the paragraph and shapes every fragment, up to three times
+a frame (taffy probes unconstrained and at the column width), and
+`prepaint` builds a `div` plus `Inline` per wrapped fragment as its own
+taffy root with a fresh `InlineState`, so the `Inline`'s retained layout
+never hit. Measured with upstream's own bench (`cargo bench -p gpui-base
+--bench text_view_scroll`, real text system, headless Metal) extended by a
+variant with a code span in every paragraph and list item:
+
+| bench (draw mean / p95) | upstream main | with the change |
+|---|---|---|
+| `text_view_scroll` (no code spans) | 1.61-1.63 / 1.79-1.83 ms | 1.61-1.63 / 1.75-1.80 ms |
+| `text_view_scroll_inline_code` | 5.89-6.02 / 6.50-6.69 ms | 3.04-3.05 / 3.37-3.39 ms |
+
+The change (three commits, fork branch `perf/inline-flow-frame-cache`,
+PR [longbridge/gpui-kit#3180](https://github.com/longbridge/gpui-kit/pull/3180)): fragment `InlineState`s live in
+the flow's element state, so the `Inline`s find their shaped text again;
+the `div` around each fragment is gone (the fragment's text style is
+pushed around the `Inline`'s layout instead); and the flow keeps its
+layouts per wrap width, keyed by items, image sizes and typography, so a
+frame that changes nothing wraps and shapes nothing. `sample` on the bench
+binary: `InlineFlow::request_layout` went from 40 % of the draw time to
+1 %, and what is left in `prepaint` is gpui's `TextLayout::layout` per
+fragment (closure and taffy leaf per frame, a gpui cost).
+
+This does not change anything in this workspace until it moves to a
+gpui-component that uses `InlineFlow` for code spans, i.e. after the gpui
+0.3.x migration.
