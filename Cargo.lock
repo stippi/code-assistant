@@ -11933,7 +11933,6 @@ dependencies = [
  "gpui-kit",
  "image",
  "llm",
- "lsp-types",
  "open",
  "rust-embed",
  "sandbox",

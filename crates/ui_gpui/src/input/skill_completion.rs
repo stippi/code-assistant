@@ -1,126 +1,76 @@
-//! A `CompletionProvider` for the input composer's slash commands and skills.
+//! The composer's slash menu: which entries a `/<query>` offers and what Enter
+//! does with it.
 //!
-//! When the current line starts with `/`, this provider offers the
-//! session's skills (read from the [`crate::Gpui`] global, populated via
-//! `BackendEvent::ListSkills`). Selecting one replaces the typed `/...` with
-//! `/<skill-name>`. The built-in `/goal` entry expands to the required
-//! `/goal ` template. On submit, [`super::InputArea::on_enter`] recognizes a
-//! lone `/<skill-name>` that matches a known skill and translates it into a
-//! skill invocation (see [`skill_invocation_from_input`]).
+//! When the input is a bare `/<query>`, the composer shows the session's
+//! skills (read from the [`crate::Gpui`] global, populated via
+//! `BackendEvent::ListSkills`) plus the built-in `/goal` entry. Accepting an
+//! entry replaces the input with `/<skill-name>`; `/goal` expands to the
+//! required `/goal ` template. On submit, [`super::InputArea::on_enter`]
+//! recognizes a lone `/<skill-name>` that matches a known skill and translates
+//! it into a skill invocation (see [`slash_completion_state`]).
+//!
+//! Until the gpui-kit migration the menu was the input component's LSP
+//! completion popover; gpui-kit offers completions on its code editor only, so
+//! the composer (a textarea) renders the menu itself.
 
-use std::time::Duration;
-
-use anyhow::Result;
 use code_assistant_core::session::service::SkillCatalogEntry;
-use gpui_kit::component::Rope;
-use gpui_kit::component::input::RopeExt;
-use gpui_kit::{App, Task, Window};
-use lsp_types::{
-    CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
-    TextEdit,
-};
-
-use crate::Gpui;
 
 const GOAL_DESCRIPTION: &str = "Set completion criteria, or type /goal cancel";
 
-/// Completion provider that suggests built-in commands and skills after `/`.
-#[derive(Default)]
-pub struct SkillCompletionProvider;
-
-impl SkillCompletionProvider {
-    pub fn new() -> Self {
-        Self
-    }
+/// One entry of the slash menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashMenuItem {
+    /// The name shown first, e.g. `goal` or the skill's name.
+    pub label: String,
+    /// The muted text after the label.
+    pub detail: String,
+    /// What replaces the input when the entry is accepted.
+    pub insert: String,
 }
 
-/// Extract the current line's text up to `offset` (cursor) as a string.
-fn line_prefix(text: &Rope, offset: usize) -> (usize, String) {
-    let full = text.to_string();
-    let offset = offset.min(full.len());
-    let line_start = full[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    (line_start, full[line_start..offset].to_string())
+/// The bare `/<token>` of a slash-command input, if the input is one.
+///
+/// A slash command is a single token (skill names never contain spaces). A
+/// space after the token ends the query: `/goal ` is the accepted template
+/// waiting for its criteria, not a query for `goal`.
+fn slash_query(input: &str) -> Option<&str> {
+    let rest = input.trim_start().strip_prefix('/')?;
+    (!rest.contains(char::is_whitespace)).then_some(rest)
 }
 
-impl gpui_kit::component::input::CompletionProvider for SkillCompletionProvider {
-    fn completions(
-        &self,
-        text: &Rope,
-        offset: usize,
-        _trigger: CompletionContext,
-        _window: &mut Window,
-        cx: &mut App,
-    ) -> Task<Result<CompletionResponse>> {
-        let (line_start, prefix) = line_prefix(text, offset);
-
-        // Only offer skill completions on a line that begins with '/'.
-        if !prefix.starts_with('/') {
-            return Task::ready(Ok(CompletionResponse::Array(vec![])));
-        }
-
-        // The query is the text after the leading '/'. Skill names are a single
-        // token ([a-z0-9-]); anything with a space is not a skill query.
-        let query = prefix[1..].to_lowercase();
-        if query.contains(char::is_whitespace) {
-            return Task::ready(Ok(CompletionResponse::Array(vec![])));
-        }
-
-        let skills = cx.global::<Gpui>().skills();
-
-        // Replace the whole typed `/...` token with `/<name>` on accept.
-        let start = text.offset_to_position(line_start);
-        let end = text.offset_to_position(offset);
-
-        let mut items = Vec::new();
-        if query.is_empty()
-            || "goal".contains(&query)
-            || GOAL_DESCRIPTION.to_lowercase().contains(&query)
-        {
-            items.push(CompletionItem {
-                label: "goal".into(),
-                kind: Some(CompletionItemKind::SNIPPET),
-                detail: Some(GOAL_DESCRIPTION.into()),
-                filter_text: Some("goal".into()),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: lsp_types::Range { start, end },
-                    new_text: "/goal ".into(),
-                })),
-                ..Default::default()
-            });
-        }
-        items.extend(
-            skills
-                .iter()
-                .filter(|s| {
-                    query.is_empty()
-                        || s.name.to_lowercase().contains(&query)
-                        || s.description.to_lowercase().contains(&query)
-                })
-                .map(|s| CompletionItem {
-                    label: s.name.clone(),
-                    kind: Some(CompletionItemKind::SNIPPET),
-                    detail: Some(format!("({}) {}", s.scope_label, s.description)),
-                    filter_text: Some(s.name.clone()),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                        range: lsp_types::Range { start, end },
-                        new_text: format!("/{}", s.name),
-                    })),
-                    ..Default::default()
-                }),
-        );
-
-        Task::ready(Ok(CompletionResponse::Array(items)))
+/// The entries the slash menu shows for `input`; empty when the input is not a
+/// `/<query>` or nothing matches.
+pub fn slash_menu_items(input: &str, skills: &[SkillCatalogEntry]) -> Vec<SlashMenuItem> {
+    let Some(query) = slash_query(input) else {
+        return Vec::new();
+    };
+    let query = query.to_lowercase();
+    let mut items = Vec::new();
+    if query.is_empty()
+        || "goal".contains(&query)
+        || GOAL_DESCRIPTION.to_lowercase().contains(&query)
+    {
+        items.push(SlashMenuItem {
+            label: "goal".into(),
+            detail: GOAL_DESCRIPTION.into(),
+            insert: "/goal ".into(),
+        });
     }
-
-    fn is_completion_trigger(&self, _offset: usize, _new_text: &str, _cx: &mut App) -> bool {
-        // Be permissive: `completions` gates on the leading-'/' line prefix and
-        // returns an empty list (which hides the menu) outside a slash context.
-        true
-    }
-
-    fn inline_completion_debounce(&self) -> Duration {
-        Duration::from_millis(0)
-    }
+    items.extend(
+        skills
+            .iter()
+            .filter(|s| {
+                query.is_empty()
+                    || s.name.to_lowercase().contains(&query)
+                    || s.description.to_lowercase().contains(&query)
+            })
+            .map(|s| SlashMenuItem {
+                label: s.name.clone(),
+                detail: format!("({}) {}", s.scope_label, s.description),
+                insert: format!("/{}", s.name),
+            }),
+    );
+    items
 }
 
 /// What pressing Enter on the composer should do, given the current input and
@@ -129,39 +79,19 @@ impl gpui_kit::component::input::CompletionProvider for SkillCompletionProvider 
 pub enum SlashState {
     /// The input is a complete `/<skill-name>` — activate it.
     Invoke { scope: String, name: String },
-    /// The input is a `/<query>` for which the completion menu is showing at
-    /// least one entry. Enter should confirm the highlighted entry (handled by
-    /// the inner input's completion menu), not submit the message.
+    /// The input is a `/<query>` for which the slash menu shows at least one
+    /// entry. Enter should accept the highlighted entry, not submit.
     MenuOpen,
     /// Not a slash-completion context — submit as an ordinary message.
     None,
 }
 
-/// Whether a `/<query>` line would show at least one completion entry. Mirrors
-/// the filter in [`SkillCompletionProvider::completions`] so callers can tell
-/// when the completion menu is open.
-fn query_matches(query: &str, skills: &[SkillCatalogEntry]) -> bool {
-    let q = query.to_lowercase();
-    q.is_empty()
-        || "goal".contains(&q)
-        || GOAL_DESCRIPTION.to_lowercase().contains(&q)
-        || skills.iter().any(|s| {
-            q.is_empty()
-                || s.name.to_lowercase().contains(&q)
-                || s.description.to_lowercase().contains(&q)
-        })
-}
-
 /// Classify the composer input for Enter handling (see [`SlashState`]).
 pub fn slash_completion_state(input: &str, skills: &[SkillCatalogEntry]) -> SlashState {
-    let trimmed = input.trim();
-    let Some(rest) = trimmed.strip_prefix('/') else {
+    // Trailing whitespace does not keep a complete skill name from invoking.
+    let Some(rest) = slash_query(input.trim_end()) else {
         return SlashState::None;
     };
-    // A slash command is a single bare token (skill names never contain spaces).
-    if rest.contains(char::is_whitespace) {
-        return SlashState::None;
-    }
     // A fully-typed, known skill name activates immediately.
     if let Some(s) = skills.iter().find(|s| s.name == rest) {
         return SlashState::Invoke {
@@ -170,10 +100,10 @@ pub fn slash_completion_state(input: &str, skills: &[SkillCatalogEntry]) -> Slas
         };
     }
     // Otherwise, if the menu is showing matches, Enter belongs to the menu.
-    if query_matches(rest, skills) {
-        SlashState::MenuOpen
-    } else {
+    if slash_menu_items(input, skills).is_empty() {
         SlashState::None
+    } else {
+        SlashState::MenuOpen
     }
 }
 
@@ -188,6 +118,10 @@ mod tests {
             scope_token: scope_token.to_string(),
             scope_label: "project".to_string(),
         }
+    }
+
+    fn labels(items: &[SlashMenuItem]) -> Vec<&str> {
+        items.iter().map(|i| i.label.as_str()).collect()
     }
 
     #[test]
@@ -222,6 +156,9 @@ mod tests {
         );
         assert_eq!(slash_completion_state("/go", &[]), SlashState::MenuOpen);
         assert_eq!(slash_completion_state("/goal", &[]), SlashState::MenuOpen);
+        // The accepted `/goal ` template is a message once its criteria follow;
+        // Enter on it must not re-accept the template forever.
+        assert_eq!(slash_completion_state("/goal ", &[]), SlashState::None);
     }
 
     #[test]
@@ -242,10 +179,37 @@ mod tests {
     }
 
     #[test]
-    fn line_prefix_extracts_current_line() {
-        let rope = Rope::from("first line\n/sec");
-        let (start, prefix) = line_prefix(&rope, rope.to_string().len());
-        assert_eq!(prefix, "/sec");
-        assert_eq!(start, "first line\n".len());
+    fn bare_slash_lists_goal_and_every_skill() {
+        let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
+        let items = slash_menu_items("/", &skills);
+        assert_eq!(labels(&items), ["goal", "pdf-extraction", "review"]);
+        assert_eq!(items[0].insert, "/goal ");
+        assert_eq!(items[1].insert, "/pdf-extraction");
+        assert_eq!(items[1].detail, "(project) desc");
+    }
+
+    #[test]
+    fn query_filters_by_name_and_description() {
+        let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
+        assert_eq!(
+            labels(&slash_menu_items("/PDF", &skills)),
+            ["pdf-extraction"]
+        );
+        // "desc" is every test skill's description; "goal" does not match it.
+        assert_eq!(
+            labels(&slash_menu_items("/desc", &skills)),
+            ["pdf-extraction", "review"]
+        );
+        assert_eq!(labels(&slash_menu_items("/crit", &skills)), ["goal"]);
+        assert!(slash_menu_items("/zzz", &skills).is_empty());
+    }
+
+    #[test]
+    fn menu_is_empty_outside_a_slash_command() {
+        let skills = vec![entry("review", ":config:")];
+        assert!(slash_menu_items("hello", &skills).is_empty());
+        assert!(slash_menu_items("/review now", &skills).is_empty());
+        assert!(slash_menu_items("/goal ", &skills).is_empty());
+        assert!(slash_menu_items("", &skills).is_empty());
     }
 }

@@ -18,9 +18,6 @@ tools_core = { path = "../tools_core" }
 # platform backends (font-kit, x11, wayland) itself. `profiler` is what
 # shared::frame_profile reads gpui's frame timings through.
 gpui-kit = { version = "0.6.6", features = ["tree-sitter-languages", "profiler"] }
-# Must match the version gpui-component uses so CompletionProvider trait types
-# (CompletionItem, CompletionResponse, …) are identical.
-lsp-types = "0.97"
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
 tokio = { version = "1.48", features = ["full"] }
