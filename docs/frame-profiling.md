@@ -129,3 +129,26 @@ Where the taffy time comes from: 56-65 % is the list rows' `layout_as_root`
 `InlineFlow::prepaint`, which lays every wrapped text fragment out as its
 own taffy root; the window root tree (sidebars, input) is 2-4 %.
 `Theme::clone` per block does not show up in the samples.
+
+## Optimizations and their effect
+
+Measured with the same session and sweep, both binaries run back to back
+on a 60 Hz display (draw times do not depend on the refresh rate, frame
+counts do).
+
+1. **Diff row syntax styles once per theme** (`DiffSyntax` caches every
+   line's styles, computed on the background thread that parsed). The
+   tree-sitter query per row and frame fell from 4-7 % of the draw time to
+   0.2-0.4 %; the `edit` card's build went from 0.85 ms to 0.25 ms per card.
+2. **Diff rows as one element** (`DiffRows` in
+   `tool_cards/diff_rows.rs`, used by tool cards and the review panel).
+   Taffy's share of the draw time fell from 39-40 % to 25-27 %. Over the
+   whole sweep the draw mean went from 5.44 ms to 5.16 ms (p95 6.50 to
+   5.93 ms); in intervals with diff cards in view it went down by
+   0.3-0.7 ms per frame, and a card-heavy frame from 4.7 ms to 2.1 ms of
+   `edit` time.
+
+What is left is text: `block.text` (markdown) is now the largest block
+cost, and gpui-component's `InlineFlow` still lays every wrapped fragment
+out as its own taffy root in `prepaint` (a third of the remaining taffy
+time). That is the next candidate, as a contribution to gpui-component.
