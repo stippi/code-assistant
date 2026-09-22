@@ -354,6 +354,7 @@ impl MessageContainer {
             state: initial_state,
             duration_seconds,
             images: Vec::new(),
+            revision: 0,
         });
         let view = cx.new(|cx| {
             BlockView::new(
@@ -388,7 +389,7 @@ impl MessageContainer {
 
         for element in elements.iter() {
             element.update(cx, |view, cx| {
-                if let Some(tool) = view.block.as_tool_mut()
+                if let Some(tool) = view.block_mut().as_tool_mut()
                     && tool.id == tool_id
                 {
                     tool.status = status;
@@ -452,7 +453,7 @@ impl MessageContainer {
             let mut was_appended = false;
 
             last.update(cx, |view, cx| {
-                if let Some(text_block) = view.block.as_text_mut() {
+                if let Some(text_block) = view.block_mut().as_text_mut() {
                     let appended_text = if let Some(prefix) = &paragraph_prefix {
                         format!("{}{}", prefix, content)
                     } else {
@@ -523,7 +524,7 @@ impl MessageContainer {
             let mut was_appended = false;
 
             last.update(cx, |view, cx| {
-                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                if let Some(thinking_block) = view.block_mut().as_thinking_mut() {
                     let appended_text = if let Some(prefix) = &paragraph_prefix {
                         format!("{}{}", prefix, content)
                     } else {
@@ -606,7 +607,7 @@ impl MessageContainer {
             let mut param_added = false;
 
             element.update(cx, |view, cx| {
-                if let Some(tool) = view.block.as_tool_mut()
+                if let Some(tool) = view.block_mut().as_tool_mut()
                     && tool.id == tool_id
                 {
                     tool_found = true;
@@ -673,6 +674,7 @@ impl MessageContainer {
                 state: initial_state,
                 duration_seconds: None,
                 images: Vec::new(),
+                revision: 0,
             };
 
             tool.parameters.push(ParameterBlock {
@@ -714,7 +716,7 @@ impl MessageContainer {
         for element in elements.iter().rev() {
             let mut found = false;
             element.update(cx, |view, cx| {
-                if let Some(tool) = view.block.as_tool_mut()
+                if let Some(tool) = view.block_mut().as_tool_mut()
                     && tool.id == tool_id
                 {
                     for param in tool.parameters.iter_mut() {
@@ -754,7 +756,7 @@ impl MessageContainer {
         // Find the tool and mark it as completed
         for element in elements.iter() {
             cx.update_entity(element, |block_view, cx| {
-                if let Some(tool_block) = block_view.block.as_tool_mut()
+                if let Some(tool_block) = block_view.block_mut().as_tool_mut()
                     && tool_block.id == id
                 {
                     block_view.set_generating(false); // Mark as completed (not generating)
@@ -779,7 +781,7 @@ impl MessageContainer {
         // Find the tool and append the output chunk
         for element in elements.iter() {
             cx.update_entity(element, |block_view, cx| {
-                if let Some(tool_block) = block_view.block.as_tool_mut()
+                if let Some(tool_block) = block_view.block_mut().as_tool_mut()
                     && tool_block.id == tool_id
                 {
                     found = true;
@@ -809,7 +811,7 @@ impl MessageContainer {
         // Mark any previous thinking blocks as completed and not generating
         for element in elements.iter() {
             element.update(cx, |view, cx| {
-                if let Some(thinking_block) = view.block.as_thinking_mut()
+                if let Some(thinking_block) = view.block_mut().as_thinking_mut()
                     && !thinking_block.is_completed
                 {
                     // Finalize any reasoning content before marking as completed
@@ -831,7 +833,7 @@ impl MessageContainer {
 
         if let Some(last) = elements.last() {
             last.update(cx, |view, cx| {
-                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                if let Some(thinking_block) = view.block_mut().as_thinking_mut() {
                     thinking_block.start_reasoning_summary_item();
                     cx.notify();
                 }
@@ -868,7 +870,7 @@ impl MessageContainer {
             let mut was_updated = false;
 
             last.update(cx, |view, cx| {
-                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                if let Some(thinking_block) = view.block_mut().as_thinking_mut() {
                     thinking_block.append_reasoning_summary_delta(delta.clone());
                     was_updated = true;
                     cx.notify();
@@ -908,7 +910,7 @@ impl MessageContainer {
 
         if let Some(last) = elements.last() {
             last.update(cx, |view, cx| {
-                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                if let Some(thinking_block) = view.block_mut().as_thinking_mut() {
                     thinking_block.complete_reasoning();
                     view.set_generating(false);
                     cx.notify();

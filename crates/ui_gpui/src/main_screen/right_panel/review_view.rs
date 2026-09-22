@@ -26,7 +26,9 @@
 //! listing entry changed is stale and re-requested, but keeps rendering until
 //! its replacement arrives, so nothing flickers.
 
-use super::review_rows::{DiffBody, FileOutline, RepoOutline, ReviewRow, changed_span, flatten};
+use super::review_rows::{
+    DiffBody, FileOutline, RepoOutline, ReviewRow, changed_span, files_by_proximity, flatten,
+};
 use crate::shared::file_icons;
 use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_chunk};
 use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
@@ -366,8 +368,8 @@ impl ReviewView {
         }
     }
 
-    /// Request the next visible file that has no prepared diff yet. At most
-    /// one request is in flight; collapsed repos and files are skipped, which
+    /// Request the next file that has no prepared diff yet, starting with the
+    /// ones in view. At most one request is in flight; collapsed repos and files are skipped, which
     /// keeps loading lazy.
     fn ensure_diff_request(&mut self, cx: &mut Context<Self>) {
         if self.in_flight.is_some() {
@@ -377,31 +379,42 @@ impl ReviewView {
             return;
         };
 
-        let mut next: Option<(PathBuf, Option<String>, ChangedFile)> = None;
-        'outer: for section in &self.repos {
-            if section.collapsed {
-                continue;
-            }
-            for file in &section.files {
-                let key = (section.repo_root.clone(), file.path.clone());
-                // A diff loaded for exactly this listing entry is current;
-                // one loaded for an older entry (fingerprint moved) is stale
-                // and gets requested again.
-                let is_current = self
+        // A diff loaded for exactly this listing entry is current; one loaded
+        // for an older entry (fingerprint moved) is stale and gets requested
+        // again.
+        let needs_load = |section: &RepoSection, file: &ChangedFile| {
+            let key = (section.repo_root.clone(), file.path.clone());
+            !section.collapsed
+                && !self.collapsed_files.contains(&key)
+                && !self
                     .file_diffs
                     .get(&key)
-                    .is_some_and(|loaded| &loaded.file == file);
-                if self.collapsed_files.contains(&key) || is_current {
-                    continue;
-                }
-                next = Some((
+                    .is_some_and(|loaded| &loaded.file == file)
+        };
+
+        // Files in view first. The rows can lag behind a fresh listing, so
+        // their indices are only hints; listing order covers the rest.
+        let top_row = self.list_state.logical_scroll_top().item_ix;
+        let by_proximity = files_by_proximity(&self.rows, top_row)
+            .into_iter()
+            .filter_map(|(repo, file)| {
+                let section = self.repos.get(repo)?;
+                Some((section, section.files.get(file)?))
+            });
+        let in_listing_order = self
+            .repos
+            .iter()
+            .flat_map(|section| section.files.iter().map(move |file| (section, file)));
+        let next = by_proximity
+            .chain(in_listing_order)
+            .find(|(section, file)| needs_load(section, file))
+            .map(|(section, file)| {
+                (
                     section.repo_root.clone(),
                     section.base.clone(),
                     file.clone(),
-                ));
-                break 'outer;
-            }
-        }
+                )
+            });
 
         if let Some((repo_root, base, file)) = next {
             self.in_flight = Some(((repo_root.clone(), file.path.clone()), file.clone()));

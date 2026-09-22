@@ -682,6 +682,7 @@ impl Gpui {
             gpui_component::init(cx);
             // Apply our custom theme colors (restoring saved mode)
             shared::theme::init_themes(cx, saved_theme_mode);
+            tool_cards::diff_syntax::register_language_aliases();
 
             // Restore saved font scale
             {

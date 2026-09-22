@@ -8,6 +8,7 @@
 //!
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
+use super::diff_prepare::SectionLines;
 use super::diff_syntax::DiffSyntax;
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
@@ -52,7 +53,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
     fn render(
         &self,
         tool: &ToolUseBlock,
-        is_generating: bool,
+        _is_generating: bool,
         theme: &gpui_component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
         window: &mut Window,
@@ -143,7 +144,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
             );
         }
         // Diff/File toggle button for write_file with original_content
-        if tool.name == "write_file" && write_file_has_original_content(tool) {
+        if card_ctx.diff.has_original {
             let diff_mode = card_ctx.write_file_diff_mode;
             let label: SharedString = if diff_mode { "diff" } else { "file" }.into();
             let btn_text_color = if diff_mode {
@@ -219,19 +220,20 @@ impl ToolBlockRenderer for DiffCardRenderer {
 
         // --- Body (animated) ---
         if scale > 0.0 {
-            let body_bg = if is_dark {
-                gpui::hsla(0.0, 0.0, 0.08, 1.0)
-            } else {
-                gpui::hsla(0.0, 0.0, 0.97, 1.0)
-            };
+            let body_bg = diff_body_bg(theme);
 
-            let body_content = match tool.name.as_str() {
-                "edit" => render_edit_body(tool, is_generating, theme, rem_size),
-                "replace_in_file" => render_replace_body(tool, is_generating, theme, rem_size),
-                "write_file" => {
-                    render_write_body(tool, theme, rem_size, card_ctx.write_file_diff_mode)
-                }
-                "delete_files" => render_delete_body(tool, theme),
+            let body_content = match (tool.name.as_str(), &card_ctx.diff.sections) {
+                ("delete_files", _) => render_delete_body(tool, theme),
+                (_, Some(sections)) => Some(render_prepared_diff(
+                    sections,
+                    card_ctx.diff.syntax.as_deref().map(Vec::as_slice),
+                    theme,
+                    rem_size,
+                )),
+                // Still streaming, or a large diff is being computed.
+                ("edit", None) => render_streaming_edit(tool, theme),
+                ("replace_in_file", None) => render_streaming_replace(tool, theme),
+                ("write_file", None) => render_streaming_write(tool, theme, rem_size),
                 _ => None,
             };
 
@@ -293,141 +295,77 @@ impl ToolBlockRenderer for DiffCardRenderer {
 // Per-tool body rendering
 // ---------------------------------------------------------------------------
 
-/// Render body for the `edit` tool.
-///
-/// During streaming (`is_generating`), parameters are still being built up so
-/// we show raw red/green blocks.  Once the tool is complete we compute a real
-/// unified diff so only the actually-changed lines are highlighted — matching
-/// what is shown after a session reload.
-fn render_edit_body(
-    tool: &ToolUseBlock,
-    is_generating: bool,
+/// The finished card: every section's cached rows, highlighted once the
+/// syntax parse has arrived.
+fn render_prepared_diff(
+    sections: &[SectionLines],
+    syntax: Option<&[DiffSyntax]>,
     theme: &gpui_component::theme::Theme,
     rem_size: gpui::Pixels,
-) -> Option<gpui::AnyElement> {
-    let old_text = get_param(tool, "old_text");
-    let new_text = get_param(tool, "new_text");
-
-    if is_generating {
-        // Streaming: show whatever we have so far as raw blocks
-        let mut children: Vec<gpui::AnyElement> = Vec::new();
-        if let Some(old) = old_text.filter(|s| !s.is_empty()) {
-            children.push(render_streaming_block(old, true, theme));
-        }
-        if let Some(new) = new_text.filter(|s| !s.is_empty()) {
-            children.push(render_streaming_block(new, false, theme));
-        }
-        if children.is_empty() {
-            return None;
-        }
-        Some(div().flex().flex_col().children(children).into_any())
-    } else {
-        // Completed: compute a proper unified diff
-        let start_lines = parse_match_start_lines(tool);
-        let start_line = start_lines.first().copied();
-        match (old_text, new_text) {
-            (Some(old), Some(new)) if !old.is_empty() || !new.is_empty() => {
-                Some(render_unified_diff(old, new, theme, start_line, rem_size))
-            }
-            (Some(old), None) if !old.is_empty() => Some(render_streaming_block(old, true, theme)),
-            (None, Some(new)) if !new.is_empty() => Some(render_streaming_block(new, false, theme)),
-            _ => None,
-        }
-    }
+) -> gpui::AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .children(sections.iter().enumerate().map(|(ix, section)| {
+            render_diff_lines(
+                &section.lines,
+                theme,
+                section.start_line,
+                rem_size,
+                syntax.and_then(|syntax| syntax.get(ix)),
+            )
+        }))
+        .into_any()
 }
 
-/// Render body for the `replace_in_file` tool.
-///
-/// Same streaming/completed split as `render_edit_body`: during streaming we
-/// show raw search/replace blocks, after completion we show unified diffs.
-fn render_replace_body(
+/// `edit` while its parameters stream in: raw red/green blocks. The real
+/// diff only makes sense (and is only computed) once the tool is complete.
+fn render_streaming_edit(
     tool: &ToolUseBlock,
-    is_generating: bool,
     theme: &gpui_component::theme::Theme,
-    rem_size: gpui::Pixels,
 ) -> Option<gpui::AnyElement> {
-    let diff_text = get_param(tool, "diff")?;
-    if diff_text.is_empty() {
-        return None;
+    let mut children: Vec<gpui::AnyElement> = Vec::new();
+    if let Some(old) = get_param(tool, "old_text").filter(|s| !s.is_empty()) {
+        children.push(render_streaming_block(old, true, theme));
     }
-
-    let sections = parse_diff_sections(diff_text);
-    if sections.is_empty() {
-        return None;
+    if let Some(new) = get_param(tool, "new_text").filter(|s| !s.is_empty()) {
+        children.push(render_streaming_block(new, false, theme));
     }
+    (!children.is_empty()).then(|| div().flex().flex_col().children(children).into_any())
+}
 
-    let start_lines = parse_match_start_lines(tool);
-
-    let children: Vec<gpui::AnyElement> = sections
-        .into_iter()
-        .enumerate()
-        .map(|(i, section)| {
-            if is_generating || section.in_search || section.in_replace {
-                // Streaming or incomplete section: show raw blocks
-                render_streaming_diff_section(&section, theme)
-            } else {
-                // Completed section: compute proper unified diff
-                let start_line = start_lines.get(i).copied();
-                render_unified_diff(
-                    &section.search_content,
-                    &section.replace_content,
-                    theme,
-                    start_line,
-                    rem_size,
-                )
-            }
-        })
-        .collect();
-
-    Some(
+/// `replace_in_file` while streaming: raw search/replace blocks per section.
+fn render_streaming_replace(
+    tool: &ToolUseBlock,
+    theme: &gpui_component::theme::Theme,
+) -> Option<gpui::AnyElement> {
+    let sections = parse_diff_sections(get_param(tool, "diff")?);
+    (!sections.is_empty()).then(|| {
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .children(children)
-            .into_any(),
-    )
+            .children(
+                sections
+                    .iter()
+                    .map(|section| render_streaming_diff_section(section, theme)),
+            )
+            .into_any()
+    })
 }
 
-/// Render body for the `write_file` tool.
-///
-/// When `diff_mode` is true and the tool output contains `original_content`
-/// (indicating an existing file was overwritten), renders a unified diff.
-/// Otherwise falls back to all-green additions with line numbers.
-fn render_write_body(
+/// `write_file` while streaming: the content so far as numbered additions.
+fn render_streaming_write(
     tool: &ToolUseBlock,
     theme: &gpui_component::theme::Theme,
     rem_size: gpui::Pixels,
-    diff_mode: bool,
 ) -> Option<gpui::AnyElement> {
     let content = get_param(tool, "content")?;
     if content.is_empty() {
         return None;
     }
 
-    // Try to extract original_content from the tool output JSON
-    let original_content = tool
-        .output
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .and_then(|v| {
-            v.get("original_content")
-                .and_then(|c| c.as_str())
-                .map(String::from)
-        });
-
-    // If we have original content and diff mode is on, show a unified diff
-    if diff_mode && let Some(ref original) = original_content {
-        return Some(render_unified_diff(
-            original,
-            content,
-            theme,
-            Some(1),
-            rem_size,
-        ));
-    }
-
-    // Fall back to all-green additions (new file or diff mode toggled off)
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let gutter_width = total_lines.to_string().len();
@@ -837,7 +775,10 @@ pub(crate) fn render_diff_chunk(
         rem_size,
         syntax.map(|syntax| RowSyntax {
             syntax,
-            old_start: chunk.old_start,
+            start: LineCounter {
+                old: chunk.old_start,
+                new: chunk.new_start,
+            },
         }),
     );
     if !chunk.starts_later_hunk() {
@@ -859,30 +800,15 @@ pub(crate) fn render_diff_chunk(
         .into_any()
 }
 
-/// Compute and render a unified diff in one go. For per-frame rendering of
-/// unchanged content, prefer caching [`compute_diff_lines`]'s result and
-/// calling [`render_diff_lines`] instead.
-pub(crate) fn render_unified_diff(
-    old_text: &str,
-    new_text: &str,
-    theme: &gpui_component::theme::Theme,
-    start_line: Option<usize>,
-    rem_size: gpui::Pixels,
-) -> gpui::AnyElement {
-    render_diff_lines(
-        &compute_diff_lines(old_text, new_text),
-        theme,
-        start_line,
-        rem_size,
-    )
-}
-
-/// Build the element tree for already-computed diff lines.
+/// Build the element tree for already-computed diff lines of a snippet.
+/// `start_line` numbers the gutter; `syntax` was parsed from the snippet
+/// alone, so its lines count from 1.
 pub(crate) fn render_diff_lines(
     diff_lines: &[DiffLine],
     theme: &gpui_component::theme::Theme,
     start_line: Option<usize>,
     rem_size: gpui::Pixels,
+    syntax: Option<&DiffSyntax>,
 ) -> gpui::AnyElement {
     // Compute the gutter width (number of digits) based on new-file line numbers
     let gutter_width = if let Some(start) = start_line {
@@ -895,14 +821,58 @@ pub(crate) fn render_diff_lines(
     } else {
         0
     };
-    render_diff_rows(diff_lines, theme, start_line, gutter_width, rem_size, None)
+    render_diff_rows(
+        diff_lines,
+        theme,
+        start_line,
+        gutter_width,
+        rem_size,
+        syntax.map(|syntax| RowSyntax {
+            syntax,
+            start: LineCounter::default(),
+        }),
+    )
 }
 
-/// Syntax source for [`render_diff_rows`]. New-file numbering comes from the
-/// rows' `start_line`; the old side needs its own start.
+/// 1-based line numbers on both sides of a diff while walking its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LineCounter {
+    old: usize,
+    new: usize,
+}
+
+impl Default for LineCounter {
+    fn default() -> Self {
+        Self { old: 1, new: 1 }
+    }
+}
+
+impl LineCounter {
+    /// The line number of a row with `tag` in its own side (the old file for
+    /// deletions, the new file otherwise); then steps past the row.
+    fn advance(&mut self, tag: ChangeTag) -> usize {
+        let line_no = if tag == ChangeTag::Delete {
+            self.old
+        } else {
+            self.new
+        };
+        if tag != ChangeTag::Insert {
+            self.old += 1;
+        }
+        if tag != ChangeTag::Delete {
+            self.new += 1;
+        }
+        line_no
+    }
+}
+
+/// Syntax source for [`render_diff_rows`], with the line numbers of the first
+/// row in the parsed texts. Those are independent of the gutter's
+/// `start_line`: a tool card parses just its snippet but numbers the gutter
+/// by the file.
 struct RowSyntax<'a> {
     syntax: &'a DiffSyntax,
-    old_start: usize,
+    start: LineCounter,
 }
 
 /// Shared row builder: renders diff rows with numbering from `start_line`
@@ -915,9 +885,11 @@ fn render_diff_rows(
     rem_size: gpui::Pixels,
     syntax: Option<RowSyntax>,
 ) -> gpui::AnyElement {
-    // Track both old and new line numbers
-    let mut old_line_num = syntax.as_ref().map_or(1, |s| s.old_start);
-    let mut new_line_num = start_line.unwrap_or(1);
+    let mut gutter_lines = LineCounter {
+        old: 1,
+        new: start_line.unwrap_or(1),
+    };
+    let mut syntax_lines = syntax.as_ref().map(|s| s.start).unwrap_or_default();
 
     // Gutter width: compute in rems (~0.5rem per digit + 0.75rem padding),
     // then convert to rounded pixels so it aligns to the pixel grid.
@@ -929,26 +901,16 @@ fn render_diff_rows(
         .flex()
         .flex_col()
         .children(diff_lines.iter().map(|dl| {
-            let (row_bg, text_color) = match dl.tag {
-                ChangeTag::Equal => unchanged_row_colors(theme),
-                ChangeTag::Delete => deleted_row_colors(theme),
-                ChangeTag::Insert => added_row_colors(theme),
-            };
+            let (row_bg, _) = row_colors(dl.tag, theme);
+            let text_color = row_text_color(dl.tag, syntax.is_some(), theme);
 
             let mut row = div().w_full().flex().flex_row().items_start();
             if let Some(bg) = row_bg {
                 row = row.bg(bg);
             }
 
-            // This row's line number in its own side (old file for
-            // deletions), then advance the counters past it.
-            let (old_num, new_num) = (old_line_num, new_line_num);
-            if dl.tag != ChangeTag::Insert {
-                old_line_num += 1;
-            }
-            if dl.tag != ChangeTag::Delete {
-                new_line_num += 1;
-            }
+            let new_num = gutter_lines.advance(dl.tag);
+            let syntax_line = syntax_lines.advance(dl.tag);
 
             // Gutter with line number (shows new-file line numbers)
             if start_line.is_some() {
@@ -958,11 +920,7 @@ fn render_diff_rows(
                     }
                     ChangeTag::Delete => format!("{:>width$}", "", width = gutter_width),
                 };
-                let gutter_color = match dl.tag {
-                    ChangeTag::Equal => unchanged_row_colors(theme).1.opacity(0.5),
-                    ChangeTag::Delete => deleted_row_colors(theme).1.opacity(0.5),
-                    ChangeTag::Insert => added_row_colors(theme).1.opacity(0.5),
-                };
+                let gutter_color = row_colors(dl.tag, theme).1.opacity(0.5);
                 row = row.child(
                     div()
                         .flex_none()
@@ -980,13 +938,8 @@ fn render_diff_rows(
             // wrap with the text (unlike per-span elements).
             // Syntax colors come first, the word emphasis layers on top.
             let syntax_styles = syntax.as_ref().map_or_else(Vec::new, |s| {
-                let line_no = if dl.tag == ChangeTag::Delete {
-                    old_num
-                } else {
-                    new_num
-                };
                 s.syntax
-                    .line_styles(dl.tag, line_no, &dl.text, &theme.highlight_theme)
+                    .line_styles(dl.tag, syntax_line, &dl.text, &theme.highlight_theme)
             });
             let content: gpui::AnyElement = if dl.emphasis.is_empty() && syntax_styles.is_empty() {
                 dl.text.clone().into_any_element()
@@ -1080,14 +1033,14 @@ fn render_streaming_diff_section(
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct DiffSection {
-    search_content: String,
-    replace_content: String,
+pub(super) struct DiffSection {
+    pub(super) search_content: String,
+    pub(super) replace_content: String,
     in_search: bool,
     in_replace: bool,
 }
 
-fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
+pub(super) fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
     let mut sections = Vec::new();
     let mut current = DiffSection {
         search_content: String::new(),
@@ -1166,21 +1119,11 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn get_param<'a>(tool: &'a ToolUseBlock, name: &str) -> Option<&'a str> {
+pub(super) fn get_param<'a>(tool: &'a ToolUseBlock, name: &str) -> Option<&'a str> {
     tool.parameters
         .iter()
         .find(|p| p.name == name)
         .map(|p| p.value.as_str())
-}
-
-/// Check whether a write_file tool's output JSON contains `original_content`,
-/// indicating the file was overwritten (not newly created).
-fn write_file_has_original_content(tool: &ToolUseBlock) -> bool {
-    tool.output
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .and_then(|v| v.get("original_content").cloned())
-        .is_some()
 }
 
 /// Extract match start line numbers from the tool's output JSON.
@@ -1188,7 +1131,7 @@ fn write_file_has_original_content(tool: &ToolUseBlock) -> bool {
 /// After execution, `edit` and `replace_in_file` tools emit their output as
 /// JSON containing a `match_start_lines` array via `render_for_ui()`.
 /// This function attempts to parse that; returns an empty vec on failure.
-fn parse_match_start_lines(tool: &ToolUseBlock) -> Vec<usize> {
+pub(super) fn parse_match_start_lines(tool: &ToolUseBlock) -> Vec<usize> {
     tool.output
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
@@ -1245,6 +1188,15 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
     .into()
 }
 
+/// Background of a diff card's body, behind the rows.
+pub(crate) fn diff_body_bg(theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+    if theme.is_dark() {
+        gpui::hsla(0.0, 0.0, 0.08, 1.0)
+    } else {
+        gpui::hsla(0.0, 0.0, 0.97, 1.0)
+    }
+}
+
 pub(crate) fn deleted_row_colors(
     theme: &gpui_component::theme::Theme,
 ) -> (Option<gpui::Hsla>, gpui::Hsla) {
@@ -1277,9 +1229,34 @@ pub(crate) fn added_row_colors(
     }
 }
 
+fn row_colors(
+    tag: ChangeTag,
+    theme: &gpui_component::theme::Theme,
+) -> (Option<gpui::Hsla>, gpui::Hsla) {
+    match tag {
+        ChangeTag::Equal => unchanged_row_colors(theme),
+        ChangeTag::Delete => deleted_row_colors(theme),
+        ChangeTag::Insert => added_row_colors(theme),
+    }
+}
+
+/// Text color of a row. Syntax highlighted rows use the syntax theme's neutral
+/// foreground, since red/green tinted text fights with the syntax colors; the
+/// row background still tells the change.
+fn row_text_color(
+    tag: ChangeTag,
+    highlighted: bool,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::Hsla {
+    highlighted
+        .then_some(theme.highlight_theme.style.editor_foreground)
+        .flatten()
+        .unwrap_or_else(|| row_colors(tag, theme).1)
+}
+
 /// Background for word-level (intra-line) changes: a stronger tint layered on
 /// top of the row's add/delete background.
-fn word_emphasis_bg(tag: ChangeTag, theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+pub(crate) fn word_emphasis_bg(tag: ChangeTag, theme: &gpui_component::theme::Theme) -> gpui::Hsla {
     match (tag, theme.is_dark()) {
         (ChangeTag::Delete, true) => rgba_color(0xC0, 0x38, 0x38, 0x70),
         (ChangeTag::Delete, false) => rgba_color(0xE0, 0x60, 0x60, 0x60),
@@ -1302,6 +1279,40 @@ pub(crate) fn unchanged_row_colors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_counter_numbers_each_row_in_its_own_side() {
+        let mut lines = LineCounter { old: 10, new: 20 };
+        let numbers: Vec<usize> = [
+            ChangeTag::Equal,
+            ChangeTag::Delete,
+            ChangeTag::Delete,
+            ChangeTag::Insert,
+            ChangeTag::Equal,
+        ]
+        .into_iter()
+        .map(|tag| lines.advance(tag))
+        .collect();
+        assert_eq!(numbers, [20, 11, 12, 21, 22]);
+        assert_eq!(lines, LineCounter { old: 14, new: 23 });
+    }
+
+    #[test]
+    fn highlighted_rows_use_the_neutral_syntax_foreground() {
+        use gpui_component::theme::{Theme, ThemeColor};
+        let mut theme = Theme::from(&*ThemeColor::light());
+        theme.highlight_theme = crate::shared::theme::syntax_theme(theme.mode);
+        let foreground = theme.highlight_theme.style.editor_foreground.unwrap();
+
+        for tag in [ChangeTag::Equal, ChangeTag::Delete, ChangeTag::Insert] {
+            assert_eq!(row_text_color(tag, true, &theme), foreground);
+        }
+        // Without syntax the rows keep their tinted text.
+        assert_eq!(
+            row_text_color(ChangeTag::Insert, false, &theme),
+            added_row_colors(&theme).1
+        );
+    }
 
     #[test]
     fn compute_diff_hunks_groups_changes_with_context() {
@@ -1580,6 +1591,7 @@ mod tests {
             state: crate::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,
             images: Vec::new(),
+            revision: 0,
         };
         assert_eq!(extract_path_or_paths(&tool), "src/main.rs");
     }
@@ -1601,6 +1613,7 @@ mod tests {
             state: crate::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,
             images: Vec::new(),
+            revision: 0,
         };
         assert_eq!(extract_path_or_paths(&tool), "a.rs, b.rs");
     }

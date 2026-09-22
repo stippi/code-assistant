@@ -9,6 +9,9 @@ use gpui::prelude::*;
 use gpui::{Context, Entity, Pixels, Task, px};
 use gpui_component::text::{SelectionFormat, TextView, TextViewState};
 
+use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
+use crate::tool_cards::diff_syntax::language_for_path;
+
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -140,11 +143,72 @@ enum AnimationState {
     },
 }
 
+/// How a text differs from the one last given to a [`TextViewState`].
+#[derive(Debug, PartialEq, Eq)]
+enum TextUpdate<'a> {
+    Unchanged,
+    /// The old text plus this suffix — the common case while streaming.
+    Append(&'a str),
+    Replace,
+}
+
+/// Remembers (as length and hash, not a copy) the text last given to a
+/// [`TextViewState`], to tell appends from rewrites. Appends go through
+/// `push_str`, which re-parses only the last Markdown block and so keeps the
+/// highlighted code blocks before it; `set_text` rebuilds them all.
+struct MarkdownSync {
+    len: usize,
+    hash: u64,
+}
+
+impl MarkdownSync {
+    fn new(text: &str) -> Self {
+        Self {
+            len: text.len(),
+            hash: Self::hash(text),
+        }
+    }
+
+    fn hash(text: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn update<'a>(&mut self, text: &'a str) -> TextUpdate<'a> {
+        let update = match text.split_at_checked(self.len) {
+            Some((old, "")) if Self::hash(old) == self.hash => return TextUpdate::Unchanged,
+            Some((old, suffix)) if Self::hash(old) == self.hash => TextUpdate::Append(suffix),
+            _ => TextUpdate::Replace,
+        };
+        *self = Self::new(text);
+        update
+    }
+}
+
+/// A diff card's [`PreparedDiff`] and what it was computed from.
+struct DiffCache {
+    /// [`ToolUseBlock::revision`] last seen; the per-frame check.
+    revision: u64,
+    diff_mode: bool,
+    /// [`DiffInput::content_hash`], looked at only when the revision moved.
+    hash: u64,
+    prepared: PreparedDiff,
+    /// Background work filling in `prepared`; dropped (cancelled) with the cache.
+    _task: Option<Task<()>>,
+}
+
 /// Entity view for a block
 pub struct BlockView {
-    block: BlockData,
+    /// Shared so `render` can hold the block (text, tool output and images
+    /// can be large) while calling `&mut self` methods, without copying it;
+    /// mutation goes through [`Self::block_mut`].
+    block: Rc<BlockData>,
     request_id: u64,
     markdown_state: Option<Entity<TextViewState>>,
+    markdown_sync: MarkdownSync,
+    diff_cache: Option<DiffCache>,
     is_generating: bool, // Universal generating state for all block types
     // Animation state
     animation_state: AnimationState,
@@ -196,13 +260,16 @@ impl BlockView {
             BlockData::CompactionSummary(block) => Some(block.summary.clone()),
             BlockData::ToolUse(_) | BlockData::ImageBlock(_) => None,
         };
+        let markdown_sync = MarkdownSync::new(initial_markdown.as_deref().unwrap_or(""));
         let markdown_state =
             initial_markdown.map(|text| _cx.new(|cx| TextViewState::markdown(&text, cx)));
 
         Self {
-            block,
+            block: Rc::new(block),
             request_id,
             markdown_state,
+            markdown_sync,
+            diff_cache: None,
             is_generating: true, // Default to generating when first created
             animation_state: AnimationState::Idle,
             content_height: Rc::new(Cell::new(px(0.0))),
@@ -215,20 +282,99 @@ impl BlockView {
         }
     }
 
+    /// Mutable access to the block. `render` has dropped its handle by the
+    /// time anything mutates, so this does not copy.
+    fn block_mut(&mut self) -> &mut BlockData {
+        Rc::make_mut(&mut self.block)
+    }
+
+    /// The block's Markdown state, created empty on first use. Tool cards
+    /// that render Markdown fill it themselves.
+    pub(crate) fn markdown_entity(&mut self, cx: &mut Context<Self>) -> Entity<TextViewState> {
+        self.markdown_state
+            .get_or_insert_with(|| cx.new(|cx| TextViewState::markdown("", cx)))
+            .clone()
+    }
+
+    /// The block's Markdown state, brought up to date with `text`.
     fn markdown_state(&mut self, text: &str, cx: &mut Context<Self>) -> Entity<TextViewState> {
-        let state = if let Some(state) = &self.markdown_state {
-            state.clone()
-        } else {
-            let state = cx.new(|cx| TextViewState::markdown(text, cx));
-            self.markdown_state = Some(state.clone());
-            state
-        };
-
-        state.update(cx, |state, cx| {
-            state.set_text(text, cx);
-        });
-
+        let state = self.markdown_entity(cx);
+        match self.markdown_sync.update(text) {
+            TextUpdate::Unchanged => {}
+            TextUpdate::Append(suffix) => state.update(cx, |state, cx| state.push_str(suffix, cx)),
+            TextUpdate::Replace => state.update(cx, |state, cx| state.set_text(text, cx)),
+        }
         state
+    }
+
+    /// The diff a finished file-editing tool block shows, computed once per
+    /// content change. Empty while the block streams (the card shows raw
+    /// blocks then, and nothing is parsed per chunk) and for other tools;
+    /// parts computed in the background arrive with a later notify.
+    pub(crate) fn prepared_diff(&mut self, cx: &mut Context<Self>) -> PreparedDiff {
+        let diff_mode = self.write_file_diff_mode;
+        let Some(tool) = self.block.as_tool().filter(|_| !self.is_generating) else {
+            self.diff_cache = None;
+            return PreparedDiff::default();
+        };
+        if let Some(cache) = &self.diff_cache
+            && cache.revision == tool.revision
+            && cache.diff_mode == diff_mode
+        {
+            return cache.prepared.clone();
+        }
+
+        let revision = tool.revision;
+        let Some(input) = DiffInput::for_tool(tool, diff_mode) else {
+            self.diff_cache = None;
+            return PreparedDiff::default();
+        };
+        let hash = input.content_hash();
+        if let Some(cache) = &mut self.diff_cache
+            && cache.hash == hash
+        {
+            // Touched (collapsed, status update, ...) but showing the same.
+            cache.revision = revision;
+            cache.diff_mode = diff_mode;
+            return cache.prepared.clone();
+        }
+
+        let diff_now = input.byte_len() <= SYNC_DIFF_MAX_BYTES;
+        let prepared = PreparedDiff {
+            sections: diff_now.then(|| Rc::new(input.diff())),
+            syntax: None,
+            has_original: input.has_original,
+        };
+        let has_grammar = language_for_path(&input.path).is_some();
+        let task = (!diff_now || has_grammar).then(|| {
+            cx.spawn(async move |this, cx| {
+                let (sections, syntax) = cx
+                    .background_spawn(async move {
+                        let sections = (!diff_now).then(|| input.diff());
+                        (sections, input.parse_syntax())
+                    })
+                    .await;
+                _ = this.update(cx, |view, cx| {
+                    if let Some(cache) = &mut view.diff_cache
+                        && cache.hash == hash
+                    {
+                        if let Some(sections) = sections {
+                            cache.prepared.sections = Some(Rc::new(sections));
+                        }
+                        cache.prepared.syntax = syntax.map(Rc::new);
+                        cx.notify();
+                    }
+                });
+            })
+        });
+        self.diff_cache = Some(DiffCache {
+            revision,
+            diff_mode,
+            hash,
+            prepared: prepared.clone(),
+            _task: task,
+        });
+        prepared
     }
 
     fn markdown_view(&mut self, text: &str, selectable: bool, cx: &mut Context<Self>) -> TextView {
@@ -255,9 +401,13 @@ impl BlockView {
 
     /// Copy the given markdown source to the clipboard and show a short-lived
     /// checkmark on the copy button.
-    pub(super) fn copy_source_to_clipboard(&mut self, source: String, cx: &mut Context<Self>) {
+    pub(super) fn copy_source_to_clipboard(&mut self, cx: &mut Context<Self>) {
         use gpui::ClipboardItem;
 
+        let source = self
+            .block
+            .copy_source(self.is_generating)
+            .unwrap_or_default();
         let source = source.trim_end().to_string();
         if source.is_empty() {
             return;
@@ -283,7 +433,7 @@ impl BlockView {
 
     /// Check if this block is an image block
     pub fn is_image_block(&self) -> bool {
-        matches!(self.block, BlockData::ImageBlock(_))
+        matches!(*self.block, BlockData::ImageBlock(_))
     }
 
     /// Set the generating state of this block
@@ -293,7 +443,7 @@ impl BlockView {
 
     /// Check if this block can toggle expansion
     pub fn can_toggle_expansion(&self) -> bool {
-        match &self.block {
+        match &*self.block {
             BlockData::ToolUse(_) => true, // Tools can always toggle, even while generating
             BlockData::ThinkingBlock(_) => true,
             BlockData::CompactionSummary(_) => true,
@@ -302,7 +452,7 @@ impl BlockView {
     }
 
     fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
-        let should_expand = if let Some(thinking) = self.block.as_thinking_mut() {
+        let should_expand = if let Some(thinking) = self.block_mut().as_thinking_mut() {
             thinking.is_collapsed = !thinking.is_collapsed;
             !thinking.is_collapsed
         } else {
@@ -317,7 +467,7 @@ impl BlockView {
             return;
         }
 
-        let should_expand = if let Some(tool) = self.block.as_tool_mut() {
+        let should_expand = if let Some(tool) = self.block_mut().as_tool_mut() {
             match tool.state {
                 ToolBlockState::Collapsed => {
                     tool.state = ToolBlockState::Expanded;
@@ -335,7 +485,7 @@ impl BlockView {
         // Persist the new state in the global UI state store (in-memory +
         // debounced write to disk) so it survives session reconnects and app
         // restarts.
-        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool_mut())
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool())
             && ToolCollapseState::set(session_id, &tool.id, tool.state.clone())
         {
             // Schedule a debounced save
@@ -369,7 +519,7 @@ impl BlockView {
     }
 
     fn toggle_compaction(&mut self, cx: &mut Context<Self>) {
-        if let Some(summary) = self.block.as_compaction_mut() {
+        if let Some(summary) = self.block_mut().as_compaction_mut() {
             let should_expand = !summary.is_expanded;
             summary.is_expanded = should_expand;
             self.start_expand_collapse_animation(should_expand, cx);
@@ -542,7 +692,7 @@ mod tests {
                 // Verify content was appended
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::TextBlock(text) = &block.block {
+                if let BlockData::TextBlock(text) = &*block.block {
                     assert_eq!(text.content, "Hello world");
                 } else {
                     panic!("Expected TextBlock");
@@ -567,7 +717,7 @@ mod tests {
                 // Verify content
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                if let BlockData::ThinkingBlock(thinking) = &*block.block {
                     assert_eq!(thinking.content, "Thinking... more thoughts");
                     assert!(!thinking.is_completed);
                 } else {
@@ -588,7 +738,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.name, "read_files");
                     assert_eq!(tool.id, "tool-1");
                     assert_eq!(tool.status, ToolStatus::Pending);
@@ -622,7 +772,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.status, ToolStatus::Success);
                     assert_eq!(tool.status_message, Some("Done".to_string()));
                     assert_eq!(tool.output, Some("output text".to_string()));
@@ -671,7 +821,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.parameters.len(), 1);
                     assert_eq!(tool.parameters[0].name, "path");
                     assert_eq!(tool.parameters[0].value, "src/main.rs");
@@ -684,7 +834,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.parameters.len(), 1);
                     assert_eq!(tool.parameters[0].value, "src/main.rs/extra");
                 } else {
@@ -716,7 +866,7 @@ mod tests {
                 // Verify remaining block is from request 1
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::TextBlock(text) = &block.block {
+                if let BlockData::TextBlock(text) = &*block.block {
                     assert_eq!(text.content, "First");
                 } else {
                     panic!("Expected TextBlock");
@@ -737,7 +887,7 @@ mod tests {
                 // Verify it's not completed
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                if let BlockData::ThinkingBlock(thinking) = &*block.block {
                     assert!(!thinking.is_completed);
                 } else {
                     panic!("Expected ThinkingBlock");
@@ -749,7 +899,7 @@ mod tests {
                 // Verify thinking block is now completed
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ThinkingBlock(thinking) = &block.block {
+                if let BlockData::ThinkingBlock(thinking) = &*block.block {
                     assert!(thinking.is_completed);
                 } else {
                     panic!("Expected ThinkingBlock");
@@ -772,7 +922,7 @@ mod tests {
 
                 let elements = container.elements();
                 let block = elements[0].read(cx);
-                if let BlockData::ToolUse(tool) = &block.block {
+                if let BlockData::ToolUse(tool) = &*block.block {
                     assert_eq!(tool.output, Some("line 1\nline 2\n".to_string()));
                 } else {
                     panic!("Expected ToolUse block");
@@ -856,5 +1006,172 @@ mod tests {
             assert!(thinking.current_generating_content.is_none());
             assert_eq!(thinking.reasoning_summary_items.len(), 1);
         });
+    }
+
+    #[test]
+    fn markdown_sync_tells_appends_from_rewrites() {
+        let mut sync = MarkdownSync::new("Hello");
+        assert_eq!(sync.update("Hello"), TextUpdate::Unchanged);
+        assert_eq!(sync.update("Hello, wörld"), TextUpdate::Append(", wörld"));
+        assert_eq!(sync.update("Hello, wörld!"), TextUpdate::Append("!"));
+        // Same length, different content.
+        assert_eq!(sync.update("Hello, wörld?"), TextUpdate::Replace);
+        // Shorter, and longer without the old text as prefix.
+        assert_eq!(sync.update("Hello"), TextUpdate::Replace);
+        assert_eq!(sync.update("Jello, world"), TextUpdate::Replace);
+        // An old length inside a multi-byte character of the new text.
+        let mut sync = MarkdownSync::new("a");
+        assert_eq!(sync.update("ö"), TextUpdate::Replace);
+    }
+
+    #[gpui::test]
+    fn tool_card_markdown_entity_keeps_its_text(cx: &mut TestAppContext) {
+        cx.update(init_test_globals);
+        let view = cx.update(|cx| {
+            cx.new(|cx| {
+                BlockView::new(
+                    BlockData::ThinkingBlock(ThinkingBlock::new(String::new())),
+                    0,
+                    0,
+                    Arc::new(Mutex::new(String::new())),
+                    None,
+                    cx,
+                )
+            })
+        });
+        let state = view.update(cx, |view, cx| view.markdown_entity(cx));
+        state.update(cx, |state, cx| state.set_text("sub-agent answer", cx));
+        cx.run_until_parked();
+
+        let changes = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let changes = changes.clone();
+            cx.observe(&state, move |_, _| changes.set(changes.get() + 1))
+                .detach();
+        });
+
+        // Fetching the entity again (as every card render does) must not
+        // reset what the card put in.
+        let again = view.update(cx, |view, cx| view.markdown_entity(cx));
+        cx.run_until_parked();
+        assert_eq!(again, state);
+        assert_eq!(changes.get(), 0);
+    }
+
+    fn diff_tool_view(params: &[(&str, &str)], cx: &mut TestAppContext) -> Entity<BlockView> {
+        cx.update(init_test_globals);
+        let tool = crate::tool_cards::diff_prepare::tests::tool("edit", params, None);
+        cx.update(|cx| {
+            cx.new(|cx| {
+                let mut view = BlockView::new(
+                    BlockData::ToolUse(tool),
+                    0,
+                    0,
+                    Arc::new(Mutex::new(String::new())),
+                    None,
+                    cx,
+                );
+                view.set_generating(false);
+                view
+            })
+        })
+    }
+
+    const RUST_EDIT: &[(&str, &str)] = &[
+        ("path", "src/a.rs"),
+        ("old_text", "fn a() {}"),
+        ("new_text", "fn b() {}"),
+    ];
+
+    #[gpui::test]
+    fn small_diffs_are_ready_at_once_and_syntax_follows(cx: &mut TestAppContext) {
+        let view = diff_tool_view(RUST_EDIT, cx);
+
+        let first = view.update(cx, |view, cx| view.prepared_diff(cx));
+        let sections = first.sections.expect("diffed synchronously");
+        assert_eq!(sections[0].lines.len(), 2);
+        assert!(first.syntax.is_none());
+
+        cx.run_until_parked();
+        let second = view.update(cx, |view, cx| view.prepared_diff(cx));
+        assert!(Rc::ptr_eq(&sections, second.sections.as_ref().unwrap()));
+        assert_eq!(second.syntax.map(|s| s.len()), Some(1));
+    }
+
+    #[gpui::test]
+    fn diff_cache_survives_touches_but_not_content_changes(cx: &mut TestAppContext) {
+        let view = diff_tool_view(RUST_EDIT, cx);
+        let first = view.update(cx, |view, cx| view.prepared_diff(cx));
+        cx.run_until_parked();
+
+        // Collapsing goes through `as_tool_mut` without changing the content.
+        let touched = view.update(cx, |view, cx| {
+            view.block_mut().as_tool_mut().unwrap().state = ToolBlockState::Collapsed;
+            view.prepared_diff(cx)
+        });
+        assert!(Rc::ptr_eq(
+            first.sections.as_ref().unwrap(),
+            touched.sections.as_ref().unwrap()
+        ));
+        assert!(touched.syntax.is_some(), "the parsed syntax is kept too");
+
+        // Format-on-save rewrites a parameter.
+        let changed = view.update(cx, |view, cx| {
+            view.block_mut().as_tool_mut().unwrap().parameters[2].value =
+                "fn b() {}\nfn c() {}".into();
+            view.prepared_diff(cx)
+        });
+        assert_eq!(changed.sections.unwrap()[0].lines.len(), 3);
+        assert!(changed.syntax.is_none(), "stale syntax must not be reused");
+    }
+
+    #[gpui::test]
+    fn large_diffs_are_computed_in_the_background(cx: &mut TestAppContext) {
+        let new_text = "let x = 1;\n".repeat(SYNC_DIFF_MAX_BYTES / 10);
+        let view = diff_tool_view(
+            &[
+                ("path", "notes.txt"),
+                ("old_text", "old"),
+                ("new_text", &new_text),
+            ],
+            cx,
+        );
+        let first = view.update(cx, |view, cx| view.prepared_diff(cx));
+        assert!(first.sections.is_none());
+
+        cx.run_until_parked();
+        let second = view.update(cx, |view, cx| view.prepared_diff(cx));
+        assert!(second.sections.is_some());
+        assert!(second.syntax.is_none(), "no grammar for .txt");
+    }
+
+    #[gpui::test]
+    fn streaming_blocks_prepare_nothing(cx: &mut TestAppContext) {
+        let view = diff_tool_view(RUST_EDIT, cx);
+        let prepared = view.update(cx, |view, cx| {
+            view.set_generating(true);
+            view.prepared_diff(cx)
+        });
+        assert!(prepared.sections.is_none());
+        cx.run_until_parked();
+        assert!(view.update(cx, |view, _| view.diff_cache.is_none()));
+    }
+
+    #[test]
+    fn copy_source_is_the_markdown_a_block_shows() {
+        let text = BlockData::TextBlock(TextBlock {
+            content: "**hi**".into(),
+        });
+        assert_eq!(text.copy_source(false).as_deref(), Some("**hi**"));
+
+        // A thinking block copies what it displays: the item being generated
+        // while streaming, the full content afterwards.
+        let mut thinking = ThinkingBlock::new("all of it".into());
+        thinking.current_generating_content = Some("current item".into());
+        let thinking = BlockData::ThinkingBlock(thinking);
+        assert_eq!(thinking.copy_source(true).as_deref(), Some("current item"));
+
+        let tool = crate::tool_cards::diff_prepare::tests::tool("edit", &[], None);
+        assert!(BlockData::ToolUse(tool).copy_source(false).is_none());
     }
 }

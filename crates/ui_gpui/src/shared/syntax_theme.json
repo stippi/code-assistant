@@ -1,0 +1,126 @@
+{
+  "light": {
+    "editor.foreground": "#1C1D1F",
+    "syntax": {
+      "keyword": {
+        "color": "#C8001D"
+      },
+      "function": {
+        "color": "#1560C0"
+      },
+      "constructor": {
+        "color": "#1560C0"
+      },
+      "type": {
+        "color": "#1560C0"
+      },
+      "string": {
+        "color": "#007211"
+      },
+      "string.escape": {
+        "color": "#9C4D00"
+      },
+      "string.special": {
+        "color": "#9C4D00"
+      },
+      "constant": {
+        "color": "#9C4D00"
+      },
+      "number": {
+        "color": "#9C4D00"
+      },
+      "boolean": {
+        "color": "#9C4D00"
+      },
+      "attribute": {
+        "color": "#9C4D00"
+      },
+      "variable.special": {
+        "color": "#9C4D00"
+      },
+      "comment": {
+        "color": "#5D6269"
+      },
+      "comment.doc": {
+        "color": "#5D6269"
+      },
+      "punctuation": {
+        "color": "#5D6269"
+      },
+      "operator": {
+        "color": "#5D6269"
+      },
+      "tag": {
+        "color": "#1560C0"
+      },
+      "emphasis": {
+        "font_style": "italic"
+      },
+      "emphasis.strong": {
+        "font_weight": 700
+      }
+    }
+  },
+  "dark": {
+    "editor.foreground": "#FAFAFA",
+    "syntax": {
+      "keyword": {
+        "color": "#F8A8A1"
+      },
+      "function": {
+        "color": "#A2C2F1"
+      },
+      "constructor": {
+        "color": "#A2C2F1"
+      },
+      "type": {
+        "color": "#A2C2F1"
+      },
+      "string": {
+        "color": "#9BD0A1"
+      },
+      "string.escape": {
+        "color": "#E0B891"
+      },
+      "string.special": {
+        "color": "#E0B891"
+      },
+      "constant": {
+        "color": "#E0B891"
+      },
+      "number": {
+        "color": "#E0B891"
+      },
+      "boolean": {
+        "color": "#E0B891"
+      },
+      "attribute": {
+        "color": "#E0B891"
+      },
+      "variable.special": {
+        "color": "#E0B891"
+      },
+      "comment": {
+        "color": "#A6ADB4"
+      },
+      "comment.doc": {
+        "color": "#A6ADB4"
+      },
+      "punctuation": {
+        "color": "#BDC0C5"
+      },
+      "operator": {
+        "color": "#BDC0C5"
+      },
+      "tag": {
+        "color": "#A2C2F1"
+      },
+      "emphasis": {
+        "font_style": "italic"
+      },
+      "emphasis.strong": {
+        "font_weight": 700
+      }
+    }
+  }
+}

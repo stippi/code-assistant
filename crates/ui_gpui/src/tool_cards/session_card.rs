@@ -403,6 +403,7 @@ mod tests {
             state: crate::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,
             images: Vec::new(),
+            revision: 0,
         }
     }
 
