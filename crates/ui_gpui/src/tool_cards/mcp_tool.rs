@@ -14,7 +14,7 @@
 use super::inline_renderer::{render_inline_output, render_inline_output_text};
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
-use gpui::{AnyElement, Context, Window};
+use gpui_kit::{AnyElement, Context, Window};
 
 /// Split a registry tool name `mcp__<server>__<tool>` into `(server, tool)`.
 ///
@@ -74,7 +74,7 @@ impl ToolBlockRenderer for McpToolRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         _card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
         _cx: &mut Context<BlockView>,

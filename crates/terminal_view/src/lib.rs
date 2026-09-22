@@ -10,12 +10,12 @@
 //! 1. `prepaint()`: Read the terminal content snapshot, compute font metrics,
 //!    convert cells to `BatchedTextRun`s (styled text) and `LayoutRect`s (backgrounds)
 //! 2. `paint()`: Draw backgrounds, then text, then cursor
-use gpui::{
+use gpui_kit::{
     App, BorderStyle, Bounds, ContentMask, Context, Element, Entity, EventEmitter, GlobalElementId,
     Hsla, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point, Rems, Render,
     SharedString, Size, Style, Styled, Window, fill, outline, point, px, relative, size,
 };
-use gpui::{Font, FontStyle, FontWeight, TextRun, div};
+use gpui_kit::{Font, FontStyle, FontWeight, TextRun, div};
 use terminal::{AlacCell, AlacCellFlags, GridPoint, IndexedCell, Terminal, TerminalBounds};
 
 // Re-exports
@@ -97,7 +97,7 @@ pub fn convert_color(
 }
 
 fn rgba_color(r: u8, g: u8, b: u8) -> Hsla {
-    gpui::Rgba {
+    gpui_kit::Rgba {
         r: r as f32 / 255.0,
         g: g as f32 / 255.0,
         b: b as f32 / 255.0,
@@ -250,7 +250,7 @@ impl BatchedTextRun {
             .paint(
                 pos,
                 dimensions.line_height,
-                gpui::TextAlign::Left,
+                gpui_kit::TextAlign::Left,
                 None,
                 window,
                 cx,
@@ -322,7 +322,7 @@ impl CursorLayout {
                         .paint(
                             point(x, y),
                             dimensions.line_height,
-                            gpui::TextAlign::Left,
+                            gpui_kit::TextAlign::Left,
                             None,
                             window,
                             cx,
@@ -409,7 +409,7 @@ impl Element for TerminalElement {
     type RequestLayoutState = ();
     type PrepaintState = Option<LayoutState>;
 
-    fn id(&self) -> Option<gpui::ElementId> {
+    fn id(&self) -> Option<gpui_kit::ElementId> {
         None
     }
 
@@ -782,7 +782,7 @@ fn cell_style(cell: &AlacCell, fg_color: Hsla, font: &Font, _font_size: Pixels) 
     }
 
     let underline = if cell.flags.contains(AlacCellFlags::UNDERLINE) {
-        Some(gpui::UnderlineStyle {
+        Some(gpui_kit::UnderlineStyle {
             thickness: px(1.),
             color: Some(fg_color),
             wavy: false,
@@ -792,7 +792,7 @@ fn cell_style(cell: &AlacCell, fg_color: Hsla, font: &Font, _font_size: Pixels) 
     };
 
     let strikethrough = if cell.flags.contains(AlacCellFlags::STRIKEOUT) {
-        Some(gpui::StrikethroughStyle {
+        Some(gpui_kit::StrikethroughStyle {
             thickness: px(1.),
             color: Some(fg_color),
         })
@@ -844,7 +844,7 @@ pub struct TerminalView {
     font_family: SharedString,
     font_size: Rems,
     theme_colors: TerminalThemeColors,
-    _subscriptions: Vec<gpui::Subscription>,
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<TerminalViewEvent> for TerminalView {}

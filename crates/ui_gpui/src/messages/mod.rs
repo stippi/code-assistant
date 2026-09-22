@@ -8,13 +8,13 @@ use crate::shared::frame_profile;
 
 use code_assistant_core::session::instance::SessionActivityState;
 
-use gpui::{
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme, Icon};
+use gpui_kit::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, ListAlignment, ListOffset, ListState,
     MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Task, Window, div, list,
     prelude::*, px, rems,
 };
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme, Icon};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -362,7 +362,7 @@ impl MessagesView {
     fn write_persisted_scroll(
         &self,
         session_id: &str,
-        anchor: gpui::ListOffset,
+        anchor: gpui_kit::ListOffset,
         follow_tail: bool,
     ) -> bool {
         let pos = crate::shared::ui_state::ScrollPosition {
@@ -384,7 +384,7 @@ impl MessagesView {
         let store = crate::shared::ui_state::UiStateStore::try_global()?;
         let pos = store.lock().ok()?.get_scroll(session_id)?;
         Some(SavedScroll {
-            anchor: gpui::ListOffset {
+            anchor: gpui_kit::ListOffset {
                 item_ix: pos.item_ix,
                 offset_in_item: px(pos.offset_in_item),
             },
@@ -561,7 +561,7 @@ impl MessagesView {
                     if displacement.abs() > 0.01 {
                         // set_offset_from_scrollbar expects negative y (same
                         // convention as scroll_px_offset_for_scrollbar).
-                        list_state.set_offset_from_scrollbar(gpui::Point {
+                        list_state.set_offset_from_scrollbar(gpui_kit::Point {
                             x: px(0.),
                             y: px(-max.round()),
                         });
@@ -609,7 +609,7 @@ impl MessagesView {
                 // scroll_px_offset_for_scrollbar returns).
                 // set_offset_from_scrollbar expects this same sign convention.
                 let new_y = current_offset + delta;
-                list_state.set_offset_from_scrollbar(gpui::Point {
+                list_state.set_offset_from_scrollbar(gpui_kit::Point {
                     x: px(0.),
                     y: px(new_y.min(0.0)),
                 });
@@ -722,7 +722,7 @@ impl MessagesView {
                     continue;
                 }
 
-                list_state.set_offset_from_scrollbar(gpui::Point {
+                list_state.set_offset_from_scrollbar(gpui_kit::Point {
                     x: px(0.),
                     y: px(new_y),
                 });
@@ -781,14 +781,14 @@ impl MessagesView {
                         // A wheel delta is the content movement: negative
                         // scrolls down, like a real wheel.
                         window.dispatch_event(
-                            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                            gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
                                 position: view.list_bounds.get().center(),
-                                delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
                                     px(0.),
                                     px(-direction * STEP),
                                 )),
-                                modifiers: gpui::Modifiers::default(),
-                                touch_phase: gpui::TouchPhase::Moved,
+                                modifiers: gpui_kit::Modifiers::default(),
+                                touch_phase: gpui_kit::TouchPhase::Moved,
                             }),
                             cx,
                         );
@@ -1061,7 +1061,7 @@ impl Render for MessagesView {
                                 .border_1()
                                 .border_color(btn_border)
                                 .shadow_md()
-                                .cursor(gpui::CursorStyle::PointingHand)
+                                .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .hover(move |s| s.bg(btn_hover_bg).border_color(btn_hover_border))
                                 .child(
                                     Icon::default()
@@ -1106,7 +1106,7 @@ impl Render for MessagesView {
                                 .rounded_full()
                                 .bg(btn_bg)
                                 .shadow_md()
-                                .cursor(gpui::CursorStyle::PointingHand)
+                                .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .hover(move |s| s.bg(btn_hover_bg))
                                 .child(
                                     Icon::default()
@@ -1140,14 +1140,14 @@ impl Render for MessagesView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
 
     /// Initialize globals needed for tests (theme).
-    fn init_test_globals(cx: &mut gpui::App) {
-        gpui_component::theme::init(cx);
+    fn init_test_globals(cx: &mut gpui_kit::App) {
+        gpui_kit::component::theme::init(cx);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_messages_view_starts_with_follow_tail(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
             init_test_globals(cx);
@@ -1166,7 +1166,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_messages_spliced_updates_list_state(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1201,7 +1201,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_messages_spliced_no_op_when_no_growth(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1224,7 +1224,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_messages_reset_resets_list_state(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1256,7 +1256,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_messages_reset_to_zero(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1279,7 +1279,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_activate_follow_tail(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1308,7 +1308,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_scroll_to_bottom_no_op_when_empty(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1330,7 +1330,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_stop_animation(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1355,7 +1355,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_set_current_session_id(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1382,7 +1382,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_update_pending_message(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1409,7 +1409,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_messages_spliced_triggers_animation_when_following(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1432,7 +1432,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_messages_spliced_no_animation_when_not_following(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1455,7 +1455,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_same_session_reset_preserves_scroll_offset(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1491,7 +1491,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_restoring_bottom_session_anchors_to_end(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));
@@ -1531,7 +1531,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_session_switch_saves_and_restores_scroll(cx: &mut TestAppContext) {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let activity = Arc::new(Mutex::new(None));

@@ -43,7 +43,7 @@ pub struct ThinkingBlock {
 pub struct ImageBlock {
     pub media_type: String,
     /// Parsed image ready for rendering, if parsing was successful
-    pub image: Option<Arc<gpui::Image>>,
+    pub image: Option<Arc<gpui_kit::Image>>,
 }
 
 /// Tool use block with name and parameters

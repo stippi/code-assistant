@@ -3,9 +3,9 @@
 //! Used for most providers (Anthropic, OpenAI, Ollama, etc.)
 
 use super::ProviderForm;
-use gpui::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
-use gpui_component::ActiveTheme;
-use gpui_component::input::{Input, InputState};
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
 use serde_json::Value;
 
 pub struct DefaultProviderForm {
@@ -32,7 +32,7 @@ impl DefaultProviderForm {
     fn form_row(
         &self,
         label: &str,
-        widget: gpui::AnyElement,
+        widget: gpui_kit::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -45,7 +45,7 @@ impl DefaultProviderForm {
                     .w(px(80.))
                     .flex_none()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )

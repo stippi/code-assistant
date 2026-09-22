@@ -16,12 +16,12 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::component::Root;
+use gpui_kit::prelude::*;
+use gpui_kit::{
     App, Bounds, Context, Entity, IntoElement, KeyBinding, ParentElement, Render, SharedString,
     Styled, Window, WindowBounds, WindowOptions, actions, div, px, rems, size,
 };
-use gpui_component::Root;
 use terminal::{Terminal, TerminalBuilder, TerminalOptions};
 use terminal_view::{TerminalThemeColors, TerminalView};
 
@@ -107,7 +107,7 @@ struct TerminalCard {
     view: Option<Entity<TerminalView>>,
     command: String,
     theme_colors: TerminalThemeColors,
-    _subscriptions: Vec<gpui::Subscription>,
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl TerminalCard {
@@ -165,12 +165,12 @@ impl Render for TerminalCard {
 
         let border_color = if !is_running {
             if exit_status == Some(Some(0)) {
-                gpui::hsla(0.33, 0.5, 0.4, 0.6) // green-ish
+                gpui_kit::hsla(0.33, 0.5, 0.4, 0.6) // green-ish
             } else {
-                gpui::hsla(0.0, 0.6, 0.5, 0.6) // red-ish
+                gpui_kit::hsla(0.0, 0.6, 0.5, 0.6) // red-ish
             }
         } else {
-            gpui::hsla(0.0, 0.0, 0.4, 0.4) // neutral gray
+            gpui_kit::hsla(0.0, 0.0, 0.4, 0.4) // neutral gray
         };
 
         div()
@@ -185,7 +185,7 @@ impl Render for TerminalCard {
                 div()
                     .px_3()
                     .py_1p5()
-                    .bg(gpui::hsla(0.0, 0.0, 0.15, 1.0))
+                    .bg(gpui_kit::hsla(0.0, 0.0, 0.15, 1.0))
                     .flex()
                     .flex_row()
                     .justify_between()
@@ -193,13 +193,13 @@ impl Render for TerminalCard {
                     .child(
                         div()
                             .text_size(px(12.0))
-                            .text_color(gpui::hsla(0.0, 0.0, 0.7, 1.0))
+                            .text_color(gpui_kit::hsla(0.0, 0.0, 0.7, 1.0))
                             .child(format!("$ {}", self.command)),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
-                            .text_color(gpui::hsla(0.0, 0.0, 0.5, 1.0))
+                            .text_color(gpui_kit::hsla(0.0, 0.0, 0.5, 1.0))
                             .child(status_text),
                     ),
             )
@@ -226,7 +226,7 @@ struct TestApp {
     /// Whether cards are currently attached (simulates session connect/disconnect)
     cards_attached: bool,
     theme_colors: TerminalThemeColors,
-    focus_handle: gpui::FocusHandle,
+    focus_handle: gpui_kit::FocusHandle,
 }
 
 /// Commands to cycle through for spawning new terminals
@@ -320,9 +320,9 @@ impl TestApp {
 
 impl Render for TestApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let bg = gpui::hsla(0.0, 0.0, 0.11, 1.0);
-        let sidebar_bg = gpui::hsla(0.0, 0.0, 0.08, 1.0);
-        let dim_text = gpui::hsla(0.0, 0.0, 0.4, 1.0);
+        let bg = gpui_kit::hsla(0.0, 0.0, 0.11, 1.0);
+        let sidebar_bg = gpui_kit::hsla(0.0, 0.0, 0.08, 1.0);
+        let dim_text = gpui_kit::hsla(0.0, 0.0, 0.4, 1.0);
 
         div()
             .id("test-app-root")
@@ -339,7 +339,7 @@ impl Render for TestApp {
             }))
             .size_full()
             .bg(bg)
-            .text_color(gpui::hsla(0.0, 0.0, 0.85, 1.0))
+            .text_color(gpui_kit::hsla(0.0, 0.0, 0.85, 1.0))
             .flex()
             .flex_row()
             .child(
@@ -349,7 +349,7 @@ impl Render for TestApp {
                     .h_full()
                     .bg(sidebar_bg)
                     .border_r_1()
-                    .border_color(gpui::hsla(0.0, 0.0, 0.2, 1.0))
+                    .border_color(gpui_kit::hsla(0.0, 0.0, 0.2, 1.0))
                     .flex()
                     .flex_col()
                     .child(
@@ -357,7 +357,7 @@ impl Render for TestApp {
                             .px_3()
                             .py_2()
                             .text_size(px(14.0))
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .font_weight(gpui_kit::FontWeight::BOLD)
                             .child("Terminal Pool"),
                     )
                     .child(
@@ -371,9 +371,9 @@ impl Render for TestApp {
 
                                 let indicator = if is_running { "●" } else { "○" };
                                 let indicator_color = if is_running {
-                                    gpui::hsla(0.33, 0.7, 0.5, 1.0)
+                                    gpui_kit::hsla(0.33, 0.7, 0.5, 1.0)
                                 } else {
-                                    gpui::hsla(0.0, 0.0, 0.4, 1.0)
+                                    gpui_kit::hsla(0.0, 0.0, 0.4, 1.0)
                                 };
 
                                 let cmd_display = if entry.command.len() > 20 {
@@ -386,7 +386,7 @@ impl Render for TestApp {
                                     .px_2()
                                     .py_1()
                                     .rounded(px(4.0))
-                                    .when(is_selected, |d| d.bg(gpui::hsla(0.0, 0.0, 0.2, 1.0)))
+                                    .when(is_selected, |d| d.bg(gpui_kit::hsla(0.0, 0.0, 0.2, 1.0)))
                                     .flex()
                                     .flex_row()
                                     .gap_2()
@@ -401,9 +401,9 @@ impl Render for TestApp {
                                         div()
                                             .text_size(px(11.0))
                                             .text_color(if has_card {
-                                                gpui::hsla(0.0, 0.0, 0.8, 1.0)
+                                                gpui_kit::hsla(0.0, 0.0, 0.8, 1.0)
                                             } else {
-                                                gpui::hsla(0.0, 0.0, 0.4, 1.0)
+                                                gpui_kit::hsla(0.0, 0.0, 0.4, 1.0)
                                             })
                                             .child(cmd_display),
                                     )
@@ -421,7 +421,7 @@ impl Render for TestApp {
                             .child(
                                 div()
                                     .text_size(px(11.0))
-                                    .text_color(gpui::hsla(0.0, 0.0, 0.5, 1.0))
+                                    .text_color(gpui_kit::hsla(0.0, 0.0, 0.5, 1.0))
                                     .child(format!(
                                         "Cards: {} | Pool: {}",
                                         self.cards.len(),
@@ -444,7 +444,7 @@ impl Render for TestApp {
                                     .mt_2()
                                     .pt_2()
                                     .border_t_1()
-                                    .border_color(gpui::hsla(0.0, 0.0, 0.2, 1.0))
+                                    .border_color(gpui_kit::hsla(0.0, 0.0, 0.2, 1.0))
                                     .flex()
                                     .flex_col()
                                     .gap(px(2.0))
@@ -470,7 +470,7 @@ impl Render for TestApp {
                     .child(
                         div()
                             .text_size(px(16.0))
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .font_weight(gpui_kit::FontWeight::BOLD)
                             .mb_3()
                             .child("Terminal Cards"),
                     )
@@ -483,7 +483,7 @@ impl Render for TestApp {
                     } else {
                         vec![div()
                             .text_size(px(14.0))
-                            .text_color(gpui::hsla(0.0, 0.0, 0.4, 1.0))
+                            .text_color(gpui_kit::hsla(0.0, 0.0, 0.4, 1.0))
                             .p_8()
                             .child(
                                 "Cards detached — terminals still running in pool. Press A to re-attach.",
@@ -500,9 +500,9 @@ impl Render for TestApp {
 
 fn dark_theme_colors() -> TerminalThemeColors {
     TerminalThemeColors {
-        foreground: gpui::hsla(0.0, 0.0, 0.85, 1.0),
-        background: gpui::hsla(0.0, 0.0, 0.1, 1.0),
-        cursor: gpui::hsla(0.0, 0.0, 0.85, 1.0),
+        foreground: gpui_kit::hsla(0.0, 0.0, 0.85, 1.0),
+        background: gpui_kit::hsla(0.0, 0.0, 0.1, 1.0),
+        cursor: gpui_kit::hsla(0.0, 0.0, 0.85, 1.0),
         ..TerminalThemeColors::default()
     }
 }
@@ -512,9 +512,9 @@ fn dark_theme_colors() -> TerminalThemeColors {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    gpui_platform::application().run(move |cx: &mut App| {
-        gpui_component::init(cx);
-        gpui_component::theme::init(cx);
+    gpui_kit::application().run(move |cx: &mut App| {
+        gpui_kit::component::init(cx);
+        gpui_kit::component::theme::init(cx);
 
         // Register key bindings
         cx.bind_keys([
@@ -532,7 +532,7 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(gpui::TitlebarOptions {
+                titlebar: Some(gpui_kit::TitlebarOptions {
                     title: Some(SharedString::from("Terminal Cards Test")),
                     ..Default::default()
                 }),

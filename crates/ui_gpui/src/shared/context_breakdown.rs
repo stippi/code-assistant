@@ -12,8 +12,8 @@
 //!
 //! Both sections share a legend mapping each color to its category.
 
-use gpui::{Hsla, div, prelude::*, px, relative};
-use gpui_component::ActiveTheme;
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::{Hsla, div, prelude::*, px, relative};
 
 /// Token usage broken down by category, plus the model's context limit.
 ///
@@ -63,16 +63,16 @@ impl ContextUsage {
 // Fixed, theme-independent colors for the four token categories so the legend
 // and bar remain readable and distinct across light and dark themes.
 fn color_input() -> Hsla {
-    gpui::hsla(217.0 / 360.0, 0.85, 0.58, 1.0)
+    gpui_kit::hsla(217.0 / 360.0, 0.85, 0.58, 1.0)
 }
 fn color_cache_write() -> Hsla {
-    gpui::hsla(28.0 / 360.0, 0.88, 0.55, 1.0)
+    gpui_kit::hsla(28.0 / 360.0, 0.88, 0.55, 1.0)
 }
 fn color_cache_read() -> Hsla {
-    gpui::hsla(158.0 / 360.0, 0.55, 0.48, 1.0)
+    gpui_kit::hsla(158.0 / 360.0, 0.55, 0.48, 1.0)
 }
 fn color_output() -> Hsla {
-    gpui::hsla(268.0 / 360.0, 0.55, 0.62, 1.0)
+    gpui_kit::hsla(268.0 / 360.0, 0.55, 0.62, 1.0)
 }
 
 /// The four token categories in display order: Cache Read, Cache Write, Input,
@@ -148,7 +148,7 @@ impl ContextBreakdown {
     /// Build the colored bar. Segment widths are `token / denominator`, so pass
     /// the context limit for a "fill" bar or the summed total for a
     /// proportional (full-width) bar.
-    fn bar(usage: &ContextUsage, denominator: u32, cx: &gpui::App) -> impl IntoElement {
+    fn bar(usage: &ContextUsage, denominator: u32, cx: &gpui_kit::App) -> impl IntoElement {
         let denom = denominator.max(1) as f32;
         let mut bar = div()
             .h(px(8.0))
@@ -164,7 +164,7 @@ impl ContextBreakdown {
         bar
     }
 
-    fn legend(usage: &ContextUsage, cx: &gpui::App) -> impl IntoElement {
+    fn legend(usage: &ContextUsage, cx: &gpui_kit::App) -> impl IntoElement {
         let mut list = div().flex().flex_col().gap_1();
         for (color, label, value) in categories(usage) {
             list = list.child(
@@ -193,7 +193,7 @@ impl ContextBreakdown {
         list
     }
 
-    fn section_label(text: &'static str, cx: &gpui::App) -> impl IntoElement {
+    fn section_label(text: &'static str, cx: &gpui_kit::App) -> impl IntoElement {
         div()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
@@ -202,7 +202,7 @@ impl ContextBreakdown {
 }
 
 impl RenderOnce for ContextBreakdown {
-    fn render(self, _window: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) -> impl IntoElement {
         let last = self.last_request;
         let limit = last.limit.max(1);
         let percent = (last.total() as f32 / limit as f32 * 100.0).round() as u32;
@@ -216,7 +216,7 @@ impl RenderOnce for ContextBreakdown {
             .child(
                 div()
                     .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().popover_foreground)
                     .child("Context Window"),
             )

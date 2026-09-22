@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use code_assistant_core::session::service::SkillCatalogEntry;
-use gpui::{Context, Task, Window};
-use gpui_component::Rope;
-use gpui_component::input::{InputState, RopeExt};
+use gpui_kit::component::Rope;
+use gpui_kit::component::input::RopeExt;
+use gpui_kit::{App, Task, Window};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
     TextEdit,
@@ -42,14 +42,14 @@ fn line_prefix(text: &Rope, offset: usize) -> (usize, String) {
     (line_start, full[line_start..offset].to_string())
 }
 
-impl gpui_component::input::CompletionProvider for SkillCompletionProvider {
+impl gpui_kit::component::input::CompletionProvider for SkillCompletionProvider {
     fn completions(
         &self,
         text: &Rope,
         offset: usize,
         _trigger: CompletionContext,
         _window: &mut Window,
-        cx: &mut Context<InputState>,
+        cx: &mut App,
     ) -> Task<Result<CompletionResponse>> {
         let (line_start, prefix) = line_prefix(text, offset);
 
@@ -112,12 +112,7 @@ impl gpui_component::input::CompletionProvider for SkillCompletionProvider {
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
 
-    fn is_completion_trigger(
-        &self,
-        _offset: usize,
-        _new_text: &str,
-        _cx: &mut Context<InputState>,
-    ) -> bool {
+    fn is_completion_trigger(&self, _offset: usize, _new_text: &str, _cx: &mut App) -> bool {
         // Be permissive: `completions` gates on the leading-'/' line prefix and
         // returns an empty list (which hides the menu) outside a slash context.
         true

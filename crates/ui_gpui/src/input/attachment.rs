@@ -2,11 +2,11 @@ use crate::shared::file_icons;
 use crate::shared::image;
 use code_assistant_core::persistence::DraftAttachment;
 
-use gpui::{
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::{
     ClickEvent, Context, FocusHandle, Focusable, ImageSource, InteractiveElement, ObjectFit,
     SharedString, Window, div, img, prelude::*, px,
 };
-use gpui_component::ActiveTheme;
 
 /// Maximum size for attachment thumbnails
 const ATTACHMENT_THUMBNAIL_SIZE: f32 = 80.0;
@@ -36,7 +36,7 @@ impl AttachmentView {
         }
     }
 
-    fn render_content(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_content(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         match &self.attachment {
             DraftAttachment::Image {
                 mime_type, content, ..
@@ -114,7 +114,7 @@ impl AttachmentView {
 }
 
 impl Focusable for AttachmentView {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -174,4 +174,4 @@ pub enum AttachmentEvent {
     Remove(usize),
 }
 
-impl gpui::EventEmitter<AttachmentEvent> for AttachmentView {}
+impl gpui_kit::EventEmitter<AttachmentEvent> for AttachmentView {}

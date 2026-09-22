@@ -1,9 +1,9 @@
-use gpui::{
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme, StyledExt};
+use gpui_kit::{
     Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, Window, div,
     prelude::*, px,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{ActiveTheme, StyledExt};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -154,7 +154,7 @@ impl NewProjectDialog {
 impl EventEmitter<NewProjectDialogEvent> for NewProjectDialog {}
 
 impl Focusable for NewProjectDialog {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -202,7 +202,7 @@ impl Render for NewProjectDialog {
             .justify_center()
             .bg(cx.theme().background.opacity(0.6))
             .on_mouse_down(
-                gpui::MouseButton::Left,
+                gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.cancel(cx)),
             )
             .child(
@@ -220,7 +220,7 @@ impl Render for NewProjectDialog {
                     .flex_col()
                     .gap_3()
                     // Prevent backdrop click from closing when clicking inside dialog
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
                     // Title

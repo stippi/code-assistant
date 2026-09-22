@@ -11,8 +11,8 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
 use code_assistant_core::ui::ToolStatus;
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     Animation, AnimationExt, AnyElement, ClickEvent, Context, ImageSource, InteractiveElement,
     IntoElement, ObjectFit, ParentElement, SharedString, StatefulInteractiveElement, Styled,
     StyledImage, Transformation, Window, div, img, percentage, px, rems,
@@ -51,7 +51,7 @@ impl ToolBlockRenderer for BrowserCardRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
         cx: &mut Context<BlockView>,
@@ -62,9 +62,9 @@ impl ToolBlockRenderer for BrowserCardRenderer {
 
         let is_dark = theme.background.l < 0.5;
         let header_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.15, 1.0)
         } else {
-            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.93, 1.0)
         };
         let header_text_color = theme.muted_foreground;
 
@@ -102,7 +102,7 @@ impl ToolBlockRenderer for BrowserCardRenderer {
         match tool.status {
             ToolStatus::Running | ToolStatus::Pending => {
                 header_right = header_right.child(
-                    gpui::svg()
+                    gpui_kit::svg()
                         .size(px(12.))
                         .path(SharedString::from("icons/arrow_circle.svg"))
                         .text_color(header_text_color)
@@ -117,7 +117,7 @@ impl ToolBlockRenderer for BrowserCardRenderer {
             }
             ToolStatus::Error => {
                 header_right = header_right.child(
-                    gpui::svg()
+                    gpui_kit::svg()
                         .size(px(13.0))
                         .path(SharedString::from("icons/close.svg"))
                         .text_color(theme.danger),
@@ -189,7 +189,11 @@ impl ToolBlockRenderer for BrowserCardRenderer {
 }
 
 impl BrowserCardRenderer {
-    fn render_body(&self, tool: &ToolUseBlock, theme: &gpui_component::theme::Theme) -> gpui::Div {
+    fn render_body(
+        &self,
+        tool: &ToolUseBlock,
+        theme: &gpui_kit::component::theme::Theme,
+    ) -> gpui_kit::Div {
         let mut body = div()
             .flex()
             .flex_col()

@@ -4,7 +4,7 @@
 //! part of a frame (see docs/frame-profiling.md); here taffy sees one node
 //! per chunk and the text system's line cache does the rest.
 
-use gpui::{
+use gpui_kit::{
     App, AvailableSpace, Bounds, Element, GlobalElementId, HighlightStyle, Hsla,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, Point, ShapedLine, SharedString,
     Size, Style, TextAlign, TextRun, TextStyle, Window, WrappedLine, fill, point, px, relative,
@@ -225,7 +225,7 @@ impl Element for DiffRows {
     type RequestLayoutState = LayoutCell;
     type PrepaintState = ();
 
-    fn id(&self) -> Option<gpui::ElementId> {
+    fn id(&self) -> Option<gpui_kit::ElementId> {
         None
     }
 
@@ -296,7 +296,7 @@ impl Element for DiffRows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Context, Render, TestAppContext, VisualTestContext, div, red, white};
+    use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, div, red, white};
 
     #[test]
     fn row_runs_cover_the_text_exactly() {
@@ -347,7 +347,7 @@ mod tests {
         content_right: px(12.),
     };
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn rows_take_one_line_each_and_wrap_when_narrow(cx: &mut TestAppContext) {
         let (_, cx) = cx.add_window_view(|_, _| Root);
         let cx: &mut VisualTestContext = cx;

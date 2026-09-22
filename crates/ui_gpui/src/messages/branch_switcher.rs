@@ -1,8 +1,8 @@
 //! Branch navigation component for message branching/editing.
 
 use code_assistant_core::persistence::BranchInfo;
-use gpui::{App, CursorStyle, SharedString, Window, div, prelude::*, px};
-use gpui_component::{ActiveTheme, Icon};
+use gpui_kit::component::{ActiveTheme, Icon};
+use gpui_kit::{App, CursorStyle, SharedString, Window, div, prelude::*, px};
 
 /// A stateless branch navigation component styled as a bubble on the message border.
 /// Displayed at the bottom-right corner of user messages where branches exist.

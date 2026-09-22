@@ -4,14 +4,14 @@
 
 use super::{BRAILLE_FRAMES, MessagesView};
 use code_assistant_core::session::instance::SessionActivityState;
-use gpui::{Context, div, prelude::*, rems};
-use gpui_component::ActiveTheme;
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::{Context, div, prelude::*, rems};
 
 /// Render the pending message indicator
 pub fn render_pending_message(
     view: &MessagesView,
     cx: &mut Context<MessagesView>,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     let pending_message = view.current_pending_message.lock().unwrap().clone();
     let Some(pending_message) = pending_message else {
         return div().into_any_element();
@@ -44,7 +44,7 @@ pub fn render_pending_message(
                     )
                     .into_any_element(),
                     div()
-                        .font_weight(gpui::FontWeight(600.0))
+                        .font_weight(gpui_kit::FontWeight(600.0))
                         .text_color(cx.theme().warning)
                         .child("Pending")
                         .into_any_element(),
@@ -55,8 +55,11 @@ pub fn render_pending_message(
                 .mt_2()
                 .text_color(cx.theme().foreground.opacity(0.8))
                 .child(
-                    gpui_component::text::TextView::markdown("pending-message", pending_message)
-                        .selectable(true),
+                    gpui_kit::component::text::TextView::markdown(
+                        "pending-message",
+                        pending_message,
+                    )
+                    .selectable(true),
                 ),
         );
 
@@ -72,7 +75,7 @@ pub fn render_pending_message(
 pub fn render_activity_indicator(
     view: &MessagesView,
     cx: &mut Context<MessagesView>,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     let activity = view.activity_state.lock().ok().and_then(|g| g.clone());
 
     let Some(activity) = activity else {

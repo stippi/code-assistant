@@ -9,9 +9,9 @@
 //! then managing individual deployment mappings.
 
 use super::ProviderForm;
-use gpui::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
-use gpui_component::ActiveTheme;
-use gpui_component::input::{Input, InputState};
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
 use serde_json::Value;
 use tracing::warn;
 
@@ -85,7 +85,7 @@ impl AiCoreProviderForm {
     fn form_row(
         &self,
         label: &str,
-        widget: gpui::AnyElement,
+        widget: gpui_kit::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -98,7 +98,7 @@ impl AiCoreProviderForm {
                     .w(px(80.))
                     .flex_none()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )
@@ -387,7 +387,7 @@ impl Render for AiCoreProviderForm {
                             .w(px(80.))
                             .flex_none()
                             .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .text_color(cx.theme().muted_foreground)
                             .child("Service Key"),
                     )
@@ -422,11 +422,11 @@ impl Render for AiCoreProviderForm {
                 div().pl(px(83.)).child(match status {
                     Some((true, msg)) => div()
                         .text_xs()
-                        .text_color(gpui::hsla(142.0 / 360.0, 0.7, 0.45, 1.0))
+                        .text_color(gpui_kit::hsla(142.0 / 360.0, 0.7, 0.45, 1.0))
                         .child(SharedString::from(msg)),
                     Some((false, msg)) => div()
                         .text_xs()
-                        .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
+                        .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
                         .child(SharedString::from(msg)),
                     None => div()
                         .text_xs()
@@ -476,7 +476,7 @@ impl Render for AiCoreProviderForm {
                                     .w(px(80.))
                                     .flex_none()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().foreground)
                                     .child("Deployments"),
                             )
@@ -537,8 +537,8 @@ impl Render for AiCoreProviderForm {
                                     .px_1()
                                     .cursor_pointer()
                                     .text_xs()
-                                    .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                                    .hover(|s| s.text_color(gpui::hsla(0.0, 0.8, 0.4, 1.0)))
+                                    .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
+                                    .hover(|s| s.text_color(gpui_kit::hsla(0.0, 0.8, 0.4, 1.0)))
                                     .child("×")
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.remove_deployment(idx, cx);
@@ -608,9 +608,9 @@ impl Render for AiCoreProviderForm {
                                     .px_1()
                                     .cursor_pointer()
                                     .text_xs()
-                                    .text_color(gpui::hsla(142.0 / 360.0, 0.7, 0.45, 1.0))
+                                    .text_color(gpui_kit::hsla(142.0 / 360.0, 0.7, 0.45, 1.0))
                                     .hover(|s| {
-                                        s.text_color(gpui::hsla(142.0 / 360.0, 0.8, 0.35, 1.0))
+                                        s.text_color(gpui_kit::hsla(142.0 / 360.0, 0.8, 0.35, 1.0))
                                     })
                                     .child("+")
                                     .on_click(cx.listener(|this, _, window, cx| {

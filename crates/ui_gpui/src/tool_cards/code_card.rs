@@ -6,7 +6,7 @@
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
 use code_assistant_core::ui::ToolStatus;
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, Element, FontWeight, HighlightStyle, ParentElement, SharedString, Styled,
     StyledText, Window, div, px, rems,
 };
@@ -67,7 +67,7 @@ impl ToolBlockRenderer for CodeCardRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         _card_ctx: Option<&CardRenderContext>,
         window: &mut Window,
         _cx: &mut Context<BlockView>,
@@ -103,8 +103,8 @@ impl ToolBlockRenderer for CodeCardRenderer {
 
 fn render_read_files_output(
     json: &Value,
-    theme: &gpui_component::theme::Theme,
-    rem_size: gpui::Pixels,
+    theme: &gpui_kit::component::theme::Theme,
+    rem_size: gpui_kit::Pixels,
 ) -> Option<AnyElement> {
     let files = json.get("files").and_then(|f| f.as_array())?;
     let errors = json
@@ -200,8 +200,8 @@ fn render_read_files_output(
 
 fn render_search_files_output(
     json: &Value,
-    theme: &gpui_component::theme::Theme,
-    rem_size: gpui::Pixels,
+    theme: &gpui_kit::component::theme::Theme,
+    rem_size: gpui_kit::Pixels,
 ) -> Option<AnyElement> {
     let results = json.get("results").and_then(|r| r.as_array())?;
     let document_results = json
@@ -488,8 +488,8 @@ fn render_search_files_output(
 fn render_lines_with_gutter(
     content: &str,
     start_line: usize,
-    text_color: gpui::Hsla,
-    rem_size: gpui::Pixels,
+    text_color: gpui_kit::Hsla,
+    rem_size: gpui_kit::Pixels,
 ) -> AnyElement {
     let lines: Vec<&str> = content.lines().collect();
     let max_line_num = start_line + lines.len().saturating_sub(1);
@@ -545,8 +545,8 @@ fn render_search_lines_with_gutter(
     start_line: usize,
     match_lines: &[usize],
     match_ranges: &[Vec<(usize, usize)>],
-    theme: &gpui_component::theme::Theme,
-    rem_size: gpui::Pixels,
+    theme: &gpui_kit::component::theme::Theme,
+    rem_size: gpui_kit::Pixels,
 ) -> AnyElement {
     let text_color = theme.foreground;
     let max_line_num = start_line + lines.len().saturating_sub(1);
@@ -561,9 +561,9 @@ fn render_search_lines_with_gutter(
     // Inline highlight color for matched text
     let is_dark = theme.background.l < 0.5;
     let highlight_bg = if is_dark {
-        gpui::hsla(35.0 / 360.0, 0.9, 0.35, 0.45)
+        gpui_kit::hsla(35.0 / 360.0, 0.9, 0.35, 0.45)
     } else {
-        gpui::hsla(45.0 / 360.0, 1.0, 0.65, 0.45)
+        gpui_kit::hsla(45.0 / 360.0, 1.0, 0.65, 0.45)
     };
 
     div()
@@ -620,8 +620,8 @@ fn render_search_lines_with_gutter(
 fn render_line_with_highlights(
     line: &str,
     ranges: &[(usize, usize)],
-    _text_color: gpui::Hsla,
-    highlight_bg: gpui::Hsla,
+    _text_color: gpui_kit::Hsla,
+    highlight_bg: gpui_kit::Hsla,
 ) -> AnyElement {
     if ranges.is_empty() {
         return div().child(line.to_string()).into_any();
@@ -647,7 +647,7 @@ fn render_line_with_highlights(
 fn render_plain_output(
     output: &str,
     is_error: bool,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> Option<AnyElement> {
     let output_color = if is_error {
         theme.danger

@@ -1,4 +1,4 @@
-use gpui::{
+use gpui_kit::{
     FillOptions, FillRule, Hsla, PathBuilder, PathStyle, Pixels, canvas, point, prelude::*, px,
 };
 use std::f32::consts::PI;
@@ -32,8 +32,8 @@ impl ContextIndicator {
             ratio: ratio.clamp(0.0, 1.0),
             size: px(16.),
             stroke_width: px(2.5),
-            bg_color: gpui::hsla(0., 0., 0.5, 0.25),
-            progress_color: gpui::hsla(0., 0., 0.7, 0.9),
+            bg_color: gpui_kit::hsla(0., 0., 0.5, 0.25),
+            progress_color: gpui_kit::hsla(0., 0., 0.7, 0.9),
         }
     }
 
@@ -139,7 +139,7 @@ fn build_arc_sector(
 }
 
 impl RenderOnce for ContextIndicator {
-    fn render(self, _window: &mut gpui::Window, _cx: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _window: &mut gpui_kit::Window, _cx: &mut gpui_kit::App) -> impl IntoElement {
         let ratio = self.ratio;
         let stroke_width = self.stroke_width;
         let bg_color = self.bg_color;

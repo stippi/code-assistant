@@ -12,12 +12,12 @@ use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use code_assistant_core::ui::ui_events::McpServerToggle;
-use gpui::{
+use gpui_kit::component::input::{Enter, InputEvent, Paste, Textarea, TextareaState};
+use gpui_kit::component::{ActiveTheme, Icon};
+use gpui_kit::{
     ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable,
     Render, SharedString, Subscription, Window, div, prelude::*, px,
 };
-use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
-use gpui_component::{ActiveTheme, Icon};
 use mcp_selector::{McpSelector, McpSelectorEvent};
 use model_selector::{ModelSelector, ModelSelectorEvent};
 use permission_selector::{PermissionSelector, PermissionSelectorEvent};
@@ -76,7 +76,7 @@ pub enum InputAreaEvent {
 
 /// Self-contained input area component that handles text input and attachments
 pub struct InputArea {
-    text_input: Entity<InputState>,
+    text_input: Entity<TextareaState>,
     model_selector: Entity<ModelSelector>,
     sandbox_selector: Entity<SandboxSelector>,
     permission_selector: Entity<PermissionSelector>,
@@ -116,17 +116,9 @@ impl InputArea {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Create the text input
         let text_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .auto_grow(1, 8)
                 .placeholder("Type your message...")
-        });
-
-        // Wire the `/skill` autocomplete provider onto the input's LSP slot.
-        text_input.update(cx, |state, _cx| {
-            state.lsp.completion_provider = Some(std::rc::Rc::new(
-                skill_completion::SkillCompletionProvider::new(),
-            ));
         });
 
         // Subscribe to text input events
@@ -494,7 +486,7 @@ impl InputArea {
     /// Handle text input events
     fn on_input_event(
         &mut self,
-        _input: &Entity<InputState>,
+        _input: &Entity<TextareaState>,
         event: &InputEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
@@ -789,7 +781,7 @@ impl InputArea {
                                     })
                                     .rounded_md()
                                     .track_focus(&text_input_handle)
-                                    .child(Input::new(&self.text_input).appearance(false))
+                                    .child(Textarea::new(&self.text_input).appearance(false))
                             })
                             // Selector row: model | worktree | sandbox | permissions | context ring
                             .child(
@@ -841,7 +833,7 @@ impl InputArea {
                                             .ml_1()
                                             .when_some(usage, |el, usage| {
                                                 el.tooltip(move |window, cx| {
-                                                    gpui_component::tooltip::Tooltip::element(
+                                                    gpui_kit::component::tooltip::Tooltip::element(
                                                         move |_window, _cx| {
                                                             ContextBreakdown::new(usage)
                                                                 .session_total(total_usage)
@@ -948,7 +940,7 @@ impl InputArea {
 }
 
 impl Focusable for InputArea {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }

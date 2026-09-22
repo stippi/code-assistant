@@ -3,11 +3,11 @@
 //! target triple). Modeled on [`super::project_dialog::NewProjectDialog`].
 
 use code_assistant_core::version;
-use gpui::{
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt};
+use gpui_kit::{
     ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, SharedString, Window, div,
     prelude::*, px,
 };
-use gpui_component::{ActiveTheme, Icon, Sizable, Size, StyledExt};
 
 /// Events emitted by the [`AboutDialog`].
 #[derive(Clone, Debug)]
@@ -36,7 +36,7 @@ impl AboutDialog {
     }
 
     /// A single label/value info row.
-    fn info_row(label: &str, value: String, cx: &Context<Self>) -> gpui::AnyElement {
+    fn info_row(label: &str, value: String, cx: &Context<Self>) -> gpui_kit::AnyElement {
         div()
             .flex()
             .flex_row()
@@ -66,7 +66,7 @@ impl AboutDialog {
 impl EventEmitter<AboutDialogEvent> for AboutDialog {}
 
 impl Focusable for AboutDialog {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -83,7 +83,7 @@ impl Render for AboutDialog {
             .justify_center()
             .bg(cx.theme().background.opacity(0.6))
             .on_mouse_down(
-                gpui::MouseButton::Left,
+                gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.close(cx)),
             )
             .child(
@@ -101,7 +101,7 @@ impl Render for AboutDialog {
                     .flex_col()
                     .gap_3()
                     // Prevent backdrop click from closing when clicking inside dialog
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
                     // Header: icon + app name + version summary

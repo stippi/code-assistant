@@ -15,8 +15,8 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
 use code_assistant_core::ui::ToolStatus;
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     ClickEvent, Context, Element, FontWeight, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
@@ -55,11 +55,11 @@ impl ToolBlockRenderer for DiffCardRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
         window: &mut Window,
         cx: &mut Context<BlockView>,
-    ) -> Option<gpui::AnyElement> {
+    ) -> Option<gpui_kit::AnyElement> {
         let card_ctx = card_ctx?;
         let rem_size = window.rem_size();
 
@@ -76,9 +76,9 @@ impl ToolBlockRenderer for DiffCardRenderer {
         let is_collapsed = card_ctx.is_collapsed;
 
         let header_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.15, 1.0)
         } else {
-            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.93, 1.0)
         };
 
         // --- Card container ---
@@ -138,7 +138,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
         let mut header_right = div().flex().flex_row().items_center().gap_1();
         if has_error {
             header_right = header_right.child(
-                gpui::svg()
+                gpui_kit::svg()
                     .size(px(13.0))
                     .path(SharedString::from("icons/close.svg"))
                     .text_color(theme.danger),
@@ -301,9 +301,9 @@ impl ToolBlockRenderer for DiffCardRenderer {
 fn render_prepared_diff(
     sections: &[SectionLines],
     syntax: Option<&[DiffSyntax]>,
-    theme: &gpui_component::theme::Theme,
-    rem_size: gpui::Pixels,
-) -> gpui::AnyElement {
+    theme: &gpui_kit::component::theme::Theme,
+    rem_size: gpui_kit::Pixels,
+) -> gpui_kit::AnyElement {
     div()
         .flex()
         .flex_col()
@@ -324,9 +324,9 @@ fn render_prepared_diff(
 /// diff only makes sense (and is only computed) once the tool is complete.
 fn render_streaming_edit(
     tool: &ToolUseBlock,
-    theme: &gpui_component::theme::Theme,
-) -> Option<gpui::AnyElement> {
-    let mut children: Vec<gpui::AnyElement> = Vec::new();
+    theme: &gpui_kit::component::theme::Theme,
+) -> Option<gpui_kit::AnyElement> {
+    let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
     if let Some(old) = get_param(tool, "old_text").filter(|s| !s.is_empty()) {
         children.push(render_streaming_block(old, true, theme));
     }
@@ -339,8 +339,8 @@ fn render_streaming_edit(
 /// `replace_in_file` while streaming: raw search/replace blocks per section.
 fn render_streaming_replace(
     tool: &ToolUseBlock,
-    theme: &gpui_component::theme::Theme,
-) -> Option<gpui::AnyElement> {
+    theme: &gpui_kit::component::theme::Theme,
+) -> Option<gpui_kit::AnyElement> {
     let sections = parse_diff_sections(get_param(tool, "diff")?);
     (!sections.is_empty()).then(|| {
         div()
@@ -359,9 +359,9 @@ fn render_streaming_replace(
 /// `write_file` while streaming: the content so far as numbered additions.
 fn render_streaming_write(
     tool: &ToolUseBlock,
-    theme: &gpui_component::theme::Theme,
-    rem_size: gpui::Pixels,
-) -> Option<gpui::AnyElement> {
+    theme: &gpui_kit::component::theme::Theme,
+    rem_size: gpui_kit::Pixels,
+) -> Option<gpui_kit::AnyElement> {
     let content = get_param(tool, "content")?;
     if content.is_empty() {
         return None;
@@ -423,8 +423,8 @@ fn render_streaming_write(
 /// Render body for the `delete_files` tool — all-red deletions showing paths.
 fn render_delete_body(
     tool: &ToolUseBlock,
-    theme: &gpui_component::theme::Theme,
-) -> Option<gpui::AnyElement> {
+    theme: &gpui_kit::component::theme::Theme,
+) -> Option<gpui_kit::AnyElement> {
     let paths_raw = get_param(tool, "paths")?;
     if paths_raw.is_empty() {
         return None;
@@ -759,9 +759,9 @@ pub(crate) fn render_diff_chunk(
     chunk: &DiffChunk,
     gutter_width: usize,
     syntax: Option<&DiffSyntax>,
-    theme: &gpui_component::theme::Theme,
-    rem_size: gpui::Pixels,
-) -> gpui::AnyElement {
+    theme: &gpui_kit::component::theme::Theme,
+    rem_size: gpui_kit::Pixels,
+) -> gpui_kit::AnyElement {
     let Some(lines) = hunks
         .get(chunk.hunk)
         .and_then(|h| h.lines.get(chunk.lines.clone()))
@@ -806,11 +806,11 @@ pub(crate) fn render_diff_chunk(
 /// alone, so its lines count from 1.
 pub(crate) fn render_diff_lines(
     diff_lines: &[DiffLine],
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
     start_line: Option<usize>,
-    rem_size: gpui::Pixels,
+    rem_size: gpui_kit::Pixels,
     syntax: Option<&DiffSyntax>,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     // Compute the gutter width (number of digits) based on new-file line numbers
     let gutter_width = if let Some(start) = start_line {
         let new_count = diff_lines
@@ -881,12 +881,12 @@ struct RowSyntax<'a> {
 /// element.
 fn render_diff_rows(
     diff_lines: &[DiffLine],
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
     start_line: Option<usize>,
     gutter_width: usize,
-    rem_size: gpui::Pixels,
+    rem_size: gpui_kit::Pixels,
     syntax: Option<RowSyntax>,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     let mut gutter_lines = LineCounter {
         old: 1,
         new: start_line.unwrap_or(1),
@@ -942,13 +942,13 @@ fn render_diff_rows(
                 let emphasis = dl.emphasis.iter().map(|range| {
                     (
                         range.clone(),
-                        gpui::HighlightStyle {
+                        gpui_kit::HighlightStyle {
                             background_color: Some(word_bg),
                             ..Default::default()
                         },
                     )
                 });
-                gpui::combine_highlights(syntax_styles, emphasis).collect()
+                gpui_kit::combine_highlights(syntax_styles, emphasis).collect()
             };
             DiffRow {
                 text: dl.text.clone(),
@@ -966,8 +966,8 @@ fn render_diff_rows(
 fn render_streaming_block(
     text: &str,
     is_deletion: bool,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::AnyElement {
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::AnyElement {
     let (row_bg, text_color) = if is_deletion {
         deleted_row_colors(theme)
     } else {
@@ -986,11 +986,11 @@ fn render_streaming_block(
 
 fn render_streaming_diff_section(
     section: &DiffSection,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::AnyElement {
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::AnyElement {
     let (del_bg, del_text) = deleted_row_colors(theme);
     let (add_bg, add_text) = added_row_colors(theme);
-    let mut children: Vec<gpui::AnyElement> = Vec::new();
+    let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
 
     if !section.search_content.is_empty() {
         let mut row = div()
@@ -1158,8 +1158,8 @@ fn abbreviate_path(path: &str) -> String {
 // Theme colors
 // ---------------------------------------------------------------------------
 
-fn rgb_color(r: u8, g: u8, b: u8) -> gpui::Hsla {
-    gpui::Rgba {
+fn rgb_color(r: u8, g: u8, b: u8) -> gpui_kit::Hsla {
+    gpui_kit::Rgba {
         r: r as f32 / 255.0,
         g: g as f32 / 255.0,
         b: b as f32 / 255.0,
@@ -1168,8 +1168,8 @@ fn rgb_color(r: u8, g: u8, b: u8) -> gpui::Hsla {
     .into()
 }
 
-fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
-    gpui::Rgba {
+fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui_kit::Hsla {
+    gpui_kit::Rgba {
         r: r as f32 / 255.0,
         g: g as f32 / 255.0,
         b: b as f32 / 255.0,
@@ -1179,17 +1179,17 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> gpui::Hsla {
 }
 
 /// Background of a diff card's body, behind the rows.
-pub(crate) fn diff_body_bg(theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+pub(crate) fn diff_body_bg(theme: &gpui_kit::component::theme::Theme) -> gpui_kit::Hsla {
     if theme.is_dark() {
-        gpui::hsla(0.0, 0.0, 0.08, 1.0)
+        gpui_kit::hsla(0.0, 0.0, 0.08, 1.0)
     } else {
-        gpui::hsla(0.0, 0.0, 0.97, 1.0)
+        gpui_kit::hsla(0.0, 0.0, 0.97, 1.0)
     }
 }
 
 pub(crate) fn deleted_row_colors(
-    theme: &gpui_component::theme::Theme,
-) -> (Option<gpui::Hsla>, gpui::Hsla) {
+    theme: &gpui_kit::component::theme::Theme,
+) -> (Option<gpui_kit::Hsla>, gpui_kit::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x80, 0x20, 0x20, 0x60)),
@@ -1204,8 +1204,8 @@ pub(crate) fn deleted_row_colors(
 }
 
 pub(crate) fn added_row_colors(
-    theme: &gpui_component::theme::Theme,
-) -> (Option<gpui::Hsla>, gpui::Hsla) {
+    theme: &gpui_kit::component::theme::Theme,
+) -> (Option<gpui_kit::Hsla>, gpui_kit::Hsla) {
     if theme.is_dark() {
         (
             Some(rgba_color(0x20, 0x60, 0x20, 0x60)),
@@ -1221,8 +1221,8 @@ pub(crate) fn added_row_colors(
 
 fn row_colors(
     tag: ChangeTag,
-    theme: &gpui_component::theme::Theme,
-) -> (Option<gpui::Hsla>, gpui::Hsla) {
+    theme: &gpui_kit::component::theme::Theme,
+) -> (Option<gpui_kit::Hsla>, gpui_kit::Hsla) {
     match tag {
         ChangeTag::Equal => unchanged_row_colors(theme),
         ChangeTag::Delete => deleted_row_colors(theme),
@@ -1236,8 +1236,8 @@ fn row_colors(
 fn row_text_color(
     tag: ChangeTag,
     highlighted: bool,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::Hsla {
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::Hsla {
     highlighted
         .then_some(theme.highlight_theme.style.editor_foreground)
         .flatten()
@@ -1246,19 +1246,22 @@ fn row_text_color(
 
 /// Background for word-level (intra-line) changes: a stronger tint layered on
 /// top of the row's add/delete background.
-pub(crate) fn word_emphasis_bg(tag: ChangeTag, theme: &gpui_component::theme::Theme) -> gpui::Hsla {
+pub(crate) fn word_emphasis_bg(
+    tag: ChangeTag,
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::Hsla {
     match (tag, theme.is_dark()) {
         (ChangeTag::Delete, true) => rgba_color(0xC0, 0x38, 0x38, 0x70),
         (ChangeTag::Delete, false) => rgba_color(0xE0, 0x60, 0x60, 0x60),
         (ChangeTag::Insert, true) => rgba_color(0x38, 0xA0, 0x38, 0x70),
         (ChangeTag::Insert, false) => rgba_color(0x40, 0xB8, 0x40, 0x50),
-        (ChangeTag::Equal, _) => gpui::transparent_black(),
+        (ChangeTag::Equal, _) => gpui_kit::transparent_black(),
     }
 }
 
 pub(crate) fn unchanged_row_colors(
-    theme: &gpui_component::theme::Theme,
-) -> (Option<gpui::Hsla>, gpui::Hsla) {
+    theme: &gpui_kit::component::theme::Theme,
+) -> (Option<gpui_kit::Hsla>, gpui_kit::Hsla) {
     if theme.is_dark() {
         (None, rgba_color(0xFF, 0xFF, 0xFF, 0x99))
     } else {
@@ -1289,7 +1292,7 @@ mod tests {
 
     #[test]
     fn highlighted_rows_use_the_neutral_syntax_foreground() {
-        use gpui_component::theme::{Theme, ThemeColor};
+        use gpui_kit::component::theme::{Theme, ThemeColor};
         let mut theme = Theme::from(&*ThemeColor::light());
         theme.highlight_theme = crate::shared::theme::syntax_theme(theme.mode);
         let foreground = theme.highlight_theme.style.editor_foreground.unwrap();

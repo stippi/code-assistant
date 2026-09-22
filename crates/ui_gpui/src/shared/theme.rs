@@ -1,12 +1,12 @@
-use gpui::{App, rgb, rgba};
-use gpui_component::highlighter::{HighlightTheme, HighlightThemeStyle};
-use gpui_component::theme::{Theme, ThemeMode};
+use gpui_kit::component::highlighter::{HighlightTheme, HighlightThemeStyle};
+use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::{App, rgb, rgba};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 /// Define our custom dark theme colors - matching existing colors
-pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
-    let mut colors = *gpui_component::theme::ThemeColor::dark();
+pub fn custom_dark_theme() -> gpui_kit::component::theme::ThemeColor {
+    let mut colors = *gpui_kit::component::theme::ThemeColor::dark();
 
     // Main backgrounds
     colors.background = rgb(0x2c2c2c).into(); // Primary background
@@ -44,8 +44,8 @@ pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
 }
 
 /// Define equivalent light theme colors with good contrast
-pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
-    let mut colors = *gpui_component::theme::ThemeColor::light();
+pub fn custom_light_theme() -> gpui_kit::component::theme::ThemeColor {
+    let mut colors = *gpui_kit::component::theme::ThemeColor::light();
 
     // Main backgrounds
     colors.background = rgb(0xF5F5F5).into(); // Light gray background
@@ -122,7 +122,7 @@ fn apply_custom_theme(cx: &mut App) {
 /// Initialize the themes in the app, optionally restoring a saved mode.
 pub fn init_themes(cx: &mut App, mode: Option<ThemeMode>) {
     // Register the theme
-    gpui_component::theme::init(cx);
+    gpui_kit::component::theme::init(cx);
 
     // If a saved mode was provided, apply it; otherwise use whatever default was set.
     if let Some(mode) = mode {
@@ -135,7 +135,7 @@ pub fn init_themes(cx: &mut App, mode: Option<ThemeMode>) {
 /// Toggle between light and dark theme.
 ///
 /// Returns the new [`ThemeMode`] so callers can persist it.
-pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) -> ThemeMode {
+pub fn toggle_theme(window: Option<&mut gpui_kit::Window>, cx: &mut App) -> ThemeMode {
     // Capture the current font_size *before* Theme::change resets it.
     let current_font_size = cx.global::<Theme>().font_size;
 
@@ -154,8 +154,8 @@ pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) -> ThemeMod
 
 /// Color utility functions for specific components
 pub mod colors {
-    use gpui::{Hsla, rgba};
-    use gpui_component::theme::Theme;
+    use gpui_kit::component::theme::Theme;
+    use gpui_kit::{Hsla, rgba};
 
     // Thinking block colors
     pub fn thinking_block_bg(theme: &Theme) -> Hsla {
@@ -181,7 +181,7 @@ mod tests {
     use crate::tool_cards::diff_card::{
         added_row_colors, deleted_row_colors, diff_body_bg, word_emphasis_bg,
     };
-    use gpui::{Hsla, Rgba, TestAppContext};
+    use gpui_kit::{Hsla, Rgba, TestAppContext};
     use similar::ChangeTag;
 
     const CAPTURES: &[&str] = &[
@@ -291,7 +291,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn highlight_theme_follows_the_mode(cx: &mut TestAppContext) {
         cx.update(|cx| {
             init_themes(cx, Some(ThemeMode::Dark));

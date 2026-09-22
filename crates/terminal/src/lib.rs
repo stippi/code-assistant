@@ -35,7 +35,7 @@ use alacritty_terminal::{Term, tty};
 use anyhow::{Context as _, Result};
 use futures::StreamExt;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use gpui::{Bounds, Context, EventEmitter, Pixels, Point, Size, Task, px};
+use gpui_kit::{Bounds, Context, EventEmitter, Pixels, Point, Size, Task, px};
 
 // Re-export types needed by terminal_view for rendering
 pub use alacritty_terminal::grid::Dimensions as AlacDimensions;

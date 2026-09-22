@@ -4,9 +4,9 @@
 use code_assistant_core::skills::{
     Skill, SkillsConfig, discover_config_and_system_skills, install_system_skills,
 };
-use gpui::{App, Context, FocusHandle, Focusable, SharedString, div, prelude::*, px};
-use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme, Disableable, Sizable, Size};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, Size};
+use gpui_kit::{App, Context, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use tracing::warn;
 
 pub struct SkillsSection {
@@ -18,7 +18,7 @@ pub struct SkillsSection {
 }
 
 impl SkillsSection {
-    pub fn new(_window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(_window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             config: SkillsConfig::load(),
@@ -152,7 +152,7 @@ impl SkillsSection {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
                                     .child(SharedString::from(skill.name.clone())),
                             )
@@ -195,7 +195,11 @@ impl Focusable for SkillsSection {
 }
 
 impl Render for SkillsSection {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let enabled = self.config.enabled;
         let bundled_enabled = self.config.bundled_skills_enabled;
         let skills = self.skills.clone();
@@ -211,7 +215,7 @@ impl Render for SkillsSection {
             .child(
                 div()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .text_color(cx.theme().muted_foreground)
                     .child("SKILLS"),
             )
@@ -253,7 +257,7 @@ impl Render for SkillsSection {
             .child(
                 div()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child("USER & SYSTEM SKILLS"),
             )

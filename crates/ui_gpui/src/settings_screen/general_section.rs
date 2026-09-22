@@ -1,14 +1,14 @@
 //! General settings section — theme, scale, and other global preferences.
 
-use gpui::{App, Context, FocusHandle, Focusable, SharedString, div, prelude::*, px};
-use gpui_component::ActiveTheme;
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::{App, Context, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 
 pub struct GeneralSection {
     focus_handle: FocusHandle,
 }
 
 impl GeneralSection {
-    pub fn new(_window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(_window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
         }
@@ -22,7 +22,11 @@ impl Focusable for GeneralSection {
 }
 
 impl Render for GeneralSection {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -33,7 +37,7 @@ impl Render for GeneralSection {
             .child(
                 div()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .text_color(cx.theme().muted_foreground)
                     .child("GENERAL"),
             )
@@ -73,7 +77,7 @@ impl Render for GeneralSection {
                     .child(
                         div()
                             .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .text_color(cx.theme().muted_foreground)
                             .child("Configuration Files"),
                     )

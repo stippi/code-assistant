@@ -2,12 +2,12 @@
 
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
-use gpui::{
+use gpui_kit::component::{ActiveTheme, StyledExt};
+use gpui_kit::{
     Animation, AnimationExt, ClickEvent, Context, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window,
     div, percentage, prelude::*, px,
 };
-use gpui_component::{ActiveTheme, StyledExt};
 use std::time::SystemTime;
 
 /// Events emitted by individual SessionListItem components
@@ -110,13 +110,17 @@ impl SessionListItem {
 impl EventEmitter<SessionListItemEvent> for SessionListItem {}
 
 impl Focusable for SessionListItem {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
 impl Render for SessionListItem {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let name = if self.metadata.name.is_empty() {
             "Unnamed chat".to_string()
         } else {
@@ -181,7 +185,7 @@ impl Render for SessionListItem {
                     .justify_center()
                     .when(is_errored, |el| {
                         el.child(
-                            gpui::svg()
+                            gpui_kit::svg()
                                 .size(px(12.))
                                 .path("icons/circle_stop.svg")
                                 .text_color(activity_color),
@@ -189,7 +193,7 @@ impl Render for SessionListItem {
                     })
                     .when(is_externally_locked, |el| {
                         el.child(
-                            gpui::svg()
+                            gpui_kit::svg()
                                 .size(px(12.))
                                 .path("icons/lock.svg")
                                 .text_color(activity_color),
@@ -197,7 +201,7 @@ impl Render for SessionListItem {
                     })
                     .when(is_active && !is_errored && !is_externally_locked, |el| {
                         el.child(
-                            gpui::svg()
+                            gpui_kit::svg()
                                 .size(px(12.))
                                 .path("icons/arrow_circle.svg")
                                 .text_color(activity_color)
@@ -256,7 +260,7 @@ impl Render for SessionListItem {
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().danger.opacity(0.15)))
                                     .child(
-                                        gpui::svg()
+                                        gpui_kit::svg()
                                             .size(px(12.))
                                             .path("icons/trash.svg")
                                             .text_color(cx.theme().danger),

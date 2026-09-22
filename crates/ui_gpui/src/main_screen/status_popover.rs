@@ -2,10 +2,10 @@
 //!
 //! Shows transient error messages or status notifications.
 
-use gpui::{AnyElement, SharedString, Styled, div, px, rems, rgba, svg};
-use gpui::{Context, prelude::*};
-use gpui_component::ActiveTheme;
-use gpui_component::text::TextView;
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::text::TextView;
+use gpui_kit::{AnyElement, SharedString, Styled, div, px, rems, rgba, svg};
+use gpui_kit::{Context, prelude::*};
 
 use crate::{Gpui, UiEventSender};
 use code_assistant_core::ui::ui_events::UiEvent;
@@ -80,7 +80,7 @@ pub(super) fn render_status_popover(
                             div()
                                 .text_color(text_color)
                                 .text_size(rems(0.6875))
-                                .font_weight(gpui::FontWeight(500.0))
+                                .font_weight(gpui_kit::FontWeight(500.0))
                                 .flex_grow(1.0)
                                 .flex_shrink(1.0)
                                 .min_w_0() // Allow shrinking below content size for text wrapping
@@ -180,7 +180,7 @@ pub(super) fn render_status_popover(
                             div()
                                 .text_color(text_color)
                                 .text_size(rems(0.6875))
-                                .font_weight(gpui::FontWeight(500.0))
+                                .font_weight(gpui_kit::FontWeight(500.0))
                                 .flex_grow(1.0)
                                 .flex_shrink(1.0)
                                 .min_w_0()

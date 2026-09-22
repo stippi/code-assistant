@@ -28,8 +28,8 @@ pub mod sub_agent_card;
 pub mod terminal_card;
 
 use crate::blocks::{BlockView, ToolUseBlock};
-use gpui::{AnyElement, Context, Entity, Pixels, Window};
-use gpui_component::text::TextViewState;
+use gpui_kit::component::text::TextViewState;
+use gpui_kit::{AnyElement, Context, Entity, Pixels, Window};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -134,7 +134,7 @@ pub trait ToolBlockRenderer: Send + Sync {
         &self,
         tool: &ToolUseBlock,
         is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
         window: &mut Window,
         cx: &mut Context<BlockView>,

@@ -20,12 +20,12 @@ use code_assistant_core::ui::ui_events::UiEvent;
 use about_dialog::{AboutDialog, AboutDialogEvent};
 use project_dialog::{NewProjectDialog, NewProjectDialogEvent};
 
-use gpui::{
+use gpui_kit::{
     App, ClickEvent, Context, Entity, FocusHandle, Focusable, PathPromptOptions, Pixels,
     SharedString, Subscription, Task, div, prelude::*, px,
 };
 
-use gpui_component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -171,7 +171,7 @@ pub enum MainScreenEvent {
     OpenSettings,
 }
 
-impl gpui::EventEmitter<MainScreenEvent> for MainScreen {}
+impl gpui_kit::EventEmitter<MainScreenEvent> for MainScreen {}
 
 // Main screen - handles overall layout and coordination (chat + sidebar)
 pub struct MainScreen {
@@ -179,7 +179,7 @@ pub struct MainScreen {
     project_sidebar: Entity<SessionSidebar>,
     messages_view: Entity<MessagesView>,
     plan_banner: Entity<plan_banner::PlanBanner>,
-    recent_keystrokes: Vec<gpui::Keystroke>,
+    recent_keystrokes: Vec<gpui_kit::Keystroke>,
     focus_handle: FocusHandle,
     // Project sidebar state
     sidebar_collapsed: bool,
@@ -234,7 +234,7 @@ impl MainScreen {
     pub fn new(
         messages_view: Entity<MessagesView>,
         project_sidebar: Entity<SessionSidebar>,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // Create the plan banner
@@ -327,7 +327,7 @@ impl MainScreen {
     pub fn on_toggle_project_sidebar(
         &mut self,
         _: &ClickEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         let should_expand = self.sidebar_collapsed;
@@ -340,7 +340,7 @@ impl MainScreen {
     pub fn on_toggle_right_sidebar(
         &mut self,
         _: &ClickEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         let should_expand = self.right_sidebar_collapsed;
@@ -380,13 +380,18 @@ impl MainScreen {
     fn on_open_settings(
         &mut self,
         _: &ClickEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         cx.emit(MainScreenEvent::OpenSettings);
     }
 
-    fn on_open_about(&mut self, _: &ClickEvent, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn on_open_about(
+        &mut self,
+        _: &ClickEvent,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
         let dialog = cx.new(|cx| AboutDialog::new(window, cx));
         let subscription = cx.subscribe_in(&dialog, window, Self::on_about_dialog_event);
         self.about_dialog = Some(dialog);
@@ -398,7 +403,7 @@ impl MainScreen {
         &mut self,
         _dialog: &Entity<AboutDialog>,
         event: &AboutDialogEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -461,7 +466,7 @@ impl MainScreen {
         &mut self,
         _: &Entity<plan_banner::PlanBanner>,
         event: &plan_banner::PlanBannerEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -498,7 +503,7 @@ impl MainScreen {
     fn on_toggle_theme(
         &mut self,
         _: &ClickEvent,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         let new_mode = theme::toggle_theme(Some(window), cx);
@@ -506,8 +511,8 @@ impl MainScreen {
         // Persist the new theme choice
         Self::update_settings(cx, |s| {
             s.theme_mode = match new_mode {
-                gpui_component::theme::ThemeMode::Light => settings::ThemeModeSetting::Light,
-                gpui_component::theme::ThemeMode::Dark => settings::ThemeModeSetting::Dark,
+                gpui_kit::component::theme::ThemeMode::Light => settings::ThemeModeSetting::Light,
+                gpui_kit::component::theme::ThemeMode::Dark => settings::ThemeModeSetting::Dark,
             };
         });
 
@@ -523,7 +528,12 @@ impl MainScreen {
         60, 70, 80, 85, 90, 95, 98, 100, 102, 105, 110, 120, 130, 150, 175, 200,
     ];
 
-    fn on_zoom_in(&mut self, _: &ClickEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn on_zoom_in(
+        &mut self,
+        _: &ClickEvent,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
         let current_pct = (self.ui_scale * 100.0).round() as u32;
         if let Some(&next) = Self::ZOOM_LEVELS.iter().find(|&&l| l > current_pct) {
             self.ui_scale = next as f32 / 100.0;
@@ -532,7 +542,12 @@ impl MainScreen {
         }
     }
 
-    fn on_zoom_out(&mut self, _: &ClickEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn on_zoom_out(
+        &mut self,
+        _: &ClickEvent,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
         let current_pct = (self.ui_scale * 100.0).round() as u32;
         if let Some(&prev) = Self::ZOOM_LEVELS.iter().rev().find(|&&l| l < current_pct) {
             self.ui_scale = prev as f32 / 100.0;
@@ -543,7 +558,8 @@ impl MainScreen {
 
     fn apply_ui_scale(&self, cx: &mut Context<Self>) {
         let scaled = px(Self::BASE_FONT_SIZE * self.ui_scale);
-        cx.global_mut::<gpui_component::theme::Theme>().font_size = scaled;
+        cx.global_mut::<gpui_kit::component::theme::Theme>()
+            .font_size = scaled;
         cx.notify();
     }
 
@@ -564,14 +580,18 @@ impl MainScreen {
     /// Coming back to the window: re-list the review panel's changes. The
     /// panel's filesystem watcher normally keeps it fresh; this covers the
     /// cases a watcher can miss (e.g. inotify limits on large trees).
-    fn on_window_activation_changed(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn on_window_activation_changed(
+        &mut self,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
         if window.is_window_active() && !self.right_sidebar_collapsed {
             self.right_panel.update(cx, |panel, cx| panel.reload(cx));
         }
     }
 
     /// Called when the window is moved or resized.
-    fn on_window_bounds_changed(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn on_window_bounds_changed(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         let bounds = window.bounds();
         Self::update_settings(cx, |s| {
             s.window_bounds = Some(settings::WindowBoundsSettings::from_gpui_bounds(bounds));
@@ -582,7 +602,7 @@ impl MainScreen {
     fn on_reset_click(
         &mut self,
         _: &ClickEvent,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         self.recent_keystrokes.clear();
@@ -596,7 +616,7 @@ impl MainScreen {
         &mut self,
         _input_area: &Entity<InputArea>,
         event: &InputAreaEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -776,7 +796,7 @@ impl MainScreen {
         &mut self,
         _project_sidebar: &Entity<SessionSidebar>,
         event: &SessionSidebarEvent,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         if let SessionSidebarEvent::AddProjectRequested = event {
@@ -939,7 +959,7 @@ impl MainScreen {
         content: String,
         attachments: Vec<code_assistant_core::persistence::DraftAttachment>,
         branch_parent_id: Option<code_assistant_core::persistence::NodeId>,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         self.input_area.update(cx, |input_area, cx| {
@@ -964,7 +984,7 @@ impl MainScreen {
     fn on_cancel_agent(
         &mut self,
         _: &crate::CancelAgent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         // Request the agent of the current session to stop
@@ -977,7 +997,7 @@ impl MainScreen {
     }
 
     /// Open the add-project flow: native folder picker, then name dialog.
-    fn open_add_project_flow(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn open_add_project_flow(&mut self, _window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         debug!("Opening add-project folder picker");
 
         let receiver = cx.prompt_for_paths(PathPromptOptions {
@@ -1019,7 +1039,7 @@ impl MainScreen {
     fn show_new_project_dialog(
         &mut self,
         path: std::path::PathBuf,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         // Load existing projects so the dialog can validate name clashes
@@ -1040,7 +1060,7 @@ impl MainScreen {
         &mut self,
         _dialog: &Entity<NewProjectDialog>,
         event: &NewProjectDialogEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -1065,13 +1085,13 @@ impl MainScreen {
     }
 
     /// Render the floating status popover if needed (currently: errors only).
-    fn render_status_popover(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+    fn render_status_popover(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
         status_popover::render_status_popover(self, cx)
     }
 
     /// Banner above the input area listing tool permission requests waiting
     /// for a decision, each with allow-once / always / deny buttons.
-    fn render_permission_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_permission_prompts(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         use tools_core::PermissionDecision;
 
         let requests = cx
@@ -1086,7 +1106,7 @@ impl MainScreen {
         let respond = |session_id: &str, request_id: &str, decision: PermissionDecision| {
             let session_id = session_id.to_string();
             let request_id = request_id.to_string();
-            move |_: &gpui::ClickEvent, _: &mut gpui::Window, cx: &mut gpui::App| {
+            move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
                 if let Some(gpui) = cx.try_global::<Gpui>() {
                     gpui.cmd_respond_permission(session_id.clone(), request_id.clone(), decision);
                 }
@@ -1141,7 +1161,7 @@ impl MainScreen {
                                 .child(
                                     div()
                                         .text_sm()
-                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .font_weight(gpui_kit::FontWeight::MEDIUM)
                                         .text_color(cx.theme().foreground)
                                         .child(format!(
                                             "Permission required: {}",
@@ -1183,7 +1203,7 @@ impl MainScreen {
         &mut self,
         _previous_session_id: Option<String>,
         new_session_id: Option<String>,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(session_id) = new_session_id.as_ref() {
@@ -1317,7 +1337,11 @@ impl Focusable for MainScreen {
 }
 
 impl Render for MainScreen {
-    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // Get current chat state from global Gpui
 
         let (
@@ -1825,7 +1849,7 @@ impl Render for MainScreen {
                                         }
                                     })
                                     .on_children_prepainted({
-                                        move |bounds_vec: Vec<gpui::Bounds<Pixels>>,
+                                        move |bounds_vec: Vec<gpui_kit::Bounds<Pixels>>,
                                               _window,
                                               _app| {
                                             if let Some(first) = bounds_vec.first() {
@@ -1902,7 +1926,7 @@ impl Render for MainScreen {
                         let sidebar_width = content_width * right_sidebar_scale;
                         let resizing = self.right_sidebar_resizing;
                         let handle_mouse_down =
-                            cx.listener(|this, ev: &gpui::MouseDownEvent, _window, cx| {
+                            cx.listener(|this, ev: &gpui_kit::MouseDownEvent, _window, cx| {
                                 this.right_sidebar_resizing = true;
                                 this.resize_start_x = f32::from(ev.position.x);
                                 this.resize_start_width = f32::from(this.right_sidebar_width);
@@ -1941,7 +1965,7 @@ impl Render for MainScreen {
                                             .opacity(if resizing { 1.0 } else { 0.0 })
                                             .hover(|s| s.opacity(1.0))
                                             .on_mouse_down(
-                                                gpui::MouseButton::Left,
+                                                gpui_kit::MouseButton::Left,
                                                 handle_mouse_down,
                                             ),
                                     ),
@@ -1962,7 +1986,7 @@ impl Render for MainScreen {
                         .inset_0()
                         .cursor_col_resize()
                         .on_mouse_move(cx.listener(
-                            |this, ev: &gpui::MouseMoveEvent, _window, cx| {
+                            |this, ev: &gpui_kit::MouseMoveEvent, _window, cx| {
                                 if !this.right_sidebar_resizing {
                                     return;
                                 }
@@ -1975,8 +1999,8 @@ impl Render for MainScreen {
                             },
                         ))
                         .on_mouse_up(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _ev: &gpui::MouseUpEvent, _window, cx| {
+                            gpui_kit::MouseButton::Left,
+                            cx.listener(|this, _ev: &gpui_kit::MouseUpEvent, _window, cx| {
                                 if !this.right_sidebar_resizing {
                                     return;
                                 }

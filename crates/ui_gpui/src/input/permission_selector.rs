@@ -1,8 +1,8 @@
-use gpui::{Context, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, Size,
     select::{Select, SelectEvent, SelectItem, SelectState},
 };
+use gpui_kit::{Context, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
 use tools_core::permissions::PermissionTier;
 
 #[derive(Clone, Debug)]
@@ -25,11 +25,11 @@ impl PermissionOption {
 impl SelectItem for PermissionOption {
     type Value = PermissionTier;
 
-    fn title(&self) -> gpui::SharedString {
+    fn title(&self) -> gpui_kit::SharedString {
         self.label.into()
     }
 
-    fn display_title(&self) -> Option<gpui::AnyElement> {
+    fn display_title(&self) -> Option<gpui_kit::AnyElement> {
         None
     }
 
@@ -40,7 +40,7 @@ impl SelectItem for PermissionOption {
 
 pub struct PermissionSelector {
     dropdown_state: Entity<SelectState<Vec<PermissionOption>>>,
-    _subscription: gpui::Subscription,
+    _subscription: gpui_kit::Subscription,
 }
 
 impl EventEmitter<PermissionSelectorEvent> for PermissionSelector {}
@@ -94,7 +94,7 @@ impl PermissionSelector {
 }
 
 impl Focusable for PermissionSelector {
-    fn focus_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+    fn focus_handle(&self, cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
         self.dropdown_state.focus_handle(cx)
     }
 }

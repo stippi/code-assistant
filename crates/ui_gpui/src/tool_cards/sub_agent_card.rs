@@ -15,13 +15,13 @@ use crate::shared::context_indicator::ContextIndicator;
 use crate::shared::file_icons;
 use code_assistant_core::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
 use code_assistant_core::ui::ToolStatus;
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::component::text::{TextView, TextViewState};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     Animation, AnimationExt, ClickEvent, Context, Element, Entity, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div,
     percentage, px, rems, svg,
 };
-use gpui_component::text::{TextView, TextViewState};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -52,11 +52,11 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
         window: &mut Window,
         cx: &mut Context<BlockView>,
-    ) -> Option<gpui::AnyElement> {
+    ) -> Option<gpui_kit::AnyElement> {
         let card_ctx = card_ctx?;
 
         // Need at least instructions or output to show anything.
@@ -85,9 +85,9 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
         let is_dark = theme.background.l < 0.5;
 
         let header_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.15, 1.0)
         } else {
-            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.93, 1.0)
         };
 
         // --- Card container ---
@@ -152,7 +152,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
                     .flex()
                     .items_center()
                     .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::new(format!(
+                        gpui_kit::component::tooltip::Tooltip::new(format!(
                             "Sub-agent context: {:.0}%",
                             ratio * 100.0
                         ))
@@ -241,7 +241,7 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
         // Red ✕ on error
         if has_error {
             header_right = header_right.child(
-                gpui::svg()
+                gpui_kit::svg()
                     .size(px(13.0))
                     .path(SharedString::from("icons/close.svg"))
                     .text_color(theme.danger),
@@ -296,9 +296,9 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
         // --- Body (animated) ---
         if scale > 0.0 {
             let body_bg = if is_dark {
-                gpui::hsla(0.0, 0.0, 0.08, 1.0)
+                gpui_kit::hsla(0.0, 0.0, 0.08, 1.0)
             } else {
-                gpui::hsla(0.0, 0.0, 0.97, 1.0)
+                gpui_kit::hsla(0.0, 0.0, 0.97, 1.0)
             };
 
             let mut body = div()
@@ -392,8 +392,8 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
 /// Render a single compact tool line.
 fn render_tool_line(
     tool: &code_assistant_core::agent::sub_agent::SubAgentToolCall,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::AnyElement {
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::AnyElement {
     let icon = file_icons::get().get_tool_icon(&tool.name);
 
     let (icon_color, text_color) = match tool.status {
@@ -431,8 +431,8 @@ fn render_tool_line(
 /// Get label and color for an activity state.
 fn activity_label(
     activity: &SubAgentActivity,
-    theme: &gpui_component::theme::Theme,
-) -> (&'static str, gpui::Hsla) {
+    theme: &gpui_kit::component::theme::Theme,
+) -> (&'static str, gpui_kit::Hsla) {
     match activity {
         SubAgentActivity::WaitingForLlm => ("Waiting…", theme.muted_foreground),
         SubAgentActivity::Streaming => ("Responding…", theme.info),
@@ -446,8 +446,8 @@ fn activity_label(
 /// Render activity line for non-running states (cancelled, etc.).
 fn render_activity_line(
     activity: &SubAgentActivity,
-    theme: &gpui_component::theme::Theme,
-) -> Option<gpui::AnyElement> {
+    theme: &gpui_kit::component::theme::Theme,
+) -> Option<gpui_kit::AnyElement> {
     match activity {
         SubAgentActivity::Cancelled => Some(
             div()
@@ -464,8 +464,8 @@ fn render_activity_line(
 /// Render error/cancelled status line.
 fn render_status_line(
     output: &SubAgentOutput,
-    theme: &gpui_component::theme::Theme,
-) -> Option<gpui::AnyElement> {
+    theme: &gpui_kit::component::theme::Theme,
+) -> Option<gpui_kit::AnyElement> {
     if output.cancelled == Some(true) {
         return Some(
             div()
@@ -494,11 +494,11 @@ fn render_status_line(
 /// Render the final response as markdown.
 fn render_response(
     response: &str,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
     markdown_state: Option<&Entity<TextViewState>>,
     _window: &mut Window,
     cx: &mut Context<BlockView>,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     let response = response.to_string();
     let response_element = if let Some(state) = markdown_state {
         state.update(cx, |state, cx| {

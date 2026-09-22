@@ -12,10 +12,10 @@ use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
 use crate::terminal::pool::TerminalPool;
 use code_assistant_core::ui::ToolStatus;
-use gpui::AppContext as _; // brings .new() into scope on Context
-use gpui::prelude::FluentBuilder;
-use gpui::{Animation, AnimationExt, Transformation, svg};
-use gpui::{
+use gpui_kit::AppContext as _; // brings .new() into scope on Context
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{Animation, AnimationExt, Transformation, svg};
+use gpui_kit::{
     ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, percentage, px, rems,
 };
@@ -113,11 +113,11 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
         cx: &mut Context<BlockView>,
-    ) -> Option<gpui::AnyElement> {
+    ) -> Option<gpui_kit::AnyElement> {
         let card_ctx = card_ctx?;
         let theme_colors = theme_to_terminal_colors(theme);
 
@@ -239,9 +239,9 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         let is_dark = is_dark_theme(theme);
         let has_error = is_card_error(is_running, exit_status, is_live, &tool.status);
         let header_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.15, 1.0)
         } else {
-            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.93, 1.0)
         };
 
         let mut card = div()
@@ -383,7 +383,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                     )
                 })
                 .child(
-                    gpui::svg()
+                    gpui_kit::svg()
                         .size(px(13.0))
                         .path(SharedString::from("icons/close.svg"))
                         .text_color(theme.danger),
@@ -412,13 +412,13 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                     .size(px(20.0))
                     .rounded(px(4.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.2)))
+                    .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.6, 0.5, 0.2)))
                     .child({
                         let stop_icon = file_icons::get().get_type_icon(file_icons::STOP);
                         file_icons::render_icon(
                             &stop_icon,
                             12.0,
-                            gpui::hsla(0.0, 0.7, 0.55, 1.0),
+                            gpui_kit::hsla(0.0, 0.7, 0.55, 1.0),
                             "■",
                         )
                     })
@@ -453,14 +453,16 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .group_hover("term-header", |s| s.opacity(1.0))
                 .hover(|s| s.bg(header_text_color.opacity(0.15)))
                 .child(
-                    gpui::svg()
+                    gpui_kit::svg()
                         .size(px(13.0))
                         .path(SharedString::from("icons/copy.svg"))
                         .text_color(header_text_color),
                 )
                 .on_click(move |_event, _window, cx| {
                     cx.stop_propagation();
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(cmd_for_copy.clone()));
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                        cmd_for_copy.clone(),
+                    ));
                 }),
         );
 
@@ -554,13 +556,13 @@ impl TerminalCardRenderer {
         working_dir: Option<&str>,
         status_text: &str,
         show_stop: bool,
-        theme: &gpui_component::theme::Theme,
-    ) -> gpui::Div {
+        theme: &gpui_kit::component::theme::Theme,
+    ) -> gpui_kit::Div {
         let is_dark = is_dark_theme(theme);
         let header_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.15, 1.0)
         } else {
-            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.93, 1.0)
         };
         let border_color = theme.border;
         let header_text_color = theme.muted_foreground;
@@ -635,14 +637,14 @@ impl TerminalCardRenderer {
                                         .size(px(20.0))
                                         .rounded(px(4.0))
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.2)))
+                                        .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.6, 0.5, 0.2)))
                                         .child({
                                             let stop_icon =
                                                 file_icons::get().get_type_icon(file_icons::STOP);
                                             file_icons::render_icon(
                                                 &stop_icon,
                                                 12.0,
-                                                gpui::hsla(0.0, 0.7, 0.55, 1.0),
+                                                gpui_kit::hsla(0.0, 0.7, 0.55, 1.0),
                                                 "■",
                                             )
                                         })
@@ -703,8 +705,8 @@ fn render_static_output(
     output: &str,
     styled_lines: Option<&Vec<terminal::StyledLine>>,
     theme_colors: &TerminalThemeColors,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::Div {
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::Div {
     if let Some(styled) = styled_lines {
         render_styled_output(styled, theme_colors, theme)
     } else {
@@ -716,8 +718,8 @@ fn render_static_output(
 fn render_styled_output(
     styled_lines: &[terminal::StyledLine],
     theme_colors: &TerminalThemeColors,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::Div {
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::Div {
     let truncated = styled_lines.len() > MAX_STATIC_OUTPUT_LINES;
     let visible_lines = if truncated {
         &styled_lines[..MAX_STATIC_OUTPUT_LINES]
@@ -748,7 +750,7 @@ fn render_styled_output(
 
                 let mut span_el = div().text_color(fg_color).child(span.text.clone());
                 if span.bold {
-                    span_el = span_el.font_weight(gpui::FontWeight::BOLD);
+                    span_el = span_el.font_weight(gpui_kit::FontWeight::BOLD);
                 }
                 if span.italic {
                     span_el = span_el.italic();
@@ -785,8 +787,8 @@ fn render_styled_output(
 fn render_plain_output(
     output: &str,
     theme_colors: &TerminalThemeColors,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::Div {
+    theme: &gpui_kit::component::theme::Theme,
+) -> gpui_kit::Div {
     let lines: Vec<&str> = output.trim_end().lines().collect();
     let truncated = lines.len() > MAX_STATIC_OUTPUT_LINES;
     let visible_lines = if truncated {
@@ -882,7 +884,7 @@ fn format_elapsed(secs: u64) -> String {
 // Theme mapping
 // ---------------------------------------------------------------------------
 
-fn theme_to_terminal_colors(theme: &gpui_component::theme::Theme) -> TerminalThemeColors {
+fn theme_to_terminal_colors(theme: &gpui_kit::component::theme::Theme) -> TerminalThemeColors {
     let is_dark = is_dark_theme(theme);
 
     if is_dark {
@@ -917,8 +919,8 @@ fn theme_to_terminal_colors(theme: &gpui_component::theme::Theme) -> TerminalThe
     }
 }
 
-fn rgba(r: u8, g: u8, b: u8) -> gpui::Hsla {
-    gpui::Rgba {
+fn rgba(r: u8, g: u8, b: u8) -> gpui_kit::Hsla {
+    gpui_kit::Rgba {
         r: r as f32 / 255.0,
         g: g as f32 / 255.0,
         b: b as f32 / 255.0,
@@ -927,6 +929,6 @@ fn rgba(r: u8, g: u8, b: u8) -> gpui::Hsla {
     .into()
 }
 
-fn is_dark_theme(theme: &gpui_component::theme::Theme) -> bool {
+fn is_dark_theme(theme: &gpui_kit::component::theme::Theme) -> bool {
     theme.background.l < 0.5
 }

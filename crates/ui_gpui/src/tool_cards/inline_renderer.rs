@@ -6,7 +6,7 @@
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
 use code_assistant_core::ui::ToolStatus;
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, Element, ImageSource, ObjectFit, ParentElement, Styled, StyledImage,
     Window, div, img, px, rems,
 };
@@ -150,7 +150,7 @@ impl ToolBlockRenderer for InlineToolRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         _card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
         _cx: &mut Context<BlockView>,
@@ -164,7 +164,7 @@ impl ToolBlockRenderer for InlineToolRenderer {
 /// when there is nothing to show yet.
 pub(crate) fn render_inline_output(
     tool: &ToolUseBlock,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> Option<AnyElement> {
     let output = tool.output.as_deref().unwrap_or("");
     render_inline_output_text(output, false, tool, theme)
@@ -178,7 +178,7 @@ pub(crate) fn render_inline_output_text(
     output: &str,
     monospace: bool,
     tool: &ToolUseBlock,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> Option<AnyElement> {
     let has_images = !tool.images.is_empty();
 

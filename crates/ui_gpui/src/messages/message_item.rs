@@ -2,8 +2,8 @@
 
 use super::MessagesView;
 use super::branch_switcher::BranchSwitcherElement;
-use gpui::{Context, CursorStyle, Entity, SharedString, Window, div, prelude::*, rems, rgb};
-use gpui_component::{ActiveTheme, Icon};
+use gpui_kit::component::{ActiveTheme, Icon};
+use gpui_kit::{Context, CursorStyle, Entity, SharedString, Window, div, prelude::*, rems, rgb};
 
 /// Render a single message at the given index.
 /// Called by the list's render callback — only for visible items.
@@ -12,7 +12,7 @@ pub fn render_message(
     index: usize,
     _window: &mut Window,
     cx: &mut Context<MessagesView>,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     let messages = view.message_queue.lock().unwrap();
     let Some(msg) = messages.get(index) else {
         // Index out of bounds — might be the pending message slot
@@ -87,7 +87,7 @@ pub fn render_message(
                         )
                         .into_any_element(),
                         div()
-                            .font_weight(gpui::FontWeight(600.0))
+                            .font_weight(gpui_kit::FontWeight(600.0))
                             .text_color(user_accent)
                             .child("You")
                             .into_any_element(),
@@ -173,7 +173,7 @@ pub fn render_message(
 fn group_user_message_elements(
     elements: Vec<Entity<super::super::blocks::BlockView>>,
     cx: &Context<MessagesView>,
-) -> Vec<gpui::AnyElement> {
+) -> Vec<gpui_kit::AnyElement> {
     let mut result = Vec::new();
     let mut current_images = Vec::new();
 
