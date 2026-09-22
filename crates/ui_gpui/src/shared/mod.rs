@@ -3,6 +3,7 @@ pub mod auto_scroll;
 pub mod context_breakdown;
 pub mod context_indicator;
 pub mod file_icons;
+pub mod frame_profile;
 pub mod image;
 pub mod plan_banner;
 pub mod review_cache;

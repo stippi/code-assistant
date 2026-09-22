@@ -1,14 +1,46 @@
 //! Syntax highlighting for diff rows. Both sides of a diff are parsed once
 //! (tree-sitter, via gpui-component's [`SyntaxHighlighter`]) on a background
-//! thread; rendering then asks for the styles of just the lines it builds,
-//! against the theme current at that moment.
+//! thread, and the styles of every line are computed once per theme, ideally
+//! right there ([`DiffSyntax::prime`]): a tree-sitter query per row and frame
+//! showed up as up to 7% of a frame's draw time. Rendering then only slices
+//! the cached line styles.
 
 use super::diff_card::normalize_for_diff;
 use gpui::HighlightStyle;
 use gpui_component::Rope;
+use gpui_component::ThemeMode;
 use gpui_component::highlighter::{HighlightTheme, Language, LanguageRegistry, SyntaxHighlighter};
 use similar::ChangeTag;
 use std::ops::Range;
+use std::sync::Mutex;
+
+/// Styles of one line, as ranges relative to the line's start.
+type LineStyles = Vec<(Range<usize>, HighlightStyle)>;
+
+/// Identifies the theme a [`StyleCache`] was computed for. The address alone
+/// could be reused by a later theme, so name and appearance are compared too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThemeKey {
+    address: usize,
+    name: String,
+    appearance: ThemeMode,
+}
+
+impl ThemeKey {
+    fn of(theme: &HighlightTheme) -> Self {
+        Self {
+            address: theme as *const HighlightTheme as usize,
+            name: theme.name.clone(),
+            appearance: theme.appearance,
+        }
+    }
+}
+
+/// The styles of every line of one side, for one theme.
+struct StyleCache {
+    theme: ThemeKey,
+    lines: Vec<LineStyles>,
+}
 
 /// The grammar name for a file, if gpui-component ships one for it.
 pub fn language_for_path(path: &str) -> Option<&'static str> {
@@ -92,6 +124,9 @@ struct SyntaxSide {
     highlighter: SyntaxHighlighter,
     text: String,
     line_starts: Vec<usize>,
+    /// Filled by [`Self::prime`] or on the first query; replaced when the
+    /// theme changes.
+    cache: Mutex<Option<StyleCache>>,
 }
 
 impl SyntaxSide {
@@ -107,15 +142,52 @@ impl SyntaxSide {
             highlighter,
             text,
             line_starts,
+            cache: Mutex::new(None),
         }
     }
 
-    fn line_styles(
-        &self,
-        line_no: usize,
-        line: &str,
-        theme: &HighlightTheme,
-    ) -> Vec<(Range<usize>, HighlightStyle)> {
+    /// Compute and keep the styles of every line for `theme`.
+    fn prime(&self, theme: &HighlightTheme) {
+        *self.cache.lock().unwrap() = Some(StyleCache {
+            theme: ThemeKey::of(theme),
+            lines: self.style_all_lines(theme),
+        });
+    }
+
+    /// One query over the whole text, cut into lines. Styles that are the
+    /// default are left out, like empty ranges.
+    fn style_all_lines(&self, theme: &HighlightTheme) -> Vec<LineStyles> {
+        let mut lines: Vec<LineStyles> = vec![Vec::new(); self.line_starts.len()];
+        let line_end = |ix: usize| {
+            self.line_starts
+                .get(ix + 1)
+                .map_or(self.text.len(), |next| next - 1)
+        };
+        let mut line_ix = 0;
+        for (range, style) in self.highlighter.styles(&(0..self.text.len()), theme) {
+            if style == HighlightStyle::default() || range.is_empty() {
+                continue;
+            }
+            while line_ix + 1 < self.line_starts.len()
+                && self.line_starts[line_ix + 1] <= range.start
+            {
+                line_ix += 1;
+            }
+            // A style can span lines (block comments, strings): clip it to each.
+            let mut ix = line_ix;
+            while ix < self.line_starts.len() && self.line_starts[ix] < range.end {
+                let start = self.line_starts[ix];
+                let clipped = range.start.max(start)..range.end.min(line_end(ix));
+                if clipped.start < clipped.end {
+                    lines[ix].push((clipped.start - start..clipped.end - start, style));
+                }
+                ix += 1;
+            }
+        }
+        lines
+    }
+
+    fn line_styles(&self, line_no: usize, line: &str, theme: &HighlightTheme) -> LineStyles {
         let Some(&start) = line_no
             .checked_sub(1)
             .and_then(|ix| self.line_starts.get(ix))
@@ -127,7 +199,32 @@ impl SyntaxSide {
         if line.is_empty() || !self.text[start..].starts_with(line) {
             return Vec::new();
         }
-        let range = start..start + line.len();
+        let key = ThemeKey::of(theme);
+        let mut cache = self.cache.lock().unwrap();
+        let cache = match cache.as_mut() {
+            Some(cache) if cache.theme == key => cache,
+            _ => cache.insert(StyleCache {
+                theme: key,
+                lines: self.style_all_lines(theme),
+            }),
+        };
+        cache.lines[line_no - 1]
+            .iter()
+            .filter(|(r, _)| r.start < line.len())
+            .map(|(r, style)| (r.start..r.end.min(line.len()), *style))
+            .collect()
+    }
+
+    /// The styles of `line_no` queried on their own, as they were computed
+    /// before the cache; the cache has to give the same answer.
+    #[cfg(test)]
+    fn line_styles_uncached(&self, line_no: usize, theme: &HighlightTheme) -> LineStyles {
+        let start = self.line_starts[line_no - 1];
+        let end = self
+            .line_starts
+            .get(line_no)
+            .map_or(self.text.len(), |next| next - 1);
+        let range = start..end;
         self.highlighter
             .styles(&range, theme)
             .into_iter()
@@ -162,9 +259,18 @@ impl DiffSyntax {
         })
     }
 
+    /// Compute the styles of every line of both sides for `theme` now, so
+    /// the first frames do not have to. Call on the background thread that
+    /// parsed.
+    pub fn prime(&self, theme: &HighlightTheme) {
+        for side in [&self.old, &self.new].into_iter().flatten() {
+            side.prime(theme);
+        }
+    }
+
     /// Syntax styles for one diff row, as ranges into `line`. `line_no` is
     /// 1-based in the row's own side: the old file for deletions, the new
-    /// file otherwise.
+    /// file otherwise. Cheap after the first call per theme.
     pub fn line_styles(
         &self,
         tag: ChangeTag,
@@ -274,6 +380,65 @@ mod tests {
             syntax
                 .line_styles(ChangeTag::Delete, 1, "fn main() {}", &theme)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn cached_line_styles_match_per_line_queries() {
+        let text =
+            "/* a comment\n   over two lines */\nfn main() {\n    let s = \"multi\nline\";\n}\n";
+        let side = SyntaxSide::parse("rust", text);
+        let theme = HighlightTheme::default_dark();
+        let cached = side.style_all_lines(&theme);
+        assert_eq!(cached.len(), side.line_starts.len());
+        for line_no in 1..=side.line_starts.len() {
+            assert_eq!(
+                cached[line_no - 1],
+                side.line_styles_uncached(line_no, &theme),
+                "line {line_no}"
+            );
+        }
+        // The comment's style reaches the second line, relative to that line.
+        assert_eq!(cached[1].first().map(|(r, _)| r.start), Some(0));
+    }
+
+    #[test]
+    fn line_styles_are_computed_once_per_theme() {
+        let syntax = DiffSyntax::parse("a.rs", Some("fn a() {}\n"), Some("fn b() {}\n")).unwrap();
+        let dark = HighlightTheme::default_dark();
+        let light = HighlightTheme::default_light();
+        assert!(syntax.new.as_ref().unwrap().cache.lock().unwrap().is_none());
+
+        syntax.prime(&dark);
+        let cached_theme =
+            |side: &SyntaxSide| side.cache.lock().unwrap().as_ref().map(|c| c.theme.clone());
+        assert_eq!(
+            cached_theme(syntax.new.as_ref().unwrap()),
+            Some(ThemeKey::of(&dark))
+        );
+        assert_eq!(
+            cached_theme(syntax.old.as_ref().unwrap()),
+            Some(ThemeKey::of(&dark))
+        );
+
+        // Same theme: served from the cache; another theme replaces it.
+        assert!(
+            !syntax
+                .line_styles(ChangeTag::Insert, 1, "fn b() {}", &dark)
+                .is_empty()
+        );
+        assert_eq!(
+            cached_theme(syntax.new.as_ref().unwrap()),
+            Some(ThemeKey::of(&dark))
+        );
+        assert!(
+            !syntax
+                .line_styles(ChangeTag::Insert, 1, "fn b() {}", &light)
+                .is_empty()
+        );
+        assert_eq!(
+            cached_theme(syntax.new.as_ref().unwrap()),
+            Some(ThemeKey::of(&light))
         );
     }
 

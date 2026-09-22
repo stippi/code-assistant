@@ -3,6 +3,7 @@ pub mod project_dialog;
 pub mod right_panel;
 mod status_popover;
 
+use crate::shared::frame_profile;
 use crate::sidebar::{SessionSidebar, SessionSidebarEvent};
 
 use crate::input::{InputArea, InputAreaEvent};
@@ -1835,7 +1836,10 @@ impl Render for MainScreen {
                                             }
                                         }
                                     })
-                                    .child(sidebar),
+                                    .child(frame_profile::timed(
+                                        "region.sidebar",
+                                        sidebar.into_any_element(),
+                                    )),
                             )
                         }
                     })
@@ -1858,7 +1862,10 @@ impl Render for MainScreen {
                                     .min_h_0()
                                     .child(
                                         // Messages display area - virtualized list
-                                        self.messages_view.clone(),
+                                        frame_profile::timed(
+                                            "region.messages",
+                                            self.messages_view.clone().into_any_element(),
+                                        ),
                                     )
                                     // Status popover - overlaid at bottom of scroll area
                                     .children(self.render_status_popover(cx)),
@@ -1874,7 +1881,10 @@ impl Render for MainScreen {
                                     .bg(cx.theme().background)
                                     .border_t_1()
                                     .border_color(cx.theme().border)
-                                    .child(self.input_area.clone()),
+                                    .child(frame_profile::timed(
+                                        "region.input",
+                                        self.input_area.clone().into_any_element(),
+                                    )),
                             ),
                     )
                     // Right sidebar: Review panel (animated width, resizable)
@@ -1912,7 +1922,10 @@ impl Render for MainScreen {
                                             .w(content_width)
                                             .border_l_1()
                                             .border_color(border)
-                                            .child(right_panel),
+                                            .child(frame_profile::timed(
+                                                "region.review",
+                                                right_panel.into_any_element(),
+                                            )),
                                     )
                                     // Left-edge drag handle to resize the sidebar.
                                     .child(

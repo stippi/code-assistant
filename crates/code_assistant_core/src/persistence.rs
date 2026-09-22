@@ -737,9 +737,7 @@ pub struct FileSessionPersistence {
 impl FileSessionPersistence {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let root_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("code-assistant");
+        let root_dir = crate::config_dir::data_dir();
         info!("Storing sessions in: {:?}", root_dir.to_path_buf());
         Self { root_dir }
     }

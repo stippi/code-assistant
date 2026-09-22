@@ -7,6 +7,7 @@ pub use data::*;
 
 use gpui::prelude::*;
 use gpui::{Context, Entity, Pixels, Task, px};
+use gpui_component::ActiveTheme;
 use gpui_component::text::{SelectionFormat, TextView, TextViewState};
 
 use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
@@ -346,12 +347,13 @@ impl BlockView {
             has_original: input.has_original,
         };
         let has_grammar = language_for_path(&input.path).is_some();
+        let theme = cx.theme().highlight_theme.clone();
         let task = (!diff_now || has_grammar).then(|| {
             cx.spawn(async move |this, cx| {
                 let (sections, syntax) = cx
                     .background_spawn(async move {
                         let sections = (!diff_now).then(|| input.diff());
-                        (sections, input.parse_syntax())
+                        (sections, input.parse_syntax(Some(&theme)))
                     })
                     .await;
                 _ = this.update(cx, |view, cx| {

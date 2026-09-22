@@ -57,9 +57,7 @@ pub fn default_waits_path() -> PathBuf {
 }
 
 fn data_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("code-assistant")
+    crate::config_dir::data_dir()
 }
 
 /// The owner key of a session's goals. Namespaced so a store shared with

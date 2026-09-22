@@ -79,6 +79,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - GPUI frontend based on Zed's gpui and gpui-component with custom components
 - GPUI API reference (contexts, entities, tasks, elements, actions, events):
   `docs/gpui-reference.md`
+- Frame profiling of the GPUI frontend (opt-in via
+  `CODE_ASSISTANT_FRAME_PROFILE`, sweep runner and `sample` analysis in
+  `scripts/frame-profile/`): `docs/frame-profiling.md`
 
 ## UI Communication Architecture
 

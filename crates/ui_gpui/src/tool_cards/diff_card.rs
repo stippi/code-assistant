@@ -9,6 +9,7 @@
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
 use super::diff_prepare::SectionLines;
+use super::diff_rows::{DiffRow, DiffRows, RowGeometry};
 use super::diff_syntax::DiffSyntax;
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
@@ -875,8 +876,9 @@ struct RowSyntax<'a> {
     start: LineCounter,
 }
 
-/// Shared row builder: renders diff rows with numbering from `start_line`
-/// (when given) into a fixed `gutter_width`-digit gutter.
+/// Shared row builder: the rows with numbering from `start_line` (when
+/// given) in a fixed `gutter_width`-digit gutter, as one [`DiffRows`]
+/// element.
 fn render_diff_rows(
     diff_lines: &[DiffLine],
     theme: &gpui_component::theme::Theme,
@@ -893,56 +895,48 @@ fn render_diff_rows(
 
     // Gutter width: compute in rems (~0.5rem per digit + 0.75rem padding),
     // then convert to rounded pixels so it aligns to the pixel grid.
-    let gutter_px = rems(gutter_width as f32 * 0.5 + 0.75)
-        .to_pixels(rem_size)
-        .round();
+    let gutter_px = if start_line.is_some() {
+        rems(gutter_width as f32 * 0.5 + 0.75)
+            .to_pixels(rem_size)
+            .round()
+    } else {
+        px(0.)
+    };
+    let geometry = RowGeometry {
+        gutter_width: gutter_px,
+        gutter_left: rems(0.375).to_pixels(rem_size),
+        // Without a gutter the text keeps the card's horizontal padding.
+        content_left: rems(if start_line.is_some() { 0.25 } else { 0.75 }).to_pixels(rem_size),
+        content_right: rems(0.75).to_pixels(rem_size),
+    };
 
-    div()
-        .flex()
-        .flex_col()
-        .children(diff_lines.iter().map(|dl| {
-            let (row_bg, _) = row_colors(dl.tag, theme);
-            let text_color = row_text_color(dl.tag, syntax.is_some(), theme);
-
-            let mut row = div().w_full().flex().flex_row().items_start();
-            if let Some(bg) = row_bg {
-                row = row.bg(bg);
-            }
-
+    let rows = diff_lines
+        .iter()
+        .map(|dl| {
+            let (row_bg, gutter_fg) = row_colors(dl.tag, theme);
             let new_num = gutter_lines.advance(dl.tag);
             let syntax_line = syntax_lines.advance(dl.tag);
 
             // Gutter with line number (shows new-file line numbers)
-            if start_line.is_some() {
-                let gutter_text = match dl.tag {
+            let gutter = start_line.is_some().then(|| {
+                let text = match dl.tag {
                     ChangeTag::Equal | ChangeTag::Insert => {
                         format!("{:>width$}", new_num, width = gutter_width)
                     }
                     ChangeTag::Delete => format!("{:>width$}", "", width = gutter_width),
                 };
-                let gutter_color = row_colors(dl.tag, theme).1.opacity(0.5);
-                row = row.child(
-                    div()
-                        .flex_none()
-                        .w(gutter_px)
-                        .pl_1p5()
-                        .pr_1()
-                        .text_color(gutter_color)
-                        .child(gutter_text),
-                );
-            }
+                (SharedString::from(text), gutter_fg.opacity(0.5))
+            });
 
-            // Content — overflow_x_hidden enables min-width:0 in flex so text
-            // wraps instead of pushing the row wider than the card. Word-level
-            // changes get a stronger background via text-run highlights, which
-            // wrap with the text (unlike per-span elements).
-            // Syntax colors come first, the word emphasis layers on top.
+            // Word-level changes get a stronger background via text-run
+            // highlights, which wrap with the text. Syntax colors come
+            // first, the word emphasis layers on top.
             let syntax_styles = syntax.as_ref().map_or_else(Vec::new, |s| {
                 s.syntax
                     .line_styles(dl.tag, syntax_line, &dl.text, &theme.highlight_theme)
             });
-            let content: gpui::AnyElement = if dl.emphasis.is_empty() && syntax_styles.is_empty() {
-                dl.text.clone().into_any_element()
+            let highlights = if dl.emphasis.is_empty() && syntax_styles.is_empty() {
+                Vec::new()
             } else {
                 let word_bg = word_emphasis_bg(dl.tag, theme);
                 let emphasis = dl.emphasis.iter().map(|range| {
@@ -954,23 +948,19 @@ fn render_diff_rows(
                         },
                     )
                 });
-                gpui::StyledText::new(dl.text.clone())
-                    .with_highlights(gpui::combine_highlights(syntax_styles, emphasis))
-                    .into_any_element()
+                gpui::combine_highlights(syntax_styles, emphasis).collect()
             };
-            row = row.child(
-                div()
-                    .flex_grow(1.0)
-                    .overflow_x_hidden()
-                    .when(start_line.is_none(), |d| d.px_3())
-                    .when(start_line.is_some(), |d| d.pl_1().pr_3())
-                    .text_color(text_color)
-                    .child(content),
-            );
+            DiffRow {
+                text: dl.text.clone(),
+                highlights,
+                background: row_bg,
+                color: row_text_color(dl.tag, syntax.is_some(), theme),
+                gutter,
+            }
+        })
+        .collect();
 
-            row.into_any()
-        }))
-        .into_any()
+    DiffRows::new(rows, geometry).into_any()
 }
 
 fn render_streaming_block(
