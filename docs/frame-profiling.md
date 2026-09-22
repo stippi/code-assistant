@@ -79,6 +79,28 @@ The labels say which element costs what; `sample` (or Instruments) says
 which library function: `sample <pid> 8 -file out.txt` on the release
 binary while the sweep runs, then look at the main thread's call graph for
 `layout_as_root`, `shape_line`, `wrap_line`, `compute_layout` and `paint`.
+`sample` prints mangled Rust symbols; `c++filt` demangles them (v0).
+
+## Scripts
+
+`scripts/frame-profile/` holds what the measurements below were made with:
+
+* `run_sweep.sh NAME BINARY MODE [SAMPLE_AT]` runs one sweep of a release
+  binary through a throwaway `.app` bundle (so the window is activated),
+  writes the reports to `NAME.stderr.log` and, with `SAMPLE_AT`, a
+  demangled `sample` capture to `NAME.dem.txt`. `CODE_ASSISTANT_DATA_DIR`
+  has to point at the session copy; `FRAME_PROFILE_OUT` sets the output
+  directory. Copy the binaries of both builds first and run them back to
+  back.
+* `report_agg.py LOG...` aggregates the `scroll=yes` intervals of a log,
+  frame-weighted: draw mean, p50, p95, max and the per-label table.
+  `--max-mean MS` drops the intervals inflated by an attached `sample`.
+* `sample_phase.py OUT.txt` attributes the main thread's samples below
+  `Window::draw` to phases (taffy, shaping, wrapping, paint, ...; innermost
+  known frame wins), lists the top self symbols and, with `--incl a,b`,
+  inclusive counts. `--tree SYM` prints the merged subtree below a symbol.
+  The phase rules are heuristics: check a subtree before trusting a share
+  (see the mis-attribution noted under Findings).
 
 ## Findings (2026-09-22, branch perf/messages-frame-profiling)
 
