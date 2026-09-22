@@ -14,7 +14,9 @@ ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.2
 # gpui-kit 0.6.6 with longbridge/gpui-kit#3180 (InlineFlow keeps its fragment
 # states and layouts across frames; see docs/frame-profiling.md). The fork
 # branch `perf/inline-flow-frame-cache-0.6.6` is the v0.6.6 tag plus the PR's
-# three commits, so its gpui-base is version 0.6.6 and satisfies gpui-kit's
-# requirement; gpui-component 0.6.6 from crates.io resolves to this one copy.
-# Drop this entry once a gpui-kit release carries the PR.
-gpui-base = { git = "https://github.com/stippi/gpui-component", rev = "7e40cacddb32cac141b5ecb6f4173e3cbdafb5cc" }
+# commits as merged (including the maintainer's follow-up that releases the
+# states of fragments that went away), so its gpui-base is version 0.6.6 and
+# satisfies gpui-kit's requirement; gpui-component 0.6.6 from crates.io
+# resolves to this one copy. Drop this entry once a gpui-kit release carries
+# the PR (merged 2026-09-22, after 0.6.6).
+gpui-base = { git = "https://github.com/stippi/gpui-component", rev = "887d0d839c32491c44a81826fc401005b8a6f6a5" }
