@@ -4,6 +4,7 @@ mod message_item;
 mod scroll;
 
 use crate::Gpui;
+use crate::shared::frame_profile;
 
 use code_assistant_core::session::instance::SessionActivityState;
 
@@ -18,7 +19,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use scroll::{
     ANIMATION_FRAME_MS, ANIMATION_IDLE_MS, DAMPING_C, EDGE_SCROLL_FRAME_MS, MIN_DISTANCE_TO_STOP,
@@ -99,6 +100,8 @@ pub struct MessagesView {
     edge_drag_active: Rc<Cell<bool>>,
     /// Running edge auto-scroll task. Dropping it cancels the loop.
     edge_scroll_task: Option<Task<()>>,
+    /// Profiling aid (see [`Self::start_profile_scroll_sweep`]).
+    profile_sweep_task: Option<Task<()>>,
 
     // -- Per-session scroll persistence --
     /// The session id whose scroll position the `list_state` currently
@@ -177,6 +180,7 @@ impl MessagesView {
             edge_scroll_velocity: Rc::new(Cell::new(0.0)),
             edge_drag_active: Rc::new(Cell::new(false)),
             edge_scroll_task: None,
+            profile_sweep_task: None,
             displayed_session_id: None,
             saved_scroll: HashMap::new(),
         }
@@ -743,6 +747,48 @@ impl MessagesView {
         self.edge_scroll_task = Some(task);
     }
 
+    /// Profiling aid: after a settle time, scrolls the list up and down at a
+    /// steady pace for a while, so frame reports cover a reproducible scroll
+    /// load without anyone at the mouse (see [`frame_profile`]).
+    pub fn start_profile_scroll_sweep(&mut self, cx: &mut Context<Self>) {
+        const SETTLE: Duration = Duration::from_secs(8);
+        const SWEEP: Duration = Duration::from_secs(40);
+        const TICK: Duration = Duration::from_millis(8);
+        const STEP: f32 = 12.0;
+
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SETTLE).await;
+            frame_profile::set_scrolling(true);
+            let end = Instant::now() + SWEEP;
+            // Sessions open at the bottom, so sweep upwards first.
+            let mut direction = -1.0f32;
+            let mut stalled = 0;
+            while Instant::now() < end {
+                cx.background_executor().timer(TICK).await;
+                let moved = this.update(cx, |view, cx| {
+                    view.follow_tail = false;
+                    let before = view.list_state.scroll_px_offset_for_scrollbar().y;
+                    view.list_state.scroll_by(px(direction * STEP));
+                    cx.notify();
+                    view.list_state.scroll_px_offset_for_scrollbar().y != before
+                });
+                match moved {
+                    Ok(true) => stalled = 0,
+                    Ok(false) => {
+                        stalled += 1;
+                        if stalled >= 2 {
+                            direction = -direction;
+                            stalled = 0;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            frame_profile::set_scrolling(false);
+        });
+        self.profile_sweep_task = Some(task);
+    }
+
     /// Get the list state (for scrollbar integration)
     #[allow(dead_code)]
     pub fn list_state(&self) -> &ListState {
@@ -834,6 +880,7 @@ impl Render for MessagesView {
         let message_list = list(
             self.list_state.clone(),
             cx.processor(move |this: &mut Self, index: usize, window, cx| {
+                let _build = frame_profile::scope(frame_profile::ROW);
                 // Wrap every rendered item in a centering container so the
                 // list element itself spans the full parent width (= its
                 // hitbox receives scroll-wheel events everywhere, not only
@@ -847,7 +894,7 @@ impl Render for MessagesView {
                     activity_indicator::render_activity_indicator(this, cx)
                 };
                 let scale = cx.theme().font_size / px(16.0);
-                div()
+                let row = div()
                     .w_full()
                     .flex()
                     .justify_center()
@@ -857,11 +904,14 @@ impl Render for MessagesView {
                             .w_full()
                             .child(inner),
                     )
-                    .into_any_element()
+                    .into_any_element();
+                frame_profile::timed(frame_profile::ROW, row)
             }),
         )
         .flex_grow(1.0)
         .w_full();
+        let message_list =
+            frame_profile::timed(frame_profile::LIST, message_list.into_any_element());
 
         // Sync item count with ListState if it diverged (e.g. pending message
         // appeared/disappeared). Use splice instead of reset to preserve the

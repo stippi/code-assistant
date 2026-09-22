@@ -5,7 +5,7 @@
 //! thinking, tool-use, compaction, image).
 
 use super::{AnimationState, BlockData, BlockView, ToolBlockState, ToolUseBlock};
-use crate::shared::file_icons;
+use crate::shared::{file_icons, frame_profile};
 use code_assistant_core::ui::ToolStatus;
 
 /// Maximum height for rendered images in pixels
@@ -393,6 +393,35 @@ impl BlockView {
 
 impl gpui::Render for BlockView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !frame_profile::enabled() {
+            return self.render_block(window, cx);
+        }
+        let label = self.profile_label();
+        let element = {
+            let _build = frame_profile::scope(label.clone());
+            self.render_block(window, cx)
+        };
+        frame_profile::timed(label, element)
+    }
+}
+
+impl BlockView {
+    /// Label under which this block's frame times are reported.
+    fn profile_label(&self) -> SharedString {
+        match &*self.block {
+            BlockData::TextBlock(_) => "block.text".into(),
+            BlockData::ThinkingBlock(_) => "block.thinking".into(),
+            BlockData::CompactionSummary(_) => "block.compaction".into(),
+            BlockData::ImageBlock(_) => "block.image".into(),
+            BlockData::ToolUse(tool) => format!("block.tool:{}", tool.name).into(),
+        }
+    }
+
+    fn render_block(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let block = Rc::clone(&self.block);
         match &*block {
             BlockData::TextBlock(block) => {

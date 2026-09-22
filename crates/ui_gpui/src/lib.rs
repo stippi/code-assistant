@@ -533,10 +533,7 @@ impl Gpui {
 
         // Initialize the per-session UI state store (same directory as session files)
         {
-            let sessions_dir = dirs::data_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("code-assistant")
-                .join("sessions");
+            let sessions_dir = code_assistant_core::config_dir::data_dir().join("sessions");
 
             shared::ui_state::UiStateStore::init_global(sessions_dir);
         }
@@ -649,6 +646,12 @@ impl Gpui {
 
             // Register our Gpui instance as a global
             cx.set_global(gpui_clone.clone());
+
+            // Opt-in frame profiling (see shared::frame_profile).
+            let frame_profile_mode = shared::frame_profile::init_from_env();
+            if frame_profile_mode != shared::frame_profile::Mode::Off {
+                shared::frame_profile::spawn_reporter(cx);
+            }
 
             // Register UI event sender as global for chat components
             cx.set_global(UiEventSender(
@@ -803,6 +806,10 @@ impl Gpui {
 
                         // Store MessagesView reference in Gpui
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
+                        if frame_profile_mode == shared::frame_profile::Mode::Scroll {
+                            messages_view
+                                .update(cx, |view, cx| view.start_profile_scroll_sweep(cx));
+                        }
 
                         // Create SessionSidebar and store it in Gpui
                         let project_sidebar = cx.new(sidebar::SessionSidebar::new);
