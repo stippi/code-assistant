@@ -172,10 +172,8 @@ jobs:
           done
           # Refresh only the workspace crate versions in Cargo.lock. A bare
           # `cargo update` would re-resolve *all* dependencies; `--workspace`
-          # touches only our own crates. The gpui / gpui-component git deps are
-          # pinned to explicit revs in the root Cargo.toml `[patch]` section, so
-          # they stay at their locked commit either way and the subsequent
-          # `--locked` build stays reproducible.
+          # touches only our own crates, so the subsequent `--locked` build
+          # stays reproducible.
           cargo update --workspace
           grep -m1 "^version = " crates/code_assistant/Cargo.toml
 

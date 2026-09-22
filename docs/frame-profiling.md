@@ -179,15 +179,13 @@ counts do).
    0.3-0.7 ms per frame, and a card-heavy frame from 4.7 ms to 2.1 ms of
    `edit` time.
 
-What is left is text: `block.text` (markdown) is now the largest block
-cost. In the pinned gpui-component revision its per-frame work is the
-`Inline` paragraph's `StyledText` measurement (line wrapper plus a
-shaping-cache lookup per paragraph per frame, `TextLayout::layout` is
-16 % of the draw time inclusive) and the paragraph's `Div`s. Upstream
-gpui-component has since addressed both (#3090, retained layouts and fewer
-elements per paragraph), but that upstream is on gpui 0.3.x from crates.io
-(`gpui-pre`) while this workspace pins gpui 0.2.2 from the zed git repo, so
-it cannot be consumed without a gpui migration.
+What was left is text: `block.text` (markdown) was the largest block
+cost. In the gpui-component revision pinned at the time its per-frame work
+was the `Inline` paragraph's `StyledText` measurement (line wrapper plus a
+shaping-cache lookup per paragraph per frame, `TextLayout::layout` 16 % of
+the draw time inclusive) and the paragraph's `Div`s. Upstream gpui-component
+has since addressed both (#3090, retained layouts and fewer elements per
+paragraph); the gpui-kit migration below picks that up.
 
 ## InlineFlow (upstream contribution, 2026-09-22)
 
@@ -217,6 +215,40 @@ binary: `InlineFlow::request_layout` went from 40 % of the draw time to
 1 %, and what is left in `prepaint` is gpui's `TextLayout::layout` per
 fragment (closure and taffy leaf per frame, a gpui cost).
 
-This does not change anything in this workspace until it moves to a
-gpui-component that uses `InlineFlow` for code spans, i.e. after the gpui
-0.3.x migration.
+This reaches this workspace with a gpui-kit release that carries the PR;
+0.6.6 (the migration below) does not yet.
+
+## gpui-kit 0.6.6 migration (2026-09-22)
+
+Same session copy, same sweeps, both binaries back to back (main at
+bd330ff3 on gpui 0.2.2 / gpui-component 0.5.x, and the migration branch on
+gpui-kit 0.6.6, i.e. gpui-pre 0.3.6 and gpui-component 0.6.6), 60 Hz
+display, ~2295 frames per sweep, no `sample` attached. Per frame,
+frame-weighted over the sweep:
+
+| sweep | binary | draw mean / p50 / p95 / max | `block.text` n/frame | layout | prepaint | paint | total (% draw) |
+|---|---|---|---|---|---|---|---|
+| scroll | before | 4.55 / 4.54 / 5.70 / 19.1 ms | 1.99 | 0.11 | 0.02 | 0.18 | 0.32 (7 %) |
+| scroll | after | 4.54 / 4.49 / 5.72 / 19.8 ms | 1.99 | 0.11 | 0.17 | 0.16 | 0.46 (10 %) |
+| wheel | before | 4.35 / 4.37 / 5.61 / 19.0 ms | 2.11 | 0.11 | 0.02 | 0.21 | 0.35 (8 %) |
+| wheel | after | 4.42 / 4.43 / 5.80 / 14.3 ms | 2.15 | 0.12 | 0.20 | 0.17 | 0.50 (11 %) |
+
+The draw time per frame is unchanged within noise; the other labels
+(`region.messages`, `row`, diff cards, sidebar, input, derived row layout
+compute) moved by at most 0.1 ms. `block.text` did not get cheaper: its
+paint fell slightly (fewer elements per paragraph, #3090), but its prepaint
+went from 0.02 to 0.17-0.20 ms per frame. That is the `InlineFlow` cost
+described above: gpui-component 0.6.6 lays every paragraph with a code span
+out as an `InlineFlow`, which shapes its fragments again every frame (a
+`div` plus `Inline` per fragment as its own taffy root with a fresh
+`InlineState`). `sample` on the wheel sweeps (8 s each, attached at 20 s)
+confirms the attribution: `InlineFlow::prepaint` is on the stack in 13 % of
+the draw samples after the migration and in none before; `TextLayout::layout`
+inclusive went from 7.3 % to 7.9 %, `shape_line` from 7.1 % to 8.3 %, taffy
+stayed at 25-26 %.
+
+So the text improvement this workspace is waiting for is
+[longbridge/gpui-kit#3180](https://github.com/longbridge/gpui-kit/pull/3180)
+(open at the time of writing), not the migration itself; once a gpui-kit
+release carries it, the same sweep should show `block.text` prepaint back
+near zero and the paragraph cost below the pre-migration one.
