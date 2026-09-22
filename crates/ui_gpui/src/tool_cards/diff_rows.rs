@@ -46,6 +46,8 @@ impl RowGeometry {
 pub(crate) struct DiffRows {
     rows: Rc<Vec<DiffRow>>,
     geometry: RowGeometry,
+    /// Filled by the measure closure, read by prepaint and paint.
+    cell: LayoutCell,
 }
 
 impl DiffRows {
@@ -53,7 +55,13 @@ impl DiffRows {
         Self {
             rows: Rc::new(rows),
             geometry,
+            cell: Rc::default(),
         }
+    }
+
+    #[cfg(test)]
+    fn layout_cell(&self) -> LayoutCell {
+        self.cell.clone()
     }
 }
 
@@ -113,15 +121,38 @@ pub(crate) fn row_runs(
     runs
 }
 
+/// The text style the rows are shaped with, taken while the ancestors' styles
+/// are still on the window's stack.
+struct RowTextStyle {
+    style: TextStyle,
+    font_size: Pixels,
+    line_height: Pixels,
+}
+
+impl RowTextStyle {
+    fn capture(window: &Window) -> Self {
+        let style = window.text_style();
+        Self {
+            font_size: style.font_size.to_pixels(window.rem_size()),
+            line_height: window.line_height(),
+            style,
+        }
+    }
+}
+
 fn layout_rows(
     rows: &[DiffRow],
     geometry: RowGeometry,
     width: Option<Pixels>,
+    text: &RowTextStyle,
     window: &mut Window,
 ) -> RowsLayout {
-    let text_style = window.text_style();
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let line_height = window.line_height();
+    let RowTextStyle {
+        style: text_style,
+        font_size,
+        line_height,
+    } = text;
+    let (font_size, line_height) = (*font_size, *line_height);
     let wrap_width = width.map(|width| (width - geometry.text_inset()).max(px(0.)));
     let mut layout = RowsLayout {
         line_height,
@@ -240,9 +271,12 @@ impl Element for DiffRows {
         window: &mut Window,
         _: &mut App,
     ) -> (LayoutId, LayoutCell) {
-        let cell: LayoutCell = Rc::default();
+        let cell = self.cell.clone();
         let rows = self.rows.clone();
         let geometry = self.geometry;
+        // The measure closure runs in taffy's layout pass, when the enclosing
+        // elements' text styles are no longer on the window: read them now.
+        let text = RowTextStyle::capture(window);
         let style = Style {
             size: Size {
                 width: relative(1.).into(),
@@ -257,7 +291,7 @@ impl Element for DiffRows {
                     AvailableSpace::Definite(width) => Some(width),
                     _ => None,
                 });
-                let layout = layout_rows(&rows, geometry, width, window);
+                let layout = layout_rows(&rows, geometry, width, &text, window);
                 let measured = size(layout.width, layout.height);
                 *cell.borrow_mut() = Some(layout);
                 measured
@@ -296,7 +330,10 @@ impl Element for DiffRows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, div, red, white};
+    use gpui_kit::{
+        Context, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, div,
+        red, white,
+    };
 
     #[test]
     fn row_runs_cover_the_text_exactly() {
@@ -346,6 +383,24 @@ mod tests {
         content_left: px(4.),
         content_right: px(12.),
     };
+
+    #[gpui_kit::test]
+    fn rows_shape_with_the_enclosing_text_style(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| Root);
+        let cx: &mut VisualTestContext = cx;
+        let element = DiffRows::new(rows(&["abc"]), GEOMETRY);
+        let cell = element.layout_cell();
+        // The measure closure runs during taffy's layout pass, after the
+        // ancestors' text styles were popped; the rows must have captured
+        // them in `request_layout`.
+        cx.draw(point(px(0.), px(0.)), size(px(600.), px(400.)), |_, _| {
+            div().text_size(px(10.)).line_height(px(15.)).child(element)
+        });
+        let layout = cell.borrow();
+        let layout = layout.as_ref().expect("measured");
+        assert_eq!(layout.line_height, px(15.));
+        assert_eq!(layout.rows[0].lines[0].unwrapped_layout.font_size, px(10.));
+    }
 
     #[gpui_kit::test]
     fn rows_take_one_line_each_and_wrap_when_narrow(cx: &mut TestAppContext) {
