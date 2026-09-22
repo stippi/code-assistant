@@ -8,11 +8,11 @@ pub(crate) mod provider_suggestions;
 mod providers_section;
 mod skills_section;
 
-use gpui::{
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::{
     App, ClickEvent, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px,
 };
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme, Icon, Sizable, Size};
 use tracing::debug;
 
 /// Which section is currently displayed in the settings screen.
@@ -32,7 +32,7 @@ pub enum SettingsScreenEvent {
     Close,
 }
 
-impl gpui::EventEmitter<SettingsScreenEvent> for SettingsScreen {}
+impl gpui_kit::EventEmitter<SettingsScreenEvent> for SettingsScreen {}
 
 pub struct SettingsScreen {
     focus_handle: FocusHandle,
@@ -46,7 +46,7 @@ pub struct SettingsScreen {
 }
 
 impl SettingsScreen {
-    pub fn new(window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let providers_section = cx.new(|cx| providers_section::ProvidersSection::new(window, cx));
         let models_section = cx.new(|cx| models_section::ModelsSection::new(window, cx));
 
@@ -75,7 +75,7 @@ impl SettingsScreen {
     fn on_back_clicked(
         &mut self,
         _: &ClickEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         cx.emit(SettingsScreenEvent::Close);
@@ -84,7 +84,7 @@ impl SettingsScreen {
     fn on_section_clicked(
         &mut self,
         section: SettingsSection,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         self.active_section = section;
@@ -162,7 +162,11 @@ impl Focusable for SettingsScreen {
 }
 
 impl Render for SettingsScreen {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .track_focus(&self.focus_handle(cx))
             .size_full()
@@ -191,7 +195,7 @@ impl Render for SettingsScreen {
                         div().flex().items_center().gap_2().child(
                             div()
                                 .text_sm()
-                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(cx.theme().foreground)
                                 .child("Settings"),
                         ),

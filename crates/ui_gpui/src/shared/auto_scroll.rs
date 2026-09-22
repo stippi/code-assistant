@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use gpui::{
+use gpui_kit::component::scroll::Scrollbar;
+use gpui_kit::{
     Bounds, Context, Entity, Pixels, Point, ScrollHandle, SharedString, Size, Task, Window, div,
     prelude::*, px,
 };
-use gpui_component::scroll::Scrollbar;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;

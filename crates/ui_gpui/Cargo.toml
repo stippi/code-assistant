@@ -14,13 +14,10 @@ terminal = { path = "../terminal" }
 terminal_view = { path = "../terminal_view" }
 tools_core = { path = "../tools_core" }
 
-# GPUI related
-gpui = "0.2.2"
-gpui_platform = { version = "0.1", features = ["font-kit"] }
-gpui-component = { version = "0.5.2", features = ["tree-sitter-languages"] }
-# Must match the version gpui-component uses so CompletionProvider trait types
-# (CompletionItem, CompletionResponse, …) are identical.
-lsp-types = "0.97"
+# GPUI related. gpui-kit pins the matching gpui-pre snapshot and enables the
+# platform backends (font-kit, x11, wayland) itself. `profiler` is what
+# shared::frame_profile reads gpui's frame timings through.
+gpui-kit = { version = "0.6.6", features = ["tree-sitter-languages", "profiler"] }
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
 tokio = { version = "1.48", features = ["full"] }
@@ -43,21 +40,6 @@ similar = { version = "2.7.0", features = ["unicode"] }
 image = "0.25"
 base64 = "0.22"
 
-# macOS-specific dependencies
-# Pin core-text to avoid version conflict with zed-font-kit
-# See: https://github.com/zed-industries/zed/issues/46966
-[target.'cfg(target_os = "macos")'.dependencies]
-core-text = "=21.0.0"
-
-# On Linux/FreeBSD gpui_platform must be told to enable its `wayland` and
-# `x11` features. Those features pass through to gpui_linux, which in turn
-# decides which backend(s) the produced binary can talk to. Without them,
-# gpui_linux::current_platform compiles in only the `Headless` arm, so the
-# moment gpui::guess_compositor sees WAYLAND_DISPLAY or DISPLAY at runtime
-# it returns "Wayland"/"X11" and we hit `unreachable!()`. See #139.
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui_platform = { version = "0.1", features = ["wayland", "x11"] }
-
 [dev-dependencies]
-gpui = { version = "0.2.2", features = ["test-support"] }
+gpui-kit = { version = "0.6.6", features = ["test-support"] }
 tempfile = "3.23"

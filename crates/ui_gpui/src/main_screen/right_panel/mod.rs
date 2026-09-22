@@ -8,7 +8,7 @@
 mod review_rows;
 pub mod review_view;
 
-use gpui::{Context, Entity, FocusHandle, Focusable, Render, Window, div, prelude::*};
+use gpui_kit::{Context, Entity, FocusHandle, Focusable, Render, Window, div, prelude::*};
 use review_view::ReviewView;
 
 /// Which view the right panel is currently showing.
@@ -75,7 +75,7 @@ impl RightPanel {
 }
 
 impl Focusable for RightPanel {
-    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _cx: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }

@@ -16,11 +16,11 @@ use code_assistant_core::persistence::{ChatMetadata, DraftStorage};
 use code_assistant_core::session::service::{SessionService, SkillCatalogEntry};
 use code_assistant_core::types::PlanState;
 use code_assistant_core::ui::UiEvent;
-use gpui::{
+use gpui_kit::component::Root;
+use gpui_kit::{
     App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point, SharedString,
     actions, px,
 };
-use gpui_component::Root;
 pub use messages::MessagesView;
 pub use root::RootView;
 use sandbox::SandboxPolicy;
@@ -51,7 +51,7 @@ const UI_SETTINGS_SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from
 
 /// Pending debounced settings-save task. Replacing it drops (and thereby
 /// cancels) the previous timer, so rapid updates coalesce into a single write.
-struct UiSettingsSaveTask(#[allow(dead_code)] gpui::Task<()>);
+struct UiSettingsSaveTask(#[allow(dead_code)] gpui_kit::Task<()>);
 
 impl Global for UiSettingsSaveTask {}
 
@@ -211,12 +211,12 @@ pub struct Gpui {
     plan_state: Arc<Mutex<Option<PlanState>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
-    event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
+    event_task: Arc<Mutex<Option<gpui_kit::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
     // UI→core command facade (installed by the wiring before run_app)
     session_service: Arc<Mutex<Option<SessionService>>>,
     // Executor handle for dispatching command futures (set in run_app)
-    background_executor: Arc<Mutex<Option<gpui::BackgroundExecutor>>>,
+    background_executor: Arc<Mutex<Option<gpui_kit::BackgroundExecutor>>>,
 
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
@@ -286,7 +286,7 @@ pub struct Gpui {
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
 
     // Debounce task for persisting per-session UI state files
-    ui_state_save_task: Arc<Mutex<Option<gpui::Task<()>>>>,
+    ui_state_save_task: Arc<Mutex<Option<gpui_kit::Task<()>>>>,
 
     /// Project names that exist in projects.json (i.e. first-class projects).
     /// Used by the sidebar to decide whether to show a "persist" icon.
@@ -327,7 +327,7 @@ fn init(cx: &mut App) {
         cx.quit();
     });
 
-    use gpui_component::input::{Copy, Cut, Paste, Redo, Undo};
+    use gpui_kit::component::input::{Copy, Cut, Paste, Redo, Undo};
     cx.set_menus(vec![
         Menu {
             name: "GPUI App".into(),
@@ -337,12 +337,12 @@ fn init(cx: &mut App) {
         Menu {
             name: "Edit".into(),
             items: vec![
-                MenuItem::os_action("Undo", Undo, gpui::OsAction::Undo),
-                MenuItem::os_action("Redo", Redo, gpui::OsAction::Redo),
+                MenuItem::os_action("Undo", Undo, gpui_kit::OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, gpui_kit::OsAction::Redo),
                 MenuItem::separator(),
-                MenuItem::os_action("Cut", Cut, gpui::OsAction::Cut),
-                MenuItem::os_action("Copy", Copy, gpui::OsAction::Copy),
-                MenuItem::os_action("Paste", Paste, gpui::OsAction::Paste),
+                MenuItem::os_action("Cut", Cut, gpui_kit::OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, gpui_kit::OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, gpui_kit::OsAction::Paste),
             ],
             disabled: false,
         },
@@ -362,9 +362,9 @@ impl Gpui {
     // Helper methods for entity updates to reduce boilerplate
 
     /// Update the last message container in the queue
-    fn update_last_message<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    fn update_last_message<F>(&self, cx: &mut gpui_kit::AsyncApp, f: F)
     where
-        F: FnOnce(&mut MessageContainer, &mut gpui::Context<MessageContainer>),
+        F: FnOnce(&mut MessageContainer, &mut gpui_kit::Context<MessageContainer>),
     {
         let last = self.message_queue.lock().unwrap().last().cloned();
         if let Some(last) = last {
@@ -373,9 +373,9 @@ impl Gpui {
     }
 
     /// Update all message containers in the queue
-    fn update_all_messages<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    fn update_all_messages<F>(&self, cx: &mut gpui_kit::AsyncApp, f: F)
     where
-        F: Fn(&mut MessageContainer, &mut gpui::Context<MessageContainer>) + Clone,
+        F: Fn(&mut MessageContainer, &mut gpui_kit::Context<MessageContainer>) + Clone,
     {
         let containers = self.message_queue.lock().unwrap().clone();
         for message_container in &containers {
@@ -384,9 +384,9 @@ impl Gpui {
     }
 
     /// Update the project sidebar entity
-    fn update_project_sidebar<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    fn update_project_sidebar<F>(&self, cx: &mut gpui_kit::AsyncApp, f: F)
     where
-        F: FnOnce(&mut sidebar::SessionSidebar, &mut gpui::Context<sidebar::SessionSidebar>),
+        F: FnOnce(&mut sidebar::SessionSidebar, &mut gpui_kit::Context<sidebar::SessionSidebar>),
     {
         let project_sidebar_entity = self.project_sidebar.lock().unwrap().clone();
         if let Some(project_sidebar_entity) = project_sidebar_entity.as_ref() {
@@ -395,9 +395,9 @@ impl Gpui {
     }
 
     /// Update the messages view entity
-    fn update_messages_view<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    fn update_messages_view<F>(&self, cx: &mut gpui_kit::AsyncApp, f: F)
     where
-        F: FnOnce(&mut MessagesView, &mut gpui::Context<MessagesView>),
+        F: FnOnce(&mut MessagesView, &mut gpui_kit::Context<MessagesView>),
     {
         let messages_view_entity = self.messages_view.lock().unwrap().clone();
         if let Some(messages_view_entity) = messages_view_entity.as_ref() {
@@ -409,10 +409,10 @@ impl Gpui {
     fn update_container<F>(
         &self,
         container: &Entity<MessageContainer>,
-        cx: &mut gpui::AsyncApp,
+        cx: &mut gpui_kit::AsyncApp,
         f: F,
     ) where
-        F: FnOnce(&mut MessageContainer, &mut gpui::Context<MessageContainer>),
+        F: FnOnce(&mut MessageContainer, &mut gpui_kit::Context<MessageContainer>),
     {
         cx.update_entity(container, f);
     }
@@ -420,7 +420,7 @@ impl Gpui {
     /// Notify the MessagesView that items were appended to the message_queue.
     /// This splices the new items into the ListState (preserving cached heights
     /// of existing items) and triggers auto-scroll if following tail.
-    fn notify_messages_appended(&self, old_len: usize, cx: &mut gpui::AsyncApp) {
+    fn notify_messages_appended(&self, old_len: usize, cx: &mut gpui_kit::AsyncApp) {
         let new_len = self.message_queue.lock().unwrap().len();
         if new_len != old_len {
             self.update_messages_view(cx, |view, cx| {
@@ -435,7 +435,7 @@ impl Gpui {
     /// sessions saves/restores each session's scroll position, while a
     /// same-session resync (stream lag, file-watcher refresh, structural edit)
     /// freezes the visible offset instead of jumping to the bottom.
-    fn notify_messages_reset(&self, cx: &mut gpui::AsyncApp) {
+    fn notify_messages_reset(&self, cx: &mut gpui_kit::AsyncApp) {
         let new_len = self.message_queue.lock().unwrap().len();
         let session_id = self.current_session_id.lock().unwrap().clone();
         self.update_messages_view(cx, |view, cx| {
@@ -447,7 +447,7 @@ impl Gpui {
     /// Keep the list scrolled to the bottom if the user is following the tail.
     /// Called after streaming content is appended to the last message, which
     /// changes the height of the last list item without changing the item count.
-    fn auto_scroll_if_following(&self, cx: &mut gpui::AsyncApp) {
+    fn auto_scroll_if_following(&self, cx: &mut gpui_kit::AsyncApp) {
         self.update_messages_view(cx, |view, cx| {
             if view.follow_tail {
                 view.scroll_to_bottom();
@@ -461,7 +461,7 @@ impl Gpui {
 
     /// Remove empty containers from the message queue and sync the ListState.
     /// Called after cancellation/rollback removes blocks from containers.
-    fn remove_empty_containers(&self, cx: &mut gpui::AsyncApp) {
+    fn remove_empty_containers(&self, cx: &mut gpui_kit::AsyncApp) {
         let mut queue = self.message_queue.lock().unwrap();
         let old_len = queue.len();
         queue.retain(|container| cx.update_entity(container, |c, _cx| !c.is_empty()));
@@ -511,7 +511,7 @@ impl Gpui {
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
-        let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
+        let event_task = Arc::new(Mutex::new(None::<gpui_kit::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
 
         // Initialize tool block renderer registry
@@ -633,7 +633,7 @@ impl Gpui {
         let gpui_clone = self.clone();
 
         // Initialize app with assets
-        let app = gpui_platform::application().with_assets(Assets {});
+        let app = gpui_kit::application().with_assets(Assets {});
 
         app.run(move |cx| {
             // Capture the background executor so session commands can be
@@ -659,7 +659,7 @@ impl Gpui {
             ));
 
             // Setup window close listener
-            cx.bind_keys([gpui::KeyBinding::new("cmd-w", CloseWindow, None)]);
+            cx.bind_keys([gpui_kit::KeyBinding::new("cmd-w", CloseWindow, None)]);
             cx.on_window_closed(|cx, _window_id| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -671,10 +671,10 @@ impl Gpui {
             let ui_settings = shared::settings::UiSettings::load();
             let saved_theme_mode = match ui_settings.theme_mode {
                 shared::settings::ThemeModeSetting::Light => {
-                    Some(gpui_component::theme::ThemeMode::Light)
+                    Some(gpui_kit::component::theme::ThemeMode::Light)
                 }
                 shared::settings::ThemeModeSetting::Dark => {
-                    Some(gpui_component::theme::ThemeMode::Dark)
+                    Some(gpui_kit::component::theme::ThemeMode::Dark)
                 }
             };
 
@@ -682,15 +682,16 @@ impl Gpui {
             shared::file_icons::init(cx);
 
             // Initialize gpui-component modules
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             // Apply our custom theme colors (restoring saved mode)
             shared::theme::init_themes(cx, saved_theme_mode);
             tool_cards::diff_syntax::register_language_aliases();
 
             // Restore saved font scale
             {
-                let scaled = gpui::px(16.0 * ui_settings.ui_scale);
-                cx.global_mut::<gpui_component::theme::Theme>().font_size = scaled;
+                let scaled = gpui_kit::px(16.0 * ui_settings.ui_scale);
+                cx.global_mut::<gpui_kit::component::theme::Theme>()
+                    .font_size = scaled;
             }
 
             // Store settings as a GPUI global so entities can access/update them
@@ -778,15 +779,19 @@ impl Gpui {
                 .filter(|b| b.is_valid())
                 .map(|b| b.to_gpui_bounds())
                 .unwrap_or_else(|| {
-                    gpui::Bounds::centered(None, gpui::size(gpui::px(1100.0), gpui::px(700.0)), cx)
+                    gpui_kit::Bounds::centered(
+                        None,
+                        gpui_kit::size(gpui_kit::px(1100.0), gpui_kit::px(700.0)),
+                        cx,
+                    )
                 });
             // Open window with titlebar
             let window = cx
                 .open_window(
-                    gpui::WindowOptions {
-                        window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
-                        titlebar: Some(gpui::TitlebarOptions {
-                            title: Some(gpui::SharedString::from("Code Assistant")),
+                    gpui_kit::WindowOptions {
+                        window_bounds: Some(gpui_kit::WindowBounds::Windowed(bounds)),
+                        titlebar: Some(gpui_kit::TitlebarOptions {
+                            title: Some(gpui_kit::SharedString::from("Code Assistant")),
                             #[cfg(target_os = "macos")]
                             appears_transparent: true,
                             #[cfg(not(target_os = "macos"))]
@@ -836,7 +841,9 @@ impl Gpui {
                     window.activate_window();
                     window.set_window_title(&SharedString::from("Code Assistant"));
                     // Get the MessageView from the Root
-                    if let Some(_view) = window.root::<gpui_component::Root>().and_then(|root| root)
+                    if let Some(_view) = window
+                        .root::<gpui_kit::component::Root>()
+                        .and_then(|root| root)
                     {
                         // Activate window
                         cx.activate(true);

@@ -76,7 +76,7 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Use `tools::test_registry()` (exported under `test-utils`) for deterministic tool tests
 
 ### UI Development
-- GPUI frontend based on Zed's gpui and gpui-component with custom components
+- GPUI frontend based on gpui-kit (gpui via `gpui_kit::*`, gpui-component via `gpui_kit::component`) with custom components
 - GPUI API reference (contexts, entities, tasks, elements, actions, events):
   `docs/gpui-reference.md`
 - Frame profiling of the GPUI frontend (opt-in via

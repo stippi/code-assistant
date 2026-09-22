@@ -11,12 +11,12 @@ use code_assistant_core::ui::ToolStatus;
 /// Maximum height for rendered images in pixels
 const MAX_IMAGE_HEIGHT: f32 = 80.0;
 
-use gpui::{
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::{
     Animation, AnimationExt, ClickEvent, Context, ImageSource, IntoElement, ObjectFit,
     SharedString, Styled, Transformation, div, img, percentage, px, rems, svg,
 };
-use gpui::{FontWeight, prelude::*};
-use gpui_component::ActiveTheme;
+use gpui_kit::{FontWeight, prelude::*};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -34,9 +34,9 @@ impl BlockView {
     pub(super) fn with_copy_button(
         &self,
         group_name: SharedString,
-        body: gpui::AnyElement,
+        body: gpui_kit::AnyElement,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let theme = cx.theme().clone();
         let copied = self.copy_feedback_active();
 
@@ -67,13 +67,13 @@ impl BlockView {
                     .bg(theme.background.opacity(0.85))
                     .border_1()
                     .border_color(theme.border)
-                    .cursor(gpui::CursorStyle::PointingHand)
+                    .cursor(gpui_kit::CursorStyle::PointingHand)
                     .hover(|s| s.bg(theme.muted))
                     .on_click(cx.listener(|view, _event: &ClickEvent, _window, cx| {
                         view.copy_source_to_clipboard(cx);
                     }))
                     .child(
-                        gpui::svg()
+                        gpui_kit::svg()
                             .size(px(13.))
                             .path(SharedString::from(icon_path))
                             .text_color(icon_color),
@@ -95,13 +95,13 @@ impl BlockView {
         &self,
         block: &ToolUseBlock,
         renderer: &dyn crate::tool_cards::ToolBlockRenderer,
-        theme: &gpui_component::theme::Theme,
-    ) -> gpui::AnyElement {
+        theme: &gpui_kit::component::theme::Theme,
+    ) -> gpui_kit::AnyElement {
         let is_dark = theme.background.l < 0.5;
         let header_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.15, 1.0)
         } else {
-            gpui::hsla(0.0, 0.0, 0.93, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.93, 1.0)
         };
         let header_text_color = theme.muted_foreground;
         let icon = file_icons::get().get_tool_icon(&block.name);
@@ -153,9 +153,9 @@ impl BlockView {
         &mut self,
         block: &ToolUseBlock,
         renderer: &dyn crate::tool_cards::ToolBlockRenderer,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> gpui_kit::Div {
         let theme = cx.theme().clone();
 
         // Icon
@@ -250,7 +250,7 @@ impl BlockView {
                                 .items_center()
                                 .justify_center()
                                 .child(
-                                    gpui::svg()
+                                    gpui_kit::svg()
                                         .size(px(14.))
                                         .path(SharedString::from("icons/arrow_circle.svg"))
                                         .text_color(icon_color)
@@ -277,7 +277,9 @@ impl BlockView {
                             .text_size(rems(0.8125))
                             .text_color(desc_color)
                             .overflow_hidden()
-                            .text_overflow(gpui::TextOverflow::Truncate(SharedString::from("…")))
+                            .text_overflow(gpui_kit::TextOverflow::Truncate(SharedString::from(
+                                "…",
+                            )))
                             .child(description),
                     ),
             )
@@ -342,8 +344,8 @@ impl BlockView {
 
     /// Render a zigzag/wiggle line using a canvas element.
     /// The line fills the available width and is vertically centered.
-    pub(super) fn render_zigzag_line(color: gpui::Hsla) -> impl IntoElement {
-        use gpui::{PathBuilder, canvas, point};
+    pub(super) fn render_zigzag_line(color: gpui_kit::Hsla) -> impl IntoElement {
+        use gpui_kit::{PathBuilder, canvas, point};
 
         canvas(
             |_, _, _| {},
@@ -391,8 +393,12 @@ impl BlockView {
 // Render trait implementation
 // --------------------------------------------------------------------------
 
-impl gpui::Render for BlockView {
-    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl gpui_kit::Render for BlockView {
+    fn render(
+        &mut self,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         if !frame_profile::enabled() {
             return self.render_block(window, cx);
         }
@@ -419,9 +425,9 @@ impl BlockView {
 
     fn render_block(
         &mut self,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let block = Rc::clone(&self.block);
         match &*block {
             BlockData::TextBlock(block) => {

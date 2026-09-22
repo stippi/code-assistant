@@ -7,13 +7,13 @@
 use code_assistant_core::ui::{DisplayFragment, UiEvent};
 
 use super::super::blocks::{MessageContainer, MessageRole};
-use gpui::Entity;
+use gpui_kit::Entity;
 use tracing::{debug, trace, warn};
 
 use super::super::*;
 
 impl Gpui {
-    pub(crate) fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
+    pub(crate) fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui_kit::AsyncApp) {
         match event {
             UiEvent::DisplayUserInput {
                 content,
@@ -1085,7 +1085,7 @@ impl Gpui {
                 // delay.  When the timer fires, dirty entries are taken from the
                 // store and written to disk on a background thread.
 
-                let task = cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+                let task = cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
                     cx.background_executor()
                         .timer(shared::ui_state::debounce_duration())
                         .await;
@@ -1112,7 +1112,7 @@ impl Gpui {
         &self,
         container: &Entity<MessageContainer>,
         fragments: Vec<DisplayFragment>,
-        cx: &mut gpui::AsyncApp,
+        cx: &mut gpui_kit::AsyncApp,
     ) {
         for fragment in fragments {
             match fragment {

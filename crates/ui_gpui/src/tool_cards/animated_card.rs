@@ -1,7 +1,7 @@
 //! Animated card body helper for tool block collapse/expand transitions.
 
-use gpui::prelude::FluentBuilder;
-use gpui::{Bounds, Div, IntoElement, ParentElement, Pixels, Styled, div, px};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{Bounds, Div, IntoElement, ParentElement, Pixels, Styled, div, px};
 use std::cell::Cell;
 use std::rc::Rc;
 

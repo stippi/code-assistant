@@ -1,8 +1,8 @@
-use gpui::{Context, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, Size,
     select::{Select, SelectEvent, SelectItem, SelectState},
 };
+use gpui_kit::{Context, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
 use llm::provider_config::ConfigurationSystem;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -36,11 +36,11 @@ impl ModelItem {
 impl SelectItem for ModelItem {
     type Value = String;
 
-    fn title(&self) -> gpui::SharedString {
+    fn title(&self) -> gpui_kit::SharedString {
         self.name.clone().into()
     }
 
-    fn display_title(&self) -> Option<gpui::AnyElement> {
+    fn display_title(&self) -> Option<gpui_kit::AnyElement> {
         let mut row = div().flex().items_center().gap_1().min_w_0();
 
         if let Some(icon_path) = &self.icon_path {
@@ -71,7 +71,7 @@ impl SelectItem for ModelItem {
 pub struct ModelSelector {
     dropdown_state: Entity<SelectState<Vec<ModelItem>>>,
     config: Option<Arc<ConfigurationSystem>>,
-    _dropdown_subscription: gpui::Subscription,
+    _dropdown_subscription: gpui_kit::Subscription,
     /// Last seen config generation (to know when to reload)
     last_config_generation: u64,
 }
@@ -225,7 +225,7 @@ fn provider_icon_path(provider_type: &str) -> Option<&'static str> {
 }
 
 impl Focusable for ModelSelector {
-    fn focus_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+    fn focus_handle(&self, cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
         self.dropdown_state.focus_handle(cx)
     }
 }
@@ -241,18 +241,20 @@ impl Render for ModelSelector {
             }
         }
 
-        gpui::div().text_color(cx.theme().muted_foreground).child(
-            Select::new(&self.dropdown_state)
-                .placeholder("Select Model")
-                .with_size(Size::XSmall)
-                .appearance(false)
-                .icon(
-                    Icon::default()
-                        .path("icons/chevron_up_down.svg")
-                        .with_size(Size::XSmall)
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .min_w(px(280.)),
-        )
+        gpui_kit::div()
+            .text_color(cx.theme().muted_foreground)
+            .child(
+                Select::new(&self.dropdown_state)
+                    .placeholder("Select Model")
+                    .with_size(Size::XSmall)
+                    .appearance(false)
+                    .icon(
+                        Icon::default()
+                            .path("icons/chevron_up_down.svg")
+                            .with_size(Size::XSmall)
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .min_w(px(280.)),
+            )
     }
 }

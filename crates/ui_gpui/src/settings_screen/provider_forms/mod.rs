@@ -9,7 +9,7 @@ pub mod chatgpt_subscription_form;
 pub mod default_form;
 pub mod vertex_form;
 
-use gpui::{AnyElement, App, AppContext as _, Context, Entity, IntoElement, Window};
+use gpui_kit::{AnyElement, App, AppContext as _, Context, Entity, IntoElement, Window};
 use serde_json::Value;
 
 /// Trait for provider-specific configuration forms.
@@ -172,28 +172,28 @@ impl ProviderFormHolder {
                 if let Some(form) = &self.default_form {
                     form.clone().into_any_element()
                 } else {
-                    gpui::Empty.into_any_element()
+                    gpui_kit::Empty.into_any_element()
                 }
             }
             ProviderFormType::AiCore => {
                 if let Some(form) = &self.ai_core_form {
                     form.clone().into_any_element()
                 } else {
-                    gpui::Empty.into_any_element()
+                    gpui_kit::Empty.into_any_element()
                 }
             }
             ProviderFormType::ChatGptSubscription => {
                 if let Some(form) = &self.chatgpt_form {
                     form.clone().into_any_element()
                 } else {
-                    gpui::Empty.into_any_element()
+                    gpui_kit::Empty.into_any_element()
                 }
             }
             ProviderFormType::Vertex => {
                 if let Some(form) = &self.vertex_form {
                     form.clone().into_any_element()
                 } else {
-                    gpui::Empty.into_any_element()
+                    gpui_kit::Empty.into_any_element()
                 }
             }
         }

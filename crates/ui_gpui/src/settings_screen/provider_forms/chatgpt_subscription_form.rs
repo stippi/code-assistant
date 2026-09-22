@@ -8,8 +8,8 @@
 //! - When logged in: email, plan type, token status, and logout/re-login buttons
 
 use super::ProviderForm;
-use gpui::{App, Context, SharedString, Task, Window, div, prelude::*, px};
-use gpui_component::ActiveTheme;
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::{App, Context, SharedString, Task, Window, div, prelude::*, px};
 use llm::codex_auth::{self, CodexAuthState, CodexTokenStorage, ProvidersJsonTokenStorage};
 use serde_json::Value;
 use std::sync::Arc;
@@ -170,7 +170,7 @@ impl ChatGptSubscriptionForm {
                     .rounded_md()
                     .cursor_pointer()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .bg(cx.theme().primary)
                     .text_color(cx.theme().primary_foreground)
                     .hover(|s| s.opacity(0.9))
@@ -230,18 +230,21 @@ impl ChatGptSubscriptionForm {
                             .h(px(8.))
                             .rounded_full()
                             .bg(if needs_refresh {
-                                gpui::hsla(0.12, 0.8, 0.5, 1.0) // orange
+                                gpui_kit::hsla(0.12, 0.8, 0.5, 1.0) // orange
                             } else {
-                                gpui::hsla(0.33, 0.7, 0.4, 1.0) // green
+                                gpui_kit::hsla(0.33, 0.7, 0.4, 1.0) // green
                             }),
                     )
-                    .child(div().text_xs().font_weight(gpui::FontWeight::MEDIUM).child(
-                        if needs_refresh {
-                            SharedString::from("Authenticated (token refresh recommended)")
-                        } else {
-                            SharedString::from("Authenticated")
-                        },
-                    )),
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .child(if needs_refresh {
+                                SharedString::from("Authenticated (token refresh recommended)")
+                            } else {
+                                SharedString::from("Authenticated")
+                            }),
+                    ),
             )
             // User info rows
             .child(self.render_info_row("Email", &email_display, cx))
@@ -261,8 +264,8 @@ impl ChatGptSubscriptionForm {
                             .rounded_md()
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                            .hover(|s| s.bg(gpui::hsla(0.0, 0.7, 0.5, 0.1)))
+                            .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
+                            .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.7, 0.5, 0.1)))
                             .child("Logout")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.logout(window, cx);
@@ -296,7 +299,7 @@ impl ChatGptSubscriptionForm {
             .child(
                 div()
                     .text_xs()
-                    .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
+                    .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
                     .child(SharedString::from(format!("Error: {}", message))),
             )
             .child(
@@ -333,7 +336,7 @@ impl ChatGptSubscriptionForm {
                     .w(px(80.))
                     .flex_none()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )

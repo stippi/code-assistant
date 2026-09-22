@@ -1,9 +1,9 @@
 //! Models settings section — list configured models, add/edit/remove.
 
-use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
-use gpui_component::input::{Input, InputState};
-use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
-use gpui_component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use tracing::{debug, warn};
@@ -54,12 +54,12 @@ pub struct ModelsSection {
     form_model_id_input: Entity<InputState>,
     form_context_limit_input: Entity<InputState>,
     form_provider_select: Entity<SelectState<Vec<ProviderItem>>>,
-    _provider_select_subscription: gpui::Subscription,
+    _provider_select_subscription: gpui_kit::Subscription,
     form_selected_provider: Option<String>,
 }
 
 impl ModelsSection {
-    pub fn new(window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let models = Self::load_models();
         let providers = Self::load_providers();
 
@@ -98,7 +98,7 @@ impl ModelsSection {
         &mut self,
         _: &Entity<SelectState<Vec<ProviderItem>>>,
         event: &SelectEvent<Vec<ProviderItem>>,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         if let SelectEvent::Confirm(Some(provider_key)) = event {
@@ -256,7 +256,7 @@ impl ModelsSection {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
                                     .child(SharedString::from(entry.name.clone())),
                             )
@@ -268,7 +268,7 @@ impl ModelsSection {
                                         div()
                                             .text_xs()
                                             .text_color(if provider_missing {
-                                                gpui::hsla(0.0, 0.7, 0.5, 1.0)
+                                                gpui_kit::hsla(0.0, 0.7, 0.5, 1.0)
                                             } else {
                                                 cx.theme().muted_foreground
                                             })
@@ -303,9 +303,9 @@ impl ModelsSection {
                             .h(px(8.))
                             .rounded_full()
                             .bg(if provider_missing {
-                                gpui::hsla(0.0, 0.7, 0.5, 1.0)
+                                gpui_kit::hsla(0.0, 0.7, 0.5, 1.0)
                             } else {
-                                gpui::hsla(0.33, 0.7, 0.45, 1.0)
+                                gpui_kit::hsla(0.33, 0.7, 0.45, 1.0)
                             }),
                     )
                     // Expand chevron
@@ -327,7 +327,7 @@ impl ModelsSection {
     fn populate_form_from_entry(
         &mut self,
         name: &str,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         let entry = self.models.iter().find(|e| e.name == name).cloned();
@@ -352,7 +352,7 @@ impl ModelsSection {
         }
     }
 
-    fn reset_form(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn reset_form(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         self.form_name_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(""), window, cx);
         });
@@ -445,8 +445,8 @@ impl ModelsSection {
                                 .rounded_md()
                                 .cursor_pointer()
                                 .text_xs()
-                                .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                                .hover(|s| s.bg(gpui::hsla(0.0, 0.7, 0.5, 0.1)))
+                                .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
+                                .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.7, 0.5, 0.1)))
                                 .child("Delete")
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     this.delete_model(&key, cx);
@@ -498,7 +498,7 @@ impl ModelsSection {
     fn render_form_row(
         &self,
         label: &str,
-        widget: gpui::AnyElement,
+        widget: gpui_kit::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -511,7 +511,7 @@ impl ModelsSection {
                     .w(px(80.))
                     .flex_none()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )
@@ -650,7 +650,7 @@ impl ModelsSection {
             .pt(px(60.))
             .bg(cx.theme().background.opacity(0.6))
             .on_mouse_down(
-                gpui::MouseButton::Left,
+                gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.form_mode = FormMode::Hidden;
                     cx.notify();
@@ -668,7 +668,7 @@ impl ModelsSection {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
                     // Title
@@ -676,7 +676,7 @@ impl ModelsSection {
                         div().px_4().py_3().child(
                             div()
                                 .text_base()
-                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(cx.theme().foreground)
                                 .child("New Model"),
                         ),
@@ -694,7 +694,11 @@ impl Focusable for ModelsSection {
 }
 
 impl Render for ModelsSection {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let form_mode = self.form_mode.clone();
         let has_providers = !self.providers.is_empty();
 
@@ -718,7 +722,7 @@ impl Render for ModelsSection {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().muted_foreground)
                                     .child("MODELS"),
                             )

@@ -5,10 +5,10 @@ mod render;
 pub use container::*;
 pub use data::*;
 
-use gpui::prelude::*;
-use gpui::{Context, Entity, Pixels, Task, px};
-use gpui_component::ActiveTheme;
-use gpui_component::text::{SelectionFormat, TextView, TextViewState};
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::text::{SelectionFormat, TextView, TextViewState};
+use gpui_kit::prelude::*;
+use gpui_kit::{Context, Entity, Pixels, Task, px};
 
 use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
 use crate::tool_cards::diff_syntax::language_for_path;
@@ -404,7 +404,7 @@ impl BlockView {
     /// Copy the given markdown source to the clipboard and show a short-lived
     /// checkmark on the copy button.
     pub(super) fn copy_source_to_clipboard(&mut self, cx: &mut Context<Self>) {
-        use gpui::ClipboardItem;
+        use gpui_kit::ClipboardItem;
 
         let source = self
             .block
@@ -646,11 +646,11 @@ mod tests {
     use super::*;
     use code_assistant_core::persistence::BranchInfo;
     use code_assistant_core::ui::ToolStatus;
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
 
     /// Initialize globals needed for tests (theme).
-    fn init_test_globals(cx: &mut gpui::App) {
-        gpui_component::theme::init(cx);
+    fn init_test_globals(cx: &mut gpui_kit::App) {
+        gpui_kit::component::theme::init(cx);
     }
 
     /// Helper to create a MessageContainer entity for testing.
@@ -662,7 +662,7 @@ mod tests {
         })
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_add_text_block(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -677,7 +677,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_add_or_append_to_text_block(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -703,7 +703,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_add_or_append_to_thinking_block(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -729,7 +729,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_add_tool_use_block(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -752,7 +752,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_update_tool_status(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -786,7 +786,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_update_tool_status_nonexistent(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -810,7 +810,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_add_or_update_tool_parameter(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -846,7 +846,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_remove_blocks_with_request_id(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -877,7 +877,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_finish_thinking_blocks(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -910,7 +910,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_append_tool_output(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::Assistant, cx);
 
@@ -933,7 +933,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_is_user_message(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::User, cx);
 
@@ -942,7 +942,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_message_container_node_id_and_branch_info(cx: &mut TestAppContext) {
         let container = make_container(MessageRole::User, cx);
 
@@ -965,7 +965,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_thinking_block_formatted_duration(cx: &mut TestAppContext) {
         cx.update(|_cx| {
             let thinking = ThinkingBlock {
@@ -989,7 +989,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_thinking_block_reasoning_summary(cx: &mut TestAppContext) {
         cx.update(|_cx| {
             let mut thinking = ThinkingBlock::new(String::new());
@@ -1026,7 +1026,7 @@ mod tests {
         assert_eq!(sync.update("ö"), TextUpdate::Replace);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn tool_card_markdown_entity_keeps_its_text(cx: &mut TestAppContext) {
         cx.update(init_test_globals);
         let view = cx.update(|cx| {
@@ -1085,7 +1085,7 @@ mod tests {
         ("new_text", "fn b() {}"),
     ];
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn small_diffs_are_ready_at_once_and_syntax_follows(cx: &mut TestAppContext) {
         let view = diff_tool_view(RUST_EDIT, cx);
 
@@ -1100,7 +1100,7 @@ mod tests {
         assert_eq!(second.syntax.map(|s| s.len()), Some(1));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn diff_cache_survives_touches_but_not_content_changes(cx: &mut TestAppContext) {
         let view = diff_tool_view(RUST_EDIT, cx);
         let first = view.update(cx, |view, cx| view.prepared_diff(cx));
@@ -1127,7 +1127,7 @@ mod tests {
         assert!(changed.syntax.is_none(), "stale syntax must not be reused");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn large_diffs_are_computed_in_the_background(cx: &mut TestAppContext) {
         let new_text = "let x = 1;\n".repeat(SYNC_DIFF_MAX_BYTES / 10);
         let view = diff_tool_view(
@@ -1147,7 +1147,7 @@ mod tests {
         assert!(second.syntax.is_none(), "no grammar for .txt");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn streaming_blocks_prepare_nothing(cx: &mut TestAppContext) {
         let view = diff_tool_view(RUST_EDIT, cx);
         let prepared = view.update(cx, |view, cx| {

@@ -34,15 +34,15 @@ use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_
 use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
-use gpui::{
-    AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ListAlignment,
-    ListState, Render, Subscription, Task, Window, div, list, prelude::*, px, rems,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, Size,
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
     v_flex,
+};
+use gpui_kit::{
+    AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ListAlignment,
+    ListState, Render, Subscription, Task, Window, div, list, prelude::*, px, rems,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -59,10 +59,10 @@ struct ModeOption {
 
 impl SelectItem for ModeOption {
     type Value = ReviewMode;
-    fn title(&self) -> gpui::SharedString {
+    fn title(&self) -> gpui_kit::SharedString {
         self.label.clone().into()
     }
-    fn display_title(&self) -> Option<gpui::AnyElement> {
+    fn display_title(&self) -> Option<gpui_kit::AnyElement> {
         None
     }
     fn value(&self) -> &Self::Value {
@@ -94,10 +94,10 @@ struct BaseOption {
 
 impl SelectItem for BaseOption {
     type Value = String;
-    fn title(&self) -> gpui::SharedString {
+    fn title(&self) -> gpui_kit::SharedString {
         self.branch.clone().into()
     }
-    fn display_title(&self) -> Option<gpui::AnyElement> {
+    fn display_title(&self) -> Option<gpui_kit::AnyElement> {
         None
     }
     fn value(&self) -> &Self::Value {
@@ -125,14 +125,14 @@ struct RepoSection {
 }
 
 /// Single-letter status badge (same colors the old file tree used).
-fn status_badge(status: ChangeStatus) -> (&'static str, gpui::Hsla) {
+fn status_badge(status: ChangeStatus) -> (&'static str, gpui_kit::Hsla) {
     match status {
-        ChangeStatus::Added | ChangeStatus::Untracked => ("A", gpui::rgb(0x3f_a5_5a).into()),
-        ChangeStatus::Modified => ("M", gpui::rgb(0xc7_9a_3a).into()),
-        ChangeStatus::Deleted => ("D", gpui::rgb(0xc7_4a_4a).into()),
-        ChangeStatus::Renamed => ("R", gpui::rgb(0x4a_82_c7).into()),
-        ChangeStatus::Copied => ("C", gpui::rgb(0x4a_82_c7).into()),
-        ChangeStatus::TypeChanged => ("T", gpui::rgb(0x8a_6a_c7).into()),
+        ChangeStatus::Added | ChangeStatus::Untracked => ("A", gpui_kit::rgb(0x3f_a5_5a).into()),
+        ChangeStatus::Modified => ("M", gpui_kit::rgb(0xc7_9a_3a).into()),
+        ChangeStatus::Deleted => ("D", gpui_kit::rgb(0xc7_4a_4a).into()),
+        ChangeStatus::Renamed => ("R", gpui_kit::rgb(0x4a_82_c7).into()),
+        ChangeStatus::Copied => ("C", gpui_kit::rgb(0x4a_82_c7).into()),
+        ChangeStatus::TypeChanged => ("T", gpui_kit::rgb(0x8a_6a_c7).into()),
     }
 }
 
@@ -153,7 +153,7 @@ const REVIEW_WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_mil
 
 /// How far beyond the viewport the list builds rows, so scrolling reveals
 /// finished content.
-const REVIEW_LIST_OVERDRAW: gpui::Pixels = px(512.);
+const REVIEW_LIST_OVERDRAW: gpui_kit::Pixels = px(512.);
 
 /// A prepared diff together with the listing entry it was loaded for. When a
 /// later listing carries a different entry for the same path (new
@@ -676,16 +676,18 @@ impl ReviewView {
 
     /// The rotating double-arrow used on active sessions, in grey — shown on
     /// the repo whose scan is currently running. `id` keys the animation.
-    fn scan_spinner(id: impl std::fmt::Display, muted: gpui::Hsla) -> gpui::AnyElement {
-        gpui::svg()
+    fn scan_spinner(id: impl std::fmt::Display, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+        gpui_kit::svg()
             .size(px(12.))
             .path("icons/arrow_circle.svg")
             .text_color(muted)
             .with_animation(
-                gpui::SharedString::from(format!("review-scan-spin-{id}")),
-                gpui::Animation::new(std::time::Duration::from_secs(2)).repeat(),
+                gpui_kit::SharedString::from(format!("review-scan-spin-{id}")),
+                gpui_kit::Animation::new(std::time::Duration::from_secs(2)).repeat(),
                 |svg, delta| {
-                    svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(delta)))
+                    svg.with_transformation(gpui_kit::Transformation::rotate(gpui_kit::percentage(
+                        delta,
+                    )))
                 },
             )
             .into_any_element()
@@ -693,8 +695,8 @@ impl ReviewView {
 
     /// The same double-arrow, static and faded — marks a repo that is queued
     /// for scanning but not yet running.
-    fn pending_marker(muted: gpui::Hsla) -> gpui::AnyElement {
-        gpui::svg()
+    fn pending_marker(muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+        gpui_kit::svg()
             .size(px(12.))
             .path("icons/arrow_circle.svg")
             .text_color(muted.opacity(0.4))
@@ -704,7 +706,11 @@ impl ReviewView {
     /// The repo header's right-hand slot: a spinner while a repo is being
     /// scanned, a faded static one while it waits its turn, and a `+adds −dels`
     /// summary once its (possibly cached) result is in.
-    fn render_scan_indicator(&self, section: &RepoSection, cx: &Context<Self>) -> gpui::AnyElement {
+    fn render_scan_indicator(
+        &self,
+        section: &RepoSection,
+        cx: &Context<Self>,
+    ) -> gpui_kit::AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
 
@@ -788,7 +794,12 @@ impl ReviewView {
     }
 
     /// Build the list item at `ix`.
-    fn render_row(&self, ix: usize, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_row(
+        &self,
+        ix: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
         let empty = || div().into_any_element();
         let Some(row) = self.rows.get(ix) else {
             return empty();
@@ -842,7 +853,7 @@ impl ReviewView {
         ix: usize,
         section: &RepoSection,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let chevron = if section.collapsed {
@@ -852,7 +863,7 @@ impl ReviewView {
         };
         let toggle_root = section.repo_root.clone();
         div()
-            .id(gpui::SharedString::from(format!("repo-header-{ix}")))
+            .id(gpui_kit::SharedString::from(format!("repo-header-{ix}")))
             .w_full()
             .flex()
             .flex_row()
@@ -863,7 +874,12 @@ impl ReviewView {
             .when(ix > 0, |s| s.border_t_1().border_color(theme.border))
             .cursor_pointer()
             .hover(|s| s.bg(theme.muted))
-            .child(gpui::svg().size(px(12.)).path(chevron).text_color(muted))
+            .child(
+                gpui_kit::svg()
+                    .size(px(12.))
+                    .path(chevron)
+                    .text_color(muted),
+            )
             .child(
                 div()
                     .flex_1()
@@ -900,7 +916,11 @@ impl ReviewView {
     }
 
     /// The per-repo base selector (branch mode only).
-    fn render_base_selector(&self, section: &RepoSection, cx: &Context<Self>) -> gpui::AnyElement {
+    fn render_base_selector(
+        &self,
+        section: &RepoSection,
+        cx: &Context<Self>,
+    ) -> gpui_kit::AnyElement {
         div()
             .px_2()
             .py_1()
@@ -926,7 +946,7 @@ impl ReviewView {
         repo_root: &std::path::Path,
         file: &ChangedFile,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let fg = theme.foreground;
@@ -938,7 +958,7 @@ impl ReviewView {
         let loading = self.in_flight.as_ref().is_some_and(|(k, _)| *k == key);
 
         // Right-hand slot of the file header.
-        let indicator: gpui::AnyElement = match entry {
+        let indicator: gpui_kit::AnyElement = match entry {
             Some(e) if e.is_binary => div()
                 .text_xs()
                 .text_color(muted)
@@ -983,7 +1003,7 @@ impl ReviewView {
 
         let toggle_key = key.clone();
         div()
-            .id(gpui::SharedString::from(format!(
+            .id(gpui_kit::SharedString::from(format!(
                 "review-file-{}:{}",
                 repo_root.display(),
                 file.path
@@ -1000,7 +1020,12 @@ impl ReviewView {
             .border_color(border)
             .cursor_pointer()
             .hover(|s| s.bg(theme.muted))
-            .child(gpui::svg().size(px(10.)).path(chevron).text_color(muted))
+            .child(
+                gpui_kit::svg()
+                    .size(px(10.))
+                    .path(chevron)
+                    .text_color(muted),
+            )
             .child(file_icons::render_icon(&icon, 14.0, muted, "📄"))
             .child(
                 div()
@@ -1038,7 +1063,7 @@ impl ReviewView {
         chunk_ix: usize,
         window: &Window,
         cx: &Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let chunks = &prepared.chunked.chunks;
         let Some(chunk) = chunks.get(chunk_ix) else {
             return div().into_any_element();
@@ -1047,9 +1072,9 @@ impl ReviewView {
         let rem_size = window.rem_size();
         let is_dark = theme.background.l < 0.5;
         let body_bg = if is_dark {
-            gpui::hsla(0.0, 0.0, 0.08, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.08, 1.0)
         } else {
-            gpui::hsla(0.0, 0.0, 0.97, 1.0)
+            gpui_kit::hsla(0.0, 0.0, 0.97, 1.0)
         };
         let line_height_px = rems(1.25).to_pixels(rem_size).round();
         div()
@@ -1076,7 +1101,7 @@ impl ReviewView {
 }
 
 impl Focusable for ReviewView {
-    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _cx: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -1166,7 +1191,7 @@ impl Render for ReviewView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui_kit::{TestAppContext, VisualTestContext};
 
     fn added_file(path: &str) -> ChangedFile {
         ChangedFile {
@@ -1197,7 +1222,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (Entity<ReviewView>, &mut VisualTestContext) {
         let window = cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             file_icons::init(cx);
             cx.open_window(Default::default(), |window, cx| {
                 cx.new(|cx| ReviewView::new(window, cx))
@@ -1226,7 +1251,7 @@ mod tests {
         (view, cx)
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn highlighted_rows_with_word_emphasis_render(cx: &mut TestAppContext) {
         let (view, cx) = view_with_files(vec![added_file("a.rs")], cx);
         let prepared = PreparedReviewDiff::from_content(
@@ -1262,7 +1287,7 @@ mod tests {
         view.update(cx, |view, _| assert_eq!(view.list_state.item_count(), 3));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn list_items_follow_loaded_diffs_and_collapse_state(cx: &mut TestAppContext) {
         let root = PathBuf::from("/repo");
         let (view, cx) = view_with_files(vec![added_file("a.rs"), added_file("b.rs")], cx);

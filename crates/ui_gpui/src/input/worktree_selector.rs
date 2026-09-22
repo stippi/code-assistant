@@ -1,8 +1,8 @@
-use gpui::{Context, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, Size,
     select::{Select, SelectEvent, SelectItem, SelectState},
 };
+use gpui_kit::{Context, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
 use std::path::PathBuf;
 use tracing::debug;
 
@@ -70,11 +70,11 @@ impl WorktreeOption {
 impl SelectItem for WorktreeOption {
     type Value = WorktreeValue;
 
-    fn title(&self) -> gpui::SharedString {
+    fn title(&self) -> gpui_kit::SharedString {
         self.label.clone().into()
     }
 
-    fn display_title(&self) -> Option<gpui::AnyElement> {
+    fn display_title(&self) -> Option<gpui_kit::AnyElement> {
         None
     }
 
@@ -87,7 +87,7 @@ impl SelectItem for WorktreeOption {
 /// local project, an existing worktree, or creating a new one.
 pub struct WorktreeSelector {
     dropdown_state: Entity<SelectState<Vec<WorktreeOption>>>,
-    _subscription: gpui::Subscription,
+    _subscription: gpui_kit::Subscription,
     /// Whether the project is a git repo at all.
     is_git_repo: bool,
 }
@@ -216,7 +216,7 @@ impl WorktreeSelector {
 }
 
 impl Focusable for WorktreeSelector {
-    fn focus_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+    fn focus_handle(&self, cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
         self.dropdown_state.focus_handle(cx)
     }
 }

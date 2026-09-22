@@ -8,7 +8,7 @@
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
 use code_assistant_core::ui::ToolStatus;
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, Element, FontWeight, ParentElement, Styled, Window, div, px, rems,
 };
 use serde_json::Value;
@@ -47,7 +47,7 @@ impl ToolBlockRenderer for SessionCardRenderer {
         &self,
         tool: &ToolUseBlock,
         _is_generating: bool,
-        theme: &gpui_component::theme::Theme,
+        theme: &gpui_kit::component::theme::Theme,
         _card_ctx: Option<&CardRenderContext>,
         _window: &mut Window,
         _cx: &mut Context<BlockView>,
@@ -76,7 +76,7 @@ impl ToolBlockRenderer for SessionCardRenderer {
 
 fn render_search_sessions(
     json: &Value,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> Option<AnyElement> {
     let sessions = json.get("sessions").and_then(|s| s.as_array())?;
     let total = json.get("total").and_then(|t| t.as_u64()).unwrap_or(0);
@@ -174,7 +174,7 @@ fn render_search_sessions(
 
 fn render_session_content(
     json: &Value,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> Option<AnyElement> {
     let items = json.get("items").and_then(|i| i.as_array())?;
     let id = json
@@ -291,7 +291,7 @@ fn render_session_content(
 // ---------------------------------------------------------------------------
 
 /// The outer left-bordered inline container shared with `code_card`.
-fn container(theme: &gpui_component::theme::Theme, children: Vec<AnyElement>) -> AnyElement {
+fn container(theme: &gpui_kit::component::theme::Theme, children: Vec<AnyElement>) -> AnyElement {
     div()
         .pl(px(8.))
         .ml(px(8.))
@@ -306,7 +306,7 @@ fn container(theme: &gpui_component::theme::Theme, children: Vec<AnyElement>) ->
         .into_any()
 }
 
-fn muted_line(theme: &gpui_component::theme::Theme, text: String) -> AnyElement {
+fn muted_line(theme: &gpui_kit::component::theme::Theme, text: String) -> AnyElement {
     div()
         .w_full()
         .px_3()
@@ -316,7 +316,7 @@ fn muted_line(theme: &gpui_component::theme::Theme, text: String) -> AnyElement 
         .into_any()
 }
 
-fn indented(theme: &gpui_component::theme::Theme, text: String) -> AnyElement {
+fn indented(theme: &gpui_kit::component::theme::Theme, text: String) -> AnyElement {
     div()
         .w_full()
         .px_3()
@@ -326,7 +326,7 @@ fn indented(theme: &gpui_component::theme::Theme, text: String) -> AnyElement {
         .into_any()
 }
 
-fn hint(theme: &gpui_component::theme::Theme, text: &str) -> AnyElement {
+fn hint(theme: &gpui_kit::component::theme::Theme, text: &str) -> AnyElement {
     div()
         .w_full()
         .px_3()
@@ -340,7 +340,7 @@ fn hint(theme: &gpui_component::theme::Theme, text: &str) -> AnyElement {
 fn render_plain(
     output: &str,
     is_error: bool,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> Option<AnyElement> {
     let color = if is_error {
         theme.danger

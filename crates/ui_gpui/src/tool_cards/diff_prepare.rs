@@ -14,7 +14,7 @@ use super::diff_card::{
 };
 use super::diff_syntax::DiffSyntax;
 use crate::blocks::ToolUseBlock;
-use gpui_component::highlighter::HighlightTheme;
+use gpui_kit::component::highlighter::HighlightTheme;
 use similar::ChangeTag;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;

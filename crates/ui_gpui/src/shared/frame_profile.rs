@@ -18,7 +18,7 @@
 //!                                      dispatched through the window
 //! ```
 
-use gpui::{
+use gpui_kit::{
     AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
     LayoutId, Pixels, SharedString, Window,
 };
@@ -80,7 +80,7 @@ pub fn init_from_env() -> Mode {
 /// Switches collection on, including gpui's frame timings.
 pub fn enable() {
     ENABLED.store(true, Ordering::Relaxed);
-    gpui::set_frame_trace_enabled(true);
+    gpui_kit::set_trace_enabled(true);
 }
 
 #[inline]
@@ -422,8 +422,8 @@ impl fmt::Display for Report {
     }
 }
 
-static FRAMES: LazyLock<Mutex<gpui::FrameTimingCollector>> =
-    LazyLock::new(|| Mutex::new(gpui::FrameTimingCollector::new()));
+static FRAMES: LazyLock<Mutex<gpui_kit::FrameTimingCollector>> =
+    LazyLock::new(|| Mutex::new(gpui_kit::FrameTimingCollector::new()));
 
 /// Takes the frames drawn and the labels recorded since the previous report.
 pub fn report(elapsed: Duration) -> Report {
@@ -432,7 +432,10 @@ pub fn report(elapsed: Duration) -> Report {
         .unwrap()
         .collect_unseen()
         .iter()
-        .map(|frame| frame.draw_duration())
+        .filter_map(|event| match event {
+            gpui_kit::FrameEvent::Draw(frame) => Some(frame.draw_duration()),
+            gpui_kit::FrameEvent::Present(_) => None,
+        })
         .collect();
     Report::new(elapsed, SCROLLING.load(Ordering::Relaxed), draws, take())
 }
@@ -455,7 +458,7 @@ pub fn spawn_reporter(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{
+    use gpui_kit::{
         Context, Render, TestAppContext, VisualTestContext, div, point, prelude::*, px, size,
     };
 
@@ -558,7 +561,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn timed_element_records_every_phase(cx: &mut TestAppContext) {
         enable();
         let label = SharedString::from("frame_profile.test.timed");

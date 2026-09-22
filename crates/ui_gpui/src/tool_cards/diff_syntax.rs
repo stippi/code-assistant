@@ -6,10 +6,12 @@
 //! the cached line styles.
 
 use super::diff_card::normalize_for_diff;
-use gpui::HighlightStyle;
-use gpui_component::Rope;
-use gpui_component::ThemeMode;
-use gpui_component::highlighter::{HighlightTheme, Language, LanguageRegistry, SyntaxHighlighter};
+use gpui_kit::HighlightStyle;
+use gpui_kit::component::Rope;
+use gpui_kit::component::ThemeMode;
+use gpui_kit::component::highlighter::{
+    HighlightTheme, Language, LanguageRegistry, SyntaxHighlighter,
+};
 use similar::ChangeTag;
 use std::ops::Range;
 use std::sync::Mutex;

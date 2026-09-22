@@ -2,7 +2,7 @@
 //!
 //! Uses a spring-damper model for natural scrolling animation behavior.
 
-use gpui::{Context, ListState};
+use gpui_kit::{Context, ListState};
 use std::cell::Cell;
 use std::rc::Rc;
 

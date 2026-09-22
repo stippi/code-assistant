@@ -4,14 +4,14 @@ pub use session_item::{SessionListItem, SessionListItemEvent};
 
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
-use gpui::{
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::{
     AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription, div,
     prelude::*, px, rems,
 };
-use gpui_component::scroll::ScrollableElement;
 
-use gpui_component::{ActiveTheme, Icon, Sizable, Size, StyledExt, tooltip::Tooltip};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt, tooltip::Tooltip};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -242,7 +242,7 @@ impl SessionSidebar {
     fn on_add_project_click(
         &mut self,
         _: &ClickEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         debug!("Add project button clicked");
@@ -331,7 +331,7 @@ impl SessionSidebar {
             }))
             // Folder icon
             .child(
-                gpui::svg()
+                gpui_kit::svg()
                     .flex_none()
                     .size(rems(0.875))
                     .path(folder_icon)
@@ -371,7 +371,7 @@ impl SessionSidebar {
                             .build(window, cx)
                         })
                         .child(
-                            gpui::svg()
+                            gpui_kit::svg()
                                 .size(rems(0.75))
                                 .path("icons/pin.svg")
                                 .text_color(if is_hovered {
@@ -410,7 +410,7 @@ impl SessionSidebar {
                             .build(window, cx)
                     })
                     .child(
-                        gpui::svg()
+                        gpui_kit::svg()
                             .size(rems(0.75))
                             .path("icons/plus.svg")
                             .text_color(if is_hovered {
@@ -468,15 +468,19 @@ impl SessionSidebar {
 impl EventEmitter<SessionSidebarEvent> for SessionSidebar {}
 
 impl Focusable for SessionSidebar {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
 impl Render for SessionSidebar {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // Build the list of project groups with their items
-        let mut children: Vec<gpui::AnyElement> = Vec::new();
+        let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
 
         for (idx, group) in self.groups.iter().enumerate() {
             // Project header

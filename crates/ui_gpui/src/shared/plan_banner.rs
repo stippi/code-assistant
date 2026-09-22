@@ -1,12 +1,12 @@
 use super::file_icons;
 use code_assistant_core::types::{PlanItemStatus, PlanState};
-use gpui::prelude::*;
+use gpui_kit::prelude::*;
 
-use gpui::{
+use gpui_kit::component::{ActiveTheme, StyledExt};
+use gpui_kit::{
     Animation, AnimationExt, Bounds, ClickEvent, Context, EventEmitter, Pixels, Render,
     SharedString, Task, Transformation, Window, div, percentage, px, rems,
 };
-use gpui_component::{ActiveTheme, StyledExt};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -274,7 +274,7 @@ impl Render for PlanBanner {
                                     .child("•"),
                             )
                             .child(
-                                gpui::svg()
+                                gpui_kit::svg()
                                     .flex_none()
                                     .size(rems(0.75))
                                     .path("icons/arrow_circle.svg")
@@ -382,7 +382,7 @@ fn render_chevron(
     icon: &Option<SharedString>,
     fallback: &str,
     cx: &mut Context<PlanBanner>,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .size(rems(1.0))
         .flex()
@@ -396,7 +396,7 @@ fn render_chevron(
         ))
 }
 
-fn render_plan_label(cx: &mut Context<PlanBanner>) -> gpui::Div {
+fn render_plan_label(cx: &mut Context<PlanBanner>) -> gpui_kit::Div {
     div()
         .text_size(rems(0.75))
         .font_medium()
@@ -409,7 +409,7 @@ fn render_default_header(
     chevron_fallback: &str,
     status_text: &str,
     cx: &mut Context<PlanBanner>,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .flex()
         .items_center()
@@ -433,7 +433,7 @@ fn render_default_header(
         )
 }
 
-fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Div {
+fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui_kit::Div {
     div()
         .flex()
         .flex_col()
@@ -472,7 +472,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
                         .justify_center()
                         .when(is_completed, |el| {
                             el.child(
-                                gpui::svg()
+                                gpui_kit::svg()
                                     .size(rems(0.875))
                                     .path("icons/check_circle.svg")
                                     .text_color(icon_color),
@@ -480,7 +480,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui::Di
                         })
                         .when(is_in_progress, |el| {
                             el.child(
-                                gpui::svg()
+                                gpui_kit::svg()
                                     .size(rems(0.875))
                                     .path("icons/arrow_circle.svg")
                                     .text_color(icon_color)
@@ -547,26 +547,26 @@ fn truncate_text(text: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
     use code_assistant_core::types::PlanItem;
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
 
     /// Minimal asset source for tests — returns empty for all paths.
     struct TestAssets;
-    impl gpui::AssetSource for TestAssets {
-        fn load(&self, _path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+    impl gpui_kit::AssetSource for TestAssets {
+        fn load(&self, _path: &str) -> gpui_kit::Result<Option<std::borrow::Cow<'static, [u8]>>> {
             Ok(None)
         }
-        fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+        fn list(&self, _path: &str) -> gpui_kit::Result<Vec<SharedString>> {
             Ok(vec![])
         }
     }
 
     /// Initialize globals needed for rendering (theme, file_icons).
-    fn init_test_globals(cx: &mut gpui::App) {
-        gpui_component::theme::init(cx);
-        file_icons::init_with_assets(&(Arc::new(TestAssets) as Arc<dyn gpui::AssetSource>));
+    fn init_test_globals(cx: &mut gpui_kit::App) {
+        gpui_kit::component::theme::init(cx);
+        file_icons::init_with_assets(&(Arc::new(TestAssets) as Arc<dyn gpui_kit::AssetSource>));
     }
 
     fn make_plan(items: Vec<(&str, PlanItemStatus)>) -> PlanState {
@@ -583,7 +583,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_plan_banner_toggle_emits_event(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
             init_test_globals(cx);
@@ -640,7 +640,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_plan_banner_starts_not_collapsed(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
             cx.open_window(Default::default(), |_, cx| cx.new(PlanBanner::new))
@@ -656,7 +656,7 @@ mod tests {
             .unwrap();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_plan_banner_set_plan_updates_state(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
             init_test_globals(cx);

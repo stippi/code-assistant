@@ -8,8 +8,10 @@
 //! `InputArea` forwards to the backend.
 
 use code_assistant_core::ui::ui_events::McpServerToggle;
-use gpui::{Context, EventEmitter, Render, SharedString, Window, deferred, div, prelude::*, px};
-use gpui_component::{ActiveTheme, Icon, Sizable, Size, switch::Switch};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, switch::Switch};
+use gpui_kit::{
+    Context, EventEmitter, Render, SharedString, Window, deferred, div, prelude::*, px,
+};
 
 #[derive(Clone, Debug)]
 pub enum McpSelectorEvent {

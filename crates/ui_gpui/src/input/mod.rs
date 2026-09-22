@@ -12,17 +12,22 @@ use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use code_assistant_core::ui::ui_events::McpServerToggle;
-use gpui::{
-    ClickEvent, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable,
-    Render, SharedString, Subscription, Window, div, prelude::*, px,
+use gpui_kit::component::input::{
+    Enter, Escape, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
 };
-use gpui_component::input::{Enter, Input, InputEvent, InputState, Paste};
-use gpui_component::{ActiveTheme, Icon};
+use gpui_kit::component::list::ListItem;
+use gpui_kit::component::{ActiveTheme, Icon, ThemeStyled};
+use gpui_kit::{
+    Anchor, AnyElement, ClickEvent, ClipboardEntry, Context, CursorStyle, Edges, Entity,
+    EventEmitter, FocusHandle, Focusable, Render, SharedString, Subscription, Window, anchored,
+    deferred, div, prelude::*, px,
+};
 use mcp_selector::{McpSelector, McpSelectorEvent};
 use model_selector::{ModelSelector, ModelSelectorEvent};
 use permission_selector::{PermissionSelector, PermissionSelectorEvent};
 use sandbox::SandboxPolicy;
 use sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
+use skill_completion::SlashMenuItem;
 use tools_core::permissions::PermissionTier;
 use worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
 
@@ -74,9 +79,19 @@ pub enum InputAreaEvent {
     WorktreeRefreshRequested,
 }
 
+/// The composer's slash menu (see [`skill_completion`]).
+struct SlashMenu {
+    items: Vec<SlashMenuItem>,
+    selected: usize,
+}
+
 /// Self-contained input area component that handles text input and attachments
 pub struct InputArea {
-    text_input: Entity<InputState>,
+    text_input: Entity<TextareaState>,
+    /// Shown while the input is a `/<query>` with at least one match.
+    slash_menu: Option<SlashMenu>,
+    /// Escape hid the menu; it stays hidden until the text changes.
+    slash_menu_dismissed: bool,
     model_selector: Entity<ModelSelector>,
     sandbox_selector: Entity<SandboxSelector>,
     permission_selector: Entity<PermissionSelector>,
@@ -116,17 +131,9 @@ impl InputArea {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Create the text input
         let text_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .auto_grow(1, 8)
                 .placeholder("Type your message...")
-        });
-
-        // Wire the `/skill` autocomplete provider onto the input's LSP slot.
-        text_input.update(cx, |state, _cx| {
-            state.lsp.completion_provider = Some(std::rc::Rc::new(
-                skill_completion::SkillCompletionProvider::new(),
-            ));
         });
 
         // Subscribe to text input events
@@ -156,6 +163,8 @@ impl InputArea {
 
         Self {
             text_input,
+            slash_menu: None,
+            slash_menu_dismissed: false,
             model_selector,
             sandbox_selector,
             permission_selector,
@@ -197,6 +206,7 @@ impl InputArea {
         self.text_input.update(cx, |text_input, cx| {
             text_input.set_value(text, window, cx);
         });
+        self.refresh_slash_menu(cx);
 
         // Update attachments
         self.attachments = attachments;
@@ -310,6 +320,7 @@ impl InputArea {
         self.text_input.update(cx, |text_input, cx| {
             text_input.set_value("", window, cx);
         });
+        self.refresh_slash_menu(cx);
 
         // Clear attachments
         self.attachments.clear();
@@ -364,13 +375,17 @@ impl InputArea {
 
             // Slash-command handling: classify the input against the skill
             // catalog so Enter does the intuitive thing.
-            let skills = cx.global::<crate::Gpui>().skills();
+            let skills = Self::skills(cx);
             match skill_completion::slash_completion_state(&current_text, &skills) {
                 skill_completion::SlashState::MenuOpen => {
-                    // The completion menu is open. Let Enter propagate to the
-                    // inner input so it confirms the highlighted skill (which
+                    // Enter accepts the highlighted slash-menu entry (which
                     // inserts `/<name>`); do not submit or insert a newline.
-                    return;
+                    // With the menu dismissed, the `/...` is an ordinary
+                    // message.
+                    if self.accept_slash_item(window, cx) {
+                        cx.stop_propagation();
+                        return;
+                    }
                 }
                 skill_completion::SlashState::Invoke { scope, name } => {
                     cx.emit(InputAreaEvent::ClearDraftRequested);
@@ -482,6 +497,144 @@ impl InputArea {
         }
     }
 
+    /// The session's skills, none before the app registered its global.
+    fn skills(cx: &gpui_kit::App) -> Vec<code_assistant_core::session::service::SkillCatalogEntry> {
+        cx.try_global::<crate::Gpui>()
+            .map(|gpui| gpui.skills())
+            .unwrap_or_default()
+    }
+
+    /// Recompute the slash menu from the input text.
+    fn refresh_slash_menu(&mut self, cx: &mut Context<Self>) {
+        let text = self.text_input.read(cx).value().to_string();
+        let skills = Self::skills(cx);
+        let items = skill_completion::slash_menu_items(&text, &skills);
+        self.slash_menu = if items.is_empty() || self.slash_menu_dismissed {
+            None
+        } else {
+            // Keep the highlighted entry across keystrokes while it is listed.
+            let selected = self
+                .slash_menu
+                .as_ref()
+                .and_then(|menu| menu.items.get(menu.selected))
+                .and_then(|prev| items.iter().position(|item| item.label == prev.label))
+                .unwrap_or(0);
+            Some(SlashMenu { items, selected })
+        };
+        cx.notify();
+    }
+
+    /// Replace the input with the highlighted slash-menu entry. Returns false
+    /// when no menu is open.
+    fn accept_slash_item(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(selected) = self.slash_menu.as_ref().map(|menu| menu.selected) else {
+            return false;
+        };
+        self.accept_slash_item_at(selected, window, cx);
+        true
+    }
+
+    fn accept_slash_item_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(insert) = self
+            .slash_menu
+            .as_ref()
+            .and_then(|menu| menu.items.get(ix))
+            .map(|item| item.insert.clone())
+        else {
+            return;
+        };
+        // Replace the typed `/...` and leave the caret after the insertion,
+        // as accepting a completion does. `replace` emits `Change`, which
+        // refreshes the menu.
+        self.text_input.update(cx, |state, cx| {
+            state.select_all(window, cx);
+            state.replace(insert, window, cx);
+        });
+    }
+
+    /// Up/Down/Escape move through or hide the slash menu while it is open;
+    /// otherwise they reach the textarea as usual. Registered in the capture
+    /// phase, see [`Self::on_enter`].
+    fn on_slash_menu_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.slash_menu {
+            menu.selected = menu.selected.saturating_sub(1);
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn on_slash_menu_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.slash_menu {
+            menu.selected = (menu.selected + 1).min(menu.items.len().saturating_sub(1));
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn on_slash_menu_escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+        if self.slash_menu.take().is_some() {
+            self.slash_menu_dismissed = true;
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    /// The slash menu, anchored above the input box.
+    fn render_slash_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.slash_menu.as_ref()?;
+        let selected = menu.selected;
+        let items: Vec<_> = menu
+            .items
+            .iter()
+            .enumerate()
+            .map(|(ix, item)| {
+                ListItem::new(ix)
+                    .selected(ix == selected)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.accept_slash_item_at(ix, window, cx)
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap_2()
+                            .text_sm()
+                            .child(item.label.clone())
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(item.detail.clone()),
+                            ),
+                    )
+            })
+            .collect();
+        Some(
+            deferred(
+                anchored()
+                    .anchor(Anchor::BottomLeft)
+                    .snap_to_window_with_margin(Edges::all(px(8.)))
+                    .child(
+                        div()
+                            .id("slash-menu")
+                            .occlude()
+                            .popover_style(cx)
+                            .shadow_md()
+                            .p_1()
+                            .mb_1()
+                            .min_w(px(240.))
+                            .max_w(px(480.))
+                            .max_h(px(240.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .children(items),
+                    ),
+            )
+            .into_any_element(),
+        )
+    }
+
     /// Emit content changed event
     fn emit_content_changed(&mut self, cx: &mut Context<Self>) {
         let text = self.text_input.read(cx).value().to_string();
@@ -494,13 +647,15 @@ impl InputArea {
     /// Handle text input events
     fn on_input_event(
         &mut self,
-        _input: &Entity<InputState>,
+        _input: &Entity<TextareaState>,
         event: &InputEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             InputEvent::Change => {
+                self.slash_menu_dismissed = false;
+                self.refresh_slash_menu(cx);
                 // Emit content changed event for draft saving
                 self.emit_content_changed(cx);
             }
@@ -662,6 +817,7 @@ impl InputArea {
         let text_input_handle = self.text_input.read(cx).focus_handle(cx);
         let is_focused = text_input_handle.is_focused(window);
         let has_input_content = !self.text_input.read(cx).value().trim().is_empty();
+        let slash_menu = self.render_slash_menu(cx);
 
         div()
             .id("input-area")
@@ -789,7 +945,8 @@ impl InputArea {
                                     })
                                     .rounded_md()
                                     .track_focus(&text_input_handle)
-                                    .child(Input::new(&self.text_input).appearance(false))
+                                    .children(slash_menu)
+                                    .child(Textarea::new(&self.text_input).appearance(false))
                             })
                             // Selector row: model | worktree | sandbox | permissions | context ring
                             .child(
@@ -841,7 +998,7 @@ impl InputArea {
                                             .ml_1()
                                             .when_some(usage, |el, usage| {
                                                 el.tooltip(move |window, cx| {
-                                                    gpui_component::tooltip::Tooltip::element(
+                                                    gpui_kit::component::tooltip::Tooltip::element(
                                                         move |_window, _cx| {
                                                             ContextBreakdown::new(usage)
                                                                 .session_total(total_usage)
@@ -948,7 +1105,7 @@ impl InputArea {
 }
 
 impl Focusable for InputArea {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -959,6 +1116,9 @@ impl Render for InputArea {
         div()
             .capture_action(cx.listener(Self::on_enter))
             .capture_action(cx.listener(Self::on_paste))
+            .capture_action(cx.listener(Self::on_slash_menu_up))
+            .capture_action(cx.listener(Self::on_slash_menu_down))
+            .capture_action(cx.listener(Self::on_slash_menu_escape))
             .on_action({
                 let text_input_handle = self.text_input.clone();
                 move |_: &crate::InsertLineBreak, window, cx| {
@@ -970,5 +1130,153 @@ impl Render for InputArea {
             })
             .track_focus(&self.focus_handle(cx))
             .child(self.render_input_area(window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_assistant_core::session::service::SkillCatalogEntry;
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    fn skill(name: &str) -> SkillCatalogEntry {
+        SkillCatalogEntry {
+            name: name.to_string(),
+            description: "desc".to_string(),
+            scope_token: "proj".to_string(),
+            scope_label: "project".to_string(),
+        }
+    }
+
+    fn input_area(cx: &mut TestAppContext) -> (Entity<InputArea>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::shared::file_icons::init(cx);
+            let gpui = crate::Gpui::new();
+            gpui.set_skills(vec![skill("pdf-extraction"), skill("review")]);
+            cx.set_global(gpui);
+        });
+        cx.add_window_view(InputArea::new)
+    }
+
+    /// Types `text` at the caret, as keystrokes would (emits `Change`).
+    fn type_text(area: &Entity<InputArea>, cx: &mut VisualTestContext, text: &str) {
+        area.update_in(cx, |area, window, cx| {
+            area.text_input
+                .update(cx, |state, cx| state.insert(text, window, cx));
+        });
+    }
+
+    fn text(area: &Entity<InputArea>, cx: &mut VisualTestContext) -> String {
+        area.read_with(cx, |area, cx| area.text_input.read(cx).value().to_string())
+    }
+
+    fn menu(area: &Entity<InputArea>, cx: &mut VisualTestContext) -> Option<(Vec<String>, usize)> {
+        area.read_with(cx, |area, _| {
+            area.slash_menu.as_ref().map(|menu| {
+                let labels = menu.items.iter().map(|item| item.label.clone()).collect();
+                (labels, menu.selected)
+            })
+        })
+    }
+
+    fn enter(area: &Entity<InputArea>, cx: &mut VisualTestContext) {
+        let action = Enter {
+            secondary: false,
+            shift: false,
+        };
+        area.update_in(cx, |area, window, cx| area.on_enter(&action, window, cx));
+    }
+
+    #[gpui_kit::test]
+    fn slash_menu_follows_the_typed_query(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        assert_eq!(menu(&area, cx), None);
+
+        type_text(&area, cx, "/");
+        assert_eq!(
+            menu(&area, cx),
+            Some((
+                vec!["goal".into(), "pdf-extraction".into(), "review".into()],
+                0
+            ))
+        );
+
+        type_text(&area, cx, "re");
+        assert_eq!(menu(&area, cx), Some((vec!["review".into()], 0)));
+
+        type_text(&area, cx, " now");
+        assert_eq!(
+            menu(&area, cx),
+            None,
+            "a slash line with a space is a message"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn arrows_move_the_highlight_and_enter_accepts_it(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        type_text(&area, cx, "/");
+        area.update_in(cx, |area, window, cx| {
+            area.on_slash_menu_down(&MoveDown, window, cx);
+            area.on_slash_menu_down(&MoveDown, window, cx);
+            area.on_slash_menu_down(&MoveDown, window, cx);
+        });
+        assert_eq!(
+            menu(&area, cx).map(|m| m.1),
+            Some(2),
+            "clamped at the last entry"
+        );
+        area.update_in(cx, |area, window, cx| {
+            area.on_slash_menu_up(&MoveUp, window, cx)
+        });
+        assert_eq!(menu(&area, cx).map(|m| m.1), Some(1));
+
+        enter(&area, cx);
+        assert_eq!(text(&area, cx), "/pdf-extraction");
+        // The accepted name is a complete skill: the menu still lists it, and
+        // the next Enter invokes it (see `slash_completion_state`).
+        assert_eq!(menu(&area, cx), Some((vec!["pdf-extraction".into()], 0)));
+        let caret = area.read_with(cx, |area, cx| area.text_input.read(cx).cursor());
+        assert_eq!(caret, "/pdf-extraction".len(), "caret after the insertion");
+    }
+
+    #[gpui_kit::test]
+    fn goal_expands_to_its_template(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        type_text(&area, cx, "/go");
+        assert_eq!(menu(&area, cx), Some((vec!["goal".into()], 0)));
+        enter(&area, cx);
+        assert_eq!(text(&area, cx), "/goal ");
+        assert_eq!(menu(&area, cx), None);
+    }
+
+    #[gpui_kit::test]
+    fn escape_hides_the_menu_until_the_text_changes(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        type_text(&area, cx, "/");
+        area.update_in(cx, |area, window, cx| {
+            area.on_slash_menu_escape(&Escape, window, cx)
+        });
+        assert_eq!(menu(&area, cx), None);
+        type_text(&area, cx, "pd");
+        assert_eq!(menu(&area, cx), Some((vec!["pdf-extraction".into()], 0)));
+
+        // With the menu dismissed, Enter submits the `/...` as a message.
+        area.update_in(cx, |area, window, cx| {
+            area.on_slash_menu_escape(&Escape, window, cx)
+        });
+        enter(&area, cx);
+        assert_eq!(text(&area, cx), "", "submitted and cleared");
+        assert_eq!(menu(&area, cx), None);
+    }
+
+    #[gpui_kit::test]
+    fn clearing_the_input_closes_the_menu(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        type_text(&area, cx, "/");
+        assert!(menu(&area, cx).is_some());
+        area.update_in(cx, |area, window, cx| area.clear(window, cx));
+        assert_eq!(menu(&area, cx), None);
     }
 }

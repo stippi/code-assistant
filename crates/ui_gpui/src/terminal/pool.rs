@@ -1,5 +1,5 @@
-use gpui::AppContext as _;
-use gpui::Entity;
+use gpui_kit::AppContext as _;
+use gpui_kit::Entity;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use terminal::{StyledLine, Terminal};
@@ -190,7 +190,7 @@ fn display_terminal_order() -> &'static Mutex<Vec<String>> {
 pub fn ensure_display_terminal(
     session_id: &str,
     tool_id: &str,
-    cx: &mut gpui::AsyncApp,
+    cx: &mut gpui_kit::AsyncApp,
 ) -> Option<Entity<Terminal>> {
     let existing = TerminalPool::global().lock().ok().and_then(|pool| {
         pool.get_terminal_by_tool_id_any_session(tool_id)
@@ -233,7 +233,7 @@ pub fn feed_display_terminal(
     session_id: &str,
     tool_id: &str,
     bytes: &[u8],
-    cx: &mut gpui::AsyncApp,
+    cx: &mut gpui_kit::AsyncApp,
 ) {
     let Some(terminal) = ensure_display_terminal(session_id, tool_id, cx) else {
         return;
@@ -252,7 +252,7 @@ pub fn feed_display_terminal(
 pub fn mark_display_terminal_exited(
     tool_id: &str,
     exit_code: Option<i32>,
-    cx: &mut gpui::AsyncApp,
+    cx: &mut gpui_kit::AsyncApp,
 ) {
     let terminal = TerminalPool::global().lock().ok().and_then(|pool| {
         pool.get_terminal_by_tool_id_any_session(tool_id)
@@ -267,7 +267,7 @@ pub fn mark_display_terminal_exited(
 
 /// Snapshot a display-only terminal into the styled-output cache and drop
 /// it, so its (old) tool card falls back to static colored rendering.
-fn evict_display_terminal(terminal_id: &str, cx: &mut gpui::AsyncApp) {
+fn evict_display_terminal(terminal_id: &str, cx: &mut gpui_kit::AsyncApp) {
     let terminal = TerminalPool::global()
         .lock()
         .ok()

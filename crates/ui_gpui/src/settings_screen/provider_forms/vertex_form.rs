@@ -7,9 +7,9 @@
 //! header.
 
 use super::ProviderForm;
-use gpui::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
-use gpui_component::input::{Input, InputState};
-use gpui_component::{ActiveTheme, checkbox::Checkbox};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::{ActiveTheme, checkbox::Checkbox};
+use gpui_kit::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
 use serde_json::Value;
 
 pub struct VertexProviderForm {
@@ -39,7 +39,7 @@ impl VertexProviderForm {
     fn form_row(
         &self,
         label: &str,
-        widget: gpui::AnyElement,
+        widget: gpui_kit::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -52,7 +52,7 @@ impl VertexProviderForm {
                     .w(px(80.))
                     .flex_none()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )

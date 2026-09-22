@@ -9,7 +9,7 @@ use code_assistant_core::persistence::{BranchInfo, NodeId};
 
 use crate::shared::image;
 use code_assistant_core::ui::ToolStatus;
-use gpui::{Context, Entity, prelude::*};
+use gpui_kit::{Context, Entity, prelude::*};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
 

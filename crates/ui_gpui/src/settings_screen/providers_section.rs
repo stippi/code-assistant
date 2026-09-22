@@ -2,10 +2,10 @@
 
 use super::provider_forms::ProviderFormHolder;
 use super::provider_suggestions::{self, ProviderSuggestion, UserEnvironment};
-use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
-use gpui_component::input::{Input, InputState};
-use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
-use gpui_component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use tracing::{debug, warn};
@@ -85,7 +85,7 @@ pub struct ProvidersSection {
     form_provider_type: String,
     // Provider type dropdown
     provider_type_select: Entity<SelectState<Vec<ProviderTypeItem>>>,
-    _provider_type_subscription: gpui::Subscription,
+    _provider_type_subscription: gpui_kit::Subscription,
     // Provider-specific form
     form_holder: ProviderFormHolder,
     // Onboarding suggestions
@@ -97,7 +97,7 @@ pub struct ProvidersSection {
 }
 
 impl ProvidersSection {
-    pub fn new(window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let providers = Self::load_providers();
 
         let form_label_input =
@@ -145,7 +145,7 @@ impl ProvidersSection {
         &mut self,
         _: &Entity<SelectState<Vec<ProviderTypeItem>>>,
         event: &SelectEvent<Vec<ProviderTypeItem>>,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         if let SelectEvent::Confirm(Some(provider_id)) = event {
@@ -238,7 +238,7 @@ impl ProvidersSection {
     fn populate_form_from_entry(
         &mut self,
         entry: &ProviderEntry,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         // Set label
@@ -336,7 +336,7 @@ impl ProvidersSection {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
                                     .child(SharedString::from(entry.label.clone())),
                             )
@@ -355,9 +355,9 @@ impl ProvidersSection {
                             .items_center()
                             .gap_2()
                             .child(div().size(px(8.)).rounded_full().bg(if entry.has_api_key {
-                                gpui::hsla(142.0 / 360.0, 0.7, 0.45, 1.0)
+                                gpui_kit::hsla(142.0 / 360.0, 0.7, 0.45, 1.0)
                             } else {
-                                gpui::hsla(0.0, 0.0, 0.6, 1.0)
+                                gpui_kit::hsla(0.0, 0.0, 0.6, 1.0)
                             }))
                             .child(
                                 Icon::default()
@@ -387,7 +387,7 @@ impl ProvidersSection {
             .pt(px(60.))
             .bg(cx.theme().background.opacity(0.6))
             .on_mouse_down(
-                gpui::MouseButton::Left,
+                gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.form_mode = FormMode::Hidden;
                     cx.notify();
@@ -407,7 +407,7 @@ impl ProvidersSection {
                     .flex_col()
                     .overflow_hidden()
                     // Prevent backdrop click from closing when clicking inside dialog
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
                     // Title
@@ -415,7 +415,7 @@ impl ProvidersSection {
                         div().px_4().py_3().child(
                             div()
                                 .text_base()
-                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(cx.theme().foreground)
                                 .child("New Provider"),
                         ),
@@ -491,8 +491,8 @@ impl ProvidersSection {
                                 .rounded_md()
                                 .cursor_pointer()
                                 .text_xs()
-                                .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                                .hover(|s| s.bg(gpui::hsla(0.0, 0.7, 0.5, 0.1)))
+                                .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
+                                .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.7, 0.5, 0.1)))
                                 .child("Delete")
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     this.delete_provider(&key, cx);
@@ -545,7 +545,7 @@ impl ProvidersSection {
     fn render_form_row(
         &self,
         label: &str,
-        widget: gpui::AnyElement,
+        widget: gpui_kit::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -558,7 +558,7 @@ impl ProvidersSection {
                     .w(px(80.))
                     .flex_none()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )
@@ -754,7 +754,7 @@ impl ProvidersSection {
     fn expand_suggestion(
         &mut self,
         index: usize,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         if index >= self.suggestions.len() {
@@ -837,7 +837,7 @@ impl ProvidersSection {
                     .child(
                         div()
                             .text_sm()
-                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .text_color(cx.theme().foreground)
                             .child("Quick Setup"),
                     )
@@ -921,7 +921,7 @@ impl ProvidersSection {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
                                     .child(SharedString::from(suggestion.title.to_string())),
                             )
@@ -992,7 +992,7 @@ impl ProvidersSection {
                                                 .w(px(80.))
                                                 .flex_none()
                                                 .text_xs()
-                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .font_weight(gpui_kit::FontWeight::MEDIUM)
                                                 .text_color(cx.theme().muted_foreground)
                                                 .child(SharedString::from(field.label.to_string())),
                                         )
@@ -1071,7 +1071,11 @@ impl Focusable for ProvidersSection {
 }
 
 impl Render for ProvidersSection {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let form_mode = self.form_mode.clone();
 
         div()
@@ -1094,7 +1098,7 @@ impl Render for ProvidersSection {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().muted_foreground)
                                     .child("PROVIDERS"),
                             )

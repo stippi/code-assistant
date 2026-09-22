@@ -8,7 +8,7 @@ use super::main_screen::{MainScreen, MainScreenEvent};
 use super::messages::MessagesView;
 use super::settings_screen::{SettingsScreen, SettingsScreenEvent};
 use super::sidebar::SessionSidebar;
-use gpui::{App, Context, Entity, FocusHandle, Focusable, Subscription, div, prelude::*};
+use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, Subscription, div, prelude::*};
 use tracing::debug;
 
 /// Which top-level view is currently displayed.
@@ -31,7 +31,7 @@ impl RootView {
     pub fn new(
         messages_view: Entity<MessagesView>,
         project_sidebar: Entity<SessionSidebar>,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // Create the main screen (former RootView)
@@ -74,7 +74,7 @@ impl RootView {
     }
 
     /// Create or return the settings screen entity.
-    fn ensure_settings_screen(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn ensure_settings_screen(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         if self.settings_screen.is_none() {
             let settings = cx.new(|cx| SettingsScreen::new(window, cx));
             let subscription = cx.subscribe_in(&settings, window, Self::on_settings_screen_event);
@@ -87,7 +87,7 @@ impl RootView {
         &mut self,
         _main_screen: &Entity<MainScreen>,
         event: &MainScreenEvent,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -104,7 +104,7 @@ impl RootView {
         &mut self,
         _settings_screen: &Entity<SettingsScreen>,
         event: &SettingsScreenEvent,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -124,7 +124,11 @@ impl Focusable for RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .size_full()
             .track_focus(&self.focus_handle(cx))

@@ -9,10 +9,10 @@
 use code_assistant_core::tools::mcp::{
     self, DiscoveredTool, McpServerConfig, McpServersConfig, McpTransport,
 };
-use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
-use gpui_component::input::{Input, InputState};
-use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
@@ -57,13 +57,13 @@ pub struct McpSection {
     form_name_input: Entity<InputState>,
     form_command_input: Entity<InputState>,
     form_args_input: Entity<InputState>,
-    form_env_input: Entity<InputState>,
+    form_env_input: Entity<TextareaState>,
     form_url_input: Entity<InputState>,
-    form_headers_input: Entity<InputState>,
+    form_headers_input: Entity<TextareaState>,
 }
 
 impl McpSection {
-    pub fn new(window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let form_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. jira"));
         let form_command_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("e.g. npx or /path/to/server"));
@@ -71,16 +71,14 @@ impl McpSection {
             InputState::new(window, cx).placeholder("space-separated, e.g. -y my-mcp-server")
         });
         let form_env_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .auto_grow(2, 6)
                 .placeholder("one per line, e.g. API_TOKEN=${MY_TOKEN}")
         });
         let form_url_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("e.g. https://example.com/mcp"));
         let form_headers_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .auto_grow(2, 6)
                 .placeholder("one per line, e.g. Authorization=Bearer ${MY_TOKEN}")
         });
@@ -221,13 +219,18 @@ impl McpSection {
         .detach();
     }
 
-    fn open_add_form(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn open_add_form(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         self.form_mode = FormMode::Adding;
         self.fill_form("", None, window, cx);
         cx.notify();
     }
 
-    fn open_edit_form(&mut self, name: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn open_edit_form(
+        &mut self,
+        name: &str,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
         let server = self.config.servers.get(name).cloned();
         self.form_mode = FormMode::Editing(name.to_string());
         self.fill_form(name, server.as_ref(), window, cx);
@@ -238,7 +241,7 @@ impl McpSection {
         &mut self,
         name: &str,
         server: Option<&McpServerConfig>,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         // Pick the transport tab from the existing server, defaulting new
@@ -405,7 +408,7 @@ impl McpSection {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
                                     .child(SharedString::from(name.to_string())),
                             )
@@ -472,7 +475,7 @@ impl McpSection {
                     .child(
                         div()
                             .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .text_color(cx.theme().muted_foreground)
                             .child("TOOLS"),
                     )
@@ -504,8 +507,8 @@ impl McpSection {
                                     .rounded_md()
                                     .cursor_pointer()
                                     .text_xs()
-                                    .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                                    .hover(|s| s.bg(gpui::hsla(0.0, 0.7, 0.5, 0.1)))
+                                    .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
+                                    .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.7, 0.5, 0.1)))
                                     .child("Delete")
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.delete_server(&name_for_delete, cx);
@@ -564,7 +567,7 @@ impl McpSection {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
+                            .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
                             .child(SharedString::from(format!("Connection failed: {error}"))),
                     )
                     .child(
@@ -697,7 +700,7 @@ impl McpSection {
                 ))
                 .child(self.render_form_row(
                     "Env",
-                    Input::new(&self.form_env_input).into_any_element(),
+                    Textarea::new(&self.form_env_input).into_any_element(),
                     cx,
                 ))
             })
@@ -709,7 +712,7 @@ impl McpSection {
                 ))
                 .child(self.render_form_row(
                     "Headers",
-                    Input::new(&self.form_headers_input).into_any_element(),
+                    Textarea::new(&self.form_headers_input).into_any_element(),
                     cx,
                 ))
             })
@@ -732,8 +735,8 @@ impl McpSection {
                                 .rounded_md()
                                 .cursor_pointer()
                                 .text_xs()
-                                .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                                .hover(|s| s.bg(gpui::hsla(0.0, 0.7, 0.5, 0.1)))
+                                .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
+                                .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.7, 0.5, 0.1)))
                                 .child("Delete")
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     this.delete_server(&name, cx);
@@ -782,7 +785,7 @@ impl McpSection {
     }
 
     /// Two toggle pills to pick the transport type in the add/edit form.
-    fn render_transport_selector(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_transport_selector(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let pill = |label: &str,
                     id: &str,
                     selected: bool,
@@ -834,7 +837,7 @@ impl McpSection {
     fn render_form_row(
         &self,
         label: &str,
-        widget: gpui::AnyElement,
+        widget: gpui_kit::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -847,7 +850,7 @@ impl McpSection {
                     .w(px(80.))
                     .flex_none()
                     .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )
@@ -865,7 +868,7 @@ impl McpSection {
             .pt(px(60.))
             .bg(cx.theme().background.opacity(0.6))
             .on_mouse_down(
-                gpui::MouseButton::Left,
+                gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.form_mode = FormMode::Hidden;
                     cx.notify();
@@ -883,14 +886,14 @@ impl McpSection {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
                     .child(
                         div().px_4().py_3().child(
                             div()
                                 .text_base()
-                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(cx.theme().foreground)
                                 .child("New MCP Server"),
                         ),
@@ -940,7 +943,11 @@ impl Focusable for McpSection {
 }
 
 impl Render for McpSection {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let servers: Vec<(String, McpServerConfig)> = self
             .config
             .servers
@@ -965,7 +972,7 @@ impl Render for McpSection {
                     .child(
                         div()
                             .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(cx.theme().muted_foreground)
                             .child("MCP SERVERS"),
                     )

@@ -1,4 +1,4 @@
-use gpui::{App, AssetSource, IntoElement, ParentElement, SharedString, Styled, div, px, svg};
+use gpui_kit::{App, AssetSource, IntoElement, ParentElement, SharedString, Styled, div, px, svg};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -292,9 +292,9 @@ pub fn get() -> &'static FileIcons {
 pub fn render_icon(
     icon_opt: &Option<SharedString>,
     size: f32,
-    color: impl Into<gpui::Hsla>,
+    color: impl Into<gpui_kit::Hsla>,
     fallback: &str,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     let size_px = px(size);
 
     if let Some(icon_str) = icon_opt {
@@ -334,9 +334,9 @@ pub fn render_icon(
 pub fn render_icon_container(
     icon_opt: &Option<SharedString>,
     size: f32,
-    color: impl Into<gpui::Hsla>,
+    color: impl Into<gpui_kit::Hsla>,
     fallback: &str,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     let size_px = px(size);
 
     div()

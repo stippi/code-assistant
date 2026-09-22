@@ -2,7 +2,7 @@ use base64::{
     Engine as _, alphabet,
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
 };
-use gpui::{Image, ImageFormat};
+use gpui_kit::{Image, ImageFormat};
 use image;
 use std::sync::Arc;
 
