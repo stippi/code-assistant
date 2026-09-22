@@ -13,6 +13,9 @@
 //! ```text
 //! CODE_ASSISTANT_FRAME_PROFILE=1       report only (every REPORT_INTERVAL)
 //! CODE_ASSISTANT_FRAME_PROFILE=scroll  report and sweep the message list up and down
+//!                                      by moving its scroll offset
+//! CODE_ASSISTANT_FRAME_PROFILE=wheel   report and sweep with scroll-wheel events
+//!                                      dispatched through the window
 //! ```
 
 use gpui::{
@@ -43,8 +46,11 @@ pub enum Mode {
     Off,
     /// Collect and report.
     Report,
-    /// Collect, report, and drive a synthetic scroll sweep through the list.
+    /// Collect, report, and sweep the list by moving its scroll offset.
     Scroll,
+    /// Collect, report, and sweep the list with dispatched scroll-wheel
+    /// events, so hit testing and the scroll handlers run too.
+    Wheel,
 }
 
 impl Mode {
@@ -52,6 +58,7 @@ impl Mode {
         match value.map(str::trim) {
             None | Some("" | "0" | "off" | "false") => Mode::Off,
             Some("scroll") => Mode::Scroll,
+            Some("wheel") => Mode::Wheel,
             Some(_) => Mode::Report,
         }
     }
@@ -386,7 +393,7 @@ impl fmt::Display for Report {
             writeln!(
                 f,
                 "  {:<34} {:>8.1} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>5.0}%",
-                label,
+                label.as_ref(),
                 stats.count() as f64 / frames as f64,
                 per_frame_ms(stats.build, frames),
                 per_frame_ms(stats.request_layout, frames),
@@ -461,6 +468,7 @@ mod tests {
         assert_eq!(Mode::parse(Some("1")), Mode::Report);
         assert_eq!(Mode::parse(Some("true")), Mode::Report);
         assert_eq!(Mode::parse(Some(" scroll ")), Mode::Scroll);
+        assert_eq!(Mode::parse(Some("wheel")), Mode::Wheel);
     }
 
     #[test]

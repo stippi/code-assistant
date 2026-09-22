@@ -806,9 +806,13 @@ impl Gpui {
 
                         // Store MessagesView reference in Gpui
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
-                        if frame_profile_mode == shared::frame_profile::Mode::Scroll {
-                            messages_view
-                                .update(cx, |view, cx| view.start_profile_scroll_sweep(cx));
+                        if let sweep @ (shared::frame_profile::Mode::Scroll
+                        | shared::frame_profile::Mode::Wheel) = frame_profile_mode
+                        {
+                            let wheel = sweep == shared::frame_profile::Mode::Wheel;
+                            messages_view.update(cx, |view, cx| {
+                                view.start_profile_scroll_sweep(wheel, window, cx)
+                            });
                         }
 
                         // Create SessionSidebar and store it in Gpui

@@ -750,13 +750,23 @@ impl MessagesView {
     /// Profiling aid: after a settle time, scrolls the list up and down at a
     /// steady pace for a while, so frame reports cover a reproducible scroll
     /// load without anyone at the mouse (see [`frame_profile`]).
-    pub fn start_profile_scroll_sweep(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// With `wheel`, each step is a scroll-wheel event dispatched through the
+    /// window at the list's center, so hit testing and the scroll handlers
+    /// run as they do for a real wheel; otherwise the scroll offset is moved
+    /// directly.
+    pub fn start_profile_scroll_sweep(
+        &mut self,
+        wheel: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         const SETTLE: Duration = Duration::from_secs(8);
         const SWEEP: Duration = Duration::from_secs(40);
         const TICK: Duration = Duration::from_millis(8);
         const STEP: f32 = 12.0;
 
-        let task = cx.spawn(async move |this, cx| {
+        let task = cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SETTLE).await;
             frame_profile::set_scrolling(true);
             let end = Instant::now() + SWEEP;
@@ -765,11 +775,28 @@ impl MessagesView {
             let mut stalled = 0;
             while Instant::now() < end {
                 cx.background_executor().timer(TICK).await;
-                let moved = this.update(cx, |view, cx| {
-                    view.follow_tail = false;
+                let moved = this.update_in(cx, |view, window, cx| {
                     let before = view.list_state.scroll_px_offset_for_scrollbar().y;
-                    view.list_state.scroll_by(px(direction * STEP));
-                    cx.notify();
+                    if wheel {
+                        // A wheel delta is the content movement: negative
+                        // scrolls down, like a real wheel.
+                        window.dispatch_event(
+                            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                position: view.list_bounds.get().center(),
+                                delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                    px(0.),
+                                    px(-direction * STEP),
+                                )),
+                                modifiers: gpui::Modifiers::default(),
+                                touch_phase: gpui::TouchPhase::Moved,
+                            }),
+                            cx,
+                        );
+                    } else {
+                        view.follow_tail = false;
+                        view.list_state.scroll_by(px(direction * STEP));
+                        cx.notify();
+                    }
                     view.list_state.scroll_px_offset_for_scrollbar().y != before
                 });
                 match moved {
