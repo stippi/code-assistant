@@ -14,6 +14,7 @@ use super::diff_card::{
 };
 use super::diff_syntax::DiffSyntax;
 use crate::blocks::ToolUseBlock;
+use gpui_component::highlighter::HighlightTheme;
 use similar::ChangeTag;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -135,11 +136,18 @@ impl DiffInput {
 
     /// Parse every section for highlighting; `None` without a grammar for
     /// the file. Sections are snippets, so lines count from 1 on both sides.
+    /// With `theme`, the line styles are computed right away too.
     /// CPU-heavy — call on a background thread.
-    pub fn parse_syntax(&self) -> Option<Vec<DiffSyntax>> {
+    pub fn parse_syntax(&self, theme: Option<&HighlightTheme>) -> Option<Vec<DiffSyntax>> {
         self.sections
             .iter()
-            .map(|s| DiffSyntax::parse(&self.path, Some(&s.old), Some(&s.new)))
+            .map(|s| {
+                let syntax = DiffSyntax::parse(&self.path, Some(&s.old), Some(&s.new))?;
+                if let Some(theme) = theme {
+                    syntax.prime(theme);
+                }
+                Some(syntax)
+            })
             .collect()
     }
 }
@@ -307,7 +315,11 @@ pub(crate) mod tests {
             );
             DiffInput::for_tool(&tool, true).unwrap()
         };
-        assert_eq!(edit("a.rs").parse_syntax().map(|s| s.len()), Some(1));
-        assert!(edit("notes.txt").parse_syntax().is_none());
+        let theme = HighlightTheme::default_dark();
+        assert_eq!(
+            edit("a.rs").parse_syntax(Some(&theme)).map(|s| s.len()),
+            Some(1)
+        );
+        assert!(edit("notes.txt").parse_syntax(None).is_none());
     }
 }
