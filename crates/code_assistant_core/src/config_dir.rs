@@ -8,6 +8,10 @@
 //! 2. `CODE_ASSISTANT_CONFIG_DIR` environment variable
 //! 3. `$XDG_CONFIG_HOME/code-assistant`
 //! 4. `~/.config/code-assistant`
+//!
+//! Data (sessions, goals, per-session UI state) lives in the data directory,
+//! `CODE_ASSISTANT_DATA_DIR` if set, else the platform data dir (e.g.
+//! `~/Library/Application Support/code-assistant`).
 
 use std::path::PathBuf;
 
@@ -28,6 +32,20 @@ pub fn config_dir() -> PathBuf {
     PathBuf::from("code-assistant")
 }
 
+/// Returns the data directory (sessions, goals, per-session UI state).
+pub fn data_dir() -> PathBuf {
+    data_dir_from(std::env::var("CODE_ASSISTANT_DATA_DIR").ok().as_deref())
+}
+
+fn data_dir_from(override_dir: Option<&str>) -> PathBuf {
+    if let Some(custom_dir) = override_dir.filter(|dir| !dir.trim().is_empty()) {
+        return PathBuf::from(custom_dir);
+    }
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("code-assistant")
+}
+
 /// Apply the `--config-dir` override by setting the environment variable.
 ///
 /// Must be called early in main, before any config loading happens.
@@ -41,5 +59,21 @@ pub fn apply_override(path: &PathBuf) {
     // environment concurrently.
     unsafe {
         std::env::set_var("CODE_ASSISTANT_CONFIG_DIR", path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_honours_the_override_and_ignores_blank_ones() {
+        assert_eq!(
+            data_dir_from(Some("/tmp/ca-data")),
+            PathBuf::from("/tmp/ca-data")
+        );
+        let default = data_dir_from(None);
+        assert!(default.ends_with("code-assistant"), "{default:?}");
+        assert_eq!(data_dir_from(Some("  ")), default);
     }
 }
