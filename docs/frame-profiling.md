@@ -215,8 +215,10 @@ binary: `InlineFlow::request_layout` went from 40 % of the draw time to
 1 %, and what is left in `prepaint` is gpui's `TextLayout::layout` per
 fragment (closure and taffy leaf per frame, a gpui cost).
 
-This reaches this workspace with a gpui-kit release that carries the PR;
-0.6.6 (the migration below) does not yet.
+gpui-kit 0.6.6 does not carry the PR yet; the workspace consumes it through
+a `[patch.crates-io]` entry for `gpui-base` (fork branch
+`perf/inline-flow-frame-cache-0.6.6`: the v0.6.6 tag plus the PR's commits),
+measured below.
 
 ## gpui-kit 0.6.6 migration (2026-09-22)
 
@@ -247,8 +249,33 @@ the draw samples after the migration and in none before; `TextLayout::layout`
 inclusive went from 7.3 % to 7.9 %, `shape_line` from 7.1 % to 8.3 %, taffy
 stayed at 25-26 %.
 
-So the text improvement this workspace is waiting for is
+So the text improvement is
 [longbridge/gpui-kit#3180](https://github.com/longbridge/gpui-kit/pull/3180)
-(open at the time of writing), not the migration itself; once a gpui-kit
-release carries it, the same sweep should show `block.text` prepaint back
-near zero and the paragraph cost below the pre-migration one.
+(open at the time of writing), not the migration itself.
+
+### With the InlineFlow frame cache (gpui-base patched, 2026-09-22)
+
+The branch consumes the PR through a `[patch.crates-io]` entry for
+`gpui-base` (fork branch `perf/inline-flow-frame-cache-0.6.6`, the v0.6.6 tag
+plus the PR's three commits). Measured against the same branch without the
+patch, back to back, same session copy and display. Both binaries include
+the diff-row font fix (`fix(ui): shape diff rows with the card's text
+style`), which makes the diff cards much shorter than in the table above
+(the rows were wrapped in the 16 px UI font before), so the sweep covers a
+different stretch of the session and these rows are not comparable with the
+ones above, only with each other:
+
+| sweep | gpui-base | draw mean / p50 / p95 / max | `block.text` n/frame | layout | prepaint | paint | total (% draw) | derived row layout |
+|---|---|---|---|---|---|---|---|---|
+| scroll | 0.6.6 | 7.05 / 6.94 / 8.71 / 27.0 ms | 1.68 | 0.24 | 0.45 | 0.31 | 1.02 (14 %) | 1.41 ms |
+| scroll | patched | 6.91 / 6.83 / 8.26 / 26.3 ms | 1.68 | 0.26 | 0.27 | 0.32 | 0.88 (13 %) | 1.04 ms |
+| wheel | 0.6.6 | 4.57 / 4.57 / 5.80 / 20.2 ms | 1.80 | 0.15 | 0.29 | 0.21 | 0.67 (15 %) | 0.82 ms |
+| wheel | patched | 4.32 / 4.29 / 5.54 / 18.4 ms | 1.77 | 0.16 | 0.15 | 0.20 | 0.53 (12 %) | 0.58 ms |
+
+The patch takes 0.14-0.25 ms off every frame: `block.text` prepaint
+roughly halves (0.45 to 0.27 ms, 0.29 to 0.15 ms per frame), the derived
+row layout compute (the list's `layout_as_root`, which contains the flows'
+measure callbacks) drops by 0.25-0.37 ms, and `region.messages` prepaint by
+0.4-0.5 ms. What remains in the text prepaint is gpui's `TextLayout::layout`
+per fragment (a taffy leaf and closure per frame), which the PR does not
+address.

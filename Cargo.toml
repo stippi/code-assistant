@@ -11,3 +11,10 @@ resolver = "2"
 transmutation = { git = "https://github.com/stippi/transmutation", rev = "87f48d18ce3ff61659d7182c1b733eae8ec6f2c9" }
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
+# gpui-kit 0.6.6 with longbridge/gpui-kit#3180 (InlineFlow keeps its fragment
+# states and layouts across frames; see docs/frame-profiling.md). The fork
+# branch `perf/inline-flow-frame-cache-0.6.6` is the v0.6.6 tag plus the PR's
+# three commits, so its gpui-base is version 0.6.6 and satisfies gpui-kit's
+# requirement; gpui-component 0.6.6 from crates.io resolves to this one copy.
+# Drop this entry once a gpui-kit release carries the PR.
+gpui-base = { git = "https://github.com/stippi/gpui-component", rev = "7e40cacddb32cac141b5ecb6f4173e3cbdafb5cc" }
