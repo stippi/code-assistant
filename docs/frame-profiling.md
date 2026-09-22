@@ -257,7 +257,9 @@ So the text improvement is
 
 The branch consumes the PR through a `[patch.crates-io]` entry for
 `gpui-base` (fork branch `perf/inline-flow-frame-cache-0.6.6`, the v0.6.6 tag
-plus the PR's three commits). Measured against the same branch without the
+plus the PR's commits; the PR was merged upstream on 2026-09-22 with a
+follow-up that releases the states of fragments that went away, which the
+branch carries too). Measured against the same branch without the
 patch, back to back, same session copy and display. Both binaries include
 the diff-row font fix (`fix(ui): shape diff rows with the card's text
 style`), which makes the diff cards much shorter than in the table above
