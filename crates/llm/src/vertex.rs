@@ -227,11 +227,17 @@ struct VertexContent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VertexFunctionCall {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     args: Option<serde_json::Value>,
+    // Gemini streams incremental function-call arguments as `partialArgs`
+    // (with a `willContinue` flag) when `streamFunctionCallArguments` is
+    // enabled. These MUST be read as camelCase — without the rename the
+    // streamed arguments silently deserialize to nothing and every tool call
+    // arrives with an empty input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     partial_args: Vec<VertexPartialArg>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -843,7 +849,10 @@ impl VertexClient {
             .customize_url(&self.base_url, &self.model, streaming)
     }
 
-    fn convert_message(message: &Message) -> VertexMessage {
+    fn convert_message(
+        message: &Message,
+        tool_names: &std::collections::HashMap<String, String>,
+    ) -> VertexMessage {
         let role = Some(match message.role {
             MessageRole::User => "user".to_string(),
             MessageRole::Assistant => "model".to_string(),
@@ -873,6 +882,13 @@ impl VertexClient {
                         function_call: None,
                         function_response: None,
                     }),
+                    // Skip empty text parts. Models frequently emit an empty
+                    // text block alongside a function call; an empty string is
+                    // not a valid `data` oneof member for Gemini and the
+                    // upstream rejects the whole request with
+                    // "parts[..].data: required oneof field 'data' must have
+                    // one initialized field".
+                    ContentBlock::Text { text, .. } if text.is_empty() => None,
                     ContentBlock::Text { text, .. } => Some(VertexPart {
                         text: Some(text.clone()),
                         inline_data: None,
@@ -924,13 +940,21 @@ impl VertexClient {
                         thought_signature: None,
                         function_call: None,
                         function_response: Some(VertexFunctionResponse {
-                            // Extract the function name from the tool_use_id
-                            // Format is typically "tool-{name}-{index}"
-                            name: tool_use_id
-                                .split('-')
-                                .nth(1)
-                                .unwrap_or(tool_use_id)
-                                .to_string(),
+                            // Gemini pairs functionResponse to functionCall by
+                            // name (there are no tool-call ids on the wire), so
+                            // resolve the real tool name from the corresponding
+                            // ToolUse. The tool_use_id here is `tool-{req}-{n}`
+                            // and does NOT contain the name, so the previous
+                            // `split('-').nth(1)` heuristic produced a number
+                            // (e.g. "1"). Fall back to it only if the lookup
+                            // fails.
+                            name: tool_names.get(tool_use_id).cloned().unwrap_or_else(|| {
+                                tool_use_id
+                                    .split('-')
+                                    .nth(1)
+                                    .unwrap_or(tool_use_id)
+                                    .to_string()
+                            }),
                             // Wrap content in a proper JSON object (text only)
                             response: json!({ "result": content.text_content() }),
                         }),
@@ -990,7 +1014,7 @@ impl VertexClient {
 
         let mut request_json = serde_json::to_value(request)?;
 
-        // Apply custom model configuration if present
+        // Apply custom model configuration if present.
         if let Some(ref custom_config) = self.custom_config {
             request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
         }
@@ -1131,12 +1155,20 @@ impl VertexClient {
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
         let mut request_json = serde_json::to_value(request)?;
 
-        // Apply custom model configuration if present
+        // Enable incremental function-call argument streaming on the base
+        // request FIRST, so that a custom `tool_config` from the model config
+        // can still override (or strip) it in the merge step below. Some
+        // Gemini-compatible proxies (and older models like gemini-3.5-flash)
+        // reject the experimental `stream_function_call_arguments` field, so
+        // this ordering is what lets a model config turn it off.
+        enable_streaming_function_call_arguments(&mut request_json);
+
+        // Apply custom model configuration if present. Because the merge is
+        // shallow at the top level, a custom `tool_config` completely replaces
+        // the injected one above.
         if let Some(ref custom_config) = self.custom_config {
             request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
         }
-
-        enable_streaming_function_call_arguments(&mut request_json);
 
         // Allow request customizer to modify the request
         self.request_customizer
@@ -1376,8 +1408,30 @@ impl LLMProvider for VertexClient {
     ) -> Result<LLMResponse> {
         let mut contents = Vec::new();
 
+        // Map tool_use_id -> function name across all messages, so tool results
+        // (which only carry the id) can be sent back with the matching function
+        // name that Gemini uses to pair functionResponse with functionCall.
+        let tool_names: std::collections::HashMap<String, String> = request
+            .messages
+            .iter()
+            .filter_map(|message| match &message.content {
+                MessageContent::Structured(blocks) => Some(blocks),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, name, .. } => Some((id.clone(), name.clone())),
+                _ => None,
+            })
+            .collect();
+
         // Convert messages
-        contents.extend(request.messages.iter().map(Self::convert_message));
+        contents.extend(
+            request
+                .messages
+                .iter()
+                .map(|message| Self::convert_message(message, &tool_names)),
+        );
 
         let vertex_request = VertexRequest {
             system_instruction: Some(SystemInstruction {
@@ -1392,8 +1446,19 @@ impl LLMProvider for VertexClient {
                 response_mime_type: "text/plain".to_string(),
             }),
             tools: request.tools.map(|tools| {
+                // The HAI/Hyperspace proxy accepts an intentionally mixed
+                // shape (empirically verified against gemini-3.5-flash):
+                //   - top-level request fields in snake_case
+                //     (`system_instruction`, `generation_config`)
+                //   - but the tool key in camelCase: `functionDeclarations`
+                // With snake_case `function_declarations` the proxy leaves the
+                // tool's `tool_type` oneof empty and the upstream rejects it
+                // ("tools[0].tool_type: required one_of ... must have one
+                // initialized field"). Google's own endpoint and the AI Core
+                // Vertex passthrough accept camelCase here too, so this is safe
+                // for every path.
                 vec![json!({
-                    "function_declarations": tools.into_iter().map(|tool| {
+                    "functionDeclarations": tools.into_iter().map(|tool| {
                         json!({
                             "name": tool.name,
                             "description": tool.description,
@@ -1576,7 +1641,7 @@ mod tests {
         }];
 
         let declarations = json!({
-            "function_declarations": tools.into_iter().map(|tool| {
+            "functionDeclarations": tools.into_iter().map(|tool| {
                 json!({
                     "name": tool.name,
                     "description": tool.description,
@@ -1585,7 +1650,7 @@ mod tests {
             }).collect::<Vec<_>>()
         });
 
-        let parameters = &declarations["function_declarations"][0]["parameters"];
+        let parameters = &declarations["functionDeclarations"][0]["parameters"];
         assert!(parameters["additionalProperties"].is_null());
         assert!(parameters["properties"]["duration"]["exclusiveMinimum"].is_null());
         assert_eq!(parameters["properties"]["duration"]["type"], "number");
@@ -1656,6 +1721,38 @@ mod tests {
     }
 
     #[test]
+    fn custom_tool_config_overrides_streamed_function_call_arguments() {
+        // Base request: the experimental streaming flag is injected first.
+        let mut request = json!({
+            "contents": [],
+            "tools": [{ "function_declarations": [] }]
+        });
+        enable_streaming_function_call_arguments(&mut request);
+        assert_eq!(
+            request["tool_config"]["function_calling_config"]["stream_function_call_arguments"],
+            json!(true)
+        );
+
+        // A model config that sets `tool_config` is shallow-merged and fully
+        // replaces the injected one — so the experimental flag is no longer
+        // sent. This is the seam models like gemini-3.5-flash use to opt out.
+        let custom = json!({
+            "tool_config": { "function_calling_config": { "mode": "AUTO" } }
+        });
+        let merged = crate::config_merge::merge_json(request, custom);
+
+        assert_eq!(
+            merged["tool_config"]["function_calling_config"],
+            json!({ "mode": "AUTO" })
+        );
+        assert!(
+            merged["tool_config"]["function_calling_config"]
+                .get("stream_function_call_arguments")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn vertex_partial_args_merge_into_nested_tool_input() -> Result<()> {
         let mut input = json!({});
 
@@ -1672,6 +1769,95 @@ mod tests {
                 }]
             })
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn vertex_parts_use_camelcase_and_tool_result_name_is_resolved() {
+        use std::collections::HashMap;
+
+        // Message parts serialize (and read) in camelCase — that is what the
+        // proxy/backend accepts for the part `data` oneof.
+        let part = VertexPart {
+            text: None,
+            inline_data: None,
+            thought: None,
+            thought_signature: None,
+            function_call: Some(VertexFunctionCall {
+                name: Some("get_weather".to_string()),
+                args: Some(json!({ "city": "Berlin" })),
+                partial_args: Vec::new(),
+                will_continue: None,
+            }),
+            function_response: None,
+        };
+        let serialized = serde_json::to_value(&part).unwrap();
+        assert!(serialized.get("functionCall").is_some());
+        assert!(serialized.get("function_call").is_none());
+
+        let from_response: VertexPart = serde_json::from_value(json!({
+            "functionCall": { "name": "get_weather", "args": { "city": "Berlin" } }
+        }))
+        .unwrap();
+        assert!(from_response.function_call.is_some());
+
+        // A tool result is sent back with the real function name resolved from
+        // the matching ToolUse (not a number parsed out of the id).
+        let mut tool_names = HashMap::new();
+        tool_names.insert("tool-1-1".to_string(), "name_session".to_string());
+
+        let message =
+            Message::new_user_content(vec![ContentBlock::new_tool_result("tool-1-1", "done")]);
+        let converted = VertexClient::convert_message(&message, &tool_names);
+        let value = serde_json::to_value(&converted).unwrap();
+        assert_eq!(
+            value["parts"][0]["functionResponse"]["name"],
+            "name_session"
+        );
+    }
+
+    #[test]
+    fn empty_text_parts_are_dropped() {
+        // A model turn often carries an empty text block next to a function
+        // call; it must not be serialized (empty string is not a valid `data`
+        // oneof member and the upstream rejects the whole request).
+        let tool_names = std::collections::HashMap::new();
+        let message = Message::new_assistant_content(vec![
+            ContentBlock::new_tool_use(
+                "tool-1-1",
+                "execute_command",
+                json!({ "command_line": "ls" }),
+            ),
+            ContentBlock::new_text(""),
+        ]);
+
+        let converted = VertexClient::convert_message(&message, &tool_names);
+        let value = serde_json::to_value(&converted).unwrap();
+        let parts = value["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].get("functionCall").is_some());
+    }
+
+    #[test]
+    fn vertex_function_call_deserializes_camelcase_streaming_fields() -> Result<()> {
+        // Gemini streams incremental arguments as camelCase `partialArgs` /
+        // `willContinue`. They must deserialize into the struct rather than
+        // being silently dropped (which leaves tool calls with empty input).
+        let value = json!({
+            "name": "set_scene",
+            "partialArgs": [
+                { "jsonPath": "$.scene", "stringValue": "hello", "willContinue": true }
+            ],
+            "willContinue": true
+        });
+
+        let function_call: VertexFunctionCall = serde_json::from_value(value)?;
+        assert_eq!(function_call.name.as_deref(), Some("set_scene"));
+        assert_eq!(function_call.will_continue, Some(true));
+        assert_eq!(function_call.partial_args.len(), 1);
+        assert_eq!(function_call.partial_args[0].json_path, "$.scene");
+        assert_eq!(function_call.partial_args[0].will_continue, Some(true));
 
         Ok(())
     }
