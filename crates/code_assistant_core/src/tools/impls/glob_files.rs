@@ -66,7 +66,8 @@ impl Tool for GlobFilesTool {
     fn spec(&self) -> ToolSpec {
         let description = concat!(
             "Find files matching glob patterns within a specified project.\n",
-            "Supports standard glob patterns like *.rs, **/*.json, src/**/*.ts, etc.\n",
+            "`*` matches within one path component; use `**` to recurse, ",
+            "e.g. `**/*.md`, `src/**/*.ts`.\n",
             "Returns all file types (text and binary) that match the pattern.\n",
             "Respects gitignore rules and skips hidden files and common build directories."
         );
@@ -149,8 +150,16 @@ impl Tool for GlobFilesTool {
 
 // Helper function to find all files (text and binary) matching a glob pattern
 fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Result<Vec<PathBuf>> {
-    use glob::Pattern;
+    use glob::{MatchOptions, Pattern};
     use ignore::WalkBuilder;
+
+    // Use standard shell-glob semantics: `*` and `?` do NOT cross path
+    // separators. This makes `*.md` match only files in the project root,
+    // while `**/*.md` matches recursively across subdirectories.
+    let match_options = MatchOptions {
+        require_literal_separator: true,
+        ..MatchOptions::new()
+    };
 
     // Default directories and files to ignore (same as in explorer.rs)
     const DEFAULT_IGNORE_PATTERNS: [&str; 13] = [
@@ -211,7 +220,7 @@ fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Res
         let path_str = relative_path.to_string_lossy();
 
         // Check if the relative path matches the glob pattern
-        if glob_pattern.matches(&path_str) {
+        if glob_pattern.matches_with(&path_str, match_options) {
             matching_files.push(path.to_path_buf());
         }
     }
@@ -310,5 +319,85 @@ mod tests {
         // Test invalid patterns (glob crate should handle this)
         // Most patterns are actually valid in glob, but let's test an edge case
         assert!(Pattern::new("").is_ok()); // Empty pattern is actually valid
+    }
+
+    #[test]
+    fn test_single_star_does_not_cross_directories() -> Result<()> {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new()?;
+        let root = tmp.path();
+
+        fs::write(root.join("root.md"), "root")?;
+        fs::create_dir_all(root.join("docs"))?;
+        fs::write(root.join("docs/nested.md"), "nested")?;
+        fs::create_dir_all(root.join("docs/sub"))?;
+        fs::write(root.join("docs/sub/deep.md"), "deep")?;
+
+        // `*.md` must match only the file in the project root.
+        let mut matches = find_files_matching_pattern(root, "*.md")?
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        matches.sort();
+        assert_eq!(matches, vec!["root.md".to_string()]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_double_star_matches_recursively() -> Result<()> {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new()?;
+        let root = tmp.path();
+
+        fs::write(root.join("root.md"), "root")?;
+        fs::create_dir_all(root.join("docs/sub"))?;
+        fs::write(root.join("docs/nested.md"), "nested")?;
+        fs::write(root.join("docs/sub/deep.md"), "deep")?;
+
+        // `**/*.md` matches markdown files at any depth, including the root
+        // (the `**/` prefix can match zero directory components).
+        let mut matches = find_files_matching_pattern(root, "**/*.md")?
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        matches.sort();
+        assert_eq!(
+            matches,
+            vec![
+                "docs/nested.md".to_string(),
+                "docs/sub/deep.md".to_string(),
+                "root.md".to_string()
+            ]
+        );
+
+        // A directory-scoped pattern matches only that directory's direct children.
+        let mut docs_matches = find_files_matching_pattern(root, "docs/*.md")?
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        docs_matches.sort();
+        assert_eq!(docs_matches, vec!["docs/nested.md".to_string()]);
+
+        Ok(())
     }
 }
