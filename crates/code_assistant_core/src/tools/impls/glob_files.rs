@@ -66,8 +66,8 @@ impl Tool for GlobFilesTool {
     fn spec(&self) -> ToolSpec {
         let description = concat!(
             "Find files matching glob patterns within a specified project.\n",
-            "`*` matches within one path component (so `*.md` matches only the ",
-            "project root); use `**` to recurse, e.g. `**/*.md`, `src/**/*.ts`.\n",
+            "`*` matches within one path component; use `**` to recurse, ",
+            "e.g. `**/*.md`, `src/**/*.ts`.\n",
             "Returns all file types (text and binary) that match the pattern.\n",
             "Respects gitignore rules and skips hidden files and common build directories."
         );
