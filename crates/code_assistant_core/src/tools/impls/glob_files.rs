@@ -84,7 +84,7 @@ impl Tool for GlobFilesTool {
                     },
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern. `*` stays within one path component; use `**` to recurse. Examples: '*.rs' (root only), '**/*.json', 'src/**/*.ts'"
+                        "description": "Glob pattern to match files against. Examples: '*.rs', '**/*.json', 'src/**/*.ts'"
                     }
                 },
                 "required": ["project", "pattern"]
