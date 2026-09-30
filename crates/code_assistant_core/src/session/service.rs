@@ -15,12 +15,12 @@
 //! through [`UiEvent`] and are not part of this API.
 
 use crate::config::{DefaultProjectManager, ProjectManager, save_project};
+use crate::injection::without_injections;
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::session::event_stream::EventStream;
 use crate::skills::{
     SkillsConfig, discover_session_catalog, render_skill_injection, resolve_skill_trigger,
-    without_skill_injections,
 };
 use crate::types::{PlanState, Project};
 use crate::ui::UiEvent;
@@ -1014,7 +1014,7 @@ impl SessionService {
                 .get(&node_id)
                 .ok_or_else(|| anyhow!("Message node {node_id} not found"))?;
 
-            let message = without_skill_injections(&node.message);
+            let message = without_injections(&node.message);
             let content = match &message.content {
                 llm::MessageContent::Text(text) => text.clone(),
                 llm::MessageContent::Structured(blocks) => blocks
@@ -3078,7 +3078,7 @@ mod tests {
         let texts = first_user_texts(&manager, &id).await;
         assert_eq!(texts.len(), 2, "{texts:?}");
         assert_eq!(texts[0], "/demo tidy up foo.rs");
-        assert!(crate::skills::is_skill_injection(&texts[1]));
+        assert!(crate::injection::is_injection(&texts[1]));
         assert!(texts[1].contains("Follow the demo steps."));
 
         let active = manager
@@ -3138,7 +3138,7 @@ mod tests {
         };
         assert!(pending.iter().any(|block| matches!(
             block,
-            llm::ContentBlock::Text { text, .. } if crate::skills::is_skill_injection(text)
+            llm::ContentBlock::Text { text, .. } if crate::injection::is_injection(text)
         )));
 
         // Taking the message back for editing yields the typed text only.

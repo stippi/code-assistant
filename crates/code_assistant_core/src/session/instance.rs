@@ -642,7 +642,7 @@ impl SessionInstance {
             }
 
             match processor
-                .extract_fragments_from_message(&crate::skills::without_skill_injections(message))
+                .extract_fragments_from_message(&crate::injection::without_injections(message))
             {
                 Ok(fragments) => {
                     let role = match message.role {
@@ -741,7 +741,7 @@ impl SessionInstance {
             }
 
             match processor
-                .extract_fragments_from_message(&crate::skills::without_skill_injections(message))
+                .extract_fragments_from_message(&crate::injection::without_injections(message))
             {
                 Ok(fragments) => {
                     let role = match message.role {

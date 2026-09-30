@@ -16,6 +16,7 @@ pub mod config;
 pub mod config_dir;
 pub mod goal_commands;
 pub mod goals;
+pub mod injection;
 pub mod persistence;
 pub mod plugins;
 pub mod session;

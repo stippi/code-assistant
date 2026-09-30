@@ -2029,12 +2029,12 @@ impl SessionManager {
     }
 }
 
-/// Text summary of a pending message as the user typed it: injected skill
+/// Text summary of a pending message as the user typed it: injected
 /// instructions are left out.
 fn pending_summary(blocks: &[ContentBlock]) -> String {
     let typed: Vec<ContentBlock> = blocks
         .iter()
-        .filter(|block| !crate::skills::is_skill_injection_block(block))
+        .filter(|block| !crate::injection::is_injection_block(block))
         .cloned()
         .collect();
     crate::utils::content::text_summary_from_blocks(&typed)
