@@ -12,7 +12,8 @@ use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use code_assistant_core::persistence::SessionModelConfig;
 use code_assistant_core::session::{SessionConfig, SessionManager};
 use code_assistant_core::skills::{
-    SkillsConfig, discover_session_catalog, load_skill_payload, render_skill_invocation_message,
+    SkillsConfig, discover_session_catalog, render_skill_injection, resolve_skill_trigger,
+    without_skill_injections,
 };
 use code_assistant_core::ui::UserInterface;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
@@ -76,19 +77,37 @@ fn permission_tier_for_mode(mode_id: &str) -> Option<PermissionTier> {
         .map(|(tier, ..)| *tier)
 }
 
-/// If the prompt is a bare `/<token>` slash command (the form clients send when
-/// the user runs an advertised command), return `<token>`. Only the first text
-/// block is considered, and only when it is a single `/word` with no extra text.
-fn slash_command_token(prompt: &[acp::ContentBlock]) -> Option<String> {
-    let text = prompt.iter().find_map(|block| match block {
-        acp::ContentBlock::Text(t) => Some(t.text.trim().to_string()),
+/// The text of a prompt's first text block, where clients put a slash
+/// command (`/<name> <input>`).
+fn prompt_text(prompt: &[acp::ContentBlock]) -> Option<String> {
+    prompt.iter().find_map(|block| match block {
+        acp::ContentBlock::Text(t) => Some(t.text.clone()),
         _ => None,
-    })?;
-    let rest = text.strip_prefix('/')?;
-    if rest.is_empty() || rest.contains(char::is_whitespace) {
-        return None;
+    })
+}
+
+/// Append the instructions of the skill a prompt invokes
+/// (`/<skill-name> <request>`) to its content blocks, which keep the prompt as
+/// typed. Returns the invoked skill's name.
+fn append_invoked_skill(
+    project_manager: &dyn ProjectManager,
+    project_name: &str,
+    prompt_text: Option<&str>,
+    content_blocks: &mut Vec<llm::ContentBlock>,
+) -> Option<String> {
+    let config = SkillsConfig::load();
+    match resolve_skill_trigger(project_manager, project_name, &config, prompt_text?)? {
+        Ok(payload) => {
+            content_blocks.push(llm::ContentBlock::new_text(render_skill_injection(
+                &payload,
+            )));
+            Some(payload.name)
+        }
+        Err(e) => {
+            tracing::warn!("ACP: failed to load the invoked skill: {e:#}");
+            None
+        }
     }
-    Some(rest.to_string())
 }
 
 /// Extract arguments from a `/goal` prompt while rejecting lookalike commands
@@ -339,10 +358,15 @@ impl AgentState {
         project_name: &str,
     ) -> Vec<acp::AvailableCommand> {
         let config = SkillsConfig::load();
-        let mut commands = vec![acp::AvailableCommand::new(
-            "goal",
-            "Set or replace the session goal: /goal <completion criteria>; remove it with /goal cancel",
-        )];
+        let mut commands = vec![
+            acp::AvailableCommand::new(
+                "goal",
+                "Set or replace the session goal: /goal <completion criteria>; remove it with /goal cancel",
+            )
+            .input(acp::AvailableCommandInput::Unstructured(
+                acp::UnstructuredCommandInput::new("completion criteria, or cancel"),
+            )),
+        ];
         commands.extend(
             discover_session_catalog(project_manager, project_name, &config)
                 .into_iter()
@@ -351,6 +375,9 @@ impl AgentState {
                         skill.name.clone(),
                         format!("[{}] {}", skill.scope.label(), skill.description),
                     )
+                    .input(acp::AvailableCommandInput::Unstructured(
+                        acp::UnstructuredCommandInput::new("request for the skill (optional)"),
+                    ))
                 }),
         );
         commands
@@ -543,6 +570,8 @@ impl AgentState {
         );
 
         for message in messages {
+            // Replay what the user typed, without injected skill instructions.
+            let message = without_skill_injections(&message);
             if message.is_compaction_summary {
                 let summary = match &message.content {
                     llm::MessageContent::Text(text) => text.trim().to_string(),
@@ -942,9 +971,8 @@ impl AgentState {
             uis.insert(arguments.session_id.0.to_string(), acp_ui.clone());
         }
 
-        // Detect a `/skill` slash command before converting (clients send the
-        // advertised command name as prompt text).
-        let skill_command = slash_command_token(&arguments.prompt);
+        // Clients send an advertised command and its input as prompt text.
+        let command_text = prompt_text(&arguments.prompt);
 
         let mut content_blocks =
             convert_prompt_to_content_blocks(arguments.prompt, base_path.as_deref());
@@ -989,41 +1017,23 @@ impl AgentState {
         };
 
         // Refresh the advertised skill commands using the real project manager
-        // (so project-scoped skills resolve), then translate an explicit
-        // `/skill` invocation into a synthetic user message with the body
-        // inlined — no `read_skill` round-trip needed.
+        // (so project-scoped skills resolve), then add the instructions of a
+        // skill invoked with `/<skill-name> <request>` to the prompt.
         {
             let commands = Self::skill_commands(project_manager.as_ref(), &initial_project);
             if !commands.is_empty() {
                 self.send_available_commands(&arguments.session_id, commands);
             }
         }
-        if let Some(name) = skill_command {
-            let config = SkillsConfig::load();
-            if let Some((skill, scope_token)) =
-                discover_session_catalog(project_manager.as_ref(), &initial_project, &config)
-                    .into_iter()
-                    .find(|(s, _)| s.name == name)
-            {
-                match load_skill_payload(
-                    project_manager.as_ref(),
-                    &scope_token,
-                    &skill.name,
-                    &config,
-                ) {
-                    Ok(payload) => {
-                        let message = render_skill_invocation_message(&payload);
-                        content_blocks = vec![llm::ContentBlock::new_text(message)];
-                        // Record the activation so compaction can remind the model.
-                        let mut manager = self.session_manager.lock().await;
-                        let _ =
-                            manager.activate_session_skill(&arguments.session_id.0, &skill.name);
-                    }
-                    Err(e) => {
-                        tracing::warn!("ACP: failed to load skill `{name}`: {e}");
-                    }
-                }
-            }
+        if let Some(name) = append_invoked_skill(
+            project_manager.as_ref(),
+            &initial_project,
+            command_text.as_deref(),
+            &mut content_blocks,
+        ) {
+            // Record the activation so compaction can remind the model.
+            let mut manager = self.session_manager.lock().await;
+            let _ = manager.activate_session_skill(&arguments.session_id.0, &name);
         }
 
         let command_executor: Box<dyn CommandExecutor> = if terminal_supported {
@@ -1196,42 +1206,85 @@ impl AgentState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn detects_bare_slash_command() {
-        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
-            "/pdf-extraction",
-        ))];
-        assert_eq!(
-            slash_command_token(&prompt),
-            Some("pdf-extraction".to_string())
-        );
+    /// A project manager for project `proj` at `root`, defining skill `demo`.
+    fn project_with_skill(
+        root: &std::path::Path,
+    ) -> code_assistant_core::mocks::MockProjectManager {
+        let dir = root.join(".agents/skills/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: Demo.\n---\nFollow the demo steps.",
+        )
+        .unwrap();
+        let explorer = code_assistant_core::mocks::MockExplorer::new(Default::default(), None)
+            .with_root(root.to_path_buf());
+        code_assistant_core::mocks::MockProjectManager::default().with_project_path(
+            "proj",
+            root.to_path_buf(),
+            Box::new(explorer),
+        )
+    }
+
+    fn texts(blocks: &[llm::ContentBlock]) -> Vec<&str> {
+        blocks
+            .iter()
+            .filter_map(|block| match block {
+                llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn trims_whitespace_around_command() {
+    fn skill_trigger_keeps_the_request_and_appends_the_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let pm = project_with_skill(dir.path());
         let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
-            "  /review  ",
+            "/demo tidy up foo.rs",
         ))];
-        assert_eq!(slash_command_token(&prompt), Some("review".to_string()));
+        let text = prompt_text(&prompt);
+        let mut blocks = vec![llm::ContentBlock::new_text("/demo tidy up foo.rs")];
+
+        let invoked = append_invoked_skill(&pm, "proj", text.as_deref(), &mut blocks);
+
+        assert_eq!(invoked.as_deref(), Some("demo"));
+        let texts = texts(&blocks);
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0], "/demo tidy up foo.rs");
+        assert!(code_assistant_core::skills::is_skill_injection(texts[1]));
+        assert!(texts[1].contains("Follow the demo steps."));
     }
 
     #[test]
-    fn ignores_non_command_prompts() {
-        // Ordinary message.
-        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
-            "hello there",
-        ))];
-        assert_eq!(slash_command_token(&prompt), None);
-        // Slash with trailing text is not a bare command token.
-        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
-            "/skill do it",
-        ))];
-        assert_eq!(slash_command_token(&prompt), None);
-        // Bare slash.
-        let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new("/"))];
-        assert_eq!(slash_command_token(&prompt), None);
-        // Empty prompt.
-        assert_eq!(slash_command_token(&[]), None);
+    fn other_prompts_are_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let pm = project_with_skill(dir.path());
+        for text in ["hello there", "/nope do it", "please /demo"] {
+            let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(text))];
+            let mut blocks = vec![llm::ContentBlock::new_text(text)];
+            let text = prompt_text(&prompt);
+            assert_eq!(
+                append_invoked_skill(&pm, "proj", text.as_deref(), &mut blocks),
+                None
+            );
+            assert_eq!(texts(&blocks).len(), 1);
+        }
+        assert_eq!(prompt_text(&[]), None);
+        let mut blocks = Vec::new();
+        assert_eq!(append_invoked_skill(&pm, "proj", None, &mut blocks), None);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn skills_are_advertised_with_free_text_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let pm = project_with_skill(dir.path());
+        let commands = AgentState::skill_commands(&pm, "proj");
+        let demo = commands.iter().find(|c| c.name == "demo").expect("demo");
+        assert!(demo.input.is_some(), "the request after /demo is its input");
+        let goal = commands.iter().find(|c| c.name == "goal").expect("goal");
+        assert!(goal.input.is_some());
     }
 
     #[test]
