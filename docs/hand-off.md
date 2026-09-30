@@ -102,11 +102,15 @@ without prompt) is left out of the prompt.
   reached the threshold, and nothing was prepared for its current last
   message (`SessionManager::claim_handoff_preparation`), a
   `RunTask::PrepareHandoff` run sends history + one appended user message
-  holding the idle request ("the user is away; hand off the most obvious
-  next step"). It holds the run like any other, so the session shows as
-  running meanwhile, but nothing is written to the transcript and the
-  timer is not re-armed. A message queued meanwhile is answered instead
-  and the prompt is dropped.
+  holding the idle request. It tells the agent that this is an automatic
+  hand-off because the user is inactive and the prompt cache expires soon,
+  that the system cannot tell whether a hand-off makes sense right now, and
+  that it may decline by replying exactly `[cancel hand-off]` (e.g. while
+  it waits for a decision only the user can make). It holds the run like
+  any other, so the session shows as running meanwhile, but nothing is
+  written to the transcript and the timer is not re-armed. A declined
+  hand-off offers nothing and is not retried for the same state; a message
+  queued meanwhile is answered instead and the prompt is dropped.
 - **Result**: published as `UiEvent::HandoffPrepared { session_id, prompt }`.
   A frontend puts `/new <prompt>` into that session's composer if it is
   empty; a non-empty draft is never overwritten.

@@ -562,6 +562,38 @@ mod tests {
         assert_eq!(request.messages.len(), 3);
         let appended = texts(request.messages.last().unwrap()).join("\n");
         assert!(appended.starts_with("<hand-off-request>"), "{appended}");
+        assert!(appended.contains("[cancel hand-off]"), "{appended}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_preparation_offers_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["Which option do you want?", "  [cancel hand-off]\n"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::HandoffPrepared { prompt } => panic!("offered {prompt:?}"),
+            UiEvent::UpdateSessionActivityState {
+                activity_state: crate::session::instance::SessionActivityState::Idle,
+                ..
+            } => Some(()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(llm.get_requests().len(), 2);
+        assert_eq!(path(tmp.path(), &id).len(), 2, "the history is unchanged");
+        // The session's state counts as handled: no second attempt.
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+        assert!(!service.is_session_busy(id.clone()).await.unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread")]

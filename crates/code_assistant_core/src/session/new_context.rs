@@ -26,9 +26,15 @@ const HANDOFF_FOCUS: &str = "The user asked for this hand-off by starting this m
 user hands off; follow it. Without such text, hand off the most obvious next step.";
 
 /// What the idle preparation asks the model to focus on: nobody asked.
-const IDLE_FOCUS: &str = "The user has been away for a while and has not asked for a hand-off. \
-Prepare one they can send when they come back: hand off the most obvious next step for a \
-follow-up session.";
+const IDLE_FOCUS: &str = "This is an automatic hand-off: the user has been inactive for a while, \
+and the prompt cache for this conversation expires soon. Writing the hand-off now is cheap; \
+later it would have to be written without the cache. The user did not ask for it and will find \
+it in the input field when they return, to send, edit or discard. Hand off the most obvious \
+next step for a follow-up session. The system cannot tell whether a hand-off makes sense at \
+this point; you can. If it does not, reply with exactly `[cancel hand-off]` and nothing else.";
+
+/// The reply with which the agent declines an automatic hand-off.
+const CANCEL_HANDOFF: &str = "[cancel hand-off]";
 
 /// A slash command that ends the current context.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,8 +88,8 @@ pub(crate) fn handoff_request() -> String {
 
 /// Write a hand-off prompt for the composer while the session is idle,
 /// without changing the history: the request is the history plus an
-/// appended hand-off request. `None` when a user message was queued
-/// meanwhile; the run answers that message instead.
+/// appended hand-off request. `None` when the agent declined, or when a
+/// user message was queued meanwhile; the run answers that message instead.
 pub(crate) async fn prepare_handoff(
     agent: &mut Agent,
     pending: &Mutex<Option<Vec<llm::ContentBlock>>>,
@@ -97,7 +103,7 @@ pub(crate) async fn prepare_handoff(
         agent.run_single_iteration().await?;
         return Ok(None);
     }
-    Ok(Some(prompt))
+    Ok((prompt.trim() != CANCEL_HANDOFF).then_some(prompt))
 }
 
 /// Where the new context continues.
