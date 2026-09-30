@@ -275,6 +275,18 @@ pub enum UiEvent {
     /// A permission request was settled (answered, or dropped by a stop
     /// request); open prompts for it should dismiss.
     ToolPermissionRequestResolved { request_id: String },
+    /// `/new` or `/hand-off` asks where the new context continues. Answered
+    /// via `SessionService::respond_new_context_target`; a
+    /// [`UiEvent::NewContextTargetResolved`] follows once settled.
+    RequestNewContextTarget {
+        request: crate::session::new_context::NewContextTargetRequest,
+    },
+    /// The target question was settled (answered, or dropped by a stop
+    /// request); an open prompt for it should dismiss.
+    NewContextTargetResolved { request_id: String },
+    /// The session's work continues in the new session `to` (`/new`,
+    /// `/hand-off`); a frontend viewing this session should switch to it.
+    SessionHandedOff { to: String },
 
     /// Schedule a debounced save of the per-session UI state file.
     /// Sent after any mutation to the UI state (tool collapse toggle, plan

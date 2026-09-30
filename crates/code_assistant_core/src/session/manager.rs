@@ -38,6 +38,9 @@ pub struct RegistryRequest {
 pub(crate) struct RunConfig {
     pub session: SessionConfig,
     pub model: Option<SessionModelConfig>,
+    /// Open a new context (`/new`, `/hand-off`) instead of answering the
+    /// last user message.
+    pub new_context: Option<crate::session::new_context::NewContextRun>,
 }
 
 /// Provides the tool registry for the next agent run. Consulted at the
@@ -927,6 +930,7 @@ impl SessionManager {
         let run_config = RunConfig {
             session: instance.session.config.clone(),
             model: instance.session.model_config.clone(),
+            new_context: None,
         };
         self.refresh_tool_registry(session_id, registry_request)
             .await;
@@ -998,6 +1002,7 @@ impl SessionManager {
             session_state,
             activity,
             pending_message_ref,
+            pending_target,
             sandbox_context,
         ) = {
             let session_instance = self
@@ -1019,6 +1024,7 @@ impl SessionManager {
                 session_instance.create_publisher(self.events.clone(), turn_recorder.clone());
             let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
+            let pending_target = session_instance.pending_new_context_target.clone();
 
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
@@ -1072,9 +1078,11 @@ impl SessionManager {
                 session_state,
                 activity,
                 pending_message_ref,
+                pending_target,
                 session_instance.sandbox_context.clone(),
             )
         };
+        let new_context = run_config.new_context;
 
         // Broadcast the initial state change
         self.events.publish_ui(
@@ -1245,7 +1253,17 @@ impl SessionManager {
                             plan: agent.plan().clone(),
                         })
                         .await;
-                    agent.run_single_iteration().await
+                    match new_context {
+                        Some(run) => {
+                            let target = crate::session::new_context::ask_target(
+                                &session_id_clone,
+                                &events_clone,
+                                &pending_target,
+                            );
+                            run.run(&mut agent, target).await
+                        }
+                        None => agent.run_single_iteration().await,
+                    }
                 });
                 match iteration_future.catch_unwind().await {
                     Ok(result) => result,

@@ -222,6 +222,17 @@ impl Agent {
         self.runtime.append_message(message)
     }
 
+    /// Ask the model for a hand-off text without changing the history (see
+    /// [`AgentRuntime::generate_handoff`]).
+    pub async fn generate_handoff(&mut self, prompt: Option<&str>) -> Result<String> {
+        self.runtime.generate_handoff(prompt).await
+    }
+
+    /// Open a fresh context whose first user message is `prompt`.
+    pub fn append_new_context(&mut self, prompt: String) -> Result<()> {
+        self.runtime.append_new_context(prompt)
+    }
+
     /// Run a single iteration of the agent loop without waiting for user input.
     /// One call drives the full turn (LLM + tool executions) until the agent
     /// needs user input again.

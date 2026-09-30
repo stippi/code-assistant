@@ -186,6 +186,9 @@ pub struct SessionInstance {
     /// Permission requests currently awaiting a user decision.
     pub pending_permission_requests: Arc<crate::session::permissions::PendingPermissionRequests>,
 
+    /// The open `/new` / `/hand-off` target question, if any.
+    pub pending_new_context_target: Arc<crate::session::new_context::PendingTargetRequest>,
+
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 
@@ -264,6 +267,7 @@ impl SessionInstance {
             pending_permission_requests: Arc::new(
                 crate::session::permissions::PendingPermissionRequests::default(),
             ),
+            pending_new_context_target: Arc::default(),
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
             browser_sessions: Arc::new(web::BrowserSessionManager::default()),
@@ -282,13 +286,15 @@ impl SessionInstance {
     }
 
     /// Ask the running agent to stop at its next streaming checkpoint.
-    /// Pending permission requests resolve as denied so the agent does not
-    /// stay blocked waiting for an answer.
+    /// Pending permission requests resolve as denied and an open target
+    /// question is dropped, so the agent does not stay blocked waiting for
+    /// an answer.
     pub fn request_stop(&self) {
         self.cancellation.cancel();
         self.stop_requested
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.pending_permission_requests.deny_all();
+        self.pending_new_context_target.cancel();
     }
 
     /// Reset per-run state when a new agent starts: clears a previous stop
@@ -533,6 +539,7 @@ impl SessionInstance {
                 &self.session.config.disabled_mcp_servers,
             ),
             pending_permission_requests: self.pending_permission_requests.snapshot(),
+            pending_new_context_target: self.pending_new_context_target.snapshot(),
         })
     }
 

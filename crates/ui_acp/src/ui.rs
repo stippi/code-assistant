@@ -953,6 +953,9 @@ impl UserInterface for ACPUserUI {
             // requestPermission RPC (AcpPermissionMediator), not the stream.
             | UiEvent::RequestToolPermission { .. }
             | UiEvent::ToolPermissionRequestResolved { .. }
+            | UiEvent::RequestNewContextTarget { .. }
+            | UiEvent::NewContextTargetResolved { .. }
+            | UiEvent::SessionHandedOff { .. }
             | UiEvent::HiddenToolCompleted
             | UiEvent::MessageEditReady { .. }
             | UiEvent::UpdateBranchInfo { .. }

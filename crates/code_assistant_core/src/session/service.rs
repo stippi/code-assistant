@@ -19,6 +19,7 @@ use crate::injection::without_injections;
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::session::event_stream::EventStream;
+use crate::session::new_context::{NewContextCommand, NewContextRun};
 use crate::skills::{
     SkillsConfig, discover_session_catalog, render_skill_injection, resolve_skill_trigger,
 };
@@ -26,7 +27,7 @@ use crate::types::{PlanState, Project};
 use crate::ui::UiEvent;
 use crate::ui::ui_events::{MessageData, ToolResultData};
 use crate::utils::content::content_blocks_from;
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use command_executor::CommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
@@ -655,6 +656,11 @@ impl SessionService {
         attachments: Vec<DraftAttachment>,
         branch_parent_id: Option<NodeId>,
     ) -> Result<()> {
+        if let Some(command) = NewContextCommand::parse(&message) {
+            return self
+                .start_new_context(session_id, message, command, attachments, branch_parent_id)
+                .await;
+        }
         self.call_session(session_id.clone(), move |ctx| async move {
             send_user_message_impl(
                 &ctx,
@@ -662,8 +668,7 @@ impl SessionService {
                 &message,
                 &attachments,
                 branch_parent_id,
-                None,
-                None,
+                RunOptions::default(),
             )
             .await
         })
@@ -688,8 +693,10 @@ impl SessionService {
                 &message,
                 &attachments,
                 None,
-                Some(tool_scope),
-                None,
+                RunOptions {
+                    tool_scope_override: Some(tool_scope),
+                    ..Default::default()
+                },
             )
             .await
         })
@@ -708,6 +715,12 @@ impl SessionService {
         message: String,
         attachments: Vec<DraftAttachment>,
     ) -> Result<()> {
+        // Not queued: they are only accepted by an idle session.
+        if let Some(command) = NewContextCommand::parse(&message) {
+            return self
+                .start_new_context(session_id, message, command, attachments, None)
+                .await;
+        }
         self.call_session(session_id.clone(), move |ctx| async move {
             send_or_queue_user_message_impl(&ctx, &session_id, &message, &attachments).await
         })
@@ -785,6 +798,10 @@ impl SessionService {
         message: String,
         attachments: Vec<DraftAttachment>,
     ) -> Result<Option<String>> {
+        ensure!(
+            NewContextCommand::parse(&message).is_none(),
+            "/new and /hand-off can't be queued; wait for the agent to finish or stop it"
+        );
         self.call_session(session_id.clone(), move |ctx| async move {
             let content_blocks =
                 user_message_blocks(&ctx, &session_id, &message, &attachments).await?;
@@ -1642,8 +1659,7 @@ async fn send_user_message_impl(
     message: &str,
     attachments: &[DraftAttachment],
     branch_parent_id: Option<NodeId>,
-    tool_scope_override: Option<crate::tools::core::ToolScope>,
-    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+    options: RunOptions,
 ) -> Result<()> {
     debug!(
         "User message for session {}: {} (with {} attachments, branch_parent: {:?})",
@@ -1654,17 +1670,36 @@ async fn send_user_message_impl(
     );
 
     let content_blocks = user_message_blocks(ctx, session_id, message, attachments).await?;
+    append_and_run(
+        ctx,
+        session_id,
+        message,
+        content_blocks,
+        attachments,
+        branch_parent_id,
+        options,
+    )
+    .await
+}
 
+/// Add a user message made of `content_blocks` (shown as `message` with
+/// `attachments`) and start a run for it.
+async fn append_and_run(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    message: &str,
+    content_blocks: Vec<llm::ContentBlock>,
+    attachments: &[DraftAttachment],
+    branch_parent_id: Option<NodeId>,
+    options: RunOptions,
+) -> Result<()> {
     // First, add the user message to the session and get the new node_id.
     let (new_node_id, branch_info_updates) = {
         let mut manager = ctx.manager.lock().await;
         // Headless dispatch (channel adapters, schedulers) reaches sessions
         // no frontend has opened since the restart — load on demand.
         manager.ensure_session_loaded(session_id)?;
-        let cancellation = turn_recorder
-            .as_ref()
-            .map(|recorder| recorder.cancellation.clone())
-            .unwrap_or_default();
+        let cancellation = options.cancellation();
         // Claim the cross-process writer before touching the conversation.
         manager.reserve_agent_run(session_id, cancellation.clone())?;
         let prepared: Result<_> = (|| {
@@ -1676,14 +1711,7 @@ async fn send_user_message_impl(
             } else {
                 Vec::new()
             };
-            schedule_agent_impl(
-                ctx,
-                &mut manager,
-                session_id,
-                tool_scope_override,
-                turn_recorder,
-                cancellation.clone(),
-            )?;
+            schedule_agent_impl(ctx, &mut manager, session_id, options, cancellation.clone())?;
             Ok((node_id, updates))
         })();
         if let Err(error) = &prepared {
@@ -1751,7 +1779,15 @@ async fn send_or_queue_user_message_impl(
         return Ok(());
     }
 
-    send_user_message_impl(ctx, session_id, message, attachments, None, None, None).await
+    send_user_message_impl(
+        ctx,
+        session_id,
+        message,
+        attachments,
+        None,
+        RunOptions::default(),
+    )
+    .await
 }
 
 async fn try_send_user_message_if_idle_impl(
@@ -1772,7 +1808,15 @@ async fn try_send_user_message_if_idle_impl(
         return Ok(false);
     }
 
-    send_user_message_impl(ctx, session_id, message, attachments, None, None, None).await?;
+    send_user_message_impl(
+        ctx,
+        session_id,
+        message,
+        attachments,
+        None,
+        RunOptions::default(),
+    )
+    .await?;
     Ok(true)
 }
 
@@ -1806,8 +1850,11 @@ async fn start_turn_if_idle_impl(
         &request.message,
         &request.attachments,
         None,
-        request.tool_scope,
-        Some(recorder),
+        RunOptions {
+            tool_scope_override: request.tool_scope,
+            turn_recorder: Some(recorder),
+            ..Default::default()
+        },
     )
     .await?;
     Ok(TurnDispatch::Started(TurnHandle::new(
@@ -1853,7 +1900,7 @@ async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
         }
     }
 
-    start_agent_impl(ctx, session_id, None, None).await
+    start_agent_impl(ctx, session_id, RunOptions::default()).await
 }
 
 /// Start the agent loop for a session against its current message history.
@@ -1878,40 +1925,50 @@ fn runnable_model_config(
     SessionModelConfig::new(default_model_name.to_string())
 }
 
-async fn start_agent_impl(
-    ctx: &ServiceCtx,
-    session_id: &str,
-    tool_scope_override: Option<crate::tools::core::ToolScope>,
-    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
-) -> Result<()> {
+async fn start_agent_impl(ctx: &ServiceCtx, session_id: &str, options: RunOptions) -> Result<()> {
     let mut manager = ctx.manager.lock().await;
-    let cancellation = turn_recorder
-        .as_ref()
-        .map(|recorder| recorder.cancellation.clone())
-        .unwrap_or_default();
+    let cancellation = options.cancellation();
     manager.reserve_agent_run(session_id, cancellation.clone())?;
-    let result = schedule_agent_impl(
-        ctx,
-        &mut manager,
-        session_id,
-        tool_scope_override,
-        turn_recorder,
-        cancellation.clone(),
-    );
+    let result = schedule_agent_impl(ctx, &mut manager, session_id, options, cancellation.clone());
     if let Err(error) = &result {
         manager.finish_failed_setup(session_id, &cancellation, format!("{error:#}"));
     }
     result
 }
 
+/// How a run started by the service differs from an ordinary user turn.
+#[derive(Default)]
+struct RunOptions {
+    /// Restrict the run to the tools carrying this scope's capability tag.
+    tool_scope_override: Option<crate::tools::core::ToolScope>,
+    /// The outcome tee of a controller-started turn.
+    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+    /// Open a new context instead of answering the last user message.
+    new_context: Option<NewContextRun>,
+}
+
+impl RunOptions {
+    /// The run's cancellation token: the turn recorder's, when there is one.
+    fn cancellation(&self) -> tools_core::RunCancellation {
+        self.turn_recorder
+            .as_ref()
+            .map(|recorder| recorder.cancellation.clone())
+            .unwrap_or_default()
+    }
+}
+
 fn schedule_agent_impl(
     ctx: &ServiceCtx,
     manager: &mut SessionManager,
     session_id: &str,
-    tool_scope_override: Option<crate::tools::core::ToolScope>,
-    turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+    options: RunOptions,
     cancellation: tools_core::RunCancellation,
 ) -> Result<()> {
+    let RunOptions {
+        tool_scope_override,
+        turn_recorder,
+        new_context,
+    } = options;
     // Caller owns the reservation and handles synchronous setup failures.
     let loader = manager.registry_loader();
     let session_config = manager.get_session_model_config(session_id)?;
@@ -2032,6 +2089,7 @@ fn schedule_agent_impl(
                         crate::session::manager::RunConfig {
                             session: run_session_config,
                             model: Some(session_config),
+                            new_context,
                         },
                     )
                     .await
@@ -2082,6 +2140,8 @@ async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::Own
         .await;
     drop(permit);
 }
+
+mod new_context;
 
 #[cfg(test)]
 mod recovery_tests;
