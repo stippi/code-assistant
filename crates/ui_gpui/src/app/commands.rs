@@ -435,6 +435,41 @@ impl Gpui {
         });
     }
 
+    /// Answer the open `/new` / `/hand-off` target question. The prompt
+    /// dismisses when NewContextTargetResolved arrives via the stream.
+    pub(crate) fn cmd_respond_new_context_target(
+        &self,
+        session_id: String,
+        request_id: String,
+        target: code_assistant_core::session::new_context::NewContextTarget,
+    ) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service
+                .respond_new_context_target(session_id, request_id, target)
+                .await
+            {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
+    /// Tell the core the user is active in the session's composer, which
+    /// postpones preparing a hand-off.
+    pub(crate) fn cmd_note_user_activity(&self, session_id: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        self.dispatch(async move {
+            if let Err(e) = service.note_user_activity(session_id).await {
+                debug!("Failed to note user activity: {e:#}");
+            }
+        });
+    }
+
     // ========================================================================
     // Branching
     // ========================================================================

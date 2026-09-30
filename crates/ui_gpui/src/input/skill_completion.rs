@@ -1,11 +1,12 @@
 //! The composer's slash menu: which entries a `/<query>` offers and what Enter
 //! does with it.
 //!
-//! When the input is a bare `/<query>`, the composer shows the session's
+//! When the input is a bare `/<query>`, the composer shows the built-in
+//! commands (`/goal`, `/new`, `/hand-off`, `/compact`) plus the session's
 //! skills (read from the [`crate::Gpui`] global, populated via
-//! `BackendEvent::ListSkills`) plus the built-in `/goal` entry. Accepting an
-//! entry replaces the input with `/<skill-name> ` (or the `/goal ` template),
-//! ready for the request that goes with it. A message starting with
+//! `BackendEvent::ListSkills`); a skill named like a built-in is shadowed.
+//! Accepting an entry replaces the input with `/<name> `, ready for the
+//! request that goes with it. A message starting with
 //! `/<skill-name>` is submitted like any other; the core recognizes the skill
 //! and adds its instructions to the message.
 //!
@@ -13,6 +14,7 @@
 //! completion popover; gpui-kit offers completions on its code editor only, so
 //! the composer (a textarea) renders the menu itself.
 
+use code_assistant_core::session::new_context;
 use code_assistant_core::session::service::SkillCatalogEntry;
 
 const GOAL_DESCRIPTION: &str = "Set completion criteria, or type /goal cancel";
@@ -45,25 +47,23 @@ pub fn slash_menu_items(input: &str, skills: &[SkillCatalogEntry]) -> Vec<SlashM
         return Vec::new();
     };
     let query = query.to_lowercase();
-    let mut items = Vec::new();
-    if query.is_empty()
-        || "goal".contains(&query)
-        || GOAL_DESCRIPTION.to_lowercase().contains(&query)
-    {
-        items.push(SlashMenuItem {
-            label: "goal".into(),
-            detail: GOAL_DESCRIPTION.into(),
-            insert: "/goal ".into(),
-        });
-    }
+    let matches = |name: &str, description: &str| {
+        query.is_empty()
+            || name.to_lowercase().contains(&query)
+            || description.to_lowercase().contains(&query)
+    };
+    let mut items: Vec<SlashMenuItem> = builtin_commands()
+        .filter(|(name, description)| matches(name, description))
+        .map(|(name, description)| SlashMenuItem {
+            label: name.into(),
+            detail: description.into(),
+            insert: format!("/{name} "),
+        })
+        .collect();
     items.extend(
         skills
             .iter()
-            .filter(|s| {
-                query.is_empty()
-                    || s.name.to_lowercase().contains(&query)
-                    || s.description.to_lowercase().contains(&query)
-            })
+            .filter(|s| !is_builtin(&s.name) && matches(&s.name, &s.description))
             .map(|s| SlashMenuItem {
                 label: s.name.clone(),
                 detail: format!("({}) {}", s.scope_label, s.description),
@@ -80,7 +80,19 @@ pub fn enter_accepts_menu_item(input: &str, skills: &[SkillCatalogEntry]) -> boo
     let Some(query) = slash_query(input.trim_end()) else {
         return false;
     };
-    !skills.iter().any(|s| s.name == query) && !slash_menu_items(input, skills).is_empty()
+    !skills
+        .iter()
+        .any(|s| s.name == query && !is_builtin(&s.name))
+        && !slash_menu_items(input, skills).is_empty()
+}
+
+/// The built-in commands with their descriptions, in menu order.
+fn builtin_commands() -> impl Iterator<Item = (&'static str, &'static str)> {
+    std::iter::once(("goal", GOAL_DESCRIPTION)).chain(new_context::COMMANDS.iter().copied())
+}
+
+fn is_builtin(name: &str) -> bool {
+    builtin_commands().any(|(builtin, _)| builtin == name)
 }
 
 #[cfg(test)]
@@ -133,13 +145,35 @@ mod tests {
     }
 
     #[test]
-    fn bare_slash_lists_goal_and_every_skill() {
+    fn bare_slash_lists_the_builtins_and_every_skill() {
         let skills = vec![entry("pdf-extraction"), entry("review")];
         let items = slash_menu_items("/", &skills);
-        assert_eq!(labels(&items), ["goal", "pdf-extraction", "review"]);
+        assert_eq!(
+            labels(&items),
+            [
+                "goal",
+                "new",
+                "hand-off",
+                "compact",
+                "pdf-extraction",
+                "review"
+            ]
+        );
         assert_eq!(items[0].insert, "/goal ");
-        assert_eq!(items[1].insert, "/pdf-extraction ");
-        assert_eq!(items[1].detail, "(project) desc");
+        assert_eq!(items[2].insert, "/hand-off ");
+        assert_eq!(items[4].insert, "/pdf-extraction ");
+        assert_eq!(items[4].detail, "(project) desc");
+    }
+
+    #[test]
+    fn builtins_shadow_skills_of_the_same_name() {
+        let skills = vec![entry("hand-off"), entry("new")];
+        let items = slash_menu_items("/hand", &skills);
+        assert_eq!(labels(&items), ["hand-off", "compact"]);
+        assert!(items.iter().all(|item| item.detail != "(project) desc"));
+        // Enter completes the built-in instead of submitting the skill.
+        assert!(enter_accepts_menu_item("/new", &skills));
+        assert!(!enter_accepts_menu_item("/new ", &skills));
     }
 
     #[test]
@@ -155,6 +189,10 @@ mod tests {
             ["pdf-extraction", "review"]
         );
         assert_eq!(labels(&slash_menu_items("/crit", &skills)), ["goal"]);
+        assert_eq!(
+            labels(&slash_menu_items("/hand", &skills)),
+            ["hand-off", "compact"]
+        );
         assert!(slash_menu_items("/zzz", &skills).is_empty());
     }
 

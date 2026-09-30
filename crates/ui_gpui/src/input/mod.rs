@@ -334,6 +334,14 @@ impl InputArea {
         (text, self.attachments.clone())
     }
 
+    /// Whether the composer holds nothing: no text, no attachments, and no
+    /// message being edited.
+    pub fn is_blank(&self, cx: &gpui_kit::App) -> bool {
+        self.text_input.read(cx).value().trim().is_empty()
+            && self.attachments.is_empty()
+            && self.branch_parent_id.is_none()
+    }
+
     /// Update agent state for button rendering
     pub fn set_agent_state(
         &mut self,
@@ -1181,7 +1189,14 @@ mod tests {
         assert_eq!(
             menu(&area, cx),
             Some((
-                vec!["goal".into(), "pdf-extraction".into(), "review".into()],
+                vec![
+                    "goal".into(),
+                    "new".into(),
+                    "hand-off".into(),
+                    "compact".into(),
+                    "pdf-extraction".into(),
+                    "review".into()
+                ],
                 0
             ))
         );
@@ -1202,19 +1217,19 @@ mod tests {
         let (area, cx) = input_area(cx);
         type_text(&area, cx, "/");
         area.update_in(cx, |area, window, cx| {
-            area.on_slash_menu_down(&MoveDown, window, cx);
-            area.on_slash_menu_down(&MoveDown, window, cx);
-            area.on_slash_menu_down(&MoveDown, window, cx);
+            for _ in 0..6 {
+                area.on_slash_menu_down(&MoveDown, window, cx);
+            }
         });
         assert_eq!(
             menu(&area, cx).map(|m| m.1),
-            Some(2),
+            Some(5),
             "clamped at the last entry"
         );
         area.update_in(cx, |area, window, cx| {
             area.on_slash_menu_up(&MoveUp, window, cx)
         });
-        assert_eq!(menu(&area, cx).map(|m| m.1), Some(1));
+        assert_eq!(menu(&area, cx).map(|m| m.1), Some(4));
 
         enter(&area, cx);
         // The accepted skill waits for the request to go with it.

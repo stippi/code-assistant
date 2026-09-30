@@ -823,11 +823,11 @@ impl Gpui {
                     .retain(|r| r.request_id != request_id);
                 cx.refresh();
             }
-            // TODO(hand-off): rendered in the GPUI step of docs/hand-off.md.
+            // State tracked by the event bridge; the main screen renders it.
             UiEvent::RequestNewContextTarget { .. }
             | UiEvent::NewContextTargetResolved { .. }
-            | UiEvent::SessionHandedOff { .. }
-            | UiEvent::HandoffPrepared { .. } => {}
+            | UiEvent::HandoffPrepared { .. } => cx.refresh(),
+            UiEvent::SessionHandedOff { .. } => {}
             UiEvent::UpdateWorktreeData {
                 worktrees,
                 current_worktree_path,

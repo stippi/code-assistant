@@ -57,6 +57,15 @@ impl Gpui {
                     let _ = self.handle_fragment(&fragment);
                 }
             }
+            EventPayload::Ui(UiEvent::HandoffPrepared { prompt }) if !is_current_session => {
+                // Offered in the background session's draft, unless the
+                // user already left one there.
+                if let Some(session_id) = event.session_id
+                    && self.load_draft_for_session(&session_id).is_none()
+                {
+                    self.save_draft_for_session(&session_id, &handoff_draft(&prompt), &[], None);
+                }
+            }
             EventPayload::Ui(ui_event) => {
                 let forward = match &ui_event {
                     // Sidebar state: relevant for every session, always.
@@ -122,6 +131,30 @@ impl Gpui {
                     .lock()
                     .unwrap()
                     .retain(|r| &r.request_id != request_id);
+            }
+            UiEvent::RequestNewContextTarget { request } => {
+                *self.pending_new_context_target.lock().unwrap() = Some(request.clone());
+            }
+            UiEvent::NewContextTargetResolved { request_id } => {
+                let mut pending = self.pending_new_context_target.lock().unwrap();
+                if pending
+                    .as_ref()
+                    .is_some_and(|request| &request.request_id == request_id)
+                {
+                    *pending = None;
+                }
+            }
+            UiEvent::HandoffPrepared { prompt } => {
+                if let Some(session_id) = self.get_current_session_id() {
+                    *self.prepared_handoff.lock().unwrap() =
+                        Some((session_id, handoff_draft(prompt)));
+                }
+            }
+            UiEvent::SessionHandedOff { to } => {
+                // Follow the work into the new session.
+                *self.current_session_id.lock().unwrap() = Some(to.clone());
+                self.cmd_refresh_chat_list();
+                self.cmd_load_session(to.clone(), None);
             }
             _ => {}
         }
@@ -267,4 +300,9 @@ impl Gpui {
 
         Ok(())
     }
+}
+
+/// The composer text offering a prepared hand-off.
+fn handoff_draft(prompt: &str) -> String {
+    format!("/new {prompt}")
 }
