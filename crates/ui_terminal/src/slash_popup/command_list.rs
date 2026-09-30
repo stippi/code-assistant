@@ -1,4 +1,5 @@
-//! Root popup that lists all known slash commands.
+//! Root popup that lists all known slash commands, followed by the session's
+//! skills (`/<skill-name> <request>`).
 
 use crate::commands::{CommandResult, all_commands};
 use crate::slash_popup::session_picker::SessionPickerPopup;
@@ -7,14 +8,30 @@ use crate::slash_popup::{PopupAction, PopupRow, SlashPopup};
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::service::SkillCatalogEntry;
 
+/// What a root row stands for.
+enum Entry {
+    Command(&'static str),
+    Skill(String),
+}
+
+impl Entry {
+    fn name(&self) -> &str {
+        match self {
+            Entry::Command(name) => name,
+            Entry::Skill(name) => name,
+        }
+    }
+}
+
 pub struct CommandListPopup {
     /// All rows the popup knows about, before filtering.
     all_rows: Vec<PopupRow>,
-    /// All command names (parallel to `all_rows`); used to dispatch on activate.
-    all_names: Vec<&'static str>,
+    /// What each row stands for (parallel to `all_rows`); used to dispatch on
+    /// activate.
+    all_entries: Vec<Entry>,
     /// Currently visible rows after filtering.
     visible_rows: Vec<PopupRow>,
-    /// Indices into `all_rows`/`all_names` for the currently visible rows.
+    /// Indices into `all_rows`/`all_entries` for the currently visible rows.
     visible_indices: Vec<usize>,
     /// Highlighted row inside `visible_rows`.
     selected: usize,
@@ -46,20 +63,28 @@ impl CommandListPopup {
     /// backend round-trip.
     pub fn with_context(skills: Vec<SkillCatalogEntry>, sessions: Vec<ChatMetadata>) -> Self {
         let mut all_rows = Vec::new();
-        let mut all_names = Vec::new();
+        let mut all_entries = Vec::new();
         for cmd in all_commands() {
             all_rows.push(PopupRow {
                 label: format!("/{}", cmd.name),
                 description: cmd.description.to_string(),
                 has_submenu: command_has_submenu(cmd.name),
             });
-            all_names.push(cmd.name);
+            all_entries.push(Entry::Command(cmd.name));
+        }
+        for skill in &skills {
+            all_rows.push(PopupRow {
+                label: format!("/{}", skill.name),
+                description: format!("({}) {}", skill.scope_label, skill.description),
+                has_submenu: false,
+            });
+            all_entries.push(Entry::Skill(skill.name.clone()));
         }
         let visible_indices = (0..all_rows.len()).collect::<Vec<_>>();
         let visible_rows = all_rows.clone();
         Self {
             all_rows,
-            all_names,
+            all_entries,
             visible_rows,
             visible_indices,
             selected: 0,
@@ -68,10 +93,10 @@ impl CommandListPopup {
         }
     }
 
-    /// Return the command name for the currently selected visible row.
-    fn selected_name(&self) -> Option<&'static str> {
+    /// Return the entry for the currently selected visible row.
+    fn selected_entry(&self) -> Option<&Entry> {
         let idx = *self.visible_indices.get(self.selected)?;
-        self.all_names.get(idx).copied()
+        self.all_entries.get(idx)
     }
 }
 
@@ -111,8 +136,8 @@ impl SlashPopup for CommandListPopup {
         let q = query.to_lowercase();
         self.visible_rows.clear();
         self.visible_indices.clear();
-        for (i, name) in self.all_names.iter().enumerate() {
-            if name.to_lowercase().starts_with(&q) {
+        for (i, entry) in self.all_entries.iter().enumerate() {
+            if entry.name().to_lowercase().starts_with(&q) {
                 self.visible_rows.push(self.all_rows[i].clone());
                 self.visible_indices.push(i);
             }
@@ -142,19 +167,23 @@ impl SlashPopup for CommandListPopup {
     }
 
     fn activate(&self) -> PopupAction {
-        match self.selected_name() {
+        match self.selected_entry() {
             // The skill picker needs the session-scoped catalog, which the
             // static `dispatch_command` table can't provide; build it here from
             // the cached entries instead.
-            Some("skill") => PopupAction::Push(Box::new(SkillPickerPopup::from_entries(
-                self.skills.clone(),
-            ))),
+            Some(Entry::Command("skill")) => PopupAction::Push(Box::new(
+                SkillPickerPopup::from_entries(self.skills.clone()),
+            )),
             // The session picker needs the cached session list, which the
             // static `dispatch_command` table can't provide; build it here.
-            Some("sessions") => PopupAction::Push(Box::new(SessionPickerPopup::from_sessions(
-                self.sessions.clone(),
-            ))),
-            Some(name) => dispatch_command(name),
+            Some(Entry::Command("sessions")) => PopupAction::Push(Box::new(
+                SessionPickerPopup::from_sessions(self.sessions.clone()),
+            )),
+            Some(Entry::Command(name)) => dispatch_command(name),
+            // The trigger goes into the composer, ready for the request.
+            Some(Entry::Skill(name)) => {
+                PopupAction::Commit(CommandResult::InsertInputTemplate(format!("/{name} ")))
+            }
             None => PopupAction::Continue,
         }
     }
@@ -274,6 +303,41 @@ mod tests {
             Some(CommandResult::InsertInputTemplate(ref template)) if template == "/goal "
         ));
         assert!(!stack.is_active());
+    }
+
+    fn skill(name: &str) -> SkillCatalogEntry {
+        SkillCatalogEntry {
+            name: name.to_string(),
+            description: "Audit auth.".to_string(),
+            scope_token: ":config:".to_string(),
+            scope_label: "user".to_string(),
+        }
+    }
+
+    #[test]
+    fn skills_are_listed_after_the_commands() {
+        let mut popup = CommandListPopup::with_skills(vec![skill("review")]);
+        assert_eq!(popup.rows().len(), all_commands().len() + 1);
+        let last = popup.rows().last().unwrap();
+        assert_eq!(last.label, "/review");
+        assert_eq!(last.description, "(user) Audit auth.");
+        popup.set_query("rev");
+        let labels: Vec<&str> = popup.rows().iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["/review"]);
+    }
+
+    #[test]
+    fn enter_on_a_skill_inserts_its_trigger() {
+        let mut stack = PopupStack::new();
+        stack.push(Box::new(CommandListPopup::with_skills(vec![skill(
+            "review",
+        )])));
+        stack.set_query("review");
+        let result = stack.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            result,
+            Some(CommandResult::InsertInputTemplate(ref template)) if template == "/review "
+        ));
     }
 
     #[test]

@@ -45,9 +45,6 @@ pub enum KeyEventResult {
     OpenSessionPicker,
     /// Switch to another session by id.
     SwitchSession(String),
-    /// Activate a skill. `scope` is the scope token, or `None` to resolve it
-    /// from the cached catalog by name.
-    InvokeSkill { scope: Option<String>, name: String },
     /// Manage the session's durable goals (`/goal`): the raw argument text.
     Goal { args: String },
     /// Show the current permission tier.
@@ -93,6 +90,15 @@ pub struct InputManager {
     /// to the popup stack as [`KeyEventResult::PopupKey`] events. The flag is
     /// set/cleared by the app event loop based on the popup-stack depth.
     pub popup_active: bool,
+}
+
+/// The command-list query of a composer line: the text after a leading `/`,
+/// up to the end of the command token. Once whitespace follows the token the
+/// line is a command with arguments (or a skill with its request) and is no
+/// longer completed — Enter submits it.
+pub fn command_query(line: &str) -> Option<&str> {
+    let query = line.strip_prefix('/')?;
+    (!query.contains(char::is_whitespace)).then_some(query)
 }
 
 impl InputManager {
@@ -213,9 +219,10 @@ impl InputManager {
                             CommandResult::OpenSkillPicker => KeyEventResult::OpenSkillPicker,
                             CommandResult::OpenSessionPicker => KeyEventResult::OpenSessionPicker,
                             CommandResult::SwitchSession(id) => KeyEventResult::SwitchSession(id),
-                            CommandResult::InvokeSkill { scope, name } => {
-                                KeyEventResult::InvokeSkill { scope, name }
-                            }
+                            CommandResult::SendMessage(message) => KeyEventResult::SendMessage {
+                                message,
+                                attachments,
+                            },
                             CommandResult::Goal { args } => KeyEventResult::Goal { args },
                             CommandResult::InsertInputTemplate(template) => {
                                 self.textarea.insert_str(&template);
@@ -263,14 +270,25 @@ impl InputManager {
         }
     }
 
-    /// Returns `Some(query)` when the current input line starts with `/`, where
-    /// `query` is the text after the `/`.  Returns `None` otherwise.
+    /// Returns `Some(query)` when the current input line is a `/<query>`
+    /// (see [`command_query`]).  Returns `None` otherwise.
     ///
     /// Used after every keystroke to decide whether to show/update/hide the
     /// autocomplete popup.
     pub fn slash_prefix(&self) -> Option<String> {
-        let line = self.textarea.current_line();
-        line.strip_prefix('/').map(|s| s.to_string())
+        command_query(self.textarea.current_line()).map(str::to_string)
+    }
+
+    /// Update the session's skill names, so `/<skill-name> <request>` is
+    /// submitted as a message.
+    pub fn set_skill_names(&mut self, names: impl Iterator<Item = String>) {
+        let Some(processor) = self.command_processor.as_mut() else {
+            return;
+        };
+        let names: Vec<String> = names.collect();
+        if processor.skill_names() != names.as_slice() {
+            processor.set_skill_names(names);
+        }
     }
 
     /// Handle a terminal paste event (from bracketed paste).
@@ -429,6 +447,20 @@ mod tests {
 
         // Content should be cleared after submission
         assert_eq!(input_manager.textarea.text(), "");
+    }
+
+    #[test]
+    fn slash_prefix_ends_with_the_command_token() {
+        let mut input_manager = InputManager::new();
+        input_manager.handle_key_event(create_key_event(KeyCode::Char('/'), KeyModifiers::NONE));
+        let result = input_manager
+            .handle_key_event(create_key_event(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(matches!(result, KeyEventResult::SlashPrefixChanged(Some(ref q)) if q == "r"));
+        // After the token, the line is a command with arguments (or a skill
+        // with its request): no completion popup, Enter submits it.
+        let result = input_manager
+            .handle_key_event(create_key_event(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(matches!(result, KeyEventResult::SlashPrefixChanged(None)));
     }
 
     #[test]

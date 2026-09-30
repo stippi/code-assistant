@@ -280,18 +280,6 @@ impl Actions {
         });
     }
 
-    fn invoke_skill(&self, session_id: String, scope: String, name: String) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            if this.refuse_if_view_only().await {
-                return;
-            }
-            if let Err(e) = this.service.invoke_skill(session_id, scope, name).await {
-                this.display_error(format!("{e:#}"));
-            }
-        });
-    }
-
     /// Fetch the session list and publish it to the UI.
     fn refresh_chat_list(&self) {
         let this = self.clone();
@@ -525,45 +513,6 @@ async fn handle_command_result(
         CommandResult::SwitchSession(session_id) => {
             actions.switch_session(session_id);
         }
-        CommandResult::InvokeSkill { scope, name } => {
-            let session_id = app_state.lock().await.current_session_id.clone();
-            let Some(session_id) = session_id else {
-                app_state
-                    .lock()
-                    .await
-                    .set_info_message(Some("No active session to activate a skill".to_string()));
-                return;
-            };
-
-            // Resolve the scope token: use the explicit one from the picker, or
-            // look it up in the cached catalog by name (inline `/skill <name>`).
-            let resolved_scope = match scope {
-                Some(scope) => Some(scope),
-                None => app_state
-                    .lock()
-                    .await
-                    .skills
-                    .iter()
-                    .find(|s| s.name == name)
-                    .map(|s| s.scope_token.clone()),
-            };
-
-            match resolved_scope {
-                Some(scope) => {
-                    app_state
-                        .lock()
-                        .await
-                        .set_info_message(Some(format!("Activating skill: {name}")));
-                    actions.invoke_skill(session_id, scope, name);
-                }
-                None => {
-                    app_state
-                        .lock()
-                        .await
-                        .set_info_message(Some(format!("No skill named '{name}' was found")));
-                }
-            }
-        }
         CommandResult::Goal { args } => {
             let session_id = app_state.lock().await.current_session_id.clone();
             let Some(session_id) = session_id else {
@@ -589,6 +538,8 @@ async fn handle_command_result(
         // Produced only by the popup and handled where the composer is
         // available in the event loop.
         CommandResult::InsertInputTemplate(_) => {}
+        // Turned into a submitted message by the input manager.
+        CommandResult::SendMessage(_) => {}
         CommandResult::ShowPermissionTier => {
             let mut state = app_state.lock().await;
             let message = match state.current_permission_tier {
@@ -750,8 +701,12 @@ async fn event_loop(
                             // Permission prompts push popups from the backend
                             // event task; resync routing before each key so
                             // Up/Down/Enter reach an asynchronously opened popup.
-                            input_manager.popup_active =
-                                app_state.lock().await.popup_stack.is_active();
+                            {
+                                let state = app_state.lock().await;
+                                input_manager.popup_active = state.popup_stack.is_active();
+                                input_manager
+                                    .set_skill_names(state.skills.iter().map(|s| s.name.clone()));
+                            }
                             let key_result = input_manager.handle_key_event(key_event);
 
                             match key_result {
@@ -997,15 +952,6 @@ async fn event_loop(
                                     )
                                     .await;
                                 }
-                                KeyEventResult::InvokeSkill { scope, name } => {
-                                    handle_command_result(
-                                        crate::commands::CommandResult::InvokeSkill { scope, name },
-                                        &app_state,
-                                        &renderer,
-                                        &actions,
-                                    )
-                                    .await;
-                                }
                                 KeyEventResult::Goal { args } => {
                                     handle_command_result(
                                         crate::commands::CommandResult::Goal { args },
@@ -1048,14 +994,19 @@ async fn event_loop(
                                     // For the root popup the user typed "/cl",
                                     // so the query is the part after the leading "/".
                                     // For sub-popups the composer is the query verbatim.
-                                    let query: String = if state.popup_stack.depth() == 1
+                                    if state.popup_stack.depth() == 1
+                                        && !state.popup_stack.has_permission_popup()
                                         && text.starts_with('/')
                                     {
-                                        text[1..].to_string()
+                                        // Once the command token is complete the
+                                        // line is submitted, not completed.
+                                        match crate::input::command_query(&text) {
+                                            Some(query) => state.popup_stack.set_query(query),
+                                            None => state.popup_stack.clear(),
+                                        }
                                     } else {
-                                        text
-                                    };
-                                    state.popup_stack.set_query(&query);
+                                        state.popup_stack.set_query(&text);
+                                    }
                                     input_manager.popup_active =
                                         state.popup_stack.is_active();
                                 }
@@ -1129,6 +1080,10 @@ async fn event_loop(
                                             template,
                                         ) = cmd
                                         {
+                                            // A sub-popup's query is the whole composer.
+                                            if depth_before > 1 {
+                                                input_manager.textarea.clear();
+                                            }
                                             input_manager.textarea.insert_str(&template);
                                         } else {
                                             handle_command_result(

@@ -1,4 +1,4 @@
-//! Sub-popup that lets the user pick a skill to activate.
+//! Sub-popup that lets the user pick a skill to use.
 //!
 //! Pushed by [`super::command_list::CommandListPopup`] when `/skill` is
 //! activated. Unlike the model picker (which reads global config), the skills
@@ -53,7 +53,7 @@ impl SkillPickerPopup {
 
 impl SlashPopup for SkillPickerPopup {
     fn title(&self) -> &str {
-        "Activate skill"
+        "Use skill"
     }
 
     fn set_query(&mut self, query: &str) {
@@ -96,10 +96,11 @@ impl SlashPopup for SkillPickerPopup {
 
     fn activate(&self) -> PopupAction {
         match self.selected_entry() {
-            Some(entry) => PopupAction::Commit(CommandResult::InvokeSkill {
-                scope: Some(entry.scope_token.clone()),
-                name: entry.name.clone(),
-            }),
+            // The trigger goes into the composer, ready for the request.
+            Some(entry) => PopupAction::Commit(CommandResult::InsertInputTemplate(format!(
+                "/{} ",
+                entry.name
+            ))),
             None => PopupAction::Continue,
         }
     }
@@ -137,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_commits_invoke_skill_with_scope_token() {
+    fn enter_inserts_the_skill_trigger() {
         let mut stack = PopupStack::new();
         stack.push(Box::new(SkillPickerPopup::from_entries(vec![
             entry("pdf", "proj", "project", "Extract PDFs."),
@@ -147,8 +148,7 @@ mod tests {
         let result = stack.handle_key(key(KeyCode::Enter));
         assert!(matches!(
             result,
-            Some(CommandResult::InvokeSkill { ref scope, ref name })
-                if scope.as_deref() == Some(":config:") && name == "review"
+            Some(CommandResult::InsertInputTemplate(ref template)) if template == "/review "
         ));
         assert!(!stack.is_active());
     }

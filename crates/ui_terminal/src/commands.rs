@@ -78,7 +78,7 @@ pub fn all_commands() -> &'static [SlashCommand] {
         SlashCommand {
             name: "skill",
             aliases: &[],
-            description: "Activate a skill: /skill <name> (or pick from the list)",
+            description: "Use a skill: /<skill-name> <request> (or pick from the list)",
         },
         SlashCommand {
             name: "sessions",
@@ -118,10 +118,9 @@ pub enum CommandResult {
     OpenSessionPicker,
     /// Switch the terminal to another session, loading its transcript.
     SwitchSession(String),
-    /// Activate a skill by name. `scope` is the scope token (project name, or
-    /// `:config:` / `:system:`); `None` means resolve it from the cached
-    /// catalog by name.
-    InvokeSkill { scope: Option<String>, name: String },
+    /// Submit this text as a user message: `/skill <name> <request>`
+    /// rewritten to the `/<name> <request>` skill trigger.
+    SendMessage(String),
     /// Manage the session's durable goals directly (never through the agent):
     /// the raw text after `/goal`, parsed by
     /// `code_assistant_core::goal_commands::GoalCommand`.
@@ -144,12 +143,30 @@ pub enum CommandResult {
 /// Process slash commands in terminal UI
 pub struct CommandProcessor {
     config: ConfigurationSystem,
+    /// Skills of the current session: `/<skill-name> <request>` is a message
+    /// for the agent, not an unknown command.
+    skill_names: Vec<String>,
 }
 
 impl CommandProcessor {
     pub fn new() -> Result<Self> {
         let config = ConfigurationSystem::load()?;
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            skill_names: Vec::new(),
+        })
+    }
+
+    pub fn skill_names(&self) -> &[String] {
+        &self.skill_names
+    }
+
+    pub fn set_skill_names(&mut self, names: Vec<String>) {
+        self.skill_names = names;
+    }
+
+    fn is_skill(&self, name: &str) -> bool {
+        self.skill_names.iter().any(|n| n == name)
     }
 
     /// Process a slash command and return the result
@@ -189,19 +206,30 @@ impl CommandProcessor {
             "goal" => CommandResult::Goal {
                 args: parts[1..].join(" "),
             },
-            "skill" => {
-                if parts.len() > 1 {
-                    CommandResult::InvokeSkill {
-                        scope: None,
-                        name: parts[1..].join(" "),
+            "skill" => match parts.get(1) {
+                None => CommandResult::OpenSkillPicker,
+                Some(name) if self.is_skill(name) => {
+                    // Keep the request verbatim (line breaks included).
+                    let request = input[1..]
+                        .strip_prefix(parts[0])
+                        .and_then(|rest| rest.trim_start().strip_prefix(*name))
+                        .unwrap_or_default()
+                        .trim();
+                    if request.is_empty() {
+                        CommandResult::SendMessage(format!("/{name}"))
+                    } else {
+                        CommandResult::SendMessage(format!("/{name} {request}"))
                     }
-                } else {
-                    CommandResult::OpenSkillPicker
                 }
-            }
+                Some(name) => {
+                    CommandResult::InvalidCommand(format!("No skill named '{name}' was found"))
+                }
+            },
             // Both `/sessions` and `/resume` open the session picker; any
             // trailing text is ignored (selection happens in the picker).
             "sessions" | "resume" => CommandResult::OpenSessionPicker,
+            // A skill trigger: the core adds the skill's instructions.
+            _ if self.is_skill(parts[0]) => CommandResult::Continue,
             _ => CommandResult::InvalidCommand(format!("Unknown command: /{}", parts[0])),
         }
     }
@@ -323,7 +351,54 @@ mod tests {
             providers: Default::default(),
             models: Default::default(),
         };
-        CommandProcessor { config }
+        CommandProcessor {
+            config,
+            skill_names: Vec::new(),
+        }
+    }
+
+    fn processor_with_skills(names: &[&str]) -> CommandProcessor {
+        let mut processor = test_processor();
+        processor.set_skill_names(names.iter().map(|n| n.to_string()).collect());
+        processor
+    }
+
+    #[test]
+    fn skill_trigger_is_sent_as_a_message() {
+        let processor = processor_with_skills(&["review"]);
+        assert!(matches!(
+            processor.process_command("/review focus on auth"),
+            CommandResult::Continue
+        ));
+        assert!(matches!(
+            processor.process_command("/review"),
+            CommandResult::Continue
+        ));
+        assert!(matches!(
+            processor.process_command("/nope focus"),
+            CommandResult::InvalidCommand(_)
+        ));
+    }
+
+    #[test]
+    fn skill_command_sends_the_trigger_with_its_request() {
+        let processor = processor_with_skills(&["review"]);
+        match processor.process_command("/skill review focus on auth") {
+            CommandResult::SendMessage(message) => assert_eq!(message, "/review focus on auth"),
+            other => panic!("expected a message, got {other:?}"),
+        }
+        match processor.process_command("/skill review") {
+            CommandResult::SendMessage(message) => assert_eq!(message, "/review"),
+            other => panic!("expected a message, got {other:?}"),
+        }
+        assert!(matches!(
+            processor.process_command("/skill nope"),
+            CommandResult::InvalidCommand(_)
+        ));
+        assert!(matches!(
+            processor.process_command("/skill"),
+            CommandResult::OpenSkillPicker
+        ));
     }
 
     #[test]
