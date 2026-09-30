@@ -72,7 +72,11 @@ impl CommandListPopup {
             });
             all_entries.push(Entry::Command(cmd.name));
         }
-        for skill in &skills {
+        // A skill named like a command is shadowed by it.
+        for skill in skills
+            .iter()
+            .filter(|skill| !all_commands().iter().any(|cmd| cmd.name == skill.name))
+        {
             all_rows.push(PopupRow {
                 label: format!("/{}", skill.name),
                 description: format!("({}) {}", skill.scope_label, skill.description),
@@ -117,8 +121,10 @@ pub(crate) fn dispatch_command(name: &str) -> PopupAction {
         "current" => PopupAction::Commit(CommandResult::ShowCurrentModel),
         "plan" => PopupAction::Commit(CommandResult::TogglePlan),
         "clear" => PopupAction::Commit(CommandResult::ClearContext),
-        "compact" => PopupAction::Commit(CommandResult::CompactContext),
-        "goal" => PopupAction::Commit(CommandResult::InsertInputTemplate("/goal ".into())),
+        // Waiting for the argument that goes with them.
+        "goal" | "new" | "hand-off" | "compact" => {
+            PopupAction::Commit(CommandResult::InsertInputTemplate(format!("/{name} ")))
+        }
         other => PopupAction::Commit(CommandResult::InvalidCommand(format!(
             "Unknown command: /{other}"
         ))),
@@ -337,6 +343,30 @@ mod tests {
             result,
             Some(CommandResult::InsertInputTemplate(ref template)) if template == "/review "
         ));
+    }
+
+    #[test]
+    fn enter_on_a_new_context_command_inserts_its_template() {
+        for (query, template) in [
+            ("new", "/new "),
+            ("hand", "/hand-off "),
+            ("comp", "/compact "),
+        ] {
+            let mut stack = PopupStack::new();
+            stack.push(Box::new(CommandListPopup::new()));
+            stack.set_query(query);
+            let result = stack.handle_key(key(KeyCode::Enter));
+            assert!(
+                matches!(result, Some(CommandResult::InsertInputTemplate(ref t)) if t == template),
+                "{query}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_skill_named_like_a_command_is_shadowed() {
+        let popup = CommandListPopup::with_skills(vec![skill("hand-off"), skill("review")]);
+        assert_eq!(popup.rows().len(), all_commands().len() + 1);
     }
 
     #[test]

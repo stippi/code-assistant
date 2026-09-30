@@ -570,9 +570,26 @@ impl TerminalUI {
             UiEvent::ToolPermissionRequestResolved { request_id } => {
                 let mut state = self.app_state.lock().await;
                 state.remove_permission_request(&request_id);
-                state.popup_stack.remove_permission_popup(&request_id);
+                state.popup_stack.remove_request_popup(&request_id);
                 state.open_next_permission_prompt();
             }
+            UiEvent::RequestNewContextTarget { request } => {
+                let mut state = self.app_state.lock().await;
+                // A snapshot replays an open request.
+                state.popup_stack.remove_request_popup(&request.request_id);
+                state.popup_stack.push(Box::new(
+                    crate::slash_popup::NewContextTargetPopup::for_request(&request),
+                ));
+            }
+            UiEvent::NewContextTargetResolved { request_id } => {
+                let mut state = self.app_state.lock().await;
+                state.popup_stack.remove_request_popup(&request_id);
+            }
+            UiEvent::HandoffPrepared { prompt } => {
+                self.app_state.lock().await.prepared_handoff = Some(format!("/new {prompt}"));
+            }
+            // Handled by the event bridge, which can switch sessions.
+            UiEvent::SessionHandedOff { .. } => {}
             UiEvent::ShowTransientStatus { message } => {
                 debug!("Transient status: {}", message);
                 // In the terminal UI, show as a brief info message via the error strip

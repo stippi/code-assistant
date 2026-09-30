@@ -630,11 +630,6 @@ impl SessionService {
         .await
     }
 
-    /// Compact (summarise) conversation context for a session.
-    pub async fn compact_context(&self, _session_id: String) -> Result<()> {
-        bail!("Compact is not yet implemented. Use /clear to reset context.")
-    }
-
     /// Update the default model name used for newly created sessions.
     pub async fn update_default_model(&self, model_name: String) -> Result<()> {
         self.call(move |ctx| async move {
@@ -2840,17 +2835,6 @@ mod tests {
         assert!(service.request_stop("nope".to_string()).await.is_err());
 
         service.request_stop(id).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn compact_context_reports_unimplemented() {
-        let tmp = tempfile::tempdir().unwrap();
-        let service = test_service(tmp.path());
-        let err = service
-            .compact_context("any".to_string())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("not yet implemented"));
     }
 
     #[tokio::test]

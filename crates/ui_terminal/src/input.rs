@@ -37,8 +37,6 @@ pub enum KeyEventResult {
 
     /// Clear conversation context
     ClearContext,
-    /// Compact (summarise) conversation context
-    CompactContext,
     /// Open the skill picker popup.
     OpenSkillPicker,
     /// Open the session picker popup.
@@ -215,7 +213,6 @@ impl InputManager {
                             CommandResult::ShowCurrentModel => KeyEventResult::ShowCurrentModel,
                             CommandResult::TogglePlan => KeyEventResult::TogglePlan,
                             CommandResult::ClearContext => KeyEventResult::ClearContext,
-                            CommandResult::CompactContext => KeyEventResult::CompactContext,
                             CommandResult::OpenSkillPicker => KeyEventResult::OpenSkillPicker,
                             CommandResult::OpenSessionPicker => KeyEventResult::OpenSessionPicker,
                             CommandResult::SwitchSession(id) => KeyEventResult::SwitchSession(id),
@@ -242,6 +239,9 @@ impl InputManager {
                             CommandResult::InvalidCommand(error) => {
                                 KeyEventResult::ShowInfo(format!("Error: {error}"))
                             }
+                            // Produced only by the target prompt popup.
+                            CommandResult::RespondNewContextTarget { .. }
+                            | CommandResult::CancelNewContext => KeyEventResult::Continue,
                         }
                     } else {
                         // Command processor not available, treat as regular message

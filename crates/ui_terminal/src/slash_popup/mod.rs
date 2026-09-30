@@ -17,12 +17,14 @@
 
 pub mod command_list;
 pub mod model_picker;
+pub mod new_context_target;
 pub mod permission_prompt;
 pub mod session_picker;
 pub mod skill_picker;
 
 pub use command_list::CommandListPopup;
 pub use model_picker::ModelPickerPopup;
+pub use new_context_target::NewContextTargetPopup;
 pub use permission_prompt::PermissionPromptPopup;
 pub use session_picker::SessionPickerPopup;
 pub use skill_picker::SkillPickerPopup;
@@ -87,7 +89,7 @@ pub trait SlashPopup: Send {
                 PopupAction::Continue
             }
             KeyCode::Enter | KeyCode::Tab => self.activate(),
-            KeyCode::Esc => PopupAction::Pop,
+            KeyCode::Esc => self.escape(),
             _ => PopupAction::Continue,
         }
     }
@@ -98,10 +100,16 @@ pub trait SlashPopup: Send {
     /// Activate the currently highlighted row.
     fn activate(&self) -> PopupAction;
 
-    /// For permission prompts: the id of the request this popup answers.
-    /// `None` for all other popups. Lets the stack find/remove the prompt
-    /// when its request resolves elsewhere.
-    fn permission_request_id(&self) -> Option<&str> {
+    /// What Esc does; closes the popup by default.
+    fn escape(&self) -> PopupAction {
+        PopupAction::Pop
+    }
+
+    /// For prompts the core asks for (permission, new-context target): the
+    /// id of the request this popup answers. `None` for all other popups.
+    /// Lets the stack find/remove the prompt when its request resolves
+    /// elsewhere.
+    fn request_id(&self) -> Option<&str> {
         None
     }
 }
@@ -210,18 +218,15 @@ impl PopupStack {
         }
     }
 
-    /// Whether a permission prompt is anywhere on the stack.
-    pub fn has_permission_popup(&self) -> bool {
-        self.stack
-            .iter()
-            .any(|p| p.permission_request_id().is_some())
+    /// Whether a prompt the core asked for is anywhere on the stack.
+    pub fn has_request_popup(&self) -> bool {
+        self.stack.iter().any(|p| p.request_id().is_some())
     }
 
-    /// Remove the permission prompt for the given request id, wherever it
-    /// sits on the stack (the request resolved through another channel).
-    pub fn remove_permission_popup(&mut self, request_id: &str) {
-        self.stack
-            .retain(|p| p.permission_request_id() != Some(request_id));
+    /// Remove the prompt for the given request id, wherever it sits on the
+    /// stack (the request resolved through another channel).
+    pub fn remove_request_popup(&mut self, request_id: &str) {
+        self.stack.retain(|p| p.request_id() != Some(request_id));
     }
 }
 
