@@ -14,9 +14,11 @@ pub struct TextBlock {
     pub content: String,
 }
 
-/// Summary shown after context compaction
+/// Divider where a fresh model context starts: the compaction summary, or
+/// the prompt a new context opens with
 #[derive(Debug, Clone)]
 pub struct CompactionSummaryBlock {
+    pub boundary: agent_core::ui::ContextBoundary,
     pub summary: String,
     pub is_expanded: bool,
 }

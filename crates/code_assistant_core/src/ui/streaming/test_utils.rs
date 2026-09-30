@@ -205,8 +205,8 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
             } => println!("  [{i}] ToolTerminal(tool_id: {tool_id}, terminal_id: {terminal_id})"),
             DisplayFragment::ReasoningComplete => println!("  [{i}] ReasoningComplete"),
 
-            DisplayFragment::CompactionDivider { summary } => {
-                println!("  [{i}] CompactionDivider: {summary}");
+            DisplayFragment::ContextDivider { boundary, summary } => {
+                println!("  [{i}] ContextDivider({boundary:?}): {summary}");
             }
             DisplayFragment::HiddenToolCompleted => {
                 println!("  [{i}] HiddenToolCompleted");
@@ -269,9 +269,15 @@ pub fn fragments_match(expected: &DisplayFragment, actual: &DisplayFragment) -> 
             },
         ) => expected_terminal == actual_terminal,
         (
-            DisplayFragment::CompactionDivider { summary: expected },
-            DisplayFragment::CompactionDivider { summary: actual },
-        ) => expected == actual,
+            DisplayFragment::ContextDivider {
+                boundary: expected_boundary,
+                summary: expected,
+            },
+            DisplayFragment::ContextDivider {
+                boundary: actual_boundary,
+                summary: actual,
+            },
+        ) => expected_boundary == actual_boundary && expected == actual,
         _ => false,
     }
 }

@@ -12,8 +12,8 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
         DisplayFragment::ThinkingText { text, .. } => {
             acp::ContentBlock::Text(acp::TextContent::new(text.clone()))
         }
-        DisplayFragment::CompactionDivider { summary } => acp::ContentBlock::Text(
-            acp::TextContent::new(format!("Conversation compacted:\n{summary}")),
+        DisplayFragment::ContextDivider { boundary, summary } => acp::ContentBlock::Text(
+            acp::TextContent::new(format!("{}:\n{summary}", boundary.label())),
         ),
         DisplayFragment::Image { media_type, data } => {
             acp::ContentBlock::Image(acp::ImageContent::new(data.clone(), media_type.clone()))

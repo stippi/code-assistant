@@ -143,7 +143,10 @@ pub enum UiEvent {
         node_id: Option<NodeId>,
     },
     /// Display a system-generated compaction divider message
-    DisplayCompactionSummary { summary: String },
+    DisplayContextDivider {
+        boundary: agent_core::ui::ContextBoundary,
+        summary: String,
+    },
     /// Append to the last text block
     AppendToTextBlock { content: String },
     /// Append to the last thinking block

@@ -254,8 +254,9 @@ impl Gpui {
                     tool_id: tool_id.clone(),
                 });
             }
-            DisplayFragment::CompactionDivider { summary } => {
-                self.push_event(UiEvent::DisplayCompactionSummary {
+            DisplayFragment::ContextDivider { boundary, summary } => {
+                self.push_event(UiEvent::DisplayContextDivider {
+                    boundary: *boundary,
                     summary: summary.clone(),
                 });
             }

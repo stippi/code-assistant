@@ -648,9 +648,9 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
 
     // Ensure the UI received a SetMessages event with the compaction divider
     let streaming_output = ui.get_streaming_output();
-    let has_compaction_fragment = streaming_output
-        .iter()
-        .any(|chunk| chunk.starts_with("[compaction] ") && chunk.contains(summary_text));
+    let has_compaction_fragment = streaming_output.iter().any(|chunk| {
+        chunk.starts_with("[Conversation compacted] ") && chunk.contains(summary_text)
+    });
     assert!(
         has_compaction_fragment,
         "Expected compaction divider fragment with summary text"
@@ -2397,7 +2397,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
     let streaming_output = ui.get_streaming_output();
     let has_compaction = streaming_output
         .iter()
-        .any(|s| s.starts_with("[compaction]"));
+        .any(|s| s.starts_with("[Conversation compacted]"));
     assert!(
         has_compaction,
         "Expected compaction divider in UI streaming output"
@@ -2768,7 +2768,7 @@ async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -
     let retry_prompt = message_text(requests[1].messages.last().unwrap());
     assert!(
         retry_prompt.contains("system-compaction")
-            && retry_prompt.contains("Reminder: this is a compaction request"),
+            && retry_prompt.contains("Reminder: Do not call any tools"),
         "{retry_prompt}"
     );
     let summary = agent

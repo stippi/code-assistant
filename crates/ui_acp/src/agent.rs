@@ -573,22 +573,7 @@ impl AgentState {
             // Replay what the user typed, without injected skill instructions.
             let message = without_skill_injections(&message);
             if message.is_compaction_summary {
-                let summary = match &message.content {
-                    llm::MessageContent::Text(text) => text.trim().to_string(),
-                    llm::MessageContent::Structured(blocks) => blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_string(),
-                };
-                let fragment =
-                    code_assistant_core::ui::DisplayFragment::CompactionDivider { summary };
+                let fragment = code_assistant_core::ui::context_divider(&message);
                 ui.display_fragment(&fragment)
                     .map_err(|_| acp::Error::internal_error())?;
                 continue;

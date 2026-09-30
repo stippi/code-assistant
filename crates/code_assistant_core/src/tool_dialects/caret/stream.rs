@@ -918,7 +918,7 @@ impl CaretStreamProcessor {
 
                     DisplayFragment::PlainText(_)
                     | DisplayFragment::ThinkingText { .. }
-                    | DisplayFragment::CompactionDivider { .. } => {
+                    | DisplayFragment::ContextDivider { .. } => {
                         // Text or thinking - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..

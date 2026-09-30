@@ -469,3 +469,222 @@ fn prompt_after_a_second_compaction_carries_user_messages_from_before_the_first(
     assert!(!handoff.contains("summary one"));
     assert!(handoff.contains("<summary>\nsummary two\n</summary>"));
 }
+
+#[test]
+fn prompt_after_a_new_context_is_its_prompt_alone() {
+    let (mut runtime, _) = runtime();
+    runtime
+        .append_message(Message::new_user("Old ask"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_assistant("Done"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_context("Write the tests for X"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_assistant("Starting"))
+        .unwrap();
+
+    let prompt = runtime.render_tool_results_in_messages();
+
+    assert_eq!(prompt.len(), 2);
+    assert_eq!(prompt[0].role, MessageRole::User);
+    assert_eq!(text(&prompt[0]), "Write the tests for X");
+    assert_eq!(text(&prompt[1]), "Starting");
+}
+
+#[test]
+fn an_empty_new_context_is_left_out_of_the_prompt() {
+    let (mut runtime, _) = runtime();
+    runtime
+        .append_message(Message::new_user("Old ask"))
+        .unwrap();
+    runtime.append_message(Message::new_context("")).unwrap();
+    runtime
+        .append_message(Message::new_user("Fresh ask"))
+        .unwrap();
+
+    let prompt = runtime.render_tool_results_in_messages();
+
+    assert_eq!(prompt.len(), 1);
+    assert_eq!(text(&prompt[0]), "Fresh ask");
+}
+
+#[test]
+fn compaction_after_a_new_context_hands_over_only_the_new_context_messages() {
+    let (mut runtime, _) = runtime();
+    runtime
+        .append_message(Message::new_user("Old ask"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_context("Next step"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_user("Follow-up"))
+        .unwrap();
+    runtime.append_message(summary("summary")).unwrap();
+
+    let prompt = runtime.render_tool_results_in_messages();
+
+    let handoff = text(&prompt[0]);
+    assert!(!handoff.contains("Old ask"), "{handoff}");
+    assert!(handoff.contains("<message index=\"1\">\nNext step\n</message>"));
+    assert!(handoff.contains("<message index=\"2\">\nFollow-up\n</message>"));
+}
+
+/// LLM provider answering from a script and recording the requests.
+#[derive(Clone, Default)]
+struct Scripted {
+    responses: Arc<Mutex<std::collections::VecDeque<Vec<ContentBlock>>>>,
+    requests: Arc<Mutex<Vec<LLMRequest>>>,
+}
+
+impl Scripted {
+    fn answering(responses: Vec<Vec<ContentBlock>>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses.into())),
+            ..Default::default()
+        }
+    }
+
+    fn requests(&self) -> Vec<LLMRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl LLMProvider for Scripted {
+    async fn send_message(
+        &mut self,
+        request: LLMRequest,
+        _: Option<&StreamingCallback>,
+    ) -> Result<llm::LLMResponse> {
+        self.requests.lock().unwrap().push(request);
+        let content = self
+            .responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("an unscripted LLM call");
+        Ok(llm::LLMResponse {
+            content,
+            usage: llm::Usage::zero(),
+            rate_limit_info: None,
+        })
+    }
+}
+
+fn runtime_answering(responses: Vec<Vec<ContentBlock>>) -> (AgentRuntime, Scripted) {
+    let (mut runtime, _) = runtime();
+    let llm = Scripted::answering(responses);
+    runtime.llm_provider = Box::new(llm.clone());
+    (runtime, llm)
+}
+
+fn last_text(request: &LLMRequest) -> String {
+    match &request.messages.last().unwrap().content {
+        MessageContent::Text(text) => text.clone(),
+        MessageContent::Structured(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[tokio::test]
+async fn generate_handoff_answers_the_request_that_ends_the_history() {
+    let (mut runtime, llm) = runtime_answering(vec![vec![ContentBlock::new_text("Next: tests")]]);
+    runtime
+        .append_message(Message::new_user("Build X"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_assistant("Built"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_user("/hand-off write the prompt"))
+        .unwrap();
+
+    let prompt = runtime.generate_handoff(None).await.unwrap();
+
+    assert_eq!(prompt, "Next: tests");
+    let requests = llm.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].messages.len(), 3);
+    assert_eq!(last_text(&requests[0]), "/hand-off write the prompt");
+    assert_eq!(
+        runtime.conversation.active_messages().count(),
+        3,
+        "generating does not change the history"
+    );
+}
+
+#[tokio::test]
+async fn generate_handoff_appends_a_given_prompt_to_the_request() {
+    let (mut runtime, llm) = runtime_answering(vec![vec![ContentBlock::new_text("Next: tests")]]);
+    runtime
+        .append_message(Message::new_user("Build X"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_assistant("Built"))
+        .unwrap();
+
+    runtime
+        .generate_handoff(Some("What comes next?"))
+        .await
+        .unwrap();
+
+    let request = &llm.requests()[0];
+    assert_eq!(request.messages.len(), 3);
+    assert_eq!(last_text(request), "What comes next?");
+}
+
+#[tokio::test]
+async fn generate_handoff_asks_once_more_when_answered_with_tool_calls() {
+    let (mut runtime, llm) = runtime_answering(vec![
+        vec![call("t1")],
+        vec![ContentBlock::new_text("Next: tests")],
+    ]);
+    runtime
+        .append_message(Message::new_user("/hand-off"))
+        .unwrap();
+
+    let prompt = runtime.generate_handoff(None).await.unwrap();
+
+    assert_eq!(prompt, "Next: tests");
+    let requests = llm.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].messages.len(), 1, "no extra message");
+    let retry = last_text(&requests[1]);
+    assert!(retry.starts_with("/hand-off"), "{retry}");
+    assert!(retry.contains("Do not call any tools"), "{retry}");
+}
+
+#[tokio::test]
+async fn generate_handoff_fails_without_text() {
+    let (mut runtime, _) = runtime_answering(vec![vec![call("t1")], vec![call("t2")]]);
+    runtime
+        .append_message(Message::new_user("/hand-off"))
+        .unwrap();
+
+    assert!(runtime.generate_handoff(None).await.is_err());
+}
+
+#[test]
+fn append_new_context_appends_the_boundary() {
+    let (mut runtime, capture) = runtime();
+    runtime
+        .append_message(Message::new_user("Old ask"))
+        .unwrap();
+
+    runtime.append_new_context("Next step".into()).unwrap();
+
+    let saved = capture.saved();
+    let last = &saved.nodes[saved.active_path.last().unwrap()].message;
+    assert!(last.is_new_context && last.is_compaction_summary);
+    assert_eq!(text(last), "Next step");
+}

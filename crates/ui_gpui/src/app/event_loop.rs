@@ -74,7 +74,7 @@ impl Gpui {
                     messages_view.update_pending_message(None);
                 });
             }
-            UiEvent::DisplayCompactionSummary { summary } => {
+            UiEvent::DisplayContextDivider { boundary, summary } => {
                 let old_len;
                 {
                     let mut queue = self.message_queue.lock().unwrap();
@@ -83,7 +83,7 @@ impl Gpui {
                     let new_message = cx.new(|cx| {
                         let message = MessageContainer::with_role(MessageRole::System, cx);
                         message.set_session_id(sid);
-                        message.add_compaction_divider(summary.clone(), cx);
+                        message.add_context_divider(boundary, summary.clone(), cx);
                         message
                     });
                     queue.push(new_message);
@@ -1163,9 +1163,9 @@ impl Gpui {
                         container.add_image_block(media_type, data, cx);
                     });
                 }
-                DisplayFragment::CompactionDivider { summary } => {
+                DisplayFragment::ContextDivider { boundary, summary } => {
                     self.update_container(container, cx, |container, cx| {
-                        container.add_compaction_divider(summary.clone(), cx);
+                        container.add_context_divider(boundary, summary.clone(), cx);
                     });
                 }
                 DisplayFragment::ReasoningSummaryStart => {

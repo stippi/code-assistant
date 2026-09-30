@@ -17,26 +17,33 @@ work already done instead of repeating it; the workspace reflects everything the
 previous instance did.";
 
 /// The verbatim text of the real user messages among `messages`. Tool-result
-/// messages and earlier compaction summaries share the user role but are not
-/// user messages; images are dropped.
+/// messages and compaction summaries share the user role but are not user
+/// messages; the prompt opening a new context is one. Images are dropped.
 pub(super) fn user_message_texts<'a>(messages: impl Iterator<Item = &'a Message>) -> Vec<String> {
     messages
-        .filter(|message| message.role == MessageRole::User && !message.is_compaction_summary)
-        .filter_map(|message| match &message.content {
-            MessageContent::Text(text) => Some(text.clone()),
-            MessageContent::Structured(blocks) => {
-                let text = blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (!text.trim().is_empty()).then_some(text)
-            }
-        })
+        .filter(|message| !message.is_compaction_summary || message.is_new_context)
+        .filter_map(user_message_text)
         .collect()
+}
+
+/// The text of a user message; `None` for other roles and for messages
+/// without text.
+pub(super) fn user_message_text(message: &Message) -> Option<String> {
+    if message.role != MessageRole::User {
+        return None;
+    }
+    let text = match &message.content {
+        MessageContent::Text(text) => text.clone(),
+        MessageContent::Structured(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Renders the hand-off message from the user's messages and the summary the

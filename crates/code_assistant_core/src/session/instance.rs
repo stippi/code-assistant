@@ -616,24 +616,9 @@ impl SessionInstance {
 
         for (node_id, message) in message_iter {
             if message.is_compaction_summary {
-                let summary = match &message.content {
-                    llm::MessageContent::Text(text) => text.trim().to_string(),
-                    llm::MessageContent::Structured(blocks) => blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_string(),
-                };
-
                 messages_data.push(MessageData {
                     role: MessageRole::System,
-                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    fragments: vec![crate::ui::context_divider(message)],
                     node_id,
                     branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
                 });
@@ -730,23 +715,9 @@ impl SessionInstance {
             let message = &node.message;
 
             if message.is_compaction_summary {
-                let summary = match &message.content {
-                    llm::MessageContent::Text(text) => text.trim().to_string(),
-                    llm::MessageContent::Structured(blocks) => blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_string(),
-                };
                 messages_data.push(MessageData {
                     role: MessageRole::System,
-                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    fragments: vec![crate::ui::context_divider(message)],
                     node_id: Some(node_id),
                     branch_info: self.session.get_branch_info(node_id),
                 });
@@ -1059,7 +1030,7 @@ impl UserInterface for SessionEventPublisher {
             DisplayFragment::Image { .. }
             | DisplayFragment::ToolName { .. }
             | DisplayFragment::ReasoningSummaryStart
-            | DisplayFragment::CompactionDivider { .. } => true,
+            | DisplayFragment::ContextDivider { .. } => true,
             DisplayFragment::ToolEnd { .. }
             | DisplayFragment::ToolTerminal { .. }
             | DisplayFragment::ToolTerminalExited { .. }

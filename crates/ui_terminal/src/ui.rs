@@ -141,11 +141,8 @@ impl TerminalUI {
                                 tool.output.get_or_insert_with(String::new).push_str(&chunk);
                             }
                         }
-                        DisplayFragment::CompactionDivider { summary } => {
-                            append_text_block(
-                                &mut live,
-                                &format!("\n\n[conversation compacted]\n{summary}\n"),
-                            );
+                        DisplayFragment::ContextDivider { boundary, summary } => {
+                            append_text_block(&mut live, &divider_text(boundary, &summary));
                         }
                         DisplayFragment::HiddenToolCompleted => {
                             // Preserve a paragraph break where a hidden tool sat
@@ -427,12 +424,12 @@ impl TerminalUI {
                     let _ = renderer_guard.add_user_message(&display_content);
                 }
             }
-            UiEvent::DisplayCompactionSummary { summary } => {
-                debug!("Displaying compaction summary");
+            UiEvent::DisplayContextDivider { boundary, summary } => {
+                debug!("Displaying context divider");
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    let formatted = format!("\n\n[conversation compacted]\n{summary}\n",);
-                    let _ = renderer_guard.add_instruction_message(&formatted);
+                    let _ =
+                        renderer_guard.add_instruction_message(&divider_text(boundary, &summary));
                 }
             }
             UiEvent::StreamingStarted {
@@ -762,8 +759,9 @@ impl UserInterface for TerminalUI {
                 // Terminal exit is for frontends with a display-only
                 // terminal card; the TUI has no live terminal view.
             }
-            DisplayFragment::CompactionDivider { summary } => {
-                self.push_event(UiEvent::DisplayCompactionSummary {
+            DisplayFragment::ContextDivider { boundary, summary } => {
+                self.push_event(UiEvent::DisplayContextDivider {
+                    boundary: *boundary,
                     summary: summary.clone(),
                 });
             }
@@ -809,6 +807,11 @@ impl UserInterface for TerminalUI {
             }
         });
     }
+}
+
+/// The transcript text of a context divider.
+fn divider_text(boundary: agent_core::ui::ContextBoundary, summary: &str) -> String {
+    format!("\n\n[{}]\n{summary}\n", boundary.label().to_lowercase())
 }
 
 #[cfg(test)]

@@ -727,7 +727,7 @@ impl BlockView {
                                 div()
                                     .text_size(rems(0.8125))
                                     .text_color(label_color)
-                                    .child("Conversation compacted"),
+                                    .child(block.boundary.label()),
                             ),
                     )
                     // Right zigzag line
