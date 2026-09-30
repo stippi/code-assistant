@@ -87,11 +87,10 @@ pub fn enter_accepts_menu_item(input: &str, skills: &[SkillCatalogEntry]) -> boo
 mod tests {
     use super::*;
 
-    fn entry(name: &str, scope_token: &str) -> SkillCatalogEntry {
+    fn entry(name: &str) -> SkillCatalogEntry {
         SkillCatalogEntry {
             name: name.to_string(),
             description: "desc".to_string(),
-            scope_token: scope_token.to_string(),
             scope_label: "project".to_string(),
         }
     }
@@ -102,14 +101,14 @@ mod tests {
 
     #[test]
     fn complete_skill_name_submits() {
-        let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
+        let skills = vec![entry("pdf-extraction"), entry("review")];
         assert!(!enter_accepts_menu_item("/review", &skills));
         assert!(!enter_accepts_menu_item("  /pdf-extraction  ", &skills));
     }
 
     #[test]
     fn prefix_query_accepts_the_menu_item() {
-        let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
+        let skills = vec![entry("pdf-extraction"), entry("review")];
         // A bare slash shows all skills.
         assert!(enter_accepts_menu_item("/", &skills));
         // A partial token that matches at least one skill keeps the menu open.
@@ -124,7 +123,7 @@ mod tests {
 
     #[test]
     fn other_input_submits() {
-        let skills = vec![entry("pdf-extraction", "proj")];
+        let skills = vec![entry("pdf-extraction")];
         assert!(!enter_accepts_menu_item("hello there", &skills));
         // Slash but no matching entry.
         assert!(!enter_accepts_menu_item("/zzz", &skills));
@@ -135,7 +134,7 @@ mod tests {
 
     #[test]
     fn bare_slash_lists_goal_and_every_skill() {
-        let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
+        let skills = vec![entry("pdf-extraction"), entry("review")];
         let items = slash_menu_items("/", &skills);
         assert_eq!(labels(&items), ["goal", "pdf-extraction", "review"]);
         assert_eq!(items[0].insert, "/goal ");
@@ -145,7 +144,7 @@ mod tests {
 
     #[test]
     fn query_filters_by_name_and_description() {
-        let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
+        let skills = vec![entry("pdf-extraction"), entry("review")];
         assert_eq!(
             labels(&slash_menu_items("/PDF", &skills)),
             ["pdf-extraction"]
@@ -161,7 +160,7 @@ mod tests {
 
     #[test]
     fn menu_is_empty_outside_a_slash_command() {
-        let skills = vec![entry("review", ":config:")];
+        let skills = vec![entry("review")];
         assert!(slash_menu_items("hello", &skills).is_empty());
         assert!(slash_menu_items("/review now", &skills).is_empty());
         assert!(slash_menu_items("/goal ", &skills).is_empty());

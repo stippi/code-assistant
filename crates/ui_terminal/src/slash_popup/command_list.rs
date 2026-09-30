@@ -309,7 +309,6 @@ mod tests {
         SkillCatalogEntry {
             name: name.to_string(),
             description: "Audit auth.".to_string(),
-            scope_token: ":config:".to_string(),
             scope_label: "user".to_string(),
         }
     }

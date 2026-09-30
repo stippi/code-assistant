@@ -1128,7 +1128,6 @@ mod tests {
         SkillCatalogEntry {
             name: name.to_string(),
             description: "desc".to_string(),
-            scope_token: "proj".to_string(),
             scope_label: "project".to_string(),
         }
     }

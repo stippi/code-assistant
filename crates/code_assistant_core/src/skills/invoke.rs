@@ -3,9 +3,9 @@
 //!
 //! Two consumers need the same resolution + read + truncation logic:
 //! - the `read_skill` tool (model-initiated, progressive disclosure), and
-//! - the UI invocation path (terminal `/skill`, GPUI completion, ACP command),
-//!   which injects the body directly as a synthetic user message so no extra
-//!   model round-trip is needed.
+//! - explicit invocation with `/<skill-name> <request>` (see
+//!   [`crate::skills::trigger`]), which appends the body to the user's message
+//!   so no extra model round-trip is needed.
 
 use crate::config::ProjectManager;
 use crate::skills::config::SkillsConfig;
@@ -100,7 +100,7 @@ pub fn load_skill_payload(
 
 /// Render the skill body with the standard header describing its scope and how
 /// to reach its bundled resources. This is the verbatim text the `read_skill`
-/// tool returns, and the core of the synthetic invocation message.
+/// tool returns, and the core of an explicitly invoked skill's injection.
 pub fn render_skill_body_with_header(payload: &SkillPayload) -> String {
     let dir = payload.dir.to_string_lossy().replace('\\', "/");
     format!(
@@ -115,23 +115,6 @@ pub fn render_skill_body_with_header(payload: &SkillPayload) -> String {
         dir = dir,
         scope = payload.scope_token,
         body = payload.body,
-    )
-}
-
-/// Render the synthetic user message used when a user explicitly activates a
-/// skill from the UI. The full body is embedded inline so the model can act on
-/// it immediately, without a `read_skill` round-trip.
-pub fn render_skill_invocation_message(payload: &SkillPayload) -> String {
-    format!(
-        "The user activated the **{name}** skill. Its full instructions are included below — \
-         follow them for the current task. You do not need to call `read_skill` for this skill \
-         again.\n\n\
-         {body}\n\n\
-         ---\n\n\
-         Apply this skill to the user's request. Explore the skill's bundled resources (as \
-         described above) only as needed.",
-        name = payload.name,
-        body = render_skill_body_with_header(payload),
     )
 }
 
@@ -233,22 +216,5 @@ mod tests {
         assert!(rendered.contains(".agents/skills/demo/"));
         assert!(rendered.contains("project `proj`"));
         assert!(rendered.contains("Do the thing."));
-    }
-
-    #[test]
-    fn invocation_message_embeds_body_and_framing() {
-        let payload = SkillPayload {
-            scope_token: ":config:".to_string(),
-            scope_label: "user".to_string(),
-            name: "security-review".to_string(),
-            dir: PathBuf::from("security-review"),
-            body: "Audit auth.".to_string(),
-        };
-        let rendered = render_skill_invocation_message(&payload);
-        assert!(rendered.contains("activated the **security-review** skill"));
-        assert!(rendered.contains("# Skill: security-review (user)"));
-        assert!(rendered.contains("Audit auth."));
-        // Tells the model not to call read_skill again.
-        assert!(rendered.contains("read_skill"));
     }
 }

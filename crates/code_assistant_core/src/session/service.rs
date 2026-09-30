@@ -19,8 +19,8 @@ use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConf
 use crate::session::SessionManager;
 use crate::session::event_stream::EventStream;
 use crate::skills::{
-    SkillsConfig, discover_session_catalog, load_skill_payload, render_skill_injection,
-    render_skill_invocation_message, resolve_skill_trigger, without_skill_injections,
+    SkillsConfig, discover_session_catalog, render_skill_injection, resolve_skill_trigger,
+    without_skill_injections,
 };
 use crate::types::{PlanState, Project};
 use crate::ui::UiEvent;
@@ -82,9 +82,6 @@ pub struct AgentRuntimeOptions {
 pub struct SkillCatalogEntry {
     pub name: String,
     pub description: String,
-    /// Scope token to pass back to [`SessionService::invoke_skill`] (the
-    /// project name, or `:config:` / `:system:`).
-    pub scope_token: String,
     /// Human-readable scope label (`project` / `user` / `system`).
     pub scope_label: String,
 }
@@ -859,44 +856,13 @@ impl SessionService {
             Ok(
                 discover_session_catalog(pm.as_ref(), &project_name, &config)
                     .into_iter()
-                    .map(|(skill, scope_token)| SkillCatalogEntry {
+                    .map(|(skill, _)| SkillCatalogEntry {
                         name: skill.name,
                         description: skill.description,
                         scope_label: skill.scope.label().to_string(),
-                        scope_token,
                     })
                     .collect(),
             )
-        })
-        .await
-    }
-
-    /// User-initiated ("explicit") skill activation: load the skill's body
-    /// and inject it directly as a synthetic user message, then run the
-    /// agent.
-    pub async fn invoke_skill(
-        &self,
-        session_id: String,
-        scope: String,
-        name: String,
-    ) -> Result<()> {
-        self.call_session(session_id.clone(), move |ctx| async move {
-            let config = SkillsConfig::load();
-            let pm = (ctx.runtime.project_manager_factory)();
-            let payload = load_skill_payload(pm.as_ref(), &scope, &name, &config)
-                .with_context(|| format!("Failed to load skill `{name}`"))?;
-            let message = render_skill_invocation_message(&payload);
-
-            // Record the activation (deduped) so compaction can remind the
-            // model if the injected body is summarised away.
-            {
-                let mut manager = ctx.manager.lock().await;
-                if let Err(e) = manager.activate_session_skill(&session_id, &name) {
-                    warn!("Failed to persist active_skills for {session_id}: {e}");
-                }
-            }
-
-            send_user_message_impl(&ctx, &session_id, &message, &[], None, None, None).await
         })
         .await
     }
