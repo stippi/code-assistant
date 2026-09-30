@@ -25,6 +25,11 @@ const HANDOFF_FOCUS: &str = "The user asked for this hand-off by starting this m
 `/hand-off`. The text after it, if any, says what the next context should work on or why the \
 user hands off; follow it. Without such text, hand off the most obvious next step.";
 
+/// What the idle preparation asks the model to focus on: nobody asked.
+const IDLE_FOCUS: &str = "The user has been away for a while and has not asked for a hand-off. \
+Prepare one they can send when they come back: hand off the most obvious next step for a \
+follow-up session.";
+
 /// A slash command that ends the current context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewContextCommand {
@@ -73,6 +78,26 @@ pub(crate) fn handoff_request() -> String {
         "hand-off-request",
         HANDOFF_PROMPT.replace("{focus}", HANDOFF_FOCUS).trim(),
     )
+}
+
+/// Write a hand-off prompt for the composer while the session is idle,
+/// without changing the history: the request is the history plus an
+/// appended hand-off request. `None` when a user message was queued
+/// meanwhile; the run answers that message instead.
+pub(crate) async fn prepare_handoff(
+    agent: &mut Agent,
+    pending: &Mutex<Option<Vec<llm::ContentBlock>>>,
+) -> Result<Option<String>> {
+    let request = crate::injection::wrap(
+        "hand-off-request",
+        HANDOFF_PROMPT.replace("{focus}", IDLE_FOCUS).trim(),
+    );
+    let prompt = agent.generate_handoff(Some(&request)).await?;
+    if pending.lock().unwrap().is_some() {
+        agent.run_single_iteration().await?;
+        return Ok(None);
+    }
+    Ok(Some(prompt))
 }
 
 /// Where the new context continues.

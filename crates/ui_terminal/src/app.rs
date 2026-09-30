@@ -1224,6 +1224,11 @@ impl TerminalTuiApp {
                 service.clone(),
                 Some(sleep_inhibitor),
             ));
+            // Idle hand-off: long sessions left idle get a prepared
+            // `/new <prompt>` while the prompt cache is warm.
+            manager.set_idle_handoff(
+                code_assistant_core::session::idle_handoff::spawn_idle_handoff(service.clone()),
+            );
         }
 
         // Goal controller: while the app is open, drives the sessions'

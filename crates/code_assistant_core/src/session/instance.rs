@@ -189,6 +189,10 @@ pub struct SessionInstance {
     /// The open `/new` / `/hand-off` target question, if any.
     pub pending_new_context_target: Arc<crate::session::new_context::PendingTargetRequest>,
 
+    /// The last message a hand-off was prepared for while idle, so each
+    /// state of the session is prepared at most once.
+    pub handoff_prepared_for: Option<crate::persistence::NodeId>,
+
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 
@@ -268,6 +272,7 @@ impl SessionInstance {
                 crate::session::permissions::PendingPermissionRequests::default(),
             ),
             pending_new_context_target: Arc::default(),
+            handoff_prepared_for: None,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
             browser_sessions: Arc::new(web::BrowserSessionManager::default()),

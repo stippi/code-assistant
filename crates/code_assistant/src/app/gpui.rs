@@ -97,6 +97,12 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .await
                 .set_wakeup_handle(wakeup_handle);
 
+            // Idle hand-off: long sessions left idle get a prepared
+            // `/new <prompt>` while the prompt cache is warm.
+            manager_for_mcp.lock().await.set_idle_handoff(
+                code_assistant_core::session::idle_handoff::spawn_idle_handoff(service.clone()),
+            );
+
             // Goal controller: while the app is open, drives the sessions'
             // user-set durable goals (/goal) one bounded turn at a time. The
             // verdicts come from an LLM evaluator on the configured model;

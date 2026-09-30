@@ -956,6 +956,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::RequestNewContextTarget { .. }
             | UiEvent::NewContextTargetResolved { .. }
             | UiEvent::SessionHandedOff { .. }
+            | UiEvent::HandoffPrepared { .. }
             | UiEvent::HiddenToolCompleted
             | UiEvent::MessageEditReady { .. }
             | UiEvent::UpdateBranchInfo { .. }

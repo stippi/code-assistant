@@ -73,6 +73,41 @@ impl SessionService {
         .await
     }
 
+    /// Have the agent write a hand-off prompt for the composer, if the
+    /// session qualifies (see [`SessionManager::claim_handoff_preparation`]).
+    /// Fired by the idle timers; the prompt arrives as
+    /// [`UiEvent::HandoffPrepared`].
+    pub async fn prepare_handoff(&self, session_id: String, threshold_tokens: u64) -> Result<()> {
+        self.call_session(session_id.clone(), move |ctx| async move {
+            let claimed = ctx
+                .manager
+                .lock()
+                .await
+                .claim_handoff_preparation(&session_id, threshold_tokens)?;
+            if !claimed {
+                return Ok(());
+            }
+            let options = RunOptions {
+                task: RunTask::PrepareHandoff,
+                ..Default::default()
+            };
+            start_agent_impl(&ctx, &session_id, options).await
+        })
+        .await
+    }
+
+    /// The user is active in the session (typing in its composer): postpone
+    /// preparing a hand-off.
+    pub async fn note_user_activity(&self, session_id: String) -> Result<()> {
+        self.call_control(move |ctx| async move {
+            if let Some(timers) = ctx.manager.lock().await.idle_handoff() {
+                timers.touch(&session_id);
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Create a session with `from`'s settings whose first user message is
     /// `prompt`, start the agent on it, and tell `from`'s viewers to switch.
     async fn continue_in_new_session(&self, from: &str, prompt: String) -> Result<()> {
@@ -100,7 +135,7 @@ async fn start_new_context_impl(
         // session) or the new session's first message carries the prompt.
         NewContextCommand::New { prompt } => {
             let options = RunOptions {
-                new_context: Some(NewContextRun {
+                task: RunTask::NewContext(NewContextRun {
                     prompt: Some(prompt),
                     new_session,
                 }),
@@ -116,7 +151,7 @@ async fn start_new_context_impl(
                 crate::session::new_context::handoff_request(),
             ));
             let options = RunOptions {
-                new_context: Some(NewContextRun {
+                task: RunTask::NewContext(NewContextRun {
                     prompt: None,
                     new_session,
                 }),
@@ -137,7 +172,13 @@ mod tests {
     fn text_response(text: &str) -> Result<llm::LLMResponse> {
         Ok(llm::LLMResponse {
             content: vec![llm::ContentBlock::new_text(text)],
-            usage: llm::Usage::zero(),
+            // The last request's input, as the idle preparation reads it.
+            usage: llm::Usage {
+                input_tokens: 100,
+                output_tokens: 5,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 900,
+            },
             rate_limit_info: None,
         })
     }
@@ -452,5 +493,91 @@ mod tests {
             .send_user_message(id, "/new with notes".into(), vec![attachment], None)
             .await;
         assert!(sent.unwrap_err().to_string().contains("attachments"));
+    }
+
+    async fn prepared(subscription: &mut Subscription, session_id: &str) -> String {
+        next(subscription, session_id, |event| match event {
+            UiEvent::HandoffPrepared { prompt } => Some(prompt),
+            _ => None,
+        })
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_handoff_offers_a_prompt_without_touching_the_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["built", "Next: write the tests"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+
+        assert_eq!(
+            prepared(&mut subscription, &id).await,
+            "Next: write the tests"
+        );
+        idle(&mut subscription, &id).await;
+        assert_eq!(path(tmp.path(), &id).len(), 2, "the history is unchanged");
+        let request = &llm.get_requests()[1];
+        assert_eq!(request.messages.len(), 3);
+        let appended = texts(request.messages.last().unwrap()).join("\n");
+        assert!(appended.starts_with("<hand-off-request>"), "{appended}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_handoff_skips_short_or_already_prepared_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["built", "Next: write the tests"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        // The last request's input was 1000 tokens.
+        service.prepare_handoff(id.clone(), 1001).await.unwrap();
+        assert!(!service.is_session_busy(id.clone()).await.unwrap());
+
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+        prepared(&mut subscription, &id).await;
+        idle(&mut subscription, &id).await;
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+        assert!(!service.is_session_busy(id.clone()).await.unwrap());
+        assert_eq!(llm.get_requests().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_idle_timer_prepares_a_hand_off_after_a_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["built", "Next: write the tests"]);
+        let (service, manager) = test_service_with_llm(tmp.path(), llm.into_factory());
+        manager.lock().await.set_idle_handoff(
+            crate::session::idle_handoff::IdleHandoffTimers::new(
+                service.clone(),
+                std::time::Duration::from_millis(50),
+                Arc::new(|| 1000),
+            ),
+        );
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            prepared(&mut subscription, &id).await,
+            "Next: write the tests"
+        );
     }
 }

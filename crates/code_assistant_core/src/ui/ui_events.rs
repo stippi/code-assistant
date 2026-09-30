@@ -287,6 +287,10 @@ pub enum UiEvent {
     /// The session's work continues in the new session `to` (`/new`,
     /// `/hand-off`); a frontend viewing this session should switch to it.
     SessionHandedOff { to: String },
+    /// A hand-off prompt was prepared while the session was idle; a
+    /// frontend puts `/new <prompt>` into the session's composer if it is
+    /// empty.
+    HandoffPrepared { prompt: String },
 
     /// Schedule a debounced save of the per-session UI state file.
     /// Sent after any mutation to the UI state (tool collapse toggle, plan

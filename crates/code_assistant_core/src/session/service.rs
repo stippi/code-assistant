@@ -19,6 +19,7 @@ use crate::injection::without_injections;
 use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::session::event_stream::EventStream;
+use crate::session::manager::RunTask;
 use crate::session::new_context::{NewContextCommand, NewContextRun};
 use crate::skills::{
     SkillsConfig, discover_session_catalog, render_skill_injection, resolve_skill_trigger,
@@ -1943,8 +1944,7 @@ struct RunOptions {
     tool_scope_override: Option<crate::tools::core::ToolScope>,
     /// The outcome tee of a controller-started turn.
     turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
-    /// Open a new context instead of answering the last user message.
-    new_context: Option<NewContextRun>,
+    task: RunTask,
 }
 
 impl RunOptions {
@@ -1967,7 +1967,7 @@ fn schedule_agent_impl(
     let RunOptions {
         tool_scope_override,
         turn_recorder,
-        new_context,
+        task,
     } = options;
     // Caller owns the reservation and handles synchronous setup failures.
     let loader = manager.registry_loader();
@@ -2089,7 +2089,7 @@ fn schedule_agent_impl(
                         crate::session::manager::RunConfig {
                             session: run_session_config,
                             model: Some(session_config),
-                            new_context,
+                            task,
                         },
                     )
                     .await
