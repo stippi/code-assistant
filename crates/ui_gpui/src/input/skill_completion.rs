@@ -4,10 +4,10 @@
 //! When the input is a bare `/<query>`, the composer shows the session's
 //! skills (read from the [`crate::Gpui`] global, populated via
 //! `BackendEvent::ListSkills`) plus the built-in `/goal` entry. Accepting an
-//! entry replaces the input with `/<skill-name>`; `/goal` expands to the
-//! required `/goal ` template. On submit, [`super::InputArea::on_enter`]
-//! recognizes a lone `/<skill-name>` that matches a known skill and translates
-//! it into a skill invocation (see [`slash_completion_state`]).
+//! entry replaces the input with `/<skill-name> ` (or the `/goal ` template),
+//! ready for the request that goes with it. A message starting with
+//! `/<skill-name>` is submitted like any other; the core recognizes the skill
+//! and adds its instructions to the message.
 //!
 //! Until the gpui-kit migration the menu was the input component's LSP
 //! completion popover; gpui-kit offers completions on its code editor only, so
@@ -67,44 +67,20 @@ pub fn slash_menu_items(input: &str, skills: &[SkillCatalogEntry]) -> Vec<SlashM
             .map(|s| SlashMenuItem {
                 label: s.name.clone(),
                 detail: format!("({}) {}", s.scope_label, s.description),
-                insert: format!("/{}", s.name),
+                insert: format!("/{} ", s.name),
             }),
     );
     items
 }
 
-/// What pressing Enter on the composer should do, given the current input and
-/// the available skills.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SlashState {
-    /// The input is a complete `/<skill-name>` — activate it.
-    Invoke { scope: String, name: String },
-    /// The input is a `/<query>` for which the slash menu shows at least one
-    /// entry. Enter should accept the highlighted entry, not submit.
-    MenuOpen,
-    /// Not a slash-completion context — submit as an ordinary message.
-    None,
-}
-
-/// Classify the composer input for Enter handling (see [`SlashState`]).
-pub fn slash_completion_state(input: &str, skills: &[SkillCatalogEntry]) -> SlashState {
-    // Trailing whitespace does not keep a complete skill name from invoking.
-    let Some(rest) = slash_query(input.trim_end()) else {
-        return SlashState::None;
+/// Whether Enter on the composer should accept the highlighted slash-menu
+/// entry instead of submitting: the input is a `/<query>` the menu has entries
+/// for, and not already a complete skill name (which submits as is).
+pub fn enter_accepts_menu_item(input: &str, skills: &[SkillCatalogEntry]) -> bool {
+    let Some(query) = slash_query(input.trim_end()) else {
+        return false;
     };
-    // A fully-typed, known skill name activates immediately.
-    if let Some(s) = skills.iter().find(|s| s.name == rest) {
-        return SlashState::Invoke {
-            scope: s.scope_token.clone(),
-            name: s.name.clone(),
-        };
-    }
-    // Otherwise, if the menu is showing matches, Enter belongs to the menu.
-    if slash_menu_items(input, skills).is_empty() {
-        SlashState::None
-    } else {
-        SlashState::MenuOpen
-    }
+    !skills.iter().any(|s| s.name == query) && !slash_menu_items(input, skills).is_empty()
 }
 
 #[cfg(test)]
@@ -125,57 +101,36 @@ mod tests {
     }
 
     #[test]
-    fn exact_name_invokes() {
+    fn complete_skill_name_submits() {
         let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
-        assert_eq!(
-            slash_completion_state("/review", &skills),
-            SlashState::Invoke {
-                scope: ":config:".to_string(),
-                name: "review".to_string()
-            }
-        );
-        assert_eq!(
-            slash_completion_state("  /pdf-extraction  ", &skills),
-            SlashState::Invoke {
-                scope: "proj".to_string(),
-                name: "pdf-extraction".to_string()
-            }
-        );
+        assert!(!enter_accepts_menu_item("/review", &skills));
+        assert!(!enter_accepts_menu_item("  /pdf-extraction  ", &skills));
     }
 
     #[test]
-    fn prefix_query_keeps_menu_open() {
+    fn prefix_query_accepts_the_menu_item() {
         let skills = vec![entry("pdf-extraction", "proj"), entry("review", ":config:")];
         // A bare slash shows all skills.
-        assert_eq!(slash_completion_state("/", &skills), SlashState::MenuOpen);
+        assert!(enter_accepts_menu_item("/", &skills));
         // A partial token that matches at least one skill keeps the menu open.
-        assert_eq!(slash_completion_state("/pd", &skills), SlashState::MenuOpen);
-        assert_eq!(
-            slash_completion_state("/rev", &skills),
-            SlashState::MenuOpen
-        );
-        assert_eq!(slash_completion_state("/go", &[]), SlashState::MenuOpen);
-        assert_eq!(slash_completion_state("/goal", &[]), SlashState::MenuOpen);
+        assert!(enter_accepts_menu_item("/pd", &skills));
+        assert!(enter_accepts_menu_item("/rev", &skills));
+        assert!(enter_accepts_menu_item("/go", &[]));
+        assert!(enter_accepts_menu_item("/goal", &[]));
         // The accepted `/goal ` template is a message once its criteria follow;
         // Enter on it must not re-accept the template forever.
-        assert_eq!(slash_completion_state("/goal ", &[]), SlashState::None);
+        assert!(!enter_accepts_menu_item("/goal ", &[]));
     }
 
     #[test]
-    fn ignores_non_skill_input() {
+    fn other_input_submits() {
         let skills = vec![entry("pdf-extraction", "proj")];
-        // Ordinary message.
-        assert_eq!(
-            slash_completion_state("hello there", &skills),
-            SlashState::None
-        );
-        // Slash but no matching skill → submit as a normal message.
-        assert_eq!(slash_completion_state("/zzz", &skills), SlashState::None);
-        // Slash with trailing text is not a bare skill token.
-        assert_eq!(
-            slash_completion_state("/pdf-extraction now", &skills),
-            SlashState::None
-        );
+        assert!(!enter_accepts_menu_item("hello there", &skills));
+        // Slash but no matching entry.
+        assert!(!enter_accepts_menu_item("/zzz", &skills));
+        // A skill with its request.
+        assert!(!enter_accepts_menu_item("/pdf-extraction now", &skills));
+        assert!(!enter_accepts_menu_item("/pdf-extraction ", &skills));
     }
 
     #[test]
@@ -184,7 +139,7 @@ mod tests {
         let items = slash_menu_items("/", &skills);
         assert_eq!(labels(&items), ["goal", "pdf-extraction", "review"]);
         assert_eq!(items[0].insert, "/goal ");
-        assert_eq!(items[1].insert, "/pdf-extraction");
+        assert_eq!(items[1].insert, "/pdf-extraction ");
         assert_eq!(items[1].detail, "(project) desc");
     }
 
