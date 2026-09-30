@@ -1,4 +1,4 @@
-//! Sub-popup that lets the user pick a skill to activate.
+//! Sub-popup that lets the user pick a skill to use.
 //!
 //! Pushed by [`super::command_list::CommandListPopup`] when `/skill` is
 //! activated. Unlike the model picker (which reads global config), the skills
@@ -53,7 +53,7 @@ impl SkillPickerPopup {
 
 impl SlashPopup for SkillPickerPopup {
     fn title(&self) -> &str {
-        "Activate skill"
+        "Use skill"
     }
 
     fn set_query(&mut self, query: &str) {
@@ -96,10 +96,11 @@ impl SlashPopup for SkillPickerPopup {
 
     fn activate(&self) -> PopupAction {
         match self.selected_entry() {
-            Some(entry) => PopupAction::Commit(CommandResult::InvokeSkill {
-                scope: Some(entry.scope_token.clone()),
-                name: entry.name.clone(),
-            }),
+            // The trigger goes into the composer, ready for the request.
+            Some(entry) => PopupAction::Commit(CommandResult::InsertInputTemplate(format!(
+                "/{} ",
+                entry.name
+            ))),
             None => PopupAction::Continue,
         }
     }
@@ -115,11 +116,10 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn entry(name: &str, scope_token: &str, scope_label: &str, desc: &str) -> SkillCatalogEntry {
+    fn entry(name: &str, scope_label: &str, desc: &str) -> SkillCatalogEntry {
         SkillCatalogEntry {
             name: name.to_string(),
             description: desc.to_string(),
-            scope_token: scope_token.to_string(),
             scope_label: scope_label.to_string(),
         }
     }
@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn lists_entries_with_scope_in_description() {
         let popup = SkillPickerPopup::from_entries(vec![
-            entry("pdf", "proj", "project", "Extract PDFs."),
-            entry("review", ":config:", "user", "Audit auth."),
+            entry("pdf", "project", "Extract PDFs."),
+            entry("review", "user", "Audit auth."),
         ]);
         let labels: Vec<&str> = popup.rows().iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels, vec!["pdf", "review"]);
@@ -137,18 +137,17 @@ mod tests {
     }
 
     #[test]
-    fn enter_commits_invoke_skill_with_scope_token() {
+    fn enter_inserts_the_skill_trigger() {
         let mut stack = PopupStack::new();
         stack.push(Box::new(SkillPickerPopup::from_entries(vec![
-            entry("pdf", "proj", "project", "Extract PDFs."),
-            entry("review", ":config:", "user", "Audit auth."),
+            entry("pdf", "project", "Extract PDFs."),
+            entry("review", "user", "Audit auth."),
         ])));
         stack.handle_key(key(KeyCode::Down)); // move to "review"
         let result = stack.handle_key(key(KeyCode::Enter));
         assert!(matches!(
             result,
-            Some(CommandResult::InvokeSkill { ref scope, ref name })
-                if scope.as_deref() == Some(":config:") && name == "review"
+            Some(CommandResult::InsertInputTemplate(ref template)) if template == "/review "
         ));
         assert!(!stack.is_active());
     }
@@ -156,18 +155,8 @@ mod tests {
     #[test]
     fn filter_matches_name_and_description() {
         let mut popup = SkillPickerPopup::from_entries(vec![
-            entry(
-                "pdf-extraction",
-                "proj",
-                "project",
-                "Extract text from PDFs.",
-            ),
-            entry(
-                "security-review",
-                ":config:",
-                "user",
-                "Audit auth and crypto.",
-            ),
+            entry("pdf-extraction", "project", "Extract text from PDFs."),
+            entry("security-review", "user", "Audit auth and crypto."),
         ]);
         popup.set_query("auth");
         let labels: Vec<&str> = popup.rows().iter().map(|r| r.label.as_str()).collect();

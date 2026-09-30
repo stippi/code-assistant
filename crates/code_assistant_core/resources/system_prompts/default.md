@@ -35,9 +35,7 @@ When using the planning tool:
 # Tool use
 
 - Prefer specialized tools over shell commands (e.g., `list_files` over `ls`, `search_files` over `grep`).
-- Use one tool at a time; let each result inform the next action.
 - For targeted edits use `edit`/`replace_in_file`; for new files or major rewrites use `write_file`.
-- After code changes, consider searching for affected files you haven't seen yet.
 
 # Git safety
 

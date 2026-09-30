@@ -656,7 +656,9 @@ impl SessionInstance {
                 }
             }
 
-            match processor.extract_fragments_from_message(message) {
+            match processor
+                .extract_fragments_from_message(&crate::skills::without_skill_injections(message))
+            {
                 Ok(fragments) => {
                     let role = match message.role {
                         llm::MessageRole::User => MessageRole::User,
@@ -767,7 +769,9 @@ impl SessionInstance {
                 }
             }
 
-            match processor.extract_fragments_from_message(message) {
+            match processor
+                .extract_fragments_from_message(&crate::skills::without_skill_injections(message))
+            {
                 Ok(fragments) => {
                     let role = match message.role {
                         llm::MessageRole::User => MessageRole::User,

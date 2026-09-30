@@ -652,15 +652,6 @@ impl MainScreen {
                 }
             }
 
-            InputAreaEvent::SkillInvoked { scope, name } => {
-                if let Some(session_id) = &self.current_session_id {
-                    let gpui = cx
-                        .try_global::<Gpui>()
-                        .expect("Failed to obtain Gpui global");
-                    gpui.cmd_invoke_skill(session_id.clone(), scope.clone(), name.clone());
-                }
-            }
-
             InputAreaEvent::ContentChanged {
                 content,
                 attachments,

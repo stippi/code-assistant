@@ -316,18 +316,6 @@ impl Gpui {
         });
     }
 
-    pub(crate) fn cmd_invoke_skill(&self, session_id: String, scope: String, name: String) {
-        let Some(service) = self.session_service() else {
-            return;
-        };
-        let gpui = self.clone();
-        self.dispatch(async move {
-            if let Err(e) = service.invoke_skill(session_id, scope, name).await {
-                gpui.display_error(format!("{e:#}"));
-            }
-        });
-    }
-
     // ========================================================================
     // Model & sandbox
     // ========================================================================

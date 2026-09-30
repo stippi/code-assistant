@@ -41,9 +41,6 @@ pub enum InputAreaEvent {
         /// If set, this message creates a new branch from this parent node
         branch_parent_id: Option<NodeId>,
     },
-    /// User submitted a bare `/<skill-name>` that matches a known skill.
-    /// Carries the scope token and skill name to activate.
-    SkillInvoked { scope: String, name: String },
     /// Content changed (for draft saving)
     ContentChanged {
         content: String,
@@ -373,28 +370,16 @@ impl InputArea {
         if !action.secondary {
             let current_text = self.text_input.read(cx).value().to_string();
 
-            // Slash-command handling: classify the input against the skill
-            // catalog so Enter does the intuitive thing.
+            // While the slash menu offers entries for a `/<query>`, Enter
+            // accepts the highlighted one (inserting `/<name> `); do not
+            // submit or insert a newline. With the menu dismissed, the `/...`
+            // is an ordinary message.
             let skills = Self::skills(cx);
-            match skill_completion::slash_completion_state(&current_text, &skills) {
-                skill_completion::SlashState::MenuOpen => {
-                    // Enter accepts the highlighted slash-menu entry (which
-                    // inserts `/<name>`); do not submit or insert a newline.
-                    // With the menu dismissed, the `/...` is an ordinary
-                    // message.
-                    if self.accept_slash_item(window, cx) {
-                        cx.stop_propagation();
-                        return;
-                    }
-                }
-                skill_completion::SlashState::Invoke { scope, name } => {
-                    cx.emit(InputAreaEvent::ClearDraftRequested);
-                    cx.emit(InputAreaEvent::SkillInvoked { scope, name });
-                    self.clear(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                skill_completion::SlashState::None => {}
+            if skill_completion::enter_accepts_menu_item(&current_text, &skills)
+                && self.accept_slash_item(window, cx)
+            {
+                cx.stop_propagation();
+                return;
             }
 
             // Don't submit empty messages
@@ -1143,7 +1128,6 @@ mod tests {
         SkillCatalogEntry {
             name: name.to_string(),
             description: "desc".to_string(),
-            scope_token: "proj".to_string(),
             scope_label: "project".to_string(),
         }
     }
@@ -1233,12 +1217,49 @@ mod tests {
         assert_eq!(menu(&area, cx).map(|m| m.1), Some(1));
 
         enter(&area, cx);
-        assert_eq!(text(&area, cx), "/pdf-extraction");
-        // The accepted name is a complete skill: the menu still lists it, and
-        // the next Enter invokes it (see `slash_completion_state`).
-        assert_eq!(menu(&area, cx), Some((vec!["pdf-extraction".into()], 0)));
+        // The accepted skill waits for the request to go with it.
+        assert_eq!(text(&area, cx), "/pdf-extraction ");
+        assert_eq!(menu(&area, cx), None);
         let caret = area.read_with(cx, |area, cx| area.text_input.read(cx).cursor());
-        assert_eq!(caret, "/pdf-extraction".len(), "caret after the insertion");
+        assert_eq!(caret, "/pdf-extraction ".len(), "caret after the insertion");
+    }
+
+    /// Records the content of every submitted message.
+    fn submissions(
+        area: &Entity<InputArea>,
+        cx: &mut VisualTestContext,
+    ) -> std::rc::Rc<std::cell::RefCell<Vec<String>>> {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = log.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(area, move |_, event: &InputAreaEvent, _| {
+                if let InputAreaEvent::MessageSubmitted { content, .. } = event {
+                    sink.borrow_mut().push(content.clone());
+                }
+            })
+            .detach();
+        });
+        log
+    }
+
+    #[gpui_kit::test]
+    fn skill_with_a_request_is_submitted_as_typed(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        let submitted = submissions(&area, cx);
+        type_text(&area, cx, "/review focus on auth");
+        enter(&area, cx);
+        assert_eq!(*submitted.borrow(), ["/review focus on auth"]);
+        assert_eq!(text(&area, cx), "");
+    }
+
+    #[gpui_kit::test]
+    fn complete_skill_name_is_submitted_not_completed(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        let submitted = submissions(&area, cx);
+        type_text(&area, cx, "/review");
+        assert!(menu(&area, cx).is_some());
+        enter(&area, cx);
+        assert_eq!(*submitted.borrow(), ["/review"]);
     }
 
     #[gpui_kit::test]

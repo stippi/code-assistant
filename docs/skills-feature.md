@@ -404,9 +404,17 @@ Two complementary mechanisms:
   translated into a synthetic `read_skill` call **before** the LLM is
   invoked, so the skill body is present from the very first turn that uses
   it. Active skills are visually marked in the popover.
-- **Slash command (optional).** `/skill <name>` typed at the start of a
-  message activates that skill (same translation step). Convenient when the
-  user knows the name and doesn't want to navigate the popover.
+- **Slash trigger (implemented).** A message starting with
+  `/<skill-name> <request>` invokes that skill for the request. The message
+  is sent as typed; `SessionService` (and the ACP prompt handler) resolves
+  the trigger against the session's catalog and appends the skill body to the
+  same user message as a `<skill>…</skill>` text block
+  (`code_assistant_core::skills::trigger`), and records the skill as active.
+  Transcripts, the edit context and pending-message summaries hide that
+  block, so the user sees what they typed. The UIs only help compose the
+  trigger: the slash menus insert `/<skill-name> ` ready for the request, the
+  terminal's `/skill <name> <request>` is rewritten to the trigger, and ACP
+  advertises skills as commands with free-text input.
 
 Both paths funnel through the same activation entry point as the model-side
 `read_skill` tool, so session state stays consistent.

@@ -16,13 +16,11 @@ pub mod invoke;
 pub mod loader;
 pub mod manifest;
 pub mod render;
+pub mod trigger;
 
 pub use bundled::install_system_skills;
 pub use config::{SkillsConfig, skills_config_path};
-pub use invoke::{
-    MAX_BODY_LEN, SkillPayload, load_skill_payload, render_skill_body_with_header,
-    render_skill_invocation_message,
-};
+pub use invoke::{MAX_BODY_LEN, SkillPayload, load_skill_payload, render_skill_body_with_header};
 pub use loader::{
     ScopeSkills, Skill, SkillScope, discover_all_skills, discover_all_skills_filtered,
     discover_config_and_system_skills, discover_scope_skills, discover_scope_skills_filtered,
@@ -30,3 +28,7 @@ pub use loader::{
 };
 pub use manifest::{SkillManifest, parse_skill_content};
 pub use render::render_skills_section;
+pub use trigger::{
+    is_skill_injection, is_skill_injection_block, parse_skill_trigger, render_skill_injection,
+    resolve_skill_trigger, without_skill_injections,
+};
