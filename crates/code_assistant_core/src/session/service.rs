@@ -19,7 +19,8 @@ use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConf
 use crate::session::SessionManager;
 use crate::session::event_stream::EventStream;
 use crate::skills::{
-    SkillsConfig, discover_session_catalog, load_skill_payload, render_skill_invocation_message,
+    SkillsConfig, discover_session_catalog, load_skill_payload, render_skill_injection,
+    render_skill_invocation_message, resolve_skill_trigger, without_skill_injections,
 };
 use crate::types::{PlanState, Project};
 use crate::ui::UiEvent;
@@ -788,7 +789,8 @@ impl SessionService {
         attachments: Vec<DraftAttachment>,
     ) -> Result<Option<String>> {
         self.call_session(session_id.clone(), move |ctx| async move {
-            let content_blocks = content_blocks_from(&message, &attachments);
+            let content_blocks =
+                user_message_blocks(&ctx, &session_id, &message, &attachments).await?;
             let mut manager = ctx.manager.lock().await;
             manager.queue_structured_user_message(&session_id, content_blocks)?;
             manager.get_pending_message(&session_id)
@@ -1046,7 +1048,8 @@ impl SessionService {
                 .get(&node_id)
                 .ok_or_else(|| anyhow!("Message node {node_id} not found"))?;
 
-            let content = match &node.message.content {
+            let message = without_skill_injections(&node.message);
+            let content = match &message.content {
                 llm::MessageContent::Text(text) => text.clone(),
                 llm::MessageContent::Structured(blocks) => blocks
                     .iter()
@@ -1631,6 +1634,42 @@ mod discover_tests {
     }
 }
 
+/// The content blocks of a user message: the typed text and attachments, plus
+/// the skill's instructions when the message starts with `/<skill-name>` (see
+/// [`crate::skills::trigger`]). Invoking a skill records it as active so
+/// compaction can remind the model if the injected body is summarised away.
+async fn user_message_blocks(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    message: &str,
+    attachments: &[DraftAttachment],
+) -> Result<Vec<llm::ContentBlock>> {
+    let mut blocks = content_blocks_from(message, attachments);
+    let project_name = {
+        let mut manager = ctx.manager.lock().await;
+        manager.ensure_session_loaded(session_id)?;
+        manager
+            .get_session(session_id)
+            .map(|s| s.session.config.initial_project.clone())
+            .ok_or_else(|| anyhow!("Session {session_id} not found"))?
+    };
+    let pm = (ctx.runtime.project_manager_factory)();
+    let Some(payload) =
+        resolve_skill_trigger(pm.as_ref(), &project_name, &SkillsConfig::load(), message)
+    else {
+        return Ok(blocks);
+    };
+    let payload = payload.context("Failed to load the invoked skill")?;
+    blocks.push(llm::ContentBlock::new_text(render_skill_injection(
+        &payload,
+    )));
+    let mut manager = ctx.manager.lock().await;
+    if let Err(e) = manager.activate_session_skill(session_id, &payload.name) {
+        warn!("Failed to persist active_skills for {session_id}: {e}");
+    }
+    Ok(blocks)
+}
+
 async fn send_user_message_impl(
     ctx: &ServiceCtx,
     session_id: &str,
@@ -1648,7 +1687,7 @@ async fn send_user_message_impl(
         branch_parent_id
     );
 
-    let content_blocks = content_blocks_from(message, attachments);
+    let content_blocks = user_message_blocks(ctx, session_id, message, attachments).await?;
 
     // First, add the user message to the session and get the new node_id.
     let (new_node_id, branch_info_updates) = {
@@ -1732,7 +1771,7 @@ async fn send_or_queue_user_message_impl(
     };
 
     if running {
-        let content_blocks = content_blocks_from(message, attachments);
+        let content_blocks = user_message_blocks(ctx, session_id, message, attachments).await?;
         let mut manager = ctx.manager.lock().await;
         manager.queue_structured_user_message(session_id, content_blocks)?;
         if let Some(summary) = manager.get_pending_message(session_id)? {
@@ -2956,5 +2995,244 @@ mod tests {
                 break;
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Explicit skill invocation: `/<skill-name> <request>`
+    // ------------------------------------------------------------------
+
+    /// A service whose sessions live in project `proj` at `project_root`,
+    /// which defines the skill `demo`.
+    fn test_service_with_skill(
+        root: &std::path::Path,
+        project_root: &std::path::Path,
+        factory: LlmClientFactory,
+    ) -> (SessionService, Arc<Mutex<SessionManager>>) {
+        let skill_dir = project_root.join(".agents/skills/demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: Demo skill.\n---\nFollow the demo steps.",
+        )
+        .unwrap();
+        let events = EventStream::new();
+        let persistence = FileSessionPersistence::new_with_root_dir(root.to_path_buf());
+        let manager = Arc::new(Mutex::new(SessionManager::new(
+            persistence,
+            SessionConfig::default(),
+            "test-model".to_string(),
+            crate::tools::test_registry(),
+            events.clone(),
+        )));
+        let project_root = project_root.to_path_buf();
+        let runtime = Arc::new(AgentRuntimeOptions {
+            record_path: None,
+            playback_path: None,
+            fast_playback: false,
+            command_executor_factory: Arc::new(|_| {
+                Box::new(crate::mocks::create_command_executor_mock())
+            }),
+            project_manager_factory: Arc::new(move || {
+                let explorer = crate::mocks::MockExplorer::new(Default::default(), None)
+                    .with_root(project_root.clone());
+                Box::new(
+                    crate::mocks::MockProjectManager::default().with_project_path(
+                        "proj",
+                        project_root.clone(),
+                        Box::new(explorer),
+                    ),
+                )
+            }),
+            llm_client_factory: Some(factory),
+        });
+        let (service, worker) = SessionService::new(manager.clone(), runtime, events);
+        tokio::spawn(worker);
+        (service, manager)
+    }
+
+    async fn create_proj_session(service: &SessionService) -> String {
+        let mut config = service.session_config_template().await.unwrap();
+        config.initial_project = "proj".to_string();
+        service
+            .create_session_with_config(None, config, None)
+            .await
+            .unwrap()
+    }
+
+    /// The texts of the first user message on the session's active path.
+    async fn first_user_texts(manager: &Arc<Mutex<SessionManager>>, id: &str) -> Vec<String> {
+        let manager = manager.lock().await;
+        let session = &manager.get_session(id).unwrap().session;
+        let node = session
+            .active_path
+            .iter()
+            .map(|node_id| &session.message_nodes[node_id])
+            .find(|node| node.message.role == llm::MessageRole::User)
+            .expect("a user message");
+        match &node.message.content {
+            llm::MessageContent::Text(text) => vec![text.clone()],
+            llm::MessageContent::Structured(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    llm::ContentBlock::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skill_trigger_with_request_injects_the_skill_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (service, manager) =
+            test_service_with_skill(tmp.path(), project.path(), scripted_turn("done"));
+        let id = create_proj_session(&service).await;
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(id.clone(), "/demo tidy up foo.rs".into(), vec![], None)
+            .await
+            .unwrap();
+
+        // The transcript shows what the user typed, not the skill body.
+        loop {
+            let event = subscription.recv().await.unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(UiEvent::DisplayUserInput {
+                content,
+                ..
+            }) = event.payload
+            {
+                assert_eq!(content, "/demo tidy up foo.rs");
+                break;
+            }
+        }
+
+        // The model gets the request plus the skill in the same user message.
+        let texts = first_user_texts(&manager, &id).await;
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert_eq!(texts[0], "/demo tidy up foo.rs");
+        assert!(crate::skills::is_skill_injection(&texts[1]));
+        assert!(texts[1].contains("Follow the demo steps."));
+
+        let active = manager
+            .lock()
+            .await
+            .get_session(&id)
+            .unwrap()
+            .session
+            .active_skills
+            .clone();
+        assert_eq!(active, vec!["demo".to_string()]);
+        service.terminate_agent(id).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_slash_token_is_sent_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (service, manager) =
+            test_service_with_skill(tmp.path(), project.path(), scripted_turn("done"));
+        let id = create_proj_session(&service).await;
+
+        service
+            .send_user_message(id.clone(), "/nope tidy up".into(), vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(first_user_texts(&manager, &id).await, ["/nope tidy up"]);
+        service.terminate_agent(id).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_skill_trigger_injects_but_shows_only_the_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_skill(
+            tmp.path(),
+            project.path(),
+            PendingLLMProvider::default().into_factory(),
+        );
+        let id = create_proj_session(&service).await;
+        service
+            .send_user_message(id.clone(), "first".into(), vec![], None)
+            .await
+            .unwrap();
+
+        let summary = service
+            .queue_user_message(id.clone(), "/demo then this".into(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(summary.as_deref(), Some("/demo then this"));
+
+        let pending = {
+            let manager = manager.lock().await;
+            let instance = manager.get_session(&id).unwrap();
+            instance.pending_message.lock().unwrap().clone().unwrap()
+        };
+        assert!(pending.iter().any(|block| matches!(
+            block,
+            llm::ContentBlock::Text { text, .. } if crate::skills::is_skill_injection(text)
+        )));
+
+        // Taking the message back for editing yields the typed text only.
+        let taken = service.take_pending_message(id.clone()).await.unwrap();
+        assert_eq!(taken.as_deref(), Some("/demo then this"));
+        service.request_stop(id.clone()).await.unwrap();
+        service.terminate_agent(id).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editing_a_skill_message_restores_the_typed_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (service, manager) =
+            test_service_with_skill(tmp.path(), project.path(), scripted_turn("done"));
+        let id = create_proj_session(&service).await;
+        service
+            .send_user_message(id.clone(), "/demo tidy up foo.rs".into(), vec![], None)
+            .await
+            .unwrap();
+
+        let node_id = {
+            let manager = manager.lock().await;
+            let session = &manager.get_session(&id).unwrap().session;
+            *session
+                .active_path
+                .iter()
+                .find(|n| session.message_nodes[n].message.role == llm::MessageRole::User)
+                .unwrap()
+        };
+        let edit = service
+            .start_message_edit(id.clone(), node_id)
+            .await
+            .unwrap();
+        assert_eq!(edit.content, "/demo tidy up foo.rs");
+
+        // The transcript up to (excluding) the edited node is unaffected; the
+        // snapshot of the whole session shows the typed text only.
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        let user_texts: Vec<String> = snapshot
+            .messages
+            .iter()
+            .filter(|m| m.role == crate::ui::ui_events::MessageRole::User)
+            .flat_map(|m| m.fragments.iter())
+            .filter_map(|f| match f {
+                crate::ui::DisplayFragment::PlainText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            user_texts
+                .iter()
+                .all(|t| !t.contains("Follow the demo steps.")),
+            "{user_texts:?}"
+        );
+        assert!(
+            user_texts
+                .iter()
+                .any(|t| t.contains("/demo tidy up foo.rs"))
+        );
+        service.terminate_agent(id).await.unwrap();
     }
 }

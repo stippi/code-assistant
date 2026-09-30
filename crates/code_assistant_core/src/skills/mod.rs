@@ -16,6 +16,7 @@ pub mod invoke;
 pub mod loader;
 pub mod manifest;
 pub mod render;
+pub mod trigger;
 
 pub use bundled::install_system_skills;
 pub use config::{SkillsConfig, skills_config_path};
@@ -30,3 +31,7 @@ pub use loader::{
 };
 pub use manifest::{SkillManifest, parse_skill_content};
 pub use render::render_skills_section;
+pub use trigger::{
+    is_skill_injection, is_skill_injection_block, parse_skill_trigger, render_skill_injection,
+    resolve_skill_trigger, without_skill_injections,
+};

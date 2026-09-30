@@ -2014,9 +2014,7 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let mut pending = session_instance.pending_message.lock().unwrap();
-        Ok(pending
-            .take()
-            .map(|blocks| crate::utils::content::text_summary_from_blocks(&blocks)))
+        Ok(pending.take().map(|blocks| pending_summary(&blocks)))
     }
 
     /// Get current pending message text summary without clearing it
@@ -2027,10 +2025,19 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let pending = session_instance.pending_message.lock().unwrap();
-        Ok(pending
-            .as_ref()
-            .map(|blocks| crate::utils::content::text_summary_from_blocks(blocks)))
+        Ok(pending.as_ref().map(|blocks| pending_summary(blocks)))
     }
+}
+
+/// Text summary of a pending message as the user typed it: injected skill
+/// instructions are left out.
+fn pending_summary(blocks: &[ContentBlock]) -> String {
+    let typed: Vec<ContentBlock> = blocks
+        .iter()
+        .filter(|block| !crate::skills::is_skill_injection_block(block))
+        .cloned()
+        .collect();
+    crate::utils::content::text_summary_from_blocks(&typed)
 }
 
 #[cfg(test)]
