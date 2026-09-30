@@ -226,13 +226,15 @@ pub(crate) struct NewContextRun {
 
 impl NewContextRun {
     /// Drive the run: get the prompt and the target concurrently, then open
-    /// the new context here and continue from it, or hand the prompt over
-    /// for a new session. A generated prompt is also recorded here as the
-    /// answer to the `/hand-off` message.
+    /// the new context here and continue from it (or from a message queued
+    /// meanwhile), or hand the prompt over for a new session. A generated
+    /// prompt is also recorded here as the answer to the `/hand-off`
+    /// message.
     pub(crate) async fn run(
         self,
         agent: &mut Agent,
         target: impl Future<Output = Result<NewContextTarget>>,
+        pending: &Mutex<Option<Vec<llm::ContentBlock>>>,
     ) -> Result<()> {
         let generated = self.prompt.is_none();
         let (prompt, target) = match self.prompt {
@@ -243,7 +245,7 @@ impl NewContextRun {
             NewContextTarget::SameSession => {
                 let opens_with_prompt = !prompt.trim().is_empty();
                 agent.append_new_context(prompt)?;
-                if opens_with_prompt {
+                if opens_with_prompt || pending.lock().unwrap().is_some() {
                     agent.run_single_iteration().await?;
                 }
             }

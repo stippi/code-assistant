@@ -328,6 +328,40 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_message_queued_during_the_question_opens_an_empty_new_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(id.clone(), "/new".into(), vec![], None)
+            .await
+            .unwrap();
+        let request_id = next(&mut subscription, &id, |event| match event {
+            UiEvent::RequestNewContextTarget { request } => Some(request.request_id),
+            _ => None,
+        })
+        .await;
+        service
+            .queue_user_message(id.clone(), "Write the tests".into(), vec![])
+            .await
+            .unwrap();
+        service
+            .respond_new_context_target(id.clone(), request_id, NewContextTarget::SameSession)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        let messages = path(tmp.path(), &id);
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert!(messages[0].is_new_context);
+        assert_eq!(texts(&messages[1]), ["Write the tests"]);
+        assert_eq!(texts(&messages[2]), ["on it"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn new_in_a_new_session_starts_it_with_the_prompt() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&["on it"]);

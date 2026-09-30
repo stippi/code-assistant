@@ -3,7 +3,8 @@
 When the conversation nears the model's context window, the agent asks the
 model for a hand-off and continues in a fresh context that starts from it.
 The full history stays in the session and the UI; only the prompt sent to
-the LLM is trimmed.
+the LLM is trimmed. The user-initiated siblings `/new` and `/hand-off` are
+described in `docs/hand-off.md`.
 
 ## Trigger
 

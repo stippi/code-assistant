@@ -1,6 +1,6 @@
 # New context and hand-off
 
-Status: design accepted, implementation in progress (2026-09-30).
+Status: implemented (2026-09-30).
 
 Two slash commands end the current model context on purpose:
 
@@ -32,12 +32,14 @@ The user can read, edit and send it; no second model request is needed.
 
 ## Target choice
 
-After such a message the core asks inline where to continue: *Continue in
-this session* / *Start a new session*. Transport mirrors permission
-prompts: `UiEvent::RequestNewContextTarget` +
-`SessionService::respond_new_context_target`, open requests included in
-snapshots, Stop cancels the command. For `/hand-off` the question runs
-concurrently with the generation, so the user does not wait twice.
+Both run as a new-context run (`RunTask::NewContext`,
+`session/new_context.rs`), so the session shows as running and Stop
+cancels. The run asks inline where to continue: *This session* / *New
+session*. Transport mirrors permission prompts:
+`UiEvent::RequestNewContextTarget` +
+`SessionService::respond_new_context_target`, the open request is part of
+snapshots, Stop drops it. For `/hand-off` the question runs concurrently
+with the generation, so the user does not wait twice.
 
 ## `/new [prompt]`
 
@@ -70,8 +72,9 @@ concurrently with the generation, so the user does not wait twice.
 4. **New session**: the generated prompt is stored in the old session as the
    assistant's answer to the `/hand-off` message (its history stays
    well-formed and shows what was handed over); then as `/new <generated
-   prompt>` in a new session. The run reaches the service through a
-   `NewContextSink` (implemented by `SessionService`, like `WakeupSink`).
+   prompt>` in a new session. The run hands the prompt back over a oneshot;
+   a task holding the service creates the session once the run is done
+   (`session/service/new_context.rs`).
 
 The hand-off prompt asks the model to write a self-contained prompt for a
 fresh instance, one that reads as the opening message of a new session, and
@@ -95,12 +98,15 @@ without prompt) is left out of the prompt.
 - **User activity**: frontends report typing in a session's composer via
   `SessionService::note_user_activity(session_id)` (debounced); it pushes
   the deadline back. Sending a message disarms it.
-- **Firing**: if the session is still idle and nothing was prepared for its
-  current head, the core sends a side request: history + one appended user
-  message holding the idle prompt ("the user is away; describe the most
-  obvious next step for a follow-up session as a hand-off prompt"). Nothing
-  is written to the transcript and no run is reserved; a message arriving
-  meanwhile starts a normal run and the result is dropped.
+- **Firing**: if the session is still idle, its last request's input
+  reached the threshold, and nothing was prepared for its current last
+  message (`SessionManager::claim_handoff_preparation`), a
+  `RunTask::PrepareHandoff` run sends history + one appended user message
+  holding the idle request ("the user is away; hand off the most obvious
+  next step"). It holds the run like any other, so the session shows as
+  running meanwhile, but nothing is written to the transcript and the
+  timer is not re-armed. A message queued meanwhile is answered instead
+  and the prompt is dropped.
 - **Result**: published as `UiEvent::HandoffPrepared { session_id, prompt }`.
   A frontend puts `/new <prompt>` into that session's composer if it is
   empty; a non-empty draft is never overwritten.
@@ -108,8 +114,9 @@ without prompt) is left out of the prompt.
   the core configuration so GPUI and the terminal share it; GPUI edits it in
   Settings → General.
 
-The scheduler is one tokio task with a deadline per session, like the
-`WakeupScheduler`, so several frontends on one session never prepare twice.
+The timers live in the core (`session/idle_handoff.rs`, installed by the
+wiring layers like the wakeup scheduler), so several frontends on one
+session never prepare twice.
 
 ## Frontends
 
@@ -118,18 +125,15 @@ The scheduler is one tokio task with a deadline per session, like the
   fill an empty composer or draft on `HandoffPrepared`; report composer
   activity; threshold in Settings → General.
 - **Terminal**: command-list entries; lines starting with the commands are
-  sent as messages (the `CompactContext` command goes away); target choice
-  as a modal prompt like the permission prompt; divider; switch; fill the
-  current session's empty composer; activity on keystrokes.
+  sent as messages; target choice as a modal prompt like the permission
+  prompt (Esc stops the command); divider; switch; fill the current
+  session's empty composer; activity on keystrokes.
 - **ACP**: out of scope (ACP bypasses `SessionService`); follow-up.
 
-## Implementation steps
+## Known gaps
 
-1. `agent_core`: `is_new_context` boundary in the prompt projection,
-   `generate_handoff`, appending a boundary.
-2. `code_assistant_core`: command recognition, target choice, `/new` in both
-   targets, `SessionHandedOff`; remove the `compact_context` stub.
-3. `/hand-off` run: hidden prompt block, generation, both targets.
-4. Prepared hand-off: idle scheduler, activity reporting, setting.
-5. GPUI.
-6. Terminal.
+- ACP bypasses `SessionService`, so the commands are not recognized there.
+- The terminal only fills the current session's composer; a hand-off
+  prepared for a background session is not kept for later.
+- A message queued while the target question is open and then answered
+  with *New session* stays pending in the old session.

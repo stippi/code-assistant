@@ -1333,7 +1333,7 @@ impl SessionManager {
                                 &events_clone,
                                 &pending_target,
                             );
-                            run.run(&mut agent, target).await
+                            run.run(&mut agent, target, &pending_message_for_task).await
                         }
                         RunTask::PrepareHandoff => {
                             let prepared = crate::session::new_context::prepare_handoff(
