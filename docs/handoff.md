@@ -79,6 +79,10 @@ with the generation, so the user does not wait twice.
    prompt>` in a new session. The run hands the prompt back over a oneshot;
    a task holding the service creates the session once the run is done
    (`session/service/new_context.rs`).
+5. **Stopped or failed** before the new context opened: the `/handoff`
+   message is removed from the history again (an edit it replaced becomes
+   the active branch again) and frontends get the transcript without it.
+   The target question settles on every exit, so prompts are dismissed.
 
 The handoff prompt asks the model to write a self-contained prompt for a
 fresh instance, one that reads as the opening message of a new session, and
@@ -92,30 +96,37 @@ prompt at the last summary keeps working) and gets a new `is_new_context`
 flag (`#[serde(default)]`, so existing sessions load unchanged). Its content
 is the prompt. `prompt_messages` sends it as a plain user message — no
 `<handoff>` wrapper, no earlier user messages. An empty boundary (`/new`
-without prompt) is left out of the prompt.
+without prompt) is left out of the prompt. User messages directly after
+the opening message of a context (this prompt, or a compaction handoff),
+such as one queued while it was written, are folded into it in the request,
+so it never starts with consecutive user messages.
 
 ## Prepared handoff (idle)
 
-- **Arming**: when a run ends with the session idle and the last request's
-  input (input + cache write + cache read) exceeds the threshold, the core
-  arms a per-session deadline of 2 minutes.
-- **User activity**: frontends report typing in a session's composer via
-  `SessionService::note_user_activity(session_id)` (debounced); it pushes
-  the deadline back. Sending a message disarms it.
-- **Firing**: if the session is still idle, its last request's input
-  reached the threshold, and nothing was prepared for its current last
-  message (`SessionManager::claim_handoff_preparation`), a
+- **Arming**: when a run ends in which the agent answered in the session,
+  the core arms a per-session deadline of 2 minutes. A `/new` that only
+  opened an empty context or moved to a new session does not arm it.
+- **User activity**: frontends report typing in the viewed session via
+  `SessionService::note_user_activity(session_id)`, throttled per session
+  (`ActivityThrottle`); it pushes the deadline back. Sessions in the
+  background count as inactive.
+- **Firing**: the session qualifies when it is idle (not errored), its
+  current context (after the last compaction or new context) ends with the
+  agent's answer, the request for that answer had at least the threshold
+  of input (input + cache write + cache read), and nothing was prepared
+  for this state yet (`SessionManager::claim_handoff_preparation`). Then a
   `RunTask::PrepareHandoff` run sends history + one appended user message
   holding the idle request. It tells the agent that this is an automatic
   handoff because the user is inactive and the prompt cache expires soon,
   that the system cannot tell whether a handoff makes sense right now, and
-  that it may decline by replying exactly `[cancel handoff]` (e.g. while
-  it waits for a decision only the user can make). It holds the run like
+  that it may decline by replying `[cancel handoff]` (also recognized with
+  backticks, quotes, a period or without brackets). It holds the run like
   any other, so the session shows as running meanwhile, but nothing is
-  written to the transcript and the timer is not re-armed. A declined
-  handoff offers nothing and is not retried for the same state; a message
-  queued meanwhile is answered instead and the prompt is dropped.
-- **Result**: published as `UiEvent::HandoffPrepared { session_id, prompt }`.
+  written to the transcript. A declined or failed preparation offers
+  nothing, is not retried for the same state and does not mark the session
+  errored; a message queued meanwhile is answered instead (which re-arms
+  the timer) and the prompt is dropped.
+- **Result**: published as `UiEvent::HandoffPrepared { prompt }` for the session.
   A frontend puts `/new <prompt>` into that session's composer if it is
   empty; a non-empty draft is never overwritten.
 - **Setting**: the threshold (default 150 000 tokens, 0 disables) lives in
@@ -144,6 +155,7 @@ session never prepare twice.
 - `/new` cannot replace an edited message (the run would have to branch
   the tree itself and publish branch info).
 - The terminal only fills the current session's composer; a handoff
-  prepared for a background session is not kept for later.
+  prepared for a background session is not kept for later. A retracted
+  `/handoff` message stays visible in its scrollback.
 - A message queued while the target question is open and then answered
   with *New session* stays pending in the old session.

@@ -44,9 +44,9 @@ pub struct AppState {
     pub pending_permission_requests: Vec<ToolPermissionRequestData>,
     /// Skills available to the current session, cached for the `/skill` picker.
     pub skills: Vec<SkillCatalogEntry>,
-    /// A handoff prepared for the current session while it was idle, as the
-    /// composer text; the event loop puts it into a blank composer.
-    pub prepared_handoff: Option<String>,
+    /// A handoff prepared while idle, as (session id, composer text); the
+    /// event loop puts it into a blank composer of that session.
+    pub prepared_handoff: Option<(String, String)>,
     /// Slash-command popup stack. Empty stack ↔ no popup visible.
     pub popup_stack: PopupStack,
     /// Node ids of messages the transcript already shows (or knows about),

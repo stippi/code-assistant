@@ -1153,10 +1153,10 @@ impl MainScreen {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<gpui_kit::AnyElement> {
+        let session_id = self.current_session_id.clone()?;
         let request = cx
             .try_global::<Gpui>()
-            .and_then(|gpui| gpui.get_pending_new_context_target())?;
-        let session_id = self.current_session_id.clone()?;
+            .and_then(|gpui| gpui.get_pending_new_context_target(&session_id))?;
         let rid = request.request_id.clone();
 
         Some(

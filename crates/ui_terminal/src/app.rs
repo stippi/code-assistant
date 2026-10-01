@@ -362,6 +362,7 @@ impl Actions {
                 state.tool_statuses.clear();
                 state.pending_permission_requests.clear();
                 state.popup_stack.clear();
+                state.prepared_handoff = None;
                 state.update_pending_message(None);
                 state.update_activity_state(None);
                 state.reset_seen_nodes([]);
@@ -651,7 +652,8 @@ async fn event_loop(
 
                 // Offer a handoff prepared while idle, unless the user has
                 // started writing something else.
-                if let Some(text) = state.prepared_handoff.take()
+                if let Some((session_id, text)) = state.prepared_handoff.take()
+                    && state.current_session_id.as_ref() == Some(&session_id)
                     && input_manager.textarea.is_empty()
                 {
                     input_manager.textarea.insert_str(&text);

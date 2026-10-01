@@ -586,7 +586,12 @@ impl TerminalUI {
                 state.popup_stack.remove_request_popup(&request_id);
             }
             UiEvent::HandoffPrepared { prompt } => {
-                self.app_state.lock().await.prepared_handoff = Some(format!("/new {prompt}"));
+                // Only the current session's events get here.
+                let mut state = self.app_state.lock().await;
+                state.prepared_handoff = state
+                    .current_session_id
+                    .clone()
+                    .map(|session_id| (session_id, format!("/new {prompt}")));
             }
             // Handled by the event bridge, which can switch sessions.
             UiEvent::SessionHandedOff { .. } => {}

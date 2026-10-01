@@ -282,10 +282,16 @@ pub struct Gpui {
     // Stored separately from chat_sessions for the same reason as last_usage.
     current_session_total_usage: Arc<Mutex<Option<llm::Usage>>>,
 
-    // The open `/new` / `/handoff` question where the new context goes,
-    // rendered as a prompt above the input area.
-    pending_new_context_target:
-        Arc<Mutex<Option<code_assistant_core::session::new_context::NewContextTargetRequest>>>,
+    // The open `/new` / `/handoff` question where the new context goes, with
+    // the session asking it; rendered as a prompt above that session's input.
+    pending_new_context_target: Arc<
+        Mutex<
+            Option<(
+                String,
+                code_assistant_core::session::new_context::NewContextTargetRequest,
+            )>,
+        >,
+    >,
 
     // A handoff prompt prepared for the viewed session while it was idle:
     // (session id, prompt), picked up by the main screen's composer.
@@ -957,10 +963,17 @@ impl Gpui {
         self.pending_permission_requests.lock().unwrap().clone()
     }
 
+    /// The open target question of `session_id`, if any.
     pub fn get_pending_new_context_target(
         &self,
+        session_id: &str,
     ) -> Option<code_assistant_core::session::new_context::NewContextTargetRequest> {
-        self.pending_new_context_target.lock().unwrap().clone()
+        self.pending_new_context_target
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(asking, _)| asking == session_id)
+            .map(|(_, request)| request.clone())
     }
 
     /// Take the handoff prompt prepared for `session_id`, if any.

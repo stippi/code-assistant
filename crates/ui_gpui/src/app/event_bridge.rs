@@ -74,6 +74,9 @@ impl Gpui {
                     | UiEvent::UpdateChatList { .. }
                     | UiEvent::RefreshChatList
                     | UiEvent::ConfigChanged => true,
+                    // A target question kept for the session that asked it
+                    // may be settled while another one is viewed.
+                    UiEvent::NewContextTargetResolved { .. } => true,
                     // Everything else: app-scoped events pass, session-scoped
                     // events only for the viewed session.
                     _ => event.session_id.is_none() || is_current_session,
@@ -133,13 +136,17 @@ impl Gpui {
                     .retain(|r| &r.request_id != request_id);
             }
             UiEvent::RequestNewContextTarget { request } => {
-                *self.pending_new_context_target.lock().unwrap() = Some(request.clone());
+                // Only the viewed session's events get here.
+                if let Some(session_id) = self.get_current_session_id() {
+                    *self.pending_new_context_target.lock().unwrap() =
+                        Some((session_id, request.clone()));
+                }
             }
             UiEvent::NewContextTargetResolved { request_id } => {
                 let mut pending = self.pending_new_context_target.lock().unwrap();
                 if pending
                     .as_ref()
-                    .is_some_and(|request| &request.request_id == request_id)
+                    .is_some_and(|(_, request)| &request.request_id == request_id)
                 {
                     *pending = None;
                 }
@@ -305,4 +312,69 @@ impl Gpui {
 /// The composer text offering a prepared handoff.
 fn handoff_draft(prompt: &str) -> String {
     format!("/new {prompt}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_assistant_core::session::new_context::NewContextTargetRequest;
+
+    fn viewing(session_id: &str) -> Gpui {
+        let gpui = Gpui::new();
+        *gpui.current_session_id.lock().unwrap() = Some(session_id.to_string());
+        gpui
+    }
+
+    fn ui_event(session_id: &str, event: UiEvent) -> SessionEvent {
+        SessionEvent {
+            session_id: Some(session_id.to_string()),
+            payload: EventPayload::Ui(event),
+        }
+    }
+
+    fn request(id: &str) -> NewContextTargetRequest {
+        NewContextTargetRequest {
+            request_id: id.to_string(),
+            options: Vec::new(),
+        }
+    }
+
+    /// The bridge runs on GPUI's executor, outside any tokio runtime.
+    #[test]
+    fn a_handoff_prepared_in_the_background_becomes_its_draft() {
+        let gpui = viewing("a");
+
+        futures::executor::block_on(gpui.handle_stream_event(ui_event(
+            "b",
+            UiEvent::HandoffPrepared {
+                prompt: "Next step".into(),
+            },
+        )));
+
+        let (draft, _, _) = gpui.load_draft_for_session("b").expect("a draft");
+        assert_eq!(draft, "/new Next step");
+    }
+
+    #[test]
+    fn a_target_question_shows_only_in_the_asking_session() {
+        let gpui = viewing("a");
+        futures::executor::block_on(gpui.handle_stream_event(ui_event(
+            "a",
+            UiEvent::RequestNewContextTarget {
+                request: request("q1"),
+            },
+        )));
+        assert!(gpui.get_pending_new_context_target("a").is_some());
+
+        // Viewing another session: not shown there, but still settled.
+        *gpui.current_session_id.lock().unwrap() = Some("b".to_string());
+        assert!(gpui.get_pending_new_context_target("b").is_none());
+        futures::executor::block_on(gpui.handle_stream_event(ui_event(
+            "a",
+            UiEvent::NewContextTargetResolved {
+                request_id: "q1".into(),
+            },
+        )));
+        assert!(gpui.get_pending_new_context_target("a").is_none());
+    }
 }
