@@ -120,12 +120,16 @@ impl SessionService {
 
     /// Create a session with `from`'s settings whose first user message is
     /// `prompt`, start the agent on it, and tell `from`'s viewers to switch.
+    /// Without a prompt the session stays empty, like after `/clear`.
     async fn continue_in_new_session(&self, from: &str, prompt: String) -> Result<()> {
         let to = self.start_fresh_session(from.to_string()).await?;
         let from = from.to_string();
         self.call_session(to.clone(), move |ctx| async move {
-            let blocks = content_blocks_from(&prompt, &[]);
-            append_and_run(&ctx, &to, &prompt, blocks, &[], None, RunOptions::default()).await?;
+            if !prompt.trim().is_empty() {
+                let blocks = content_blocks_from(&prompt, &[]);
+                append_and_run(&ctx, &to, &prompt, blocks, &[], None, RunOptions::default())
+                    .await?;
+            }
             ctx.notify_session(&from, UiEvent::SessionHandedOff { to });
             Ok(())
         })
@@ -380,6 +384,36 @@ mod tests {
         assert!(messages[0].is_new_context);
         assert_eq!(texts(&messages[1]), ["Write the tests"]);
         assert_eq!(texts(&messages[2]), ["on it"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_without_prompt_in_a_new_session_only_creates_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&[]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(id.clone(), "/new".into(), vec![], None)
+            .await
+            .unwrap();
+        answer_target(
+            &service,
+            &mut subscription,
+            &id,
+            NewContextTarget::NewSession,
+        )
+        .await;
+        let to = next(&mut subscription, &id, |event| match event {
+            UiEvent::SessionHandedOff { to } => Some(to),
+            _ => None,
+        })
+        .await;
+
+        assert!(path(tmp.path(), &to).is_empty(), "like /clear");
+        assert!(!service.is_session_busy(to).await.unwrap());
+        assert!(llm.get_requests().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
