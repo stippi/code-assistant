@@ -256,10 +256,11 @@ impl BrowserSession {
         self.ephemeral
     }
 
-    /// Navigate to a URL and wait for the load to settle.
+    /// Navigate to a URL and wait for its `load` event. (`goto` already waits;
+    /// a further `wait_for_navigation` has no timeout and could hang on a page
+    /// that starts a script redirect right after loading.)
     pub async fn navigate(&self, url: &str) -> Result<()> {
         self.page.goto(url).await?;
-        self.page.wait_for_navigation().await?;
         Ok(())
     }
 
