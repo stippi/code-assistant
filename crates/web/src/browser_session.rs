@@ -15,15 +15,20 @@ use crate::browser::LaunchedBrowser;
 use anyhow::Result;
 use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
 use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
-use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::cdp::browser_protocol::page::{
+    CaptureScreenshotFormat, DialogType, EventJavascriptDialogOpening, HandleJavaScriptDialogParams,
+};
 use chromiumoxide::element::Element;
 use chromiumoxide::keys::get_key_definition;
 use chromiumoxide::layout::Point;
 use chromiumoxide::page::{Page, ScreenshotParams};
+use futures::StreamExt;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
 
 /// JS that discovers the actionable elements on the page and returns them as an
 /// array of `{selector, role, label}`. Best-effort: it prefers `#id` selectors,
@@ -151,6 +156,16 @@ pub struct InteractiveElement {
     pub label: String,
 }
 
+/// A JavaScript dialog (`alert` / `confirm` / `prompt` / `beforeunload`) the
+/// session answered on its own, reported so the model knows it happened.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HandledDialog {
+    pub kind: String,
+    pub message: String,
+    /// Whether the dialog was accepted (OK) or dismissed (Cancel).
+    pub accepted: bool,
+}
+
 /// What the model sees after acting: where it is and what's on the page.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PageObservation {
@@ -170,6 +185,9 @@ pub struct PageObservation {
     pub viewport_width: f64,
     #[serde(default)]
     pub viewport_height: f64,
+    /// Dialogs answered since the previous observation.
+    #[serde(default)]
+    pub dialogs: Vec<HandledDialog>,
 }
 
 /// One live page on a launched browser, driven across many tool calls.
@@ -187,6 +205,12 @@ pub struct BrowserSession {
     /// `browser_navigate` on the default profile can't leak a Chrome process;
     /// persistent named profiles survive across turns on purpose.
     ephemeral: bool,
+    /// Dialogs answered since the last observation (drained by `observe`).
+    dialogs: Arc<Mutex<Vec<HandledDialog>>>,
+    /// Whether `confirm`/`prompt` dialogs are accepted rather than dismissed.
+    accept_dialogs: Arc<AtomicBool>,
+    /// Answers dialogs as they open (aborted on drop).
+    dialog_task: JoinHandle<()>,
 }
 
 impl BrowserSession {
@@ -198,12 +222,27 @@ impl BrowserSession {
         let ephemeral = matches!(config.profile, crate::browser::BrowserProfile::Ephemeral);
         let launched = LaunchedBrowser::launch(config).await?;
         let page = launched.browser.new_page("about:blank").await?;
+        let dialogs = Arc::new(Mutex::new(Vec::new()));
+        let accept_dialogs = Arc::new(AtomicBool::new(false));
+        let dialog_task =
+            spawn_dialog_handler(&page, dialogs.clone(), accept_dialogs.clone()).await?;
         Ok(Self {
             launched: AsyncMutex::new(launched),
             page,
             label: label.into(),
             ephemeral,
+            dialogs,
+            accept_dialogs,
+            dialog_task,
         })
+    }
+
+    /// Accept (`true`) or dismiss (`false`, the default) `confirm` and `prompt`
+    /// dialogs from now on. `alert` and `beforeunload` are always accepted: an
+    /// alert has nothing to decide, and a `beforeunload` prompt only appears
+    /// when leaving the page was already requested.
+    pub fn set_accept_dialogs(&self, accept: bool) {
+        self.accept_dialogs.store(accept, Ordering::Relaxed);
     }
 
     pub fn label(&self) -> &str {
@@ -320,6 +359,7 @@ impl BrowserSession {
             Err(_) => Vec::new(),
         };
         let (viewport_width, viewport_height) = self.viewport_size().await.unwrap_or((0.0, 0.0));
+        let dialogs = std::mem::take(&mut *self.dialogs.lock().unwrap());
         Ok(PageObservation {
             url,
             title,
@@ -327,6 +367,7 @@ impl BrowserSession {
             elements,
             viewport_width,
             viewport_height,
+            dialogs,
         })
     }
 
@@ -695,6 +736,49 @@ impl BrowserSession {
     pub async fn close(&self) {
         self.launched.lock().await.close().await;
     }
+}
+
+impl Drop for BrowserSession {
+    fn drop(&mut self) {
+        self.dialog_task.abort();
+    }
+}
+
+/// Answer every JavaScript dialog on `page` as it opens. Chrome stalls the
+/// renderer while a dialog is open, so without this the click that raised it —
+/// and every CDP command after it — hangs until the per-command timeout, often
+/// for minutes. Each answered dialog is appended to `log`.
+async fn spawn_dialog_handler(
+    page: &Page,
+    log: Arc<Mutex<Vec<HandledDialog>>>,
+    accept_dialogs: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>> {
+    let mut events = page
+        .event_listener::<EventJavascriptDialogOpening>()
+        .await?;
+    let page = page.clone();
+    Ok(tokio::spawn(async move {
+        while let Some(event) = events.next().await {
+            let (kind, accept) = match event.r#type {
+                DialogType::Alert => ("alert", true),
+                DialogType::Beforeunload => ("beforeunload", true),
+                DialogType::Confirm => ("confirm", accept_dialogs.load(Ordering::Relaxed)),
+                DialogType::Prompt => ("prompt", accept_dialogs.load(Ordering::Relaxed)),
+            };
+            let mut params = HandleJavaScriptDialogParams::new(accept);
+            if accept {
+                params.prompt_text = event.default_prompt.clone();
+            }
+            // Record before answering: the answer unblocks the action that
+            // raised the dialog, and its follow-up observation must see it.
+            log.lock().unwrap().push(HandledDialog {
+                kind: kind.to_string(),
+                message: event.message.clone(),
+                accepted: accept,
+            });
+            let _ = page.execute(params).await;
+        }
+    }))
 }
 
 /// Raw `Network.getAllCookies` command. We bypass chromiumoxide's typed `Cookie`

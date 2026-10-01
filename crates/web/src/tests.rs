@@ -495,3 +495,92 @@ async fn test_web_fetch() {
     assert!(!page.content.is_empty());
     assert!(page.content.contains("Rust"));
 }
+
+/// A page with an `alert` button and a `confirm` button that writes the user's
+/// answer into `#out`.
+#[cfg(test)]
+async fn spawn_dialog_site() -> std::net::SocketAddr {
+    use axum::response::Html;
+    use axum::{Router, routing::get};
+
+    async fn index() -> Html<&'static str> {
+        Html(
+            "<html><head><title>Dialogs</title></head><body>\
+             <button id=\"alert\" onclick=\"alert('Hallo')\">Alert</button>\
+             <button id=\"confirm\" onclick=\"document.getElementById('out').textContent = \
+             confirm('Sicher?') ? 'yes' : 'no'\">Confirm</button>\
+             <span id=\"out\"></span></body></html>",
+        )
+    }
+
+    let app = Router::new().route("/", get(index));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// A JavaScript dialog blocks the renderer until someone answers it; left open,
+/// the click that raised it and every later CDP command hang for minutes. The
+/// session must answer dialogs itself and report them in the next observation.
+#[tokio::test]
+async fn javascript_dialogs_are_answered_and_reported() {
+    use std::time::Duration;
+
+    let addr = spawn_dialog_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+
+    // An alert is acknowledged; the click returns and the page stays usable.
+    tokio::time::timeout(Duration::from_secs(10), session.click("#alert"))
+        .await
+        .expect("click raising an alert must not hang")
+        .unwrap();
+    let obs = session.observe().await.unwrap();
+    assert_eq!(obs.dialogs.len(), 1, "got: {:?}", obs.dialogs);
+    assert_eq!(obs.dialogs[0].kind, "alert");
+    assert_eq!(obs.dialogs[0].message, "Hallo");
+    assert!(obs.dialogs[0].accepted);
+
+    // Reported once: the next observation starts clean.
+    assert!(session.observe().await.unwrap().dialogs.is_empty());
+
+    // A confirm is dismissed by default — accepting could trigger an outward
+    // action the model never saw the warning for.
+    tokio::time::timeout(Duration::from_secs(10), session.click("#confirm"))
+        .await
+        .expect("click raising a confirm must not hang")
+        .unwrap();
+    let obs = session.observe().await.unwrap();
+    assert_eq!(obs.dialogs.len(), 1, "got: {:?}", obs.dialogs);
+    assert_eq!(obs.dialogs[0].kind, "confirm");
+    assert_eq!(obs.dialogs[0].message, "Sicher?");
+    assert!(!obs.dialogs[0].accepted);
+    assert_eq!(
+        session
+            .eval("document.getElementById('out').textContent")
+            .await
+            .unwrap(),
+        "no"
+    );
+
+    // Opting in accepts it.
+    session.set_accept_dialogs(true);
+    tokio::time::timeout(Duration::from_secs(10), session.click("#confirm"))
+        .await
+        .expect("click raising a confirm must not hang")
+        .unwrap();
+    let obs = session.observe().await.unwrap();
+    assert!(obs.dialogs[0].accepted);
+    assert_eq!(
+        session
+            .eval("document.getElementById('out').textContent")
+            .await
+            .unwrap(),
+        "yes"
+    );
+
+    session.close().await;
+}

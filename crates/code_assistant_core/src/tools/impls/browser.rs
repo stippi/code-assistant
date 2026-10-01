@@ -152,7 +152,11 @@ impl Render for BrowserOutput {
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(e) = &self.error {
-            return format!("Browser error: {e}");
+            let mut out = format!("Browser error: {e}");
+            if let Some(obs) = &self.observation {
+                push_dialog_notes(&mut out, obs);
+            }
+            return out;
         }
         let Some(obs) = &self.observation else {
             return "Browser action completed (no page observed).".to_string();
@@ -177,6 +181,7 @@ impl Render for BrowserOutput {
                 obs.viewport_width as i64, obs.viewport_height as i64
             ));
         }
+        push_dialog_notes(&mut out, obs);
         out.push_str("\n\n");
         out.push_str(&text);
         // List the actionable elements with their selectors, so the model can
@@ -228,6 +233,22 @@ impl Render for BrowserOutput {
 impl ToolResult for BrowserOutput {
     fn is_success(&self) -> bool {
         self.error.is_none()
+    }
+}
+
+/// Report JavaScript dialogs the session answered on its own, so the model
+/// knows a confirm was cancelled (or accepted) on its behalf.
+fn push_dialog_notes(out: &mut String, obs: &PageObservation) {
+    for dialog in &obs.dialogs {
+        let verdict = if dialog.accepted {
+            "accepted"
+        } else {
+            "dismissed"
+        };
+        out.push_str(&format!(
+            "\nNote: a {} dialog \"{}\" was {verdict}.",
+            dialog.kind, dialog.message
+        ));
     }
 }
 
@@ -517,6 +538,10 @@ pub struct BrowserActInput {
     /// through a long form whose text barely changes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_text: bool,
+    /// Accept `confirm`/`prompt` dialogs raised during this call instead of
+    /// dismissing them (the default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accept_dialogs: bool,
 }
 
 pub struct BrowserActTool;
@@ -606,6 +631,9 @@ impl Tool for BrowserActTool {
                 "read); use coordinates only for canvas/game surfaces. ",
                 "Pass \"no_text\": true to omit the page-text dump from the result (screenshot and ",
                 "element list only) to save tokens on long forms. ",
+                "JavaScript dialogs are answered automatically and reported in the result: alerts ",
+                "are acknowledged, confirm/prompt dialogs are dismissed (Cancel) unless you pass ",
+                "\"accept_dialogs\": true for that call. ",
                 "Do not type passwords or 2FA codes here — use browser_login."
             )
             .into(),
@@ -631,7 +659,8 @@ impl Tool for BrowserActTool {
                         }
                     },
                     "profile": {"type": "string", "description": "Profile to act on; omit for the throwaway browser"},
-                    "no_text": {"type": "boolean", "description": "Omit the page-text dump from the result (screenshot and element list only)"}
+                    "no_text": {"type": "boolean", "description": "Omit the page-text dump from the result (screenshot and element list only)"},
+                    "accept_dialogs": {"type": "boolean", "description": "Accept (OK) confirm/prompt dialogs raised by this call instead of dismissing them"}
                 },
                 "required": ["actions"]
             }),
@@ -663,17 +692,22 @@ impl Tool for BrowserActTool {
             ));
         };
 
+        // The opt-in covers this call only, including dialogs raised while
+        // capturing its result.
+        session.set_accept_dialogs(input.accept_dialogs);
+        let mut failure = None;
         for (i, action) in input.actions.iter().enumerate() {
             if let Err(e) = Self::run_action(&session, action).await {
-                // Capture the page as it stands so the model can see where the
-                // sequence stopped, but report the failing step.
-                let mut out =
-                    BrowserOutput::capture(&profile, &session, false, !input.no_text).await;
-                out.error = Some(format!("Action {} failed: {e}", i + 1));
-                return Ok(out);
+                failure = Some(format!("Action {} failed: {e}", i + 1));
+                break;
             }
         }
-        Ok(BrowserOutput::capture(&profile, &session, false, !input.no_text).await)
+        // On failure, capture the page as it stands so the model can see where
+        // the sequence stopped, but report the failing step.
+        let mut out = BrowserOutput::capture(&profile, &session, false, !input.no_text).await;
+        session.set_accept_dialogs(false);
+        out.error = failure;
+        Ok(out)
     }
 }
 
@@ -1357,6 +1391,7 @@ mod tests {
             ],
             profile: None,
             no_text: false,
+            accept_dialogs: false,
         };
         let out = BrowserActTool.execute(&mut context, &mut act).await?;
         assert!(out.error.is_none(), "act error: {:?}", out.error);
@@ -1419,6 +1454,7 @@ mod tests {
                 }],
                 profile: None,
                 no_text: true,
+                accept_dialogs: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "fill error: {:?}", out.error);
@@ -1453,6 +1489,7 @@ mod tests {
                 }],
                 profile: None,
                 no_text: false,
+                accept_dialogs: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "clear error: {:?}", out.error);
@@ -1462,6 +1499,79 @@ mod tests {
             .await?;
         assert_eq!(value.as_str().unwrap_or_default(), "", "clear should empty");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn act_reports_dialogs_and_accepts_them_only_on_request() -> Result<()> {
+        let html = concat!(
+            "<html><head><title>Dialogs</title></head><body>",
+            "<button id=\"confirm\" onclick=\"document.getElementById('out').textContent = ",
+            "confirm('Sicher?') ? 'yes' : 'no'\">Confirm</button>",
+            "<span id=\"out\"></span>",
+            "</body></html>"
+        );
+        let url = format!(
+            "data:text/html;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(html)
+        );
+        let click_confirm = |accept_dialogs| BrowserActInput {
+            actions: vec![BrowserAction::Click {
+                selector: "#confirm".into(),
+            }],
+            profile: None,
+            no_text: false,
+            accept_dialogs,
+        };
+
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        let mut context = fixture.context();
+        let mut nav = BrowserNavigateInput { url, profile: None };
+        BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+
+        // Dismissed by default, and the model is told so.
+        let out = BrowserActTool
+            .execute(&mut context, &mut click_confirm(false))
+            .await?;
+        assert!(out.error.is_none(), "act error: {:?}", out.error);
+        let rendered = out.render(&mut ResourcesTracker::default());
+        assert!(
+            rendered.contains("confirm dialog \"Sicher?\" was dismissed"),
+            "render should report the dialog, got:\n{rendered}"
+        );
+        assert!(
+            out.observation
+                .as_ref()
+                .unwrap()
+                .text
+                .trim()
+                .ends_with("no")
+        );
+
+        // Accepted when the call opts in.
+        let out = BrowserActTool
+            .execute(&mut context, &mut click_confirm(true))
+            .await?;
+        let rendered = out.render(&mut ResourcesTracker::default());
+        assert!(
+            rendered.contains("confirm dialog \"Sicher?\" was accepted"),
+            "got:\n{rendered}"
+        );
+        assert!(
+            out.observation
+                .as_ref()
+                .unwrap()
+                .text
+                .trim()
+                .ends_with("yes")
+        );
+
+        // The opt-in is per call: the next call dismisses again.
+        let out = BrowserActTool
+            .execute(&mut context, &mut click_confirm(false))
+            .await?;
+        let rendered = out.render(&mut ResourcesTracker::default());
+        assert!(rendered.contains("was dismissed"), "got:\n{rendered}");
         Ok(())
     }
 
@@ -1498,6 +1608,7 @@ mod tests {
                 ],
                 profile: None,
                 no_text: false,
+                accept_dialogs: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "act error: {:?}", out.error);
@@ -1551,6 +1662,7 @@ mod tests {
                 }],
                 profile: None,
                 no_text: false,
+                accept_dialogs: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "scroll error: {:?}", out.error);
@@ -1618,6 +1730,7 @@ mod tests {
                 }],
                 profile: None,
                 no_text: false,
+                accept_dialogs: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "click_at error: {:?}", out.error);
@@ -1651,6 +1764,7 @@ mod tests {
                 }],
                 profile: None,
                 no_text: false,
+                accept_dialogs: false,
             };
             let out = BrowserActTool.execute(&mut context, &mut act).await?;
             assert!(out.error.is_none(), "global press error: {:?}", out.error);
