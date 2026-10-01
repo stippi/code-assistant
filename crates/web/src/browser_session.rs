@@ -13,13 +13,15 @@
 
 use crate::browser::LaunchedBrowser;
 use anyhow::Result;
-use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchKeyEventParams, DispatchKeyEventType, InsertTextParams,
+};
 use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, DialogType, EventJavascriptDialogOpening, HandleJavaScriptDialogParams,
 };
 use chromiumoxide::element::Element;
-use chromiumoxide::keys::get_key_definition;
+use chromiumoxide::keys::{KeyDefinition, get_key_definition};
 use chromiumoxide::layout::Point;
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
@@ -522,8 +524,7 @@ impl BrowserSession {
         let element = self.find(selector).await?;
         let _ = element.scroll_into_view().await;
         element.focus().await?;
-        element.type_str(text).await?;
-        Ok(())
+        self.type_chars(text).await
     }
 
     /// Clear a field, then type `text` — the replace semantics editing a
@@ -535,7 +536,24 @@ impl BrowserSession {
         let _ = element.scroll_into_view().await;
         element.focus().await?;
         self.clear_focused(&element).await?;
-        element.type_str(text).await?;
+        self.type_chars(text).await
+    }
+
+    /// Type `text` into the focused element. Characters on the US keyboard
+    /// layout are pressed as real keys, so key handlers see them; anything
+    /// else (`ü`, `ß`, `€`, emoji) is inserted as text, since chromiumoxide's
+    /// key table only knows the US layout.
+    async fn type_chars(&self, text: &str) -> Result<()> {
+        let mut buf = [0u8; 4];
+        for c in text.chars() {
+            let c: &str = c.encode_utf8(&mut buf);
+            match get_key_definition(c) {
+                Some(def) => self.press(def, 0).await?,
+                None => {
+                    self.page.execute(InsertTextParams::new(c)).await?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -591,6 +609,11 @@ impl BrowserSession {
         let (modifiers, main_key) = parse_chord(key);
         let def = get_key_definition(main_key)
             .ok_or_else(|| anyhow::anyhow!("unknown key '{main_key}'"))?;
+        self.press(def, modifiers).await
+    }
+
+    /// Press and release one key with the given modifier bitmask.
+    async fn press(&self, def: &KeyDefinition, modifiers: i64) -> Result<()> {
         // Shift makes a letter uppercase in the emitted key/text.
         let shift = modifiers & 8 != 0;
         let key_str = if def.key.len() == 1 && shift {

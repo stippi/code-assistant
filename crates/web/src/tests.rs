@@ -584,3 +584,31 @@ async fn javascript_dialogs_are_answered_and_reported() {
 
     session.close().await;
 }
+
+/// German (and any non-US-layout) text must type: `ü`, `ß` and `€` are not in
+/// chromiumoxide's US key table, which used to fail with "Key not found".
+#[tokio::test]
+async fn type_and_fill_handle_characters_outside_the_us_layout() {
+    let addr = spawn_form_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+
+    session.type_text("#user", "Grüße, ").await.unwrap();
+    session.type_text("#user", "Straße 5 € ✓").await.unwrap();
+    let value = session
+        .eval("document.getElementById('user').value")
+        .await
+        .unwrap();
+    assert_eq!(value, "Grüße, Straße 5 € ✓");
+
+    session.fill("#user", "Übermut").await.unwrap();
+    let value = session
+        .eval("document.getElementById('user').value")
+        .await
+        .unwrap();
+    assert_eq!(value, "Übermut");
+
+    session.close().await;
+}
