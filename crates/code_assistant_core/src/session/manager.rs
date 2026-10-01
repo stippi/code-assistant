@@ -1151,8 +1151,6 @@ impl SessionManager {
             )
         };
         let task = run_config.task;
-        // Preparing a handoff leaves the session as idle as it found it.
-        let arms_idle_handoff = !matches!(task, RunTask::PrepareHandoff);
         let idle_handoff = self.idle_handoff.clone();
         let pending_message_for_task = pending_message_ref.clone();
 
@@ -1325,8 +1323,10 @@ impl SessionManager {
                             plan: agent.plan().clone(),
                         })
                         .await;
+                    // Whether the agent answered: only then is there a new
+                    // state worth preparing a handoff for when it idles.
                     match task {
-                        RunTask::Answer => agent.run_single_iteration().await,
+                        RunTask::Answer => agent.run_single_iteration().await.map(|()| true),
                         RunTask::NewContext(run) => {
                             let target = crate::session::new_context::ask_target(
                                 &session_id_clone,
@@ -1336,18 +1336,18 @@ impl SessionManager {
                             run.run(&mut agent, target, &pending_message_for_task).await
                         }
                         RunTask::PrepareHandoff => {
-                            let prepared = crate::session::new_context::prepare_handoff(
-                                &mut agent,
-                                &pending_message_for_task,
-                            )
-                            .await?;
-                            if let Some(prompt) = prepared {
-                                events_clone.publish_ui(
-                                    &session_id_clone,
-                                    UiEvent::HandoffPrepared { prompt },
-                                );
+                            use crate::session::new_context::{Prepared, prepare_handoff};
+                            match prepare_handoff(&mut agent, &pending_message_for_task).await? {
+                                Prepared::Prompt(prompt) => {
+                                    events_clone.publish_ui(
+                                        &session_id_clone,
+                                        UiEvent::HandoffPrepared { prompt },
+                                    );
+                                    Ok(false)
+                                }
+                                Prepared::Nothing => Ok(false),
+                                Prepared::Answered => Ok(true),
                             }
-                            Ok(())
                         }
                     }
                 });
@@ -1370,10 +1370,10 @@ impl SessionManager {
                 }
             };
 
-            let result = if cancellation.is_cancelled() {
-                Ok(())
-            } else {
-                result
+            let (result, answered) = match result {
+                Ok(answered) => (Ok(()), answered),
+                Err(_) if cancellation.is_cancelled() => (Ok(()), false),
+                Err(error) => (Err(error), false),
             };
             // Read usage while this run still owns the session. After publishing
             // Idle a successor may already append messages and save its own usage.
@@ -1399,7 +1399,7 @@ impl SessionManager {
                         session_id_clone
                     );
                     activity.set(crate::session::instance::SessionActivityState::Idle);
-                    if arms_idle_handoff && let Some(timers) = &idle_handoff {
+                    if answered && let Some(timers) = &idle_handoff {
                         timers.arm(&session_id_clone);
                     }
 

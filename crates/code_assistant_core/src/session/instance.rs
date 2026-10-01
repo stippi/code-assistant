@@ -304,7 +304,7 @@ impl SessionInstance {
 
     /// Reset per-run state when a new agent starts: clears a previous stop
     /// request, the live tool-status map of the prior run, and any stale
-    /// permission requests.
+    /// permission requests or target question.
     pub fn begin_agent_run(&mut self) {
         self.cancellation = tools_core::RunCancellation::default();
         self.activity = SessionActivity::default();
@@ -313,6 +313,7 @@ impl SessionInstance {
             buf.clear();
         }
         self.pending_permission_requests.deny_all();
+        self.pending_new_context_target.cancel();
     }
 
     /// Get the current activity state

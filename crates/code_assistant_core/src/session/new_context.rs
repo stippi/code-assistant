@@ -36,6 +36,18 @@ this point; you can. If it does not, reply with exactly `[cancel handoff]` and n
 /// The reply with which the agent declines an automatic handoff.
 const CANCEL_HANDOFF: &str = "[cancel handoff]";
 
+/// Whether `reply` declines the handoff: the marker alone, also with the
+/// backticks, quotes, brackets or trailing period a model may add.
+fn declines_handoff(reply: &str) -> bool {
+    let core = CANCEL_HANDOFF.trim_matches(['[', ']']);
+    reply
+        .trim()
+        .trim_end_matches('.')
+        .trim_matches(['`', '"', '\'', '[', ']'])
+        .trim()
+        .eq_ignore_ascii_case(core)
+}
+
 /// A slash command that ends the current context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewContextCommand {
@@ -86,24 +98,46 @@ pub(crate) fn handoff_request() -> String {
     )
 }
 
+/// How preparing a handoff ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Prepared {
+    /// The prompt to offer in the composer.
+    Prompt(String),
+    /// Nothing to offer: the agent declined, or writing the prompt failed.
+    Nothing,
+    /// A user message was queued meanwhile and has been answered instead.
+    Answered,
+}
+
 /// Write a handoff prompt for the composer while the session is idle,
 /// without changing the history: the request is the history plus an
-/// appended handoff request. `None` when the agent declined, or when a
-/// user message was queued meanwhile; the run answers that message instead.
+/// appended handoff request.
 pub(crate) async fn prepare_handoff(
     agent: &mut Agent,
     pending: &Mutex<Option<Vec<llm::ContentBlock>>>,
-) -> Result<Option<String>> {
+) -> Result<Prepared> {
     let request = crate::injection::wrap(
         "handoff-request",
         HANDOFF_PROMPT.replace("{focus}", IDLE_FOCUS).trim(),
     );
-    let prompt = agent.generate_handoff(Some(&request)).await?;
+    // Background work nobody asked for: a failure is logged, not shown as
+    // the session's error.
+    let prompt = match agent.generate_handoff(Some(&request)).await {
+        Ok(prompt) => Some(prompt),
+        Err(error) if error.is::<tools_core::Cancelled>() => return Err(error),
+        Err(error) => {
+            tracing::warn!("Preparing a handoff failed: {error:#}");
+            None
+        }
+    };
     if pending.lock().unwrap().is_some() {
         agent.run_single_iteration().await?;
-        return Ok(None);
+        return Ok(Prepared::Answered);
     }
-    Ok((prompt.trim() != CANCEL_HANDOFF).then_some(prompt))
+    Ok(match prompt {
+        Some(prompt) if !declines_handoff(&prompt) => Prepared::Prompt(prompt),
+        _ => Prepared::Nothing,
+    })
 }
 
 /// Where the new context continues.
@@ -210,14 +244,37 @@ pub(crate) async fn ask_target(
     pending: &PendingTargetRequest,
 ) -> Result<NewContextTarget> {
     let request = NewContextTargetRequest::new();
-    let request_id = request.request_id.clone();
     let answer = pending.open(request.clone());
+    // Settles the question on every exit, including a caller that drops
+    // this future (e.g. the handoff generation failed meanwhile).
+    let _settled = SettleOnDrop {
+        session_id,
+        request_id: request.request_id.clone(),
+        events,
+        pending,
+    };
     events.publish_ui(session_id, UiEvent::RequestNewContextTarget { request });
-    let answer = answer.await;
-    // Settled either way: answered, or dropped by a stop request.
-    pending.cancel();
-    events.publish_ui(session_id, UiEvent::NewContextTargetResolved { request_id });
-    answer.map_err(|_| tools_core::Cancelled.into())
+    answer.await.map_err(|_| tools_core::Cancelled.into())
+}
+
+/// Closes the open question and tells every view it is settled.
+struct SettleOnDrop<'a> {
+    session_id: &'a str,
+    request_id: String,
+    events: &'a EventStream,
+    pending: &'a PendingTargetRequest,
+}
+
+impl Drop for SettleOnDrop<'_> {
+    fn drop(&mut self) {
+        self.pending.cancel();
+        self.events.publish_ui(
+            self.session_id,
+            UiEvent::NewContextTargetResolved {
+                request_id: std::mem::take(&mut self.request_id),
+            },
+        );
+    }
 }
 
 /// A run that opens a new context instead of answering a user message.
@@ -235,13 +292,13 @@ impl NewContextRun {
     /// the new context here and continue from it (or from a message queued
     /// meanwhile), or hand the prompt over for a new session. A generated
     /// prompt is also recorded here as the answer to the `/handoff`
-    /// message.
+    /// message. Returns whether the agent answered in this session.
     pub(crate) async fn run(
         self,
         agent: &mut Agent,
         target: impl Future<Output = Result<NewContextTarget>>,
         pending: &Mutex<Option<Vec<llm::ContentBlock>>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let generated = self.prompt.is_none();
         let (prompt, target) = match self.prompt {
             Some(prompt) => (prompt, target.await?),
@@ -253,6 +310,7 @@ impl NewContextRun {
                 agent.append_new_context(prompt)?;
                 if opens_with_prompt || pending.lock().unwrap().is_some() {
                     agent.run_single_iteration().await?;
+                    return Ok(true);
                 }
             }
             NewContextTarget::NewSession => {
@@ -263,7 +321,7 @@ impl NewContextRun {
                 let _ = self.new_session.send(prompt);
             }
         }
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -303,6 +361,28 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_the_declined_handoff_in_common_spellings() {
+        for reply in [
+            "[cancel handoff]",
+            "  [cancel handoff]\n",
+            "`[cancel handoff]`",
+            "cancel handoff",
+            "`cancel handoff`",
+            "\"[cancel handoff]\"",
+            "[Cancel handoff].",
+        ] {
+            assert!(declines_handoff(reply), "{reply:?}");
+        }
+        for reply in [
+            "Next: write the tests.",
+            "Continue with X. If blocked, reply [cancel handoff].",
+            "",
+        ] {
+            assert!(!declines_handoff(reply), "{reply:?}");
+        }
+    }
+
+    #[test]
     fn handoff_request_is_a_hidden_block_with_the_focus() {
         let request = handoff_request();
         assert!(crate::injection::is_injection(&request));
@@ -339,6 +419,36 @@ mod tests {
 
         assert_eq!(asking.await.unwrap().unwrap(), NewContextTarget::NewSession);
         assert!(pending.snapshot().is_none());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_question_settles_it() {
+        // E.g. `/handoff`: the generation failed while the question was open.
+        let events = EventStream::new();
+        let pending = PendingTargetRequest::default();
+        let mut subscription = events.subscribe();
+        {
+            let asking = ask_target("s1", &events, &pending);
+            tokio::pin!(asking);
+            assert!(futures::poll!(asking.as_mut()).is_pending());
+            assert!(pending.snapshot().is_some());
+        }
+
+        assert!(pending.snapshot().is_none());
+        // The frontends are told to dismiss the prompt.
+        loop {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+                    .await
+                    .expect("NewContextTargetResolved")
+                    .unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(
+                UiEvent::NewContextTargetResolved { .. },
+            ) = event.payload
+            {
+                break;
+            }
+        }
     }
 
     #[tokio::test]

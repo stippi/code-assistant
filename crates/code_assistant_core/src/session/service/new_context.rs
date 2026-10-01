@@ -221,7 +221,11 @@ mod tests {
         mut pick: impl FnMut(UiEvent) -> Option<T>,
     ) -> T {
         loop {
-            let event = subscription.recv().await.unwrap();
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(10), subscription.recv())
+                    .await
+                    .expect("the awaited event did not arrive")
+                    .unwrap();
             if event.session_id.as_deref() != Some(session_id) {
                 continue;
             }
@@ -738,6 +742,81 @@ mod tests {
         // The session's state counts as handled: no second attempt.
         service.prepare_handoff(id.clone(), 1000).await.unwrap();
         assert!(!service.is_session_busy(id.clone()).await.unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_preparation_leaves_the_session_idle() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Served as a stack: the turn's answer first, then the failure.
+        let llm = MockLLMProvider::new(vec![
+            Err(anyhow!("provider unavailable")),
+            text_response("built"),
+        ]);
+        let (service, manager) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::UpdateSessionActivityState { activity_state, .. } => match activity_state {
+                crate::session::instance::SessionActivityState::Idle => Some(()),
+                crate::session::instance::SessionActivityState::Errored { message } => {
+                    panic!("errored: {message}")
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .await;
+
+        let state = manager
+            .lock()
+            .await
+            .get_session(&id)
+            .unwrap()
+            .get_activity_state();
+        assert_eq!(state, crate::session::instance::SessionActivityState::Idle);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_preparation_that_answered_a_queued_message_rearms_the_timer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&[
+            "built",
+            "Next: write the tests",
+            "answered",
+            "Next: ship it",
+        ]);
+        let (service, manager) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+        manager.lock().await.set_idle_handoff(
+            crate::session::idle_handoff::IdleHandoffTimers::new(
+                service.clone(),
+                std::time::Duration::from_millis(50),
+                Arc::new(|| 1000),
+            ),
+        );
+
+        // A message arrives while the preparation runs: it gets answered.
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+        service
+            .queue_user_message(id.clone(), "One more thing".into(), vec![])
+            .await
+            .unwrap();
+
+        // The answered state gets its own preparation.
+        assert_eq!(prepared(&mut subscription, &id).await, "Next: ship it");
     }
 
     #[tokio::test(flavor = "multi_thread")]
