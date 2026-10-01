@@ -3158,14 +3158,18 @@ mod tests {
     async fn queued_skill_trigger_injects_but_shows_only_the_request() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        let (service, manager) = test_service_with_skill(
-            tmp.path(),
-            project.path(),
-            PendingLLMProvider::default().into_factory(),
-        );
+        let provider = PendingLLMProvider::default();
+        let entered = provider.entered.clone();
+        let (service, manager) =
+            test_service_with_skill(tmp.path(), project.path(), provider.into_factory());
         let id = create_proj_session(&service).await;
         service
             .send_user_message(id.clone(), "first".into(), vec![], None)
+            .await
+            .unwrap();
+        // Queue only once the run waits on the model; before that, its loop
+        // would take the queued message itself.
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
             .await
             .unwrap();
 
