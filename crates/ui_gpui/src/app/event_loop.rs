@@ -803,28 +803,10 @@ impl Gpui {
                 *self.current_mcp_servers.lock().unwrap() = servers;
                 cx.refresh();
             }
-            UiEvent::RequestToolPermission { request } => {
-                debug!(
-                    "UI: RequestToolPermission for tool {} ({})",
-                    request.tool_name, request.request_id
-                );
-                let mut pending = self.pending_permission_requests.lock().unwrap();
-                if !pending.iter().any(|r| r.request_id == request.request_id) {
-                    pending.push(request);
-                }
-                drop(pending);
-                cx.refresh();
-            }
-            UiEvent::ToolPermissionRequestResolved { request_id } => {
-                debug!("UI: ToolPermissionRequestResolved {request_id}");
-                self.pending_permission_requests
-                    .lock()
-                    .unwrap()
-                    .retain(|r| r.request_id != request_id);
-                cx.refresh();
-            }
             // State tracked by the event bridge; the main screen renders it.
-            UiEvent::RequestNewContextTarget { .. }
+            UiEvent::RequestToolPermission { .. }
+            | UiEvent::ToolPermissionRequestResolved { .. }
+            | UiEvent::RequestNewContextTarget { .. }
             | UiEvent::NewContextTargetResolved { .. }
             | UiEvent::HandoffPrepared { .. } => cx.refresh(),
             UiEvent::SessionHandedOff { .. } => {}

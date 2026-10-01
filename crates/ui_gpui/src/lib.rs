@@ -253,10 +253,17 @@ pub struct Gpui {
     // enabled state, shown in the input-bar MCP toggle menu.
     current_mcp_servers: Arc<Mutex<Vec<code_assistant_core::ui::ui_events::McpServerToggle>>>,
 
-    // Tool permission requests awaiting the user's decision, rendered as a
-    // prompt above the input area. Keyed order = arrival order.
-    pending_permission_requests:
-        Arc<Mutex<Vec<code_assistant_core::session::permissions::ToolPermissionRequestData>>>,
+    // Tool permission requests awaiting the user's decision, each with the
+    // session asking it, in arrival order; rendered as prompts above that
+    // session's input.
+    pending_permission_requests: Arc<
+        Mutex<
+            Vec<(
+                String,
+                code_assistant_core::session::permissions::ToolPermissionRequestData,
+            )>,
+        >,
+    >,
 
     // Current worktree state (branches + worktrees listing from backend)
     current_worktree_data: Arc<Mutex<Option<WorktreeData>>>,
@@ -957,10 +964,18 @@ impl Gpui {
         self.current_mcp_servers.lock().unwrap().clone()
     }
 
+    /// The open permission requests of `session_id`, in arrival order.
     pub fn get_pending_permission_requests(
         &self,
+        session_id: &str,
     ) -> Vec<code_assistant_core::session::permissions::ToolPermissionRequestData> {
-        self.pending_permission_requests.lock().unwrap().clone()
+        self.pending_permission_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(asking, _)| asking == session_id)
+            .map(|(_, request)| request.clone())
+            .collect()
     }
 
     /// The open target question of `session_id`, if any.
