@@ -45,7 +45,9 @@ impl Gpui {
         let attachments_owned = attachments.to_vec();
         let session_drafts = self.session_drafts.clone();
 
-        tokio::spawn(async move {
+        // On GPUI's executor: callers include the event bridge, which runs
+        // outside any tokio runtime.
+        self.dispatch(async move {
             // For empty drafts, always try to delete (idempotent)
             if is_empty {
                 if let Err(e) = draft_storage.save_draft(

@@ -880,7 +880,7 @@ impl UserInterface for ACPUserUI {
                                             acp::SessionUpdate::UserMessageChunk(chunk),
                                         );
                                     }
-                                    DisplayFragment::CompactionDivider { .. } => {
+                                    DisplayFragment::ContextDivider { .. } => {
                                         self.display_fragment(fragment)?;
                                     }
                                     _ => {}
@@ -936,7 +936,7 @@ impl UserInterface for ACPUserUI {
 
             // Events that don't translate to ACP
             UiEvent::SetMessages { .. }
-            | UiEvent::DisplayCompactionSummary { .. }
+            | UiEvent::DisplayContextDivider { .. }
             | UiEvent::StreamingStarted { .. }
             | UiEvent::StreamingStopped { .. }
             | UiEvent::RefreshChatList
@@ -953,6 +953,10 @@ impl UserInterface for ACPUserUI {
             // requestPermission RPC (AcpPermissionMediator), not the stream.
             | UiEvent::RequestToolPermission { .. }
             | UiEvent::ToolPermissionRequestResolved { .. }
+            | UiEvent::RequestNewContextTarget { .. }
+            | UiEvent::NewContextTargetResolved { .. }
+            | UiEvent::SessionHandedOff { .. }
+            | UiEvent::HandoffPrepared { .. }
             | UiEvent::HiddenToolCompleted
             | UiEvent::MessageEditReady { .. }
             | UiEvent::UpdateBranchInfo { .. }
@@ -1007,7 +1011,7 @@ impl UserInterface for ACPUserUI {
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
-            DisplayFragment::CompactionDivider { .. } => {
+            DisplayFragment::ContextDivider { .. } => {
                 let content = fragment_to_content_block(fragment);
                 let chunk = Self::content_chunk(content);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));

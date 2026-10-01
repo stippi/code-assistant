@@ -186,6 +186,13 @@ pub struct SessionInstance {
     /// Permission requests currently awaiting a user decision.
     pub pending_permission_requests: Arc<crate::session::permissions::PendingPermissionRequests>,
 
+    /// The open `/new` / `/handoff` target question, if any.
+    pub pending_new_context_target: Arc<crate::session::new_context::PendingTargetRequest>,
+
+    /// The last message a handoff was prepared for while idle, so each
+    /// state of the session is prepared at most once.
+    pub handoff_prepared_for: Option<crate::persistence::NodeId>,
+
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 
@@ -264,6 +271,8 @@ impl SessionInstance {
             pending_permission_requests: Arc::new(
                 crate::session::permissions::PendingPermissionRequests::default(),
             ),
+            pending_new_context_target: Arc::default(),
+            handoff_prepared_for: None,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
             browser_sessions: Arc::new(web::BrowserSessionManager::default()),
@@ -282,18 +291,20 @@ impl SessionInstance {
     }
 
     /// Ask the running agent to stop at its next streaming checkpoint.
-    /// Pending permission requests resolve as denied so the agent does not
-    /// stay blocked waiting for an answer.
+    /// Pending permission requests resolve as denied and an open target
+    /// question is dropped, so the agent does not stay blocked waiting for
+    /// an answer.
     pub fn request_stop(&self) {
         self.cancellation.cancel();
         self.stop_requested
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.pending_permission_requests.deny_all();
+        self.pending_new_context_target.cancel();
     }
 
     /// Reset per-run state when a new agent starts: clears a previous stop
     /// request, the live tool-status map of the prior run, and any stale
-    /// permission requests.
+    /// permission requests or target question.
     pub fn begin_agent_run(&mut self) {
         self.cancellation = tools_core::RunCancellation::default();
         self.activity = SessionActivity::default();
@@ -302,6 +313,7 @@ impl SessionInstance {
             buf.clear();
         }
         self.pending_permission_requests.deny_all();
+        self.pending_new_context_target.cancel();
     }
 
     /// Get the current activity state
@@ -533,6 +545,7 @@ impl SessionInstance {
                 &self.session.config.disabled_mcp_servers,
             ),
             pending_permission_requests: self.pending_permission_requests.snapshot(),
+            pending_new_context_target: self.pending_new_context_target.snapshot(),
         })
     }
 
@@ -616,24 +629,9 @@ impl SessionInstance {
 
         for (node_id, message) in message_iter {
             if message.is_compaction_summary {
-                let summary = match &message.content {
-                    llm::MessageContent::Text(text) => text.trim().to_string(),
-                    llm::MessageContent::Structured(blocks) => blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_string(),
-                };
-
                 messages_data.push(MessageData {
                     role: MessageRole::System,
-                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    fragments: vec![crate::ui::context_divider(message)],
                     node_id,
                     branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
                 });
@@ -657,7 +655,7 @@ impl SessionInstance {
             }
 
             match processor
-                .extract_fragments_from_message(&crate::skills::without_skill_injections(message))
+                .extract_fragments_from_message(&crate::injection::without_injections(message))
             {
                 Ok(fragments) => {
                     let role = match message.role {
@@ -730,23 +728,9 @@ impl SessionInstance {
             let message = &node.message;
 
             if message.is_compaction_summary {
-                let summary = match &message.content {
-                    llm::MessageContent::Text(text) => text.trim().to_string(),
-                    llm::MessageContent::Structured(blocks) => blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_string(),
-                };
                 messages_data.push(MessageData {
                     role: MessageRole::System,
-                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                    fragments: vec![crate::ui::context_divider(message)],
                     node_id: Some(node_id),
                     branch_info: self.session.get_branch_info(node_id),
                 });
@@ -770,7 +754,7 @@ impl SessionInstance {
             }
 
             match processor
-                .extract_fragments_from_message(&crate::skills::without_skill_injections(message))
+                .extract_fragments_from_message(&crate::injection::without_injections(message))
             {
                 Ok(fragments) => {
                     let role = match message.role {
@@ -1059,7 +1043,7 @@ impl UserInterface for SessionEventPublisher {
             DisplayFragment::Image { .. }
             | DisplayFragment::ToolName { .. }
             | DisplayFragment::ReasoningSummaryStart
-            | DisplayFragment::CompactionDivider { .. } => true,
+            | DisplayFragment::ContextDivider { .. } => true,
             DisplayFragment::ToolEnd { .. }
             | DisplayFragment::ToolTerminal { .. }
             | DisplayFragment::ToolTerminalExited { .. }

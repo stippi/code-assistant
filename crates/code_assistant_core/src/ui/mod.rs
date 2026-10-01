@@ -89,3 +89,25 @@ impl agent_core::AgentUi for AgentUiAdapter {
         self.inner.clear_rate_limit();
     }
 }
+
+/// The divider a stored compaction summary or new-context boundary renders as.
+pub fn context_divider(message: &llm::Message) -> DisplayFragment {
+    let summary = match &message.content {
+        llm::MessageContent::Text(text) => text.trim().to_string(),
+        llm::MessageContent::Structured(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string(),
+    };
+    DisplayFragment::ContextDivider {
+        boundary: agent_core::ui::ContextBoundary::of(message),
+        summary,
+    }
+}

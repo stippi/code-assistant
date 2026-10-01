@@ -73,10 +73,42 @@ pub enum DisplayFragment {
     ReasoningSummaryDelta(String),
     /// Mark reasoning as completed
     ReasoningComplete,
-    /// Divider indicating the conversation was compacted, with expandable summary text
-    CompactionDivider { summary: String },
+    /// Divider where a fresh model context starts, with expandable text:
+    /// the compaction summary, or the prompt the new context opens with
+    ContextDivider {
+        boundary: ContextBoundary,
+        summary: String,
+    },
     /// A hidden tool completed - UI may need to insert paragraph break if next fragment is same type
     HiddenToolCompleted,
+}
+
+/// Why a fresh model context starts at a [`DisplayFragment::ContextDivider`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextBoundary {
+    /// The context window filled up and was summarized.
+    Compaction,
+    /// The user started a new context (`/new`, `/handoff`).
+    NewContext,
+}
+
+impl ContextBoundary {
+    /// The boundary a stored summary message marks.
+    pub fn of(message: &llm::Message) -> Self {
+        if message.is_new_context {
+            Self::NewContext
+        } else {
+            Self::Compaction
+        }
+    }
+
+    /// The divider's label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compaction => "Conversation compacted",
+            Self::NewContext => "New context",
+        }
+    }
 }
 
 impl DisplayFragment {

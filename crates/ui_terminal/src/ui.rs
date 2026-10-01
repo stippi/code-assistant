@@ -141,11 +141,8 @@ impl TerminalUI {
                                 tool.output.get_or_insert_with(String::new).push_str(&chunk);
                             }
                         }
-                        DisplayFragment::CompactionDivider { summary } => {
-                            append_text_block(
-                                &mut live,
-                                &format!("\n\n[conversation compacted]\n{summary}\n"),
-                            );
+                        DisplayFragment::ContextDivider { boundary, summary } => {
+                            append_text_block(&mut live, &divider_text(boundary, &summary));
                         }
                         DisplayFragment::HiddenToolCompleted => {
                             // Preserve a paragraph break where a hidden tool sat
@@ -427,12 +424,12 @@ impl TerminalUI {
                     let _ = renderer_guard.add_user_message(&display_content);
                 }
             }
-            UiEvent::DisplayCompactionSummary { summary } => {
-                debug!("Displaying compaction summary");
+            UiEvent::DisplayContextDivider { boundary, summary } => {
+                debug!("Displaying context divider");
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    let formatted = format!("\n\n[conversation compacted]\n{summary}\n",);
-                    let _ = renderer_guard.add_instruction_message(&formatted);
+                    let _ =
+                        renderer_guard.add_instruction_message(&divider_text(boundary, &summary));
                 }
             }
             UiEvent::StreamingStarted {
@@ -573,9 +570,31 @@ impl TerminalUI {
             UiEvent::ToolPermissionRequestResolved { request_id } => {
                 let mut state = self.app_state.lock().await;
                 state.remove_permission_request(&request_id);
-                state.popup_stack.remove_permission_popup(&request_id);
+                state.popup_stack.remove_request_popup(&request_id);
                 state.open_next_permission_prompt();
             }
+            UiEvent::RequestNewContextTarget { request } => {
+                let mut state = self.app_state.lock().await;
+                // A snapshot replays an open request.
+                state.popup_stack.remove_request_popup(&request.request_id);
+                state.popup_stack.push(Box::new(
+                    crate::slash_popup::NewContextTargetPopup::for_request(&request),
+                ));
+            }
+            UiEvent::NewContextTargetResolved { request_id } => {
+                let mut state = self.app_state.lock().await;
+                state.popup_stack.remove_request_popup(&request_id);
+            }
+            UiEvent::HandoffPrepared { prompt } => {
+                // Only the current session's events get here.
+                let mut state = self.app_state.lock().await;
+                state.prepared_handoff = state
+                    .current_session_id
+                    .clone()
+                    .map(|session_id| (session_id, format!("/new {prompt}")));
+            }
+            // Handled by the event bridge, which can switch sessions.
+            UiEvent::SessionHandedOff { .. } => {}
             UiEvent::ShowTransientStatus { message } => {
                 debug!("Transient status: {}", message);
                 // In the terminal UI, show as a brief info message via the error strip
@@ -762,8 +781,9 @@ impl UserInterface for TerminalUI {
                 // Terminal exit is for frontends with a display-only
                 // terminal card; the TUI has no live terminal view.
             }
-            DisplayFragment::CompactionDivider { summary } => {
-                self.push_event(UiEvent::DisplayCompactionSummary {
+            DisplayFragment::ContextDivider { boundary, summary } => {
+                self.push_event(UiEvent::DisplayContextDivider {
+                    boundary: *boundary,
                     summary: summary.clone(),
                 });
             }
@@ -809,6 +829,11 @@ impl UserInterface for TerminalUI {
             }
         });
     }
+}
+
+/// The transcript text of a context divider.
+fn divider_text(boundary: agent_core::ui::ContextBoundary, summary: &str) -> String {
+    format!("\n\n[{}]\n{summary}\n", boundary.label().to_lowercase())
 }
 
 #[cfg(test)]

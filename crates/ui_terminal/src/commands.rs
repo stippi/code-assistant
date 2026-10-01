@@ -1,4 +1,5 @@
 use anyhow::Result;
+use code_assistant_core::session::new_context::COMMANDS as NEW_CONTEXT_COMMANDS;
 use llm::provider_config::ConfigurationSystem;
 
 /// Static descriptor for a slash command, used for autocomplete and help display.
@@ -14,79 +15,92 @@ pub struct SlashCommand {
 /// corresponds to a match arm in `CommandProcessor::process_command`. Keeping them
 /// in sync is intentional: adding a command requires updating both places.
 pub fn all_commands() -> &'static [SlashCommand] {
-    &[
-        SlashCommand {
-            name: "help",
-            aliases: &["h"],
-            description: "Show available commands",
-        },
-        SlashCommand {
-            name: "model",
-            aliases: &["m"],
-            description: "List available models or switch to one: /model <name>",
-        },
-        SlashCommand {
-            name: "provider",
-            aliases: &["p"],
-            description: "List available LLM providers",
-        },
-        SlashCommand {
-            name: "current",
-            aliases: &["c"],
-            description: "Show the currently active model",
-        },
-        SlashCommand {
-            name: "plan",
-            aliases: &[],
-            description: "Toggle the plan view panel",
-        },
-        SlashCommand {
-            name: "clear",
-            aliases: &[],
-            description: "Clear the conversation context",
-        },
-        SlashCommand {
-            name: "compact",
-            aliases: &[],
-            description: "Summarize and compact the conversation context",
-        },
-        SlashCommand {
-            name: "permissions",
-            aliases: &[],
-            description: "Show or set the permission tier: /permissions [bypass-all|outward-tools|write-tools|all-tools]",
-        },
-        SlashCommand {
-            name: "allow",
-            aliases: &[],
-            description: "Allow the pending tool permission request once",
-        },
-        SlashCommand {
-            name: "always",
-            aliases: &[],
-            description: "Allow the pending tool permission request for this session",
-        },
-        SlashCommand {
-            name: "deny",
-            aliases: &[],
-            description: "Deny the pending tool permission request",
-        },
-        SlashCommand {
-            name: "goal",
-            aliases: &[],
-            description: "Set or replace the goal: /goal <completion criteria>; /goal cancel removes it",
-        },
-        SlashCommand {
-            name: "skill",
-            aliases: &[],
-            description: "Use a skill: /<skill-name> <request> (or pick from the list)",
-        },
-        SlashCommand {
-            name: "sessions",
-            aliases: &["resume"],
-            description: "Switch to another session (pick from the list)",
-        },
-    ]
+    ALL_COMMANDS
 }
+
+const ALL_COMMANDS: &[SlashCommand] = &[
+    SlashCommand {
+        name: "help",
+        aliases: &["h"],
+        description: "Show available commands",
+    },
+    SlashCommand {
+        name: "model",
+        aliases: &["m"],
+        description: "List available models or switch to one: /model <name>",
+    },
+    SlashCommand {
+        name: "provider",
+        aliases: &["p"],
+        description: "List available LLM providers",
+    },
+    SlashCommand {
+        name: "current",
+        aliases: &["c"],
+        description: "Show the currently active model",
+    },
+    SlashCommand {
+        name: "plan",
+        aliases: &[],
+        description: "Toggle the plan view panel",
+    },
+    SlashCommand {
+        name: "clear",
+        aliases: &[],
+        description: "Clear the conversation context",
+    },
+    // Sent as messages; the core opens the new context.
+    SlashCommand {
+        name: "new",
+        aliases: &[],
+        description: NEW_CONTEXT_COMMANDS[0].1,
+    },
+    SlashCommand {
+        name: "handoff",
+        aliases: &[],
+        description: NEW_CONTEXT_COMMANDS[1].1,
+    },
+    SlashCommand {
+        name: "compact",
+        aliases: &[],
+        description: NEW_CONTEXT_COMMANDS[2].1,
+    },
+    SlashCommand {
+        name: "permissions",
+        aliases: &[],
+        description: "Show or set the permission tier: /permissions [bypass-all|outward-tools|write-tools|all-tools]",
+    },
+    SlashCommand {
+        name: "allow",
+        aliases: &[],
+        description: "Allow the pending tool permission request once",
+    },
+    SlashCommand {
+        name: "always",
+        aliases: &[],
+        description: "Allow the pending tool permission request for this session",
+    },
+    SlashCommand {
+        name: "deny",
+        aliases: &[],
+        description: "Deny the pending tool permission request",
+    },
+    SlashCommand {
+        name: "goal",
+        aliases: &[],
+        description: "Set or replace the goal: /goal <completion criteria>; /goal cancel removes it",
+    },
+    SlashCommand {
+        name: "skill",
+        aliases: &[],
+        description: "Use a skill: /<skill-name> <request> (or pick from the list)",
+    },
+    SlashCommand {
+        name: "sessions",
+        aliases: &["resume"],
+        description: "Switch to another session (pick from the list)",
+    },
+];
 
 /// Result of processing a slash command
 #[derive(Debug, Clone)]
@@ -110,8 +124,6 @@ pub enum CommandResult {
 
     /// Clear conversation context
     ClearContext,
-    /// Compact (summarise) conversation context
-    CompactContext,
     /// Open the skill picker popup.
     OpenSkillPicker,
     /// Open the session picker popup.
@@ -138,6 +150,14 @@ pub enum CommandResult {
         request_id: Option<String>,
         decision: tools_core::PermissionDecision,
     },
+    /// Answer the `/new` / `/handoff` target question (from its prompt).
+    RespondNewContextTarget {
+        request_id: String,
+        target: code_assistant_core::session::new_context::NewContextTarget,
+    },
+    /// Cancel the `/new` / `/handoff` waiting for its target (Esc on the
+    /// prompt): stops the run.
+    CancelNewContext,
 }
 
 /// Process slash commands in terminal UI
@@ -189,7 +209,11 @@ impl CommandProcessor {
             "current" | "c" => CommandResult::ShowCurrentModel,
             "plan" => CommandResult::TogglePlan,
             "clear" => CommandResult::ClearContext,
-            "compact" => CommandResult::CompactContext,
+            // `/new`, `/handoff`, `/compact`: sent as messages; the core
+            // opens the new context. They shadow skills of the same name.
+            name if code_assistant_core::session::new_context::is_command(name) => {
+                CommandResult::Continue
+            }
             "permissions" => Self::process_permissions_command(&parts[1..]),
             "allow" => CommandResult::RespondPermission {
                 request_id: None,
@@ -378,6 +402,17 @@ mod tests {
             processor.process_command("/nope focus"),
             CommandResult::InvalidCommand(_)
         ));
+    }
+
+    #[test]
+    fn new_context_commands_are_sent_as_messages() {
+        let processor = processor_with_skills(&[]);
+        for line in ["/new write the tests", "/handoff", "/compact focus on docs"] {
+            assert!(
+                matches!(processor.process_command(line), CommandResult::Continue),
+                "{line}"
+            );
+        }
     }
 
     #[test]

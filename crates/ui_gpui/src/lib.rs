@@ -282,6 +282,21 @@ pub struct Gpui {
     // Stored separately from chat_sessions for the same reason as last_usage.
     current_session_total_usage: Arc<Mutex<Option<llm::Usage>>>,
 
+    // The open `/new` / `/handoff` question where the new context goes, with
+    // the session asking it; rendered as a prompt above that session's input.
+    pending_new_context_target: Arc<
+        Mutex<
+            Option<(
+                String,
+                code_assistant_core::session::new_context::NewContextTargetRequest,
+            )>,
+        >,
+    >,
+
+    // A handoff prompt prepared for the viewed session while it was idle:
+    // (session id, prompt), picked up by the main screen's composer.
+    prepared_handoff: Arc<Mutex<Option<(String, String)>>>,
+
     // Pending message edit state (for branching)
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
 
@@ -500,6 +515,7 @@ impl Gpui {
         *self.current_permission_tier.lock().unwrap() = None;
         self.current_mcp_servers.lock().unwrap().clear();
         self.pending_permission_requests.lock().unwrap().clear();
+        *self.pending_new_context_target.lock().unwrap() = None;
         *self.current_worktree_data.lock().unwrap() = None;
         self.set_current_review_listing(None);
         self.set_current_review_diff(None);
@@ -593,6 +609,8 @@ impl Gpui {
             current_permission_tier: Arc::new(Mutex::new(None)),
             current_mcp_servers: Arc::new(Mutex::new(Vec::new())),
             pending_permission_requests: Arc::new(Mutex::new(Vec::new())),
+            pending_new_context_target: Arc::new(Mutex::new(None)),
+            prepared_handoff: Arc::new(Mutex::new(None)),
 
             // Pending message edit state
             pending_edit: Arc::new(Mutex::new(None)),
@@ -943,6 +961,28 @@ impl Gpui {
         &self,
     ) -> Vec<code_assistant_core::session::permissions::ToolPermissionRequestData> {
         self.pending_permission_requests.lock().unwrap().clone()
+    }
+
+    /// The open target question of `session_id`, if any.
+    pub fn get_pending_new_context_target(
+        &self,
+        session_id: &str,
+    ) -> Option<code_assistant_core::session::new_context::NewContextTargetRequest> {
+        self.pending_new_context_target
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(asking, _)| asking == session_id)
+            .map(|(_, request)| request.clone())
+    }
+
+    /// Take the handoff prompt prepared for `session_id`, if any.
+    pub fn take_prepared_handoff(&self, session_id: &str) -> Option<String> {
+        let mut prepared = self.prepared_handoff.lock().unwrap();
+        if prepared.as_ref().is_some_and(|(id, _)| id == session_id) {
+            return prepared.take().map(|(_, prompt)| prompt);
+        }
+        None
     }
 
     pub fn get_current_worktree_data(&self) -> Option<WorktreeData> {

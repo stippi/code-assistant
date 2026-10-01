@@ -187,6 +187,8 @@ pub struct MainScreen {
     sessions: Vec<ChatMetadata>,
     plan_collapsed_sessions: HashMap<String, bool>,
     plan_collapsed: bool,
+    /// Throttles the composer activity reported to the core.
+    activity_reports: code_assistant_core::session::idle_handoff::ActivityThrottle,
     /// Last worktree data synced to the selector (for change detection).
     last_worktree_data: Option<WorktreeData>,
     /// Modal dialog for creating a new project (shown as overlay when Some)
@@ -288,6 +290,7 @@ impl MainScreen {
             sessions: Vec::new(),
 
             plan_collapsed_sessions: HashMap::new(),
+            activity_reports: Default::default(),
             plan_collapsed: false,
             last_worktree_data: None,
             new_project_dialog: None,
@@ -667,6 +670,7 @@ impl MainScreen {
                         editing_branch_parent_id,
                         cx,
                     );
+                    self.report_user_activity(session_id, cx);
                 }
             }
             InputAreaEvent::FocusRequested => {
@@ -1080,6 +1084,132 @@ impl MainScreen {
         status_popover::render_status_popover(self, cx)
     }
 
+    /// Tell the core the user is typing in the session (throttled); it
+    /// postpones preparing a handoff (two minutes idle).
+    fn report_user_activity(&mut self, session_id: String, cx: &mut Context<Self>) {
+        if !self
+            .activity_reports
+            .should_report(&session_id, std::time::Instant::now())
+        {
+            return;
+        }
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.cmd_note_user_activity(session_id);
+        }
+    }
+
+    /// Put a handoff prepared while the session was idle into the composer,
+    /// unless the user has started writing something else.
+    fn offer_prepared_handoff(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        let Some(session_id) = self.current_session_id.clone() else {
+            return;
+        };
+        let Some(text) = cx
+            .try_global::<Gpui>()
+            .and_then(|gpui| gpui.take_prepared_handoff(&session_id))
+        else {
+            return;
+        };
+        if !self.input_area.read(cx).is_blank(cx) {
+            return;
+        }
+        self.input_area.update(cx, |input_area, cx| {
+            input_area.set_content(text, Vec::new(), window, cx);
+        });
+    }
+
+    /// A small button of the prompts above the input area; the emphasized
+    /// one is the primary action.
+    fn prompt_button(
+        id: String,
+        label: SharedString,
+        emphasized: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        div()
+            .id(SharedString::from(id))
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .cursor_pointer()
+            .text_xs()
+            .when(emphasized, |this| {
+                this.bg(cx.theme().primary)
+                    .text_color(cx.theme().primary_foreground)
+                    .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
+            })
+            .when(!emphasized, |this| {
+                this.border_1()
+                    .border_color(cx.theme().border)
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+            })
+            .child(label)
+    }
+
+    /// Banner above the input area asking where the context opened by `/new`
+    /// or `/handoff` continues.
+    fn render_new_context_target_prompt(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let session_id = self.current_session_id.clone()?;
+        let request = cx
+            .try_global::<Gpui>()
+            .and_then(|gpui| gpui.get_pending_new_context_target(&session_id))?;
+        let rid = request.request_id.clone();
+
+        Some(
+            div()
+                .flex_none()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().primary.opacity(0.06))
+                .p_2()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(cx.theme().foreground)
+                        .child("Where should the new context continue?"),
+                )
+                .children(request.options.iter().enumerate().map(|(i, option)| {
+                    let session_id = session_id.clone();
+                    let request_id = rid.clone();
+                    let target = option.target;
+                    Self::prompt_button(
+                        format!("new-context-{i}-{rid}"),
+                        option.label.clone().into(),
+                        i == 0,
+                        cx,
+                    )
+                    .tooltip({
+                        let description = option.description.clone();
+                        move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(description.clone())
+                                .build(window, cx)
+                        }
+                    })
+                    .on_click(move |_, _, cx| {
+                        if let Some(gpui) = cx.try_global::<Gpui>() {
+                            gpui.cmd_respond_new_context_target(
+                                session_id.clone(),
+                                request_id.clone(),
+                                target,
+                            );
+                        }
+                    })
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// Banner above the input area listing tool permission requests waiting
     /// for a decision, each with allow-once / always / deny buttons.
     fn render_permission_prompts(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
@@ -1102,28 +1232,6 @@ impl MainScreen {
                     gpui.cmd_respond_permission(session_id.clone(), request_id.clone(), decision);
                 }
             }
-        };
-
-        let button = |id: String, label: SharedString, emphasized: bool, cx: &mut Context<Self>| {
-            div()
-                .id(SharedString::from(id))
-                .px_2()
-                .py_0p5()
-                .rounded_md()
-                .cursor_pointer()
-                .text_xs()
-                .when(emphasized, |this| {
-                    this.bg(cx.theme().primary)
-                        .text_color(cx.theme().primary_foreground)
-                        .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
-                })
-                .when(!emphasized, |this| {
-                    this.border_1()
-                        .border_color(cx.theme().border)
-                        .text_color(cx.theme().muted_foreground)
-                        .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
-                })
-                .child(label)
         };
 
         Some(
@@ -1172,7 +1280,7 @@ impl MainScreen {
                         // first is the primary action. Frontends don't decide
                         // the options — the mediator does (permission_options_for).
                         .children(request.options.iter().enumerate().map(|(i, option)| {
-                            button(
+                            Self::prompt_button(
                                 format!("perm-{i}-{rid}"),
                                 option.label.clone().into(),
                                 i == 0,
@@ -1404,6 +1512,8 @@ impl Render for MainScreen {
             }
         }
 
+        self.offer_prepared_handoff(window, cx);
+
         // Check for pending edit (message editing for branching)
         if let Some(gpui) = cx.try_global::<Gpui>()
             && let Some(pending_edit) = gpui.take_pending_edit()
@@ -1603,6 +1713,7 @@ impl Render for MainScreen {
         let sidebar_scale = self.sidebar_animation_scale();
         let right_sidebar_scale = self.right_sidebar_animation_scale();
         let permission_prompts = self.render_permission_prompts(cx);
+        let new_context_prompt = self.render_new_context_target_prompt(cx);
 
         // Main container with titlebar and content
         div()
@@ -1889,6 +2000,7 @@ impl Render for MainScreen {
                             .when(plan_visible, |s| s.child(self.plan_banner.clone()))
                             // Pending tool permission prompts (if any)
                             .children(permission_prompts)
+                            .children(new_context_prompt)
                             // Input area sits at the bottom
                             .child(
                                 div()

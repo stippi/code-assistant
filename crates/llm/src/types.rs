@@ -111,6 +111,11 @@ pub struct Message {
     /// Indicates this message is a compaction summary divider
     #[serde(default)]
     pub is_compaction_summary: bool,
+    /// Marks a compaction summary that opens a fresh context with a prompt
+    /// (`/new`, `/handoff`) instead of summarizing the context it replaces.
+    /// The content is the new context's first user message.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_new_context: bool,
 }
 
 impl Default for Message {
@@ -122,6 +127,7 @@ impl Default for Message {
             request_id: None,
             usage: None,
             is_compaction_summary: false,
+            is_new_context: false,
         }
     }
 }
@@ -521,6 +527,18 @@ pub trait RateLimitHandler: Sized {
 }
 
 impl Message {
+    /// The boundary that opens a fresh context whose first user message is
+    /// `prompt` (empty: the next user message opens it).
+    pub fn new_context(prompt: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: MessageContent::Text(prompt.into()),
+            is_compaction_summary: true,
+            is_new_context: true,
+            ..Default::default()
+        }
+    }
+
     pub fn new_user(text: impl Into<String>) -> Self {
         Self {
             role: MessageRole::User,

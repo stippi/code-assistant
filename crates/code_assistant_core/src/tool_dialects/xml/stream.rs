@@ -755,7 +755,7 @@ impl XmlStreamProcessor {
 
                     DisplayFragment::PlainText(_)
                     | DisplayFragment::ThinkingText { .. }
-                    | DisplayFragment::CompactionDivider { .. } => {
+                    | DisplayFragment::ContextDivider { .. } => {
                         // Text or thinking - buffer it
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..

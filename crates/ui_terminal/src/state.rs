@@ -44,6 +44,9 @@ pub struct AppState {
     pub pending_permission_requests: Vec<ToolPermissionRequestData>,
     /// Skills available to the current session, cached for the `/skill` picker.
     pub skills: Vec<SkillCatalogEntry>,
+    /// A handoff prepared while idle, as (session id, composer text); the
+    /// event loop puts it into a blank composer of that session.
+    pub prepared_handoff: Option<(String, String)>,
     /// Slash-command popup stack. Empty stack ↔ no popup visible.
     pub popup_stack: PopupStack,
     /// Node ids of messages the transcript already shows (or knows about),
@@ -72,6 +75,7 @@ impl AppState {
             current_permission_tier: None,
             pending_permission_requests: Vec::new(),
             skills: Vec::new(),
+            prepared_handoff: None,
             popup_stack: PopupStack::new(),
             seen_node_ids: HashSet::new(),
         }
@@ -152,7 +156,7 @@ impl AppState {
             "Permission required: {} — /allow, /always or /deny",
             next.summary
         ));
-        if !self.popup_stack.has_permission_popup() {
+        if !self.popup_stack.has_request_popup() {
             self.popup_stack.push(Box::new(
                 crate::slash_popup::PermissionPromptPopup::for_request(&next),
             ));

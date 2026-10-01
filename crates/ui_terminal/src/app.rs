@@ -238,18 +238,6 @@ impl Actions {
         });
     }
 
-    fn compact_context(&self, session_id: String) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            if this.refuse_if_view_only().await {
-                return;
-            }
-            if let Err(e) = this.service.compact_context(session_id).await {
-                this.display_error(format!("{e:#}"));
-            }
-        });
-    }
-
     fn change_permission_tier(&self, session_id: String, tier: tools_core::PermissionTier) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -258,6 +246,34 @@ impl Actions {
             }
             if let Err(e) = this.service.change_permission_tier(session_id, tier).await {
                 this.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
+    fn respond_new_context_target(
+        &self,
+        session_id: String,
+        request_id: String,
+        target: code_assistant_core::session::new_context::NewContextTarget,
+    ) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this
+                .service
+                .respond_new_context_target(session_id, request_id, target)
+                .await
+            {
+                this.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
+    /// The user is typing in the session: postpone preparing a handoff.
+    fn note_user_activity(&self, session_id: String) {
+        let service = self.service.clone();
+        tokio::spawn(async move {
+            if let Err(e) = service.note_user_activity(session_id).await {
+                tracing::debug!("Failed to note user activity: {e:#}");
             }
         });
     }
@@ -346,6 +362,7 @@ impl Actions {
                 state.tool_statuses.clear();
                 state.pending_permission_requests.clear();
                 state.popup_stack.clear();
+                state.prepared_handoff = None;
                 state.update_pending_message(None);
                 state.update_activity_state(None);
                 state.reset_seen_nodes([]);
@@ -474,12 +491,6 @@ async fn handle_command_result(
                 actions.clear_context(session_id);
             }
         }
-        CommandResult::CompactContext => {
-            let session_id = app_state.lock().await.current_session_id.clone();
-            if let Some(session_id) = session_id {
-                actions.compact_context(session_id);
-            }
-        }
 
         CommandResult::OpenSkillPicker => {
             // Open the skill picker built from the cached catalog. If no skills
@@ -583,6 +594,18 @@ async fn handle_command_result(
                 }
             }
         }
+        CommandResult::RespondNewContextTarget { request_id, target } => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            if let Some(session_id) = session_id {
+                actions.respond_new_context_target(session_id, request_id, target);
+            }
+        }
+        CommandResult::CancelNewContext => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            if let Some(session_id) = session_id {
+                actions.request_stop(session_id);
+            }
+        }
         CommandResult::InvalidCommand(error) => {
             app_state
                 .lock()
@@ -604,6 +627,8 @@ async fn event_loop(
 ) -> Result<()> {
     let mut event_stream = EventStream::new();
     let mut needs_redraw = true; // Draw initial frame
+    let mut activity_reports =
+        code_assistant_core::session::idle_handoff::ActivityThrottle::default();
 
     loop {
         // === PHASE 1: Draw if needed ===
@@ -623,6 +648,15 @@ async fn event_loop(
                 if state.plan_dirty {
                     renderer_guard.set_plan_state(state.plan.clone());
                     state.plan_dirty = false;
+                }
+
+                // Offer a handoff prepared while idle, unless the user has
+                // started writing something else.
+                if let Some((session_id, text)) = state.prepared_handoff.take()
+                    && state.current_session_id.as_ref() == Some(&session_id)
+                    && input_manager.textarea.is_empty()
+                {
+                    input_manager.textarea.insert_str(&text);
                 }
                 renderer_guard.set_plan_expanded(state.plan_expanded);
                 renderer_guard.set_overlay_active(state.is_overlay_active());
@@ -698,6 +732,16 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(event)) => match event {
                         Event::Key(key_event) => {
+                            // Typing postpones preparing a handoff (reports
+                            // throttled per session).
+                            let current_session =
+                                app_state.lock().await.current_session_id.clone();
+                            if let Some(session_id) = current_session
+                                && activity_reports
+                                    .should_report(&session_id, std::time::Instant::now())
+                            {
+                                actions.note_user_activity(session_id);
+                            }
                             // Permission prompts push popups from the backend
                             // event task; resync routing before each key so
                             // Up/Down/Enter reach an asynchronously opened popup.
@@ -898,15 +942,6 @@ async fn event_loop(
                                         actions.clear_context(session_id);
                                     }
                                 }
-                                KeyEventResult::CompactContext => {
-                                    let current_session_id = {
-                                        let state = app_state.lock().await;
-                                        state.current_session_id.clone()
-                                    };
-                                    if let Some(session_id) = current_session_id {
-                                        actions.compact_context(session_id);
-                                    }
-                                }
 
                                 KeyEventResult::ShowPermissionTier => {
                                     let mut state = app_state.lock().await;
@@ -995,7 +1030,7 @@ async fn event_loop(
                                     // so the query is the part after the leading "/".
                                     // For sub-popups the composer is the query verbatim.
                                     if state.popup_stack.depth() == 1
-                                        && !state.popup_stack.has_permission_popup()
+                                        && !state.popup_stack.has_request_popup()
                                         && text.starts_with('/')
                                     {
                                         // Once the command token is complete the
@@ -1016,18 +1051,18 @@ async fn event_loop(
                                         // Capture root-Esc *before* dispatch so we can also
                                         // delete the leading "/" from the composer when the
                                         // user dismisses the root popup.
-                                        // Permission prompts are not opened by a
-                                        // typed "/", so dismissing one must not
-                                        // eat a leading slash from the composer.
-                                        let top_is_permission_prompt = state
+                                        // Prompts the core asks for are not opened
+                                        // by a typed "/", so dismissing one must
+                                        // not eat a leading slash from the composer.
+                                        let top_is_request_prompt = state
                                             .popup_stack
                                             .top()
-                                            .is_some_and(|p| p.permission_request_id().is_some());
+                                            .is_some_and(|p| p.request_id().is_some());
                                         let was_root_esc = matches!(
                                             key.code,
                                             crossterm::event::KeyCode::Esc
                                         ) && state.popup_stack.depth() == 1
-                                            && !top_is_permission_prompt;
+                                            && !top_is_request_prompt;
                                         let depth_before = state.popup_stack.depth();
                                         let result = state.popup_stack.handle_key(key);
                                         let depth_after = state.popup_stack.depth();
@@ -1038,7 +1073,7 @@ async fn event_loop(
                                             still_active,
                                             depth_before,
                                             depth_after,
-                                            top_is_permission_prompt,
+                                            top_is_request_prompt,
                                         )
                                     };
                                     let (
@@ -1047,7 +1082,7 @@ async fn event_loop(
                                         still_active,
                                         depth_before,
                                         depth_after,
-                                        top_was_permission_prompt,
+                                        top_was_request_prompt,
                                     ) = outcome;
                                     input_manager.popup_active = still_active;
 
@@ -1071,9 +1106,9 @@ async fn event_loop(
                                         // The popup committed a final command; clear the
                                         // composer line (the slash word) and dispatch the
                                         // command via the same path as inline /commands.
-                                        // Permission prompts were not opened by a typed
-                                        // "/word", so their commit leaves the composer alone.
-                                        if !top_was_permission_prompt {
+                                        // Prompts the core asked for were not opened by a
+                                        // typed "/word", so their commit leaves the composer alone.
+                                        if !top_was_request_prompt {
                                             clear_slash_command_word(&mut input_manager.textarea);
                                         }
                                         if let crate::commands::CommandResult::InsertInputTemplate(
@@ -1224,6 +1259,11 @@ impl TerminalTuiApp {
                 service.clone(),
                 Some(sleep_inhibitor),
             ));
+            // Idle handoff: long sessions left idle get a prepared
+            // `/new <prompt>` while the prompt cache is warm.
+            manager.set_idle_handoff(
+                code_assistant_core::session::idle_handoff::spawn_idle_handoff(service.clone()),
+            );
         }
 
         // Goal controller: while the app is open, drives the sessions'
@@ -1250,6 +1290,10 @@ impl TerminalTuiApp {
         // Bridge: subscribe to the core→UI broadcast stream and feed the
         // terminal's rendering pipeline. Single-session app, so everything
         // scoped to the current session (or app-scoped) passes.
+        // `/new` and `/handoff` may continue in a new session; the bridge
+        // hands its id to the task below, which follows it once `Actions`
+        // exists.
+        let (handed_off_tx, mut handed_off_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         {
             let terminal_ui = terminal_ui.clone();
             let app_state = app_state.clone();
@@ -1270,6 +1314,9 @@ impl TerminalTuiApp {
                             match event.payload {
                                 EventPayload::Fragment(fragment) => {
                                     let _ = terminal_ui.display_fragment(&fragment);
+                                }
+                                EventPayload::Ui(UiEvent::SessionHandedOff { to }) => {
+                                    let _ = handed_off_tx.send(to);
                                 }
                                 EventPayload::Ui(ui_event) => {
                                     // Drive the rate-limit spinner from activity
@@ -1325,6 +1372,15 @@ impl TerminalTuiApp {
             redraw_tx: redraw_tx.clone(),
             watcher_session_ref: watcher_session_ref.clone(),
         };
+        {
+            let actions = actions.clone();
+            tokio::spawn(async move {
+                while let Some(to) = handed_off_rx.recv().await {
+                    actions.switch_session(to);
+                    actions.refresh_chat_list();
+                }
+            });
+        }
 
         // Determine which session to use and load it
         let mut session_id = None;

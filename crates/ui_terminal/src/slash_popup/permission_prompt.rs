@@ -80,7 +80,7 @@ impl SlashPopup for PermissionPromptPopup {
         })
     }
 
-    fn permission_request_id(&self) -> Option<&str> {
+    fn request_id(&self) -> Option<&str> {
         Some(&self.request_id)
     }
 }
@@ -155,11 +155,11 @@ mod tests {
     fn stack_finds_and_removes_permission_popup_by_id() {
         let mut stack = PopupStack::new();
         stack.push(Box::new(PermissionPromptPopup::for_request(&request("r1"))));
-        assert!(stack.has_permission_popup());
-        stack.remove_permission_popup("other");
-        assert!(stack.has_permission_popup());
-        stack.remove_permission_popup("r1");
-        assert!(!stack.has_permission_popup());
+        assert!(stack.has_request_popup());
+        stack.remove_request_popup("other");
+        assert!(stack.has_request_popup());
+        stack.remove_request_popup("r1");
+        assert!(!stack.has_request_popup());
         assert!(!stack.is_active());
     }
 }

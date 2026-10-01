@@ -143,7 +143,10 @@ pub enum UiEvent {
         node_id: Option<NodeId>,
     },
     /// Display a system-generated compaction divider message
-    DisplayCompactionSummary { summary: String },
+    DisplayContextDivider {
+        boundary: agent_core::ui::ContextBoundary,
+        summary: String,
+    },
     /// Append to the last text block
     AppendToTextBlock { content: String },
     /// Append to the last thinking block
@@ -272,6 +275,22 @@ pub enum UiEvent {
     /// A permission request was settled (answered, or dropped by a stop
     /// request); open prompts for it should dismiss.
     ToolPermissionRequestResolved { request_id: String },
+    /// `/new` or `/handoff` asks where the new context continues. Answered
+    /// via `SessionService::respond_new_context_target`; a
+    /// [`UiEvent::NewContextTargetResolved`] follows once settled.
+    RequestNewContextTarget {
+        request: crate::session::new_context::NewContextTargetRequest,
+    },
+    /// The target question was settled (answered, or dropped by a stop
+    /// request); an open prompt for it should dismiss.
+    NewContextTargetResolved { request_id: String },
+    /// The session's work continues in the new session `to` (`/new`,
+    /// `/handoff`); a frontend viewing this session should switch to it.
+    SessionHandedOff { to: String },
+    /// A handoff prompt was prepared while the session was idle; a
+    /// frontend puts `/new <prompt>` into the session's composer if it is
+    /// empty.
+    HandoffPrepared { prompt: String },
 
     /// Schedule a debounced save of the per-session UI state file.
     /// Sent after any mutation to the UI state (tool collapse toggle, plan

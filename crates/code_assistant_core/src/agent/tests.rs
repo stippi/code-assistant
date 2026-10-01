@@ -648,9 +648,9 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
 
     // Ensure the UI received a SetMessages event with the compaction divider
     let streaming_output = ui.get_streaming_output();
-    let has_compaction_fragment = streaming_output
-        .iter()
-        .any(|chunk| chunk.starts_with("[compaction] ") && chunk.contains(summary_text));
+    let has_compaction_fragment = streaming_output.iter().any(|chunk| {
+        chunk.starts_with("[Conversation compacted] ") && chunk.contains(summary_text)
+    });
     assert!(
         has_compaction_fragment,
         "Expected compaction divider fragment with summary text"
@@ -1058,7 +1058,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
 
     assert!(
         request_contains(old_user_text),
-        "The hand-off carries user messages from before the previous summary verbatim",
+        "The handoff carries user messages from before the previous summary verbatim",
     );
     assert!(
         !request_contains(old_assistant_text),
@@ -2397,7 +2397,7 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
     let streaming_output = ui.get_streaming_output();
     let has_compaction = streaming_output
         .iter()
-        .any(|s| s.starts_with("[compaction]"));
+        .any(|s| s.starts_with("[Conversation compacted]"));
     assert!(
         has_compaction,
         "Expected compaction divider in UI streaming output"
@@ -2703,10 +2703,8 @@ fn message_text(message: &Message) -> String {
 
 #[tokio::test]
 async fn test_pending_user_message_lands_after_the_compaction_handoff() -> Result<()> {
-    let (mut agent, mock_llm) = compaction_test_agent(vec![
-        Ok(idle_response()),
-        Ok(text_response("hand-off text")),
-    ]);
+    let (mut agent, mock_llm) =
+        compaction_test_agent(vec![Ok(idle_response()), Ok(text_response("handoff text"))]);
     agent.append_message(Message::new_user("Original request"))?;
     agent.append_message(over_threshold_assistant("Working on it"))?;
     let pending = Arc::new(std::sync::Mutex::new(Some(vec![ContentBlock::new_text(
@@ -2736,9 +2734,12 @@ async fn test_pending_user_message_lands_after_the_compaction_handoff() -> Resul
             .any(|message| message_text(message).contains("Follow-up question")),
         "the compaction request covers only the history before the pending message"
     );
+    // One opening user message: the handoff with the follow-up after it.
     let follow_up = &requests[1].messages;
-    assert!(message_text(&follow_up[0]).starts_with("<handoff>"));
-    assert_eq!(message_text(&follow_up[1]), "Follow-up question");
+    assert_eq!(follow_up.len(), 1);
+    let opening = message_text(&follow_up[0]);
+    assert!(opening.starts_with("<handoff>"), "{opening}");
+    assert!(opening.contains("Follow-up question"), "{opening}");
     Ok(())
 }
 
@@ -2755,7 +2756,7 @@ async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -
     };
     let (mut agent, mock_llm) = compaction_test_agent(vec![
         Ok(idle_response()),
-        Ok(text_response("hand-off text")),
+        Ok(text_response("handoff text")),
         Ok(tool_only),
     ]);
     agent.append_message(Message::new_user("Original request"))?;
@@ -2768,7 +2769,7 @@ async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -
     let retry_prompt = message_text(requests[1].messages.last().unwrap());
     assert!(
         retry_prompt.contains("system-compaction")
-            && retry_prompt.contains("Reminder: this is a compaction request"),
+            && retry_prompt.contains("Reminder: Do not call any tools"),
         "{retry_prompt}"
     );
     let summary = agent
@@ -2776,7 +2777,7 @@ async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -
         .into_iter()
         .find(|message| message.is_compaction_summary)
         .expect("compaction summary in history");
-    assert_eq!(message_text(&summary), "hand-off text");
+    assert_eq!(message_text(&summary), "handoff text");
     Ok(())
 }
 
@@ -2798,8 +2799,8 @@ async fn test_compaction_fails_when_the_model_never_answers_with_text() -> Resul
     let error = agent
         .run_single_iteration()
         .await
-        .expect_err("a compaction without a hand-off text fails the turn");
-    assert!(error.to_string().contains("hand-off"), "{error}");
+        .expect_err("a compaction without a handoff text fails the turn");
+    assert!(error.to_string().contains("handoff"), "{error}");
     assert!(
         !agent
             .message_history_for_tests()

@@ -12,7 +12,9 @@ use crate::hooks::{ContextSnapshot, HookRegistry, LoopCtx, RecoveryAction, ToolS
 use crate::persistence::{AgentCheckpoint, CheckpointPersistence};
 use crate::tree::{Conversation, ConversationPath, MessageNode, NodeId};
 use crate::types::{ToolExecution, ToolRequest, text_summary_from_blocks, to_tool_definitions};
-use crate::ui::{AgentActivity, AgentUi, AgentUiEvent, DisplayFragment, HiddenTools, UIError};
+use crate::ui::{
+    AgentActivity, AgentUi, AgentUiEvent, ContextBoundary, DisplayFragment, HiddenTools, UIError,
+};
 use anyhow::Result;
 use command_executor::CommandExecutor;
 use llm::{
@@ -28,10 +30,10 @@ use tools_core::{
 };
 use tracing::{debug, trace, warn};
 
-/// Appended to the compaction prompt when the model answered it with tool
-/// calls instead of text.
-const HANDOFF_TOOL_CALL_REMINDER: &str = "Reminder: this is a compaction request. Do not call any \
-tools; reply with the hand-off text only.";
+/// Appended to a handoff request when the model answered it with tool calls
+/// instead of text.
+const HANDOFF_TOOL_CALL_REMINDER: &str =
+    "Reminder: Do not call any tools in this response; reply with the handoff text only.";
 
 /// Everything an [`AgentRuntime`] is built from.
 pub struct AgentRuntimeComponents {
@@ -363,7 +365,7 @@ impl AgentRuntime {
 
         loop {
             self.cancellation.check()?;
-            // Compact before a pending user message is appended: the hand-off
+            // Compact before a pending user message is appended: the handoff
             // covers the history so far and the new request follows it.
             if self.should_trigger_compaction()? {
                 self.perform_compaction().await?;
@@ -869,30 +871,40 @@ impl AgentRuntime {
         (!text.is_empty()).then(|| text.to_string())
     }
 
-    /// Asks the model for the hand-off text. The request keeps the tool
-    /// definitions so the cached prompt prefix stays valid; a model that
-    /// answers with tool calls instead of text is asked once more.
-    async fn request_handoff(&mut self) -> Result<String> {
-        let prompt = self.hooks.compaction.compaction_prompt().to_string();
-        let messages = self.render_tool_results_in_messages();
-        for reminder in [None, Some(HANDOFF_TOOL_CALL_REMINDER)] {
-            let text = match reminder {
-                None => prompt.to_string(),
-                Some(reminder) => format!("{prompt}\n\n{reminder}"),
-            };
+    /// Asks the model for a handoff text without changing the history.
+    /// `prompt` is appended as a user message; without one, the history must
+    /// already end with the request. The request keeps the tool definitions
+    /// so the cached prompt prefix stays valid; a model that answers with
+    /// tool calls instead of text is asked once more.
+    pub async fn generate_handoff(&mut self, prompt: Option<&str>) -> Result<String> {
+        let mut messages = self.render_tool_results_in_messages();
+        if let Some(prompt) = prompt {
+            messages.push(Message::new_user(prompt));
+        }
+        for remind in [false, true] {
             let mut request = messages.clone();
-            request.push(Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(text),
-                ..Default::default()
-            });
+            if remind && let Some(last) = request.last_mut() {
+                append_text(last, HANDOFF_TOOL_CALL_REMINDER);
+            }
             let (response, _) = self.get_non_streaming_response(request).await?;
             if let Some(text) = Self::handoff_text(&response.content) {
                 return Ok(text);
             }
-            warn!("Compaction response contained no text; asking once more");
+            warn!("Handoff response contained no text; asking once more");
         }
-        anyhow::bail!("The model did not produce a hand-off text for compaction")
+        anyhow::bail!("The model did not produce a handoff text")
+    }
+
+    /// Opens a fresh context whose first user message is `prompt` (empty: the
+    /// next user message opens it) and shows the divider for it.
+    pub fn append_new_context(&mut self, prompt: String) -> Result<()> {
+        let summary = prompt.trim().to_string();
+        self.append_message(Message::new_context(prompt))?;
+        self.ui.display_fragment(&DisplayFragment::ContextDivider {
+            boundary: ContextBoundary::NewContext,
+            summary,
+        })?;
+        Ok(())
     }
 
     /// The active-path messages from the last compaction summary onwards.
@@ -907,7 +919,7 @@ impl AgentRuntime {
     }
 
     /// The messages the next request is built from: everything from the last
-    /// compaction summary onwards, with the summary rendered as the hand-off
+    /// compaction summary onwards, with the summary rendered as the handoff
     /// message that also carries the user's earlier messages verbatim.
     fn prompt_messages(&self) -> Vec<Message> {
         let path = self.conversation.path();
@@ -926,12 +938,30 @@ impl AgentRuntime {
             .filter_map(|id| nodes.get(id))
             .map(|node| node.message.clone())
             .collect();
-        if let Some(summary) = messages
+        // A new context opens with its prompt as a plain user message.
+        if messages
+            .first()
+            .is_some_and(|message| message.is_new_context)
+        {
+            if handoff::user_message_text(&messages[0]).is_none() {
+                messages.remove(0);
+            }
+        } else if let Some(summary) = messages
             .first_mut()
             .filter(|message| message.is_compaction_summary)
         {
+            // The user messages since the last new context: the ones before
+            // it belong to a context the user deliberately left behind.
+            let context_start = path[..start]
+                .iter()
+                .rposition(|id| {
+                    nodes
+                        .get(id)
+                        .is_some_and(|node| node.message.is_new_context)
+                })
+                .unwrap_or(0);
             let user_messages = handoff::user_message_texts(
-                path[..start]
+                path[context_start..start]
                     .iter()
                     .filter_map(|id| nodes.get(id))
                     .map(|node| &node.message),
@@ -943,6 +973,7 @@ impl AgentRuntime {
             summary.content =
                 MessageContent::Text(handoff::render_handoff(&user_messages, summary_text));
         }
+        handoff::fold_into_opening(&mut messages);
         messages
     }
 
@@ -1172,7 +1203,8 @@ impl AgentRuntime {
             activity: AgentActivity::WaitingForResponse,
         })
         .await?;
-        let summary_result = self.request_handoff().await;
+        let prompt = self.hooks.compaction.compaction_prompt().to_string();
+        let summary_result = self.generate_handoff(Some(&prompt)).await;
         self.send_ui(AgentUiEvent::ActivityChanged {
             activity: AgentActivity::Running,
         })
@@ -1203,7 +1235,8 @@ impl AgentRuntime {
         };
         self.append_message(summary_message)?;
 
-        let divider = DisplayFragment::CompactionDivider {
+        let divider = DisplayFragment::ContextDivider {
+            boundary: ContextBoundary::Compaction,
             summary: summary_text.trim().to_string(),
         };
         self.ui.display_fragment(&divider)?;
@@ -1566,5 +1599,16 @@ impl AgentRuntime {
             updated_request.id
         );
         Ok(updated_text)
+    }
+}
+
+/// Appends `text` to a message as a separate paragraph.
+fn append_text(message: &mut Message, text: &str) {
+    match &mut message.content {
+        MessageContent::Text(existing) => {
+            existing.push_str("\n\n");
+            existing.push_str(text);
+        }
+        MessageContent::Structured(blocks) => blocks.push(ContentBlock::new_text(text)),
     }
 }

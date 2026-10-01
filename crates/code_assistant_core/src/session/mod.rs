@@ -11,8 +11,10 @@ use tools_core::permissions::PermissionTier;
 
 // New session management architecture
 pub mod event_stream;
+pub mod idle_handoff;
 pub mod instance;
 pub mod manager;
+pub mod new_context;
 pub mod permissions;
 pub mod service;
 pub mod sleep_inhibitor;
@@ -59,6 +61,8 @@ pub struct SessionSnapshot {
     /// Permission requests still awaiting an answer; a connecting frontend
     /// should render prompts for them.
     pub pending_permission_requests: Vec<permissions::ToolPermissionRequestData>,
+    /// The open `/new` / `/handoff` target question, if any.
+    pub pending_new_context_target: Option<new_context::NewContextTargetRequest>,
 }
 
 impl SessionSnapshot {
@@ -112,6 +116,11 @@ impl SessionSnapshot {
         });
         for request in &self.pending_permission_requests {
             events.push(UiEvent::RequestToolPermission {
+                request: request.clone(),
+            });
+        }
+        if let Some(request) = &self.pending_new_context_target {
+            events.push(UiEvent::RequestNewContextTarget {
                 request: request.clone(),
             });
         }

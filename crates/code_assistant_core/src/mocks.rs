@@ -348,11 +348,11 @@ impl UserInterface for MockUI {
                     .push("\n• Reasoning Complete".to_string());
             }
 
-            crate::ui::DisplayFragment::CompactionDivider { summary } => {
+            crate::ui::DisplayFragment::ContextDivider { boundary, summary } => {
                 self.streaming
                     .lock()
                     .unwrap()
-                    .push(format!("[compaction] {summary}"));
+                    .push(format!("[{}] {summary}", boundary.label()));
             }
             crate::ui::DisplayFragment::HiddenToolCompleted => {
                 // Hidden tool completed - UI handles paragraph breaks

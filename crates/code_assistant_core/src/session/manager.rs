@@ -38,6 +38,20 @@ pub struct RegistryRequest {
 pub(crate) struct RunConfig {
     pub session: SessionConfig,
     pub model: Option<SessionModelConfig>,
+    pub task: RunTask,
+}
+
+/// What a run does.
+#[derive(Default)]
+pub(crate) enum RunTask {
+    /// Answer the last user message (and messages queued meanwhile).
+    #[default]
+    Answer,
+    /// Open a new context (`/new`, `/handoff`).
+    NewContext(crate::session::new_context::NewContextRun),
+    /// Write a handoff prompt for the composer without changing the
+    /// history (see [`crate::session::idle_handoff`]).
+    PrepareHandoff,
 }
 
 /// Provides the tool registry for the next agent run. Consulted at the
@@ -140,6 +154,10 @@ pub struct SessionManager {
     /// `schedule_wakeup` / `cancel_wakeup` tools bound to their session.
     wakeup_handle: Option<crate::session::wakeup::WakeupHandle>,
 
+    /// Timers preparing a handoff for long sessions left idle; armed when a
+    /// run ends.
+    idle_handoff: Option<crate::session::idle_handoff::IdleHandoffTimers>,
+
     /// If set, an unanswered permission prompt fails closed after this long
     /// (see [`SessionPermissionMediator`]). Left `None` for interactive
     /// frontends; set by embedders that run unattended lanes (channels,
@@ -181,6 +199,7 @@ impl SessionManager {
             tool_registry_provider: None,
             hooks_factory: None,
             wakeup_handle: None,
+            idle_handoff: None,
             permission_timeout: None,
             events,
         }
@@ -198,6 +217,103 @@ impl SessionManager {
     /// without the wakeup tools.
     pub fn set_wakeup_handle(&mut self, handle: crate::session::wakeup::WakeupHandle) {
         self.wakeup_handle = Some(handle);
+    }
+
+    /// Install the idle handoff timers (see
+    /// [`crate::session::idle_handoff::spawn_idle_handoff`]). Wiring layers
+    /// set this right after constructing the service; without it, no
+    /// handoff is prepared.
+    pub fn set_idle_handoff(&mut self, timers: crate::session::idle_handoff::IdleHandoffTimers) {
+        self.idle_handoff = Some(timers);
+    }
+
+    /// The idle handoff timers, if installed.
+    pub(crate) fn idle_handoff(&self) -> Option<&crate::session::idle_handoff::IdleHandoffTimers> {
+        self.idle_handoff.as_ref()
+    }
+
+    /// Remove a `/handoff` message nothing followed, because its run was
+    /// stopped or failed before the new context opened; an edit it replaced
+    /// becomes the active branch again. Returns whether it was removed.
+    pub(crate) fn retract_unanswered_handoff(&mut self, session_id: &str) -> Result<bool> {
+        let mut retracted = false;
+        let session = self.persistence.update_entry(session_id, |session| {
+            let Some(&last) = session.active_path.last() else {
+                return Ok(());
+            };
+            let node = &session.message_nodes[&last];
+            let has_children = session
+                .message_nodes
+                .values()
+                .any(|child| child.parent_id == Some(last));
+            if !crate::session::new_context::is_handoff_request(&node.message) || has_children {
+                return Ok(());
+            }
+            let parent = node.parent_id;
+            session.message_nodes.remove(&last);
+            session.active_path.pop();
+            let sibling = session
+                .get_children_sorted(parent)
+                .last()
+                .map(|sibling| sibling.id);
+            if let Some(sibling) = sibling {
+                session.switch_branch(sibling)?;
+            }
+            retracted = true;
+            Ok(())
+        })?;
+        self.replace_instance_session(session);
+        Ok(retracted)
+    }
+
+    /// Whether the session should get a prepared handoff now: idle (not
+    /// errored), its current context ends with the agent's answer, the
+    /// request for that answer had at least `threshold_tokens` of input, and
+    /// nothing was prepared for this state yet. Marks it as prepared.
+    pub(crate) fn claim_handoff_preparation(
+        &mut self,
+        session_id: &str,
+        threshold_tokens: u64,
+    ) -> Result<bool> {
+        self.ensure_session_loaded(session_id)?;
+        let instance = self.active_sessions.get_mut(session_id).unwrap();
+        if instance.get_activity_state() != crate::session::instance::SessionActivityState::Idle {
+            return Ok(false);
+        }
+        // Runs save through their own manager; read what they stored.
+        instance.reload_from_persistence(&self.persistence)?;
+        let session = &instance.session;
+        let head = session.active_path.last().copied();
+        if head.is_none() || head == instance.handoff_prepared_for {
+            return Ok(false);
+        }
+        let messages = session.get_active_messages_cloned();
+        // The current context starts after the last compaction or new
+        // context; the size of the one before does not count.
+        let context_start = messages
+            .iter()
+            .rposition(|message| message.is_compaction_summary)
+            .map_or(0, |index| index + 1);
+        let Some(answer) = messages[context_start..]
+            .last()
+            .filter(|message| message.role == llm::MessageRole::Assistant)
+        else {
+            return Ok(false);
+        };
+        let input_tokens = answer
+            .usage
+            .as_ref()
+            .map(|usage| {
+                u64::from(usage.input_tokens)
+                    + u64::from(usage.cache_creation_input_tokens)
+                    + u64::from(usage.cache_read_input_tokens)
+            })
+            .unwrap_or(0);
+        if input_tokens < threshold_tokens {
+            return Ok(false);
+        }
+        instance.handoff_prepared_for = head;
+        Ok(true)
     }
 
     /// Fail unanswered permission prompts closed after `timeout`, so unattended
@@ -927,6 +1043,7 @@ impl SessionManager {
         let run_config = RunConfig {
             session: instance.session.config.clone(),
             model: instance.session.model_config.clone(),
+            task: RunTask::Answer,
         };
         self.refresh_tool_registry(session_id, registry_request)
             .await;
@@ -998,6 +1115,7 @@ impl SessionManager {
             session_state,
             activity,
             pending_message_ref,
+            pending_target,
             sandbox_context,
         ) = {
             let session_instance = self
@@ -1019,6 +1137,7 @@ impl SessionManager {
                 session_instance.create_publisher(self.events.clone(), turn_recorder.clone());
             let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
+            let pending_target = session_instance.pending_new_context_target.clone();
 
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
@@ -1072,9 +1191,13 @@ impl SessionManager {
                 session_state,
                 activity,
                 pending_message_ref,
+                pending_target,
                 session_instance.sandbox_context.clone(),
             )
         };
+        let task = run_config.task;
+        let idle_handoff = self.idle_handoff.clone();
+        let pending_message_for_task = pending_message_ref.clone();
 
         // Broadcast the initial state change
         self.events.publish_ui(
@@ -1245,7 +1368,33 @@ impl SessionManager {
                             plan: agent.plan().clone(),
                         })
                         .await;
-                    agent.run_single_iteration().await
+                    // Whether the agent answered: only then is there a new
+                    // state worth preparing a handoff for when it idles.
+                    match task {
+                        RunTask::Answer => agent.run_single_iteration().await.map(|()| true),
+                        RunTask::NewContext(run) => {
+                            let target = crate::session::new_context::ask_target(
+                                &session_id_clone,
+                                &events_clone,
+                                &pending_target,
+                            );
+                            run.run(&mut agent, target, &pending_message_for_task).await
+                        }
+                        RunTask::PrepareHandoff => {
+                            use crate::session::new_context::{Prepared, prepare_handoff};
+                            match prepare_handoff(&mut agent, &pending_message_for_task).await? {
+                                Prepared::Prompt(prompt) => {
+                                    events_clone.publish_ui(
+                                        &session_id_clone,
+                                        UiEvent::HandoffPrepared { prompt },
+                                    );
+                                    Ok(false)
+                                }
+                                Prepared::Nothing => Ok(false),
+                                Prepared::Answered => Ok(true),
+                            }
+                        }
+                    }
                 });
                 match iteration_future.catch_unwind().await {
                     Ok(result) => result,
@@ -1266,10 +1415,10 @@ impl SessionManager {
                 }
             };
 
-            let result = if cancellation.is_cancelled() {
-                Ok(())
-            } else {
-                result
+            let (result, answered) = match result {
+                Ok(answered) => (Ok(()), answered),
+                Err(_) if cancellation.is_cancelled() => (Ok(()), false),
+                Err(error) => (Err(error), false),
             };
             // Read usage while this run still owns the session. After publishing
             // Idle a successor may already append messages and save its own usage.
@@ -1295,6 +1444,9 @@ impl SessionManager {
                         session_id_clone
                     );
                     activity.set(crate::session::instance::SessionActivityState::Idle);
+                    if answered && let Some(timers) = &idle_handoff {
+                        timers.arm(&session_id_clone);
+                    }
 
                     // Broadcast Idle to UI
                     events_clone.publish_ui(
@@ -1376,6 +1528,9 @@ impl SessionManager {
         // A deleted session's armed wakeups must never fire
         if let Some(handle) = &self.wakeup_handle {
             handle.cancel_session(session_id.to_string());
+        }
+        if let Some(timers) = &self.idle_handoff {
+            timers.disarm(session_id);
         }
 
         // Delete from persistence
@@ -2029,12 +2184,12 @@ impl SessionManager {
     }
 }
 
-/// Text summary of a pending message as the user typed it: injected skill
+/// Text summary of a pending message as the user typed it: injected
 /// instructions are left out.
 fn pending_summary(blocks: &[ContentBlock]) -> String {
     let typed: Vec<ContentBlock> = blocks
         .iter()
-        .filter(|block| !crate::skills::is_skill_injection_block(block))
+        .filter(|block| !crate::injection::is_injection_block(block))
         .cloned()
         .collect();
     crate::utils::content::text_summary_from_blocks(&typed)

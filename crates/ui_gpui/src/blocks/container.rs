@@ -8,6 +8,7 @@
 use code_assistant_core::persistence::{BranchInfo, NodeId};
 
 use crate::shared::image;
+use agent_core::ui::ContextBoundary;
 use code_assistant_core::ui::ToolStatus;
 use gpui_kit::{Context, Entity, prelude::*};
 use std::sync::{Arc, Mutex};
@@ -213,13 +214,19 @@ impl MessageContainer {
         cx.notify();
     }
 
-    pub fn add_compaction_divider(&self, summary: impl Into<String>, cx: &mut Context<Self>) {
+    pub fn add_context_divider(
+        &self,
+        boundary: ContextBoundary,
+        summary: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.finish_any_thinking_blocks(cx);
 
         let request_id = *self.current_request_id.lock().unwrap();
         let block_id = self.allocate_block_id();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::CompactionSummary(CompactionSummaryBlock {
+            boundary,
             summary: summary.into(),
             is_expanded: false,
         });
