@@ -29,6 +29,7 @@ impl SessionService {
             "/new can't replace an edited message"
         );
         let service = self.clone();
+        let stores_request = matches!(command, NewContextCommand::Handoff { .. });
         self.call_session(session_id.clone(), move |ctx| async move {
             let (new_session, handed_over) = tokio::sync::oneshot::channel();
             start_new_context_impl(
@@ -44,8 +45,14 @@ impl SessionService {
             // use the service from their own executor.
             tokio::spawn(async move {
                 // Dropped without a prompt: the context stayed in this
-                // session, or the run was stopped.
+                // session, or the run was stopped or failed. Then a
+                // `/handoff` request nothing answered is taken back.
                 let Ok(prompt) = handed_over.await else {
+                    if stores_request
+                        && let Err(error) = service.retract_unanswered_handoff(&session_id).await
+                    {
+                        warn!("Failed to take back the handoff request in {session_id}: {error:#}");
+                    }
                     return;
                 };
                 if let Err(error) = service.continue_in_new_session(&session_id, prompt).await {
@@ -112,6 +119,31 @@ impl SessionService {
         self.call_control(move |ctx| async move {
             if let Some(timers) = ctx.manager.lock().await.idle_handoff() {
                 timers.touch(&session_id);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Remove the session's `/handoff` message if nothing answered it, and
+    /// show the transcript without it.
+    async fn retract_unanswered_handoff(&self, session_id: &str) -> Result<()> {
+        let session_id = session_id.to_string();
+        self.call_session(session_id.clone(), move |ctx| async move {
+            let mut manager = ctx.manager.lock().await;
+            if !manager.retract_unanswered_handoff(&session_id)? {
+                return Ok(());
+            }
+            if let Some(instance) = manager.get_session(&session_id) {
+                let transcript = transcript_data(instance)?;
+                ctx.notify_session(
+                    &session_id,
+                    UiEvent::SetMessages {
+                        messages: transcript.messages,
+                        session_id: Some(session_id.clone()),
+                        tool_results: transcript.tool_results,
+                    },
+                );
             }
             Ok(())
         })
@@ -585,6 +617,121 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("/new can't"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_handoff_takes_its_request_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The handoff is written at once; the run then waits for the target.
+        let llm = answering(&["built", "Next: write the tests"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        service
+            .send_user_message(id.clone(), "/handoff".into(), vec![], None)
+            .await
+            .unwrap();
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::RequestNewContextTarget { .. } => Some(()),
+            _ => None,
+        })
+        .await;
+        service.request_stop(id.clone()).await.unwrap();
+
+        // The transcript is replaced without the request.
+        let messages = next(&mut subscription, &id, |event| match event {
+            UiEvent::SetMessages { messages, .. } => Some(messages),
+            _ => None,
+        })
+        .await;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(path(tmp.path(), &id).len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_handoff_edit_returns_to_the_edited_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["built", "answered", "Next: write the tests"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        for message in ["Build X", "/handof typo"] {
+            service
+                .send_user_message(id.clone(), message.into(), vec![], None)
+                .await
+                .unwrap();
+            idle(&mut subscription, &id).await;
+        }
+        let before = path(tmp.path(), &id);
+        let typo_node = *crate::persistence::FileSessionPersistence::new_with_root_dir(
+            tmp.path().to_path_buf(),
+        )
+        .load_chat_session(&id)
+        .unwrap()
+        .unwrap()
+        .active_path
+        .get(2)
+        .unwrap();
+        let edit = service
+            .start_message_edit(id.clone(), typo_node)
+            .await
+            .unwrap();
+
+        service
+            .send_user_message(id.clone(), "/handoff".into(), vec![], edit.branch_parent_id)
+            .await
+            .unwrap();
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::RequestNewContextTarget { .. } => Some(()),
+            _ => None,
+        })
+        .await;
+        service.request_stop(id.clone()).await.unwrap();
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::SetMessages { .. } => Some(()),
+            _ => None,
+        })
+        .await;
+
+        let after = path(tmp.path(), &id);
+        assert_eq!(after.len(), before.len());
+        assert_eq!(texts(&after[2]), ["/handof typo"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_handoff_takes_its_request_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Served as a stack: the first answer, then the failing generation.
+        let llm = MockLLMProvider::new(vec![
+            Err(anyhow!("provider unavailable")),
+            text_response("built"),
+        ]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        service
+            .send_user_message(id.clone(), "/handoff".into(), vec![], None)
+            .await
+            .unwrap();
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::SetMessages { .. } => Some(()),
+            _ => None,
+        })
+        .await;
+
+        assert_eq!(path(tmp.path(), &id).len(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

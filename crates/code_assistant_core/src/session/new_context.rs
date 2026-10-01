@@ -98,6 +98,14 @@ pub(crate) fn handoff_request() -> String {
     )
 }
 
+/// Whether `message` is a `/handoff` message carrying the request block.
+pub(crate) fn is_handoff_request(message: &llm::Message) -> bool {
+    message.role == llm::MessageRole::User
+        && matches!(&message.content, llm::MessageContent::Structured(blocks)
+            if blocks.iter().any(|block| matches!(block, llm::ContentBlock::Text { text, .. }
+                if text.starts_with("<handoff-request>") && crate::injection::is_injection(text))))
+}
+
 /// How preparing a handoff ended.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Prepared {

@@ -232,6 +232,40 @@ impl SessionManager {
         self.idle_handoff.as_ref()
     }
 
+    /// Remove a `/handoff` message nothing followed, because its run was
+    /// stopped or failed before the new context opened; an edit it replaced
+    /// becomes the active branch again. Returns whether it was removed.
+    pub(crate) fn retract_unanswered_handoff(&mut self, session_id: &str) -> Result<bool> {
+        let mut retracted = false;
+        let session = self.persistence.update_entry(session_id, |session| {
+            let Some(&last) = session.active_path.last() else {
+                return Ok(());
+            };
+            let node = &session.message_nodes[&last];
+            let has_children = session
+                .message_nodes
+                .values()
+                .any(|child| child.parent_id == Some(last));
+            if !crate::session::new_context::is_handoff_request(&node.message) || has_children {
+                return Ok(());
+            }
+            let parent = node.parent_id;
+            session.message_nodes.remove(&last);
+            session.active_path.pop();
+            let sibling = session
+                .get_children_sorted(parent)
+                .last()
+                .map(|sibling| sibling.id);
+            if let Some(sibling) = sibling {
+                session.switch_branch(sibling)?;
+            }
+            retracted = true;
+            Ok(())
+        })?;
+        self.replace_instance_session(session);
+        Ok(retracted)
+    }
+
     /// Whether the session should get a prepared handoff now: idle (not
     /// errored), its current context ends with the agent's answer, the
     /// request for that answer had at least `threshold_tokens` of input, and
