@@ -1,4 +1,4 @@
-//! `/new` and `/hand-off` through the service (see
+//! `/new` and `/handoff` through the service (see
 //! [`crate::session::new_context`]): the run that opens the new context,
 //! the answer to its target question, and the new session it may hand over
 //! to.
@@ -20,12 +20,12 @@ impl SessionService {
     ) -> Result<()> {
         ensure!(
             attachments.is_empty(),
-            "/new and /hand-off don't take attachments"
+            "/new and /handoff don't take attachments"
         );
         // `/new` stores no message of its own; its boundary is appended at
         // the end of the active path and cannot branch off an edited message.
         ensure!(
-            branch_parent_id.is_none() || matches!(command, NewContextCommand::HandOff { .. }),
+            branch_parent_id.is_none() || matches!(command, NewContextCommand::Handoff { .. }),
             "/new can't replace an edited message"
         );
         let service = self.clone();
@@ -63,7 +63,7 @@ impl SessionService {
         .await
     }
 
-    /// Answer the open target question of `/new` or `/hand-off`.
+    /// Answer the open target question of `/new` or `/handoff`.
     pub async fn respond_new_context_target(
         &self,
         session_id: String,
@@ -83,7 +83,7 @@ impl SessionService {
         .await
     }
 
-    /// Have the agent write a hand-off prompt for the composer, if the
+    /// Have the agent write a handoff prompt for the composer, if the
     /// session qualifies (see [`SessionManager::claim_handoff_preparation`]).
     /// Fired by the idle timers; the prompt arrives as
     /// [`UiEvent::HandoffPrepared`].
@@ -107,7 +107,7 @@ impl SessionService {
     }
 
     /// The user is active in the session (typing in its composer): postpone
-    /// preparing a hand-off.
+    /// preparing a handoff.
     pub async fn note_user_activity(&self, session_id: String) -> Result<()> {
         self.call_control(move |ctx| async move {
             if let Some(timers) = ctx.manager.lock().await.idle_handoff() {
@@ -154,10 +154,10 @@ async fn start_new_context_impl(
             };
             start_agent_impl(ctx, session_id, options).await
         }
-        // The request to write the hand-off rides along with the typed
+        // The request to write the handoff rides along with the typed
         // message, so the generation request is the history as it is. An
         // edited message branches off like any other.
-        NewContextCommand::HandOff { .. } => {
+        NewContextCommand::Handoff { .. } => {
             let mut blocks = content_blocks_from(message, &[]);
             blocks.push(llm::ContentBlock::new_text(
                 crate::session::new_context::handoff_request(),
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn hand_off_in_the_same_session_continues_from_the_generated_prompt() {
+    async fn handoff_in_the_same_session_continues_from_the_generated_prompt() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&["built", "Next: write the tests", "on it"]);
         let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
@@ -430,7 +430,7 @@ mod tests {
         idle(&mut subscription, &id).await;
 
         service
-            .send_user_message(id.clone(), "/hand-off focus on tests".into(), vec![], None)
+            .send_user_message(id.clone(), "/handoff focus on tests".into(), vec![], None)
             .await
             .unwrap();
         answer_target(
@@ -445,7 +445,7 @@ mod tests {
         let messages = path(tmp.path(), &id);
         assert_eq!(messages.len(), 5, "{messages:?}");
         let request = texts(&messages[2]);
-        assert_eq!(request[0], "/hand-off focus on tests");
+        assert_eq!(request[0], "/handoff focus on tests");
         assert!(crate::injection::is_injection(&request[1]));
         assert!(messages[3].is_new_context);
         assert_eq!(texts(&messages[3]), ["Next: write the tests"]);
@@ -461,13 +461,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn editing_a_message_into_a_hand_off_branches_from_it() {
+    async fn editing_a_message_into_a_handoff_branches_from_it() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&["built", "answered", "Next: write the tests", "on it"]);
         let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
         let id = service.create_session(None, None).await.unwrap();
         let mut subscription = service.subscribe();
-        for message in ["Build X", "/handoff typo"] {
+        for message in ["Build X", "/handof typo"] {
             service
                 .send_user_message(id.clone(), message.into(), vec![], None)
                 .await
@@ -491,7 +491,7 @@ mod tests {
         service
             .send_user_message(
                 id.clone(),
-                "/hand-off focus on tests".into(),
+                "/handoff focus on tests".into(),
                 vec![],
                 edit.branch_parent_id,
             )
@@ -508,9 +508,9 @@ mod tests {
 
         let messages = path(tmp.path(), &id);
         assert_eq!(messages.len(), 5, "{messages:?}");
-        assert_eq!(texts(&messages[2])[0], "/hand-off focus on tests");
+        assert_eq!(texts(&messages[2])[0], "/handoff focus on tests");
         assert!(messages[3].is_new_context);
-        // The hand-off was written from the branch, without the edited message.
+        // The handoff was written from the branch, without the edited message.
         let generation = &llm.get_requests()[2];
         assert_eq!(generation.messages.len(), 3);
     }
@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn hand_off_to_a_new_session_answers_here_and_opens_there() {
+    async fn handoff_to_a_new_session_answers_here_and_opens_there() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&["Next: write the tests", "on it"]);
         let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
@@ -627,7 +627,7 @@ mod tests {
         let id = service.create_session(None, None).await.unwrap();
 
         let queued = service
-            .queue_user_message(id.clone(), "/hand-off".into(), vec![])
+            .queue_user_message(id.clone(), "/handoff".into(), vec![])
             .await;
         assert!(queued.is_err());
         let attachment = DraftAttachment::Text {
@@ -671,14 +671,14 @@ mod tests {
         let request = &llm.get_requests()[1];
         assert_eq!(request.messages.len(), 3);
         let appended = texts(request.messages.last().unwrap()).join("\n");
-        assert!(appended.starts_with("<hand-off-request>"), "{appended}");
-        assert!(appended.contains("[cancel hand-off]"), "{appended}");
+        assert!(appended.starts_with("<handoff-request>"), "{appended}");
+        assert!(appended.contains("[cancel handoff]"), "{appended}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_cancelled_preparation_offers_nothing() {
         let tmp = tempfile::tempdir().unwrap();
-        let llm = answering(&["Which option do you want?", "  [cancel hand-off]\n"]);
+        let llm = answering(&["Which option do you want?", "  [cancel handoff]\n"]);
         let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
         let id = service.create_session(None, None).await.unwrap();
         let mut subscription = service.subscribe();
@@ -732,7 +732,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_idle_timer_prepares_a_hand_off_after_a_run() {
+    async fn the_idle_timer_prepares_a_handoff_after_a_run() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&["built", "Next: write the tests"]);
         let (service, manager) = test_service_with_llm(tmp.path(), llm.into_factory());

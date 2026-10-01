@@ -1,6 +1,6 @@
 //! Instructions the core appends to a user message as extra text blocks: the
-//! body of an invoked skill (`<skill>`), the request to write a hand-off
-//! (`<hand-off-request>`). The model reads them together with what the user
+//! body of an invoked skill (`<skill>`), the request to write a handoff
+//! (`<handoff-request>`). The model reads them together with what the user
 //! typed; transcripts, the edit context and pending-message summaries show
 //! only the typed text.
 
@@ -8,7 +8,7 @@ use llm::{ContentBlock, Message, MessageContent, MessageRole};
 use std::borrow::Cow;
 
 /// The tags an injected block is wrapped in.
-const TAGS: &[&str] = &["skill", "hand-off-request"];
+const TAGS: &[&str] = &["skill", "handoff-request"];
 
 /// Wrap `body` as an injected block tagged `tag` (one of [`TAGS`]).
 pub(crate) fn wrap(tag: &str, body: &str) -> String {
@@ -56,7 +56,7 @@ mod tests {
     #[test]
     fn wrapped_blocks_are_recognized() {
         assert!(is_injection(&wrap("skill", "Do the thing.")));
-        assert!(is_injection(&wrap("hand-off-request", "Write it.")));
+        assert!(is_injection(&wrap("handoff-request", "Write it.")));
         assert!(!is_injection("/review focus on auth"));
         assert!(!is_injection("<other>\nx\n</other>"));
         assert!(!is_injection("<skill>\nunterminated"));

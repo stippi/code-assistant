@@ -435,7 +435,7 @@ impl Gpui {
         });
     }
 
-    /// Answer the open `/new` / `/hand-off` target question. The prompt
+    /// Answer the open `/new` / `/handoff` target question. The prompt
     /// dismisses when NewContextTargetResolved arrives via the stream.
     pub(crate) fn cmd_respond_new_context_target(
         &self,
@@ -458,7 +458,7 @@ impl Gpui {
     }
 
     /// Tell the core the user is active in the session's composer, which
-    /// postpones preparing a hand-off.
+    /// postpones preparing a handoff.
     pub(crate) fn cmd_note_user_activity(&self, session_id: String) {
         let Some(service) = self.session_service() else {
             return;

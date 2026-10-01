@@ -97,7 +97,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .await
                 .set_wakeup_handle(wakeup_handle);
 
-            // Idle hand-off: long sessions left idle get a prepared
+            // Idle handoff: long sessions left idle get a prepared
             // `/new <prompt>` while the prompt cache is warm.
             manager_for_mcp.lock().await.set_idle_handoff(
                 code_assistant_core::session::idle_handoff::spawn_idle_handoff(service.clone()),

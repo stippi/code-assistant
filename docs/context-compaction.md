@@ -1,10 +1,10 @@
 # Context Compaction
 
 When the conversation nears the model's context window, the agent asks the
-model for a hand-off and continues in a fresh context that starts from it.
+model for a handoff and continues in a fresh context that starts from it.
 The full history stays in the session and the UI; only the prompt sent to
-the LLM is trimmed. The user-initiated siblings `/new` and `/hand-off` are
-described in `docs/hand-off.md`.
+the LLM is trimmed. The user-initiated siblings `/new` and `/handoff` are
+described in `docs/handoff.md`.
 
 ## Trigger
 
@@ -17,7 +17,7 @@ described in `docs/hand-off.md`.
 - The check runs at the top of every loop iteration in
   `AgentRuntime::run_until_complete` (`crates/agent_core/src/runtime.rs`),
   **before** a pending user message is appended. A request that arrives
-  while the context is full therefore follows the hand-off instead of being
+  while the context is full therefore follows the handoff instead of being
   folded into it.
 
 ## The compaction request
@@ -25,7 +25,7 @@ described in `docs/hand-off.md`.
 `request_handoff` sends the current prompt plus one user message holding
 the compaction prompt
 (`crates/code_assistant_core/resources/compaction_prompt.md`). The prompt
-frames the task as a hand-off to another instance: what the user asked for
+frames the task as a handoff to another instance: what the user asked for
 and expects, progress and decisions, verified facts with file paths, next
 steps, open questions. It forbids tool calls.
 
@@ -35,12 +35,12 @@ messages) and make the whole request a cache miss; a `tool_choice` change
 would still invalidate the messages block. If the model answers with tool
 calls instead of text anyway, the request is repeated once with a reminder
 appended; a second failure fails the turn rather than storing an empty
-summary. Only text blocks count as the hand-off; thinking blocks are
+summary. Only text blocks count as the handoff; thinking blocks are
 ignored.
 
 ## Storage
 
-The hand-off text is appended as a user message flagged
+The handoff text is appended as a user message flagged
 `is_compaction_summary`. The policy may append an addendum
 (`post_compaction_summary_addendum`), e.g. a reminder of the skills that
 were loaded before compaction dropped their tool results. The UI receives
@@ -50,7 +50,7 @@ collapsible banner; the divider does not include the addendum.
 ## Prompt after compaction
 
 `prompt_messages` builds the request from the last summary node onwards
-and rewrites the summary node into the hand-off message
+and rewrites the summary node into the handoff message
 (`crates/agent_core/src/runtime/handoff.rs`):
 
 ```
@@ -64,7 +64,7 @@ and rewrites the summary node into the hand-off message
 </user_messages>
 
 <summary>
-…hand-off text (plus addendum)…
+…handoff text (plus addendum)…
 </summary>
 </handoff>
 ```

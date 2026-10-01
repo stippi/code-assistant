@@ -47,9 +47,9 @@ pub(crate) enum RunTask {
     /// Answer the last user message (and messages queued meanwhile).
     #[default]
     Answer,
-    /// Open a new context (`/new`, `/hand-off`).
+    /// Open a new context (`/new`, `/handoff`).
     NewContext(crate::session::new_context::NewContextRun),
-    /// Write a hand-off prompt for the composer without changing the
+    /// Write a handoff prompt for the composer without changing the
     /// history (see [`crate::session::idle_handoff`]).
     PrepareHandoff,
 }
@@ -154,7 +154,7 @@ pub struct SessionManager {
     /// `schedule_wakeup` / `cancel_wakeup` tools bound to their session.
     wakeup_handle: Option<crate::session::wakeup::WakeupHandle>,
 
-    /// Timers preparing a hand-off for long sessions left idle; armed when a
+    /// Timers preparing a handoff for long sessions left idle; armed when a
     /// run ends.
     idle_handoff: Option<crate::session::idle_handoff::IdleHandoffTimers>,
 
@@ -219,20 +219,20 @@ impl SessionManager {
         self.wakeup_handle = Some(handle);
     }
 
-    /// Install the idle hand-off timers (see
+    /// Install the idle handoff timers (see
     /// [`crate::session::idle_handoff::spawn_idle_handoff`]). Wiring layers
     /// set this right after constructing the service; without it, no
-    /// hand-off is prepared.
+    /// handoff is prepared.
     pub fn set_idle_handoff(&mut self, timers: crate::session::idle_handoff::IdleHandoffTimers) {
         self.idle_handoff = Some(timers);
     }
 
-    /// The idle hand-off timers, if installed.
+    /// The idle handoff timers, if installed.
     pub(crate) fn idle_handoff(&self) -> Option<&crate::session::idle_handoff::IdleHandoffTimers> {
         self.idle_handoff.as_ref()
     }
 
-    /// Whether the session should get a prepared hand-off now: idle, its
+    /// Whether the session should get a prepared handoff now: idle, its
     /// last request's input reached `threshold_tokens`, and nothing was
     /// prepared for its current last message yet. Marks it as prepared.
     pub(crate) fn claim_handoff_preparation(
@@ -1151,7 +1151,7 @@ impl SessionManager {
             )
         };
         let task = run_config.task;
-        // Preparing a hand-off leaves the session as idle as it found it.
+        // Preparing a handoff leaves the session as idle as it found it.
         let arms_idle_handoff = !matches!(task, RunTask::PrepareHandoff);
         let idle_handoff = self.idle_handoff.clone();
         let pending_message_for_task = pending_message_ref.clone();

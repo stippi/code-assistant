@@ -11,7 +11,7 @@ use tracing::warn;
 pub struct GeneralSection {
     focus_handle: FocusHandle,
     /// Input tokens of a session's last request from which an idle session
-    /// gets a prepared hand-off; stored in `hand-off.json`.
+    /// gets a prepared handoff; stored in `handoff.json`.
     handoff_threshold_input: Entity<InputState>,
     _handoff_threshold_subscription: Subscription,
 }
@@ -54,7 +54,7 @@ impl GeneralSection {
             idle_threshold_tokens,
         };
         if let Err(e) = config.save() {
-            warn!("Failed to save the hand-off settings: {e:#}");
+            warn!("Failed to save the handoff settings: {e:#}");
         }
     }
 }
@@ -140,7 +140,7 @@ impl Render for GeneralSection {
                         cx,
                     )),
             )
-            // Prepared hand-off
+            // Prepared handoff
             .child(
                 div()
                     .flex()
@@ -151,7 +151,7 @@ impl Render for GeneralSection {
                             .text_xs()
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .text_color(cx.theme().muted_foreground)
-                            .child("Hand-off when idle"),
+                            .child("Handoff when idle"),
                     )
                     .child(
                         div()

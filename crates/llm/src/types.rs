@@ -112,7 +112,7 @@ pub struct Message {
     #[serde(default)]
     pub is_compaction_summary: bool,
     /// Marks a compaction summary that opens a fresh context with a prompt
-    /// (`/new`, `/hand-off`) instead of summarizing the context it replaces.
+    /// (`/new`, `/handoff`) instead of summarizing the context it replaces.
     /// The content is the new context's first user message.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_new_context: bool,

@@ -796,7 +796,7 @@ impl SessionService {
     ) -> Result<Option<String>> {
         ensure!(
             NewContextCommand::parse(&message).is_none(),
-            "/new and /hand-off can't be queued; wait for the agent to finish or stop it"
+            "/new and /handoff can't be queued; wait for the agent to finish or stop it"
         );
         self.call_session(session_id.clone(), move |ctx| async move {
             let content_blocks =

@@ -268,7 +268,7 @@ impl Actions {
         });
     }
 
-    /// The user is typing in the session: postpone preparing a hand-off.
+    /// The user is typing in the session: postpone preparing a handoff.
     fn note_user_activity(&self, session_id: String) {
         let service = self.service.clone();
         tokio::spawn(async move {
@@ -649,7 +649,7 @@ async fn event_loop(
                     state.plan_dirty = false;
                 }
 
-                // Offer a hand-off prepared while idle, unless the user has
+                // Offer a handoff prepared while idle, unless the user has
                 // started writing something else.
                 if let Some(text) = state.prepared_handoff.take()
                     && input_manager.textarea.is_empty()
@@ -730,7 +730,7 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(event)) => match event {
                         Event::Key(key_event) => {
-                            // Typing postpones preparing a hand-off; told to
+                            // Typing postpones preparing a handoff; told to
                             // the core at most every 15 seconds.
                             let now = std::time::Instant::now();
                             if last_activity_report
@@ -1260,7 +1260,7 @@ impl TerminalTuiApp {
                 service.clone(),
                 Some(sleep_inhibitor),
             ));
-            // Idle hand-off: long sessions left idle get a prepared
+            // Idle handoff: long sessions left idle get a prepared
             // `/new <prompt>` while the prompt cache is warm.
             manager.set_idle_handoff(
                 code_assistant_core::session::idle_handoff::spawn_idle_handoff(service.clone()),
@@ -1291,7 +1291,7 @@ impl TerminalTuiApp {
         // Bridge: subscribe to the core→UI broadcast stream and feed the
         // terminal's rendering pipeline. Single-session app, so everything
         // scoped to the current session (or app-scoped) passes.
-        // `/new` and `/hand-off` may continue in a new session; the bridge
+        // `/new` and `/handoff` may continue in a new session; the bridge
         // hands its id to the task below, which follows it once `Actions`
         // exists.
         let (handed_off_tx, mut handed_off_rx) = tokio::sync::mpsc::unbounded_channel::<String>();

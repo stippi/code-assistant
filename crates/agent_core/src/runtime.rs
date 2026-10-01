@@ -30,10 +30,10 @@ use tools_core::{
 };
 use tracing::{debug, trace, warn};
 
-/// Appended to a hand-off request when the model answered it with tool calls
+/// Appended to a handoff request when the model answered it with tool calls
 /// instead of text.
 const HANDOFF_TOOL_CALL_REMINDER: &str =
-    "Reminder: Do not call any tools in this response; reply with the hand-off text only.";
+    "Reminder: Do not call any tools in this response; reply with the handoff text only.";
 
 /// Everything an [`AgentRuntime`] is built from.
 pub struct AgentRuntimeComponents {
@@ -365,7 +365,7 @@ impl AgentRuntime {
 
         loop {
             self.cancellation.check()?;
-            // Compact before a pending user message is appended: the hand-off
+            // Compact before a pending user message is appended: the handoff
             // covers the history so far and the new request follows it.
             if self.should_trigger_compaction()? {
                 self.perform_compaction().await?;
@@ -871,7 +871,7 @@ impl AgentRuntime {
         (!text.is_empty()).then(|| text.to_string())
     }
 
-    /// Asks the model for a hand-off text without changing the history.
+    /// Asks the model for a handoff text without changing the history.
     /// `prompt` is appended as a user message; without one, the history must
     /// already end with the request. The request keeps the tool definitions
     /// so the cached prompt prefix stays valid; a model that answers with
@@ -890,9 +890,9 @@ impl AgentRuntime {
             if let Some(text) = Self::handoff_text(&response.content) {
                 return Ok(text);
             }
-            warn!("Hand-off response contained no text; asking once more");
+            warn!("Handoff response contained no text; asking once more");
         }
-        anyhow::bail!("The model did not produce a hand-off text")
+        anyhow::bail!("The model did not produce a handoff text")
     }
 
     /// Opens a fresh context whose first user message is `prompt` (empty: the
@@ -919,7 +919,7 @@ impl AgentRuntime {
     }
 
     /// The messages the next request is built from: everything from the last
-    /// compaction summary onwards, with the summary rendered as the hand-off
+    /// compaction summary onwards, with the summary rendered as the handoff
     /// message that also carries the user's earlier messages verbatim.
     fn prompt_messages(&self) -> Vec<Message> {
         let path = self.conversation.path();

@@ -1058,7 +1058,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
 
     assert!(
         request_contains(old_user_text),
-        "The hand-off carries user messages from before the previous summary verbatim",
+        "The handoff carries user messages from before the previous summary verbatim",
     );
     assert!(
         !request_contains(old_assistant_text),
@@ -2703,10 +2703,8 @@ fn message_text(message: &Message) -> String {
 
 #[tokio::test]
 async fn test_pending_user_message_lands_after_the_compaction_handoff() -> Result<()> {
-    let (mut agent, mock_llm) = compaction_test_agent(vec![
-        Ok(idle_response()),
-        Ok(text_response("hand-off text")),
-    ]);
+    let (mut agent, mock_llm) =
+        compaction_test_agent(vec![Ok(idle_response()), Ok(text_response("handoff text"))]);
     agent.append_message(Message::new_user("Original request"))?;
     agent.append_message(over_threshold_assistant("Working on it"))?;
     let pending = Arc::new(std::sync::Mutex::new(Some(vec![ContentBlock::new_text(
@@ -2755,7 +2753,7 @@ async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -
     };
     let (mut agent, mock_llm) = compaction_test_agent(vec![
         Ok(idle_response()),
-        Ok(text_response("hand-off text")),
+        Ok(text_response("handoff text")),
         Ok(tool_only),
     ]);
     agent.append_message(Message::new_user("Original request"))?;
@@ -2776,7 +2774,7 @@ async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -
         .into_iter()
         .find(|message| message.is_compaction_summary)
         .expect("compaction summary in history");
-    assert_eq!(message_text(&summary), "hand-off text");
+    assert_eq!(message_text(&summary), "handoff text");
     Ok(())
 }
 
@@ -2798,8 +2796,8 @@ async fn test_compaction_fails_when_the_model_never_answers_with_text() -> Resul
     let error = agent
         .run_single_iteration()
         .await
-        .expect_err("a compaction without a hand-off text fails the turn");
-    assert!(error.to_string().contains("hand-off"), "{error}");
+        .expect_err("a compaction without a handoff text fails the turn");
+    assert!(error.to_string().contains("handoff"), "{error}");
     assert!(
         !agent
             .message_history_for_tests()

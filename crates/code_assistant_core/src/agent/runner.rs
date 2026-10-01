@@ -222,7 +222,7 @@ impl Agent {
         self.runtime.append_message(message)
     }
 
-    /// Ask the model for a hand-off text without changing the history (see
+    /// Ask the model for a handoff text without changing the history (see
     /// [`AgentRuntime::generate_handoff`]).
     pub async fn generate_handoff(&mut self, prompt: Option<&str>) -> Result<String> {
         self.runtime.generate_handoff(prompt).await

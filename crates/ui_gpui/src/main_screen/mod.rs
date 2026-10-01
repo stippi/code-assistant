@@ -1085,7 +1085,7 @@ impl MainScreen {
     }
 
     /// Tell the core the user is typing in the session, at most every 15
-    /// seconds; it postpones preparing a hand-off (two minutes idle).
+    /// seconds; it postpones preparing a handoff (two minutes idle).
     fn report_user_activity(&mut self, session_id: String, cx: &mut Context<Self>) {
         const INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
         let now = std::time::Instant::now();
@@ -1101,7 +1101,7 @@ impl MainScreen {
         }
     }
 
-    /// Put a hand-off prepared while the session was idle into the composer,
+    /// Put a handoff prepared while the session was idle into the composer,
     /// unless the user has started writing something else.
     fn offer_prepared_handoff(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         let Some(session_id) = self.current_session_id.clone() else {
@@ -1151,7 +1151,7 @@ impl MainScreen {
     }
 
     /// Banner above the input area asking where the context opened by `/new`
-    /// or `/hand-off` continues.
+    /// or `/handoff` continues.
     fn render_new_context_target_prompt(
         &self,
         cx: &mut Context<Self>,

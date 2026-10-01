@@ -122,7 +122,7 @@ pub(crate) fn dispatch_command(name: &str) -> PopupAction {
         "plan" => PopupAction::Commit(CommandResult::TogglePlan),
         "clear" => PopupAction::Commit(CommandResult::ClearContext),
         // Waiting for the argument that goes with them.
-        "goal" | "new" | "hand-off" | "compact" => {
+        "goal" | "new" | "handoff" | "compact" => {
             PopupAction::Commit(CommandResult::InsertInputTemplate(format!("/{name} ")))
         }
         other => PopupAction::Commit(CommandResult::InvalidCommand(format!(
@@ -349,7 +349,7 @@ mod tests {
     fn enter_on_a_new_context_command_inserts_its_template() {
         for (query, template) in [
             ("new", "/new "),
-            ("hand", "/hand-off "),
+            ("hand", "/handoff "),
             ("comp", "/compact "),
         ] {
             let mut stack = PopupStack::new();
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn a_skill_named_like_a_command_is_shadowed() {
-        let popup = CommandListPopup::with_skills(vec![skill("hand-off"), skill("review")]);
+        let popup = CommandListPopup::with_skills(vec![skill("handoff"), skill("review")]);
         assert_eq!(popup.rows().len(), all_commands().len() + 1);
     }
 

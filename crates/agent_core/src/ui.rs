@@ -88,7 +88,7 @@ pub enum DisplayFragment {
 pub enum ContextBoundary {
     /// The context window filled up and was summarized.
     Compaction,
-    /// The user started a new context (`/new`, `/hand-off`).
+    /// The user started a new context (`/new`, `/handoff`).
     NewContext,
 }
 

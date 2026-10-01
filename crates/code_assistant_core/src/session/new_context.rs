@@ -1,8 +1,8 @@
-//! Ending the current model context on purpose (see `docs/hand-off.md`):
+//! Ending the current model context on purpose (see `docs/handoff.md`):
 //!
 //! - `/new [prompt]` opens a fresh context whose first user message is
 //!   `prompt`;
-//! - `/hand-off [instruction]` (alias `/compact`) lets the agent write that
+//! - `/handoff [instruction]` (alias `/compact`) lets the agent write that
 //!   prompt from the current context first.
 //!
 //! Both ask the user whether the new context continues behind a divider in
@@ -19,31 +19,31 @@ use tokio::sync::oneshot;
 
 const HANDOFF_PROMPT: &str = include_str!("../../resources/handoff_prompt.md");
 
-/// What the `/hand-off` request asks the model to focus on. The user's
+/// What the `/handoff` request asks the model to focus on. The user's
 /// instruction is the typed text of the message the request is attached to.
-const HANDOFF_FOCUS: &str = "The user asked for this hand-off by starting this message with \
-`/hand-off`. The text after it, if any, says what the next context should work on or why the \
+const HANDOFF_FOCUS: &str = "The user asked for this handoff by starting this message with \
+`/handoff`. The text after it, if any, says what the next context should work on or why the \
 user hands off; follow it. Without such text, hand off the most obvious next step.";
 
 /// What the idle preparation asks the model to focus on: nobody asked.
-const IDLE_FOCUS: &str = "This is an automatic hand-off: the user has been inactive for a while, \
-and the prompt cache for this conversation expires soon. Writing the hand-off now is cheap; \
+const IDLE_FOCUS: &str = "This is an automatic handoff: the user has been inactive for a while, \
+and the prompt cache for this conversation expires soon. Writing the handoff now is cheap; \
 later it would have to be written without the cache. The user did not ask for it and will find \
 it in the input field when they return, to send, edit or discard. Hand off the most obvious \
-next step for a follow-up session. The system cannot tell whether a hand-off makes sense at \
-this point; you can. If it does not, reply with exactly `[cancel hand-off]` and nothing else.";
+next step for a follow-up session. The system cannot tell whether a handoff makes sense at \
+this point; you can. If it does not, reply with exactly `[cancel handoff]` and nothing else.";
 
-/// The reply with which the agent declines an automatic hand-off.
-const CANCEL_HANDOFF: &str = "[cancel hand-off]";
+/// The reply with which the agent declines an automatic handoff.
+const CANCEL_HANDOFF: &str = "[cancel handoff]";
 
 /// A slash command that ends the current context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewContextCommand {
     /// `/new [prompt]`: open a new context with `prompt` (may be empty).
     New { prompt: String },
-    /// `/hand-off [instruction]` or `/compact [instruction]`: the agent
+    /// `/handoff [instruction]` or `/compact [instruction]`: the agent
     /// writes the prompt, steered by `instruction`.
-    HandOff { instruction: String },
+    Handoff { instruction: String },
 }
 
 /// The built-in commands with their slash-menu descriptions, for frontends.
@@ -51,10 +51,10 @@ pub enum NewContextCommand {
 pub const COMMANDS: &[(&str, &str)] = &[
     ("new", "Start a new context with a prompt"),
     (
-        "hand-off",
-        "Let the agent write a hand-off prompt, then start a new context with it",
+        "handoff",
+        "Let the agent write a handoff prompt, then start a new context with it",
     ),
-    ("compact", "Alias for /hand-off"),
+    ("compact", "Alias for /handoff"),
 ];
 
 /// Whether `name` (without the slash) is one of [`COMMANDS`].
@@ -69,7 +69,7 @@ impl NewContextCommand {
         let argument = argument.to_string();
         match name {
             "new" => Some(Self::New { prompt: argument }),
-            "hand-off" | "compact" => Some(Self::HandOff {
+            "handoff" | "compact" => Some(Self::Handoff {
                 instruction: argument,
             }),
             _ => None,
@@ -77,25 +77,25 @@ impl NewContextCommand {
     }
 }
 
-/// The hidden block appended to a `/hand-off` message: the request to write
-/// the hand-off prompt (see [`crate::injection`]).
+/// The hidden block appended to a `/handoff` message: the request to write
+/// the handoff prompt (see [`crate::injection`]).
 pub(crate) fn handoff_request() -> String {
     crate::injection::wrap(
-        "hand-off-request",
+        "handoff-request",
         HANDOFF_PROMPT.replace("{focus}", HANDOFF_FOCUS).trim(),
     )
 }
 
-/// Write a hand-off prompt for the composer while the session is idle,
+/// Write a handoff prompt for the composer while the session is idle,
 /// without changing the history: the request is the history plus an
-/// appended hand-off request. `None` when the agent declined, or when a
+/// appended handoff request. `None` when the agent declined, or when a
 /// user message was queued meanwhile; the run answers that message instead.
 pub(crate) async fn prepare_handoff(
     agent: &mut Agent,
     pending: &Mutex<Option<Vec<llm::ContentBlock>>>,
 ) -> Result<Option<String>> {
     let request = crate::injection::wrap(
-        "hand-off-request",
+        "handoff-request",
         HANDOFF_PROMPT.replace("{focus}", IDLE_FOCUS).trim(),
     );
     let prompt = agent.generate_handoff(Some(&request)).await?;
@@ -222,7 +222,7 @@ pub(crate) async fn ask_target(
 
 /// A run that opens a new context instead of answering a user message.
 pub(crate) struct NewContextRun {
-    /// The prompt of `/new`; `None` for `/hand-off`, whose prompt the agent
+    /// The prompt of `/new`; `None` for `/handoff`, whose prompt the agent
     /// writes first (the request is the last message of the history).
     pub prompt: Option<String>,
     /// Receives the prompt when the user chose a new session, which the
@@ -234,7 +234,7 @@ impl NewContextRun {
     /// Drive the run: get the prompt and the target concurrently, then open
     /// the new context here and continue from it (or from a message queued
     /// meanwhile), or hand the prompt over for a new session. A generated
-    /// prompt is also recorded here as the answer to the `/hand-off`
+    /// prompt is also recorded here as the answer to the `/handoff`
     /// message.
     pub(crate) async fn run(
         self,
@@ -286,27 +286,27 @@ mod tests {
             })
         );
         assert_eq!(
-            NewContextCommand::parse("  /hand-off\nfocus on docs\n"),
-            Some(NewContextCommand::HandOff {
+            NewContextCommand::parse("  /handoff\nfocus on docs\n"),
+            Some(NewContextCommand::Handoff {
                 instruction: "focus on docs".into()
             })
         );
         assert_eq!(
             NewContextCommand::parse("/compact"),
-            Some(NewContextCommand::HandOff {
+            Some(NewContextCommand::Handoff {
                 instruction: String::new()
             })
         );
         assert_eq!(NewContextCommand::parse("/newer"), None);
         assert_eq!(NewContextCommand::parse("new"), None);
-        assert!(is_command("hand-off") && !is_command("goal"));
+        assert!(is_command("handoff") && !is_command("goal"));
     }
 
     #[test]
     fn handoff_request_is_a_hidden_block_with_the_focus() {
         let request = handoff_request();
         assert!(crate::injection::is_injection(&request));
-        assert!(request.contains("`/hand-off`"));
+        assert!(request.contains("`/handoff`"));
         assert!(!request.contains("{focus}"));
     }
 

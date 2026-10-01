@@ -56,7 +56,7 @@ const ALL_COMMANDS: &[SlashCommand] = &[
         description: NEW_CONTEXT_COMMANDS[0].1,
     },
     SlashCommand {
-        name: "hand-off",
+        name: "handoff",
         aliases: &[],
         description: NEW_CONTEXT_COMMANDS[1].1,
     },
@@ -150,12 +150,12 @@ pub enum CommandResult {
         request_id: Option<String>,
         decision: tools_core::PermissionDecision,
     },
-    /// Answer the `/new` / `/hand-off` target question (from its prompt).
+    /// Answer the `/new` / `/handoff` target question (from its prompt).
     RespondNewContextTarget {
         request_id: String,
         target: code_assistant_core::session::new_context::NewContextTarget,
     },
-    /// Cancel the `/new` / `/hand-off` waiting for its target (Esc on the
+    /// Cancel the `/new` / `/handoff` waiting for its target (Esc on the
     /// prompt): stops the run.
     CancelNewContext,
 }
@@ -209,7 +209,7 @@ impl CommandProcessor {
             "current" | "c" => CommandResult::ShowCurrentModel,
             "plan" => CommandResult::TogglePlan,
             "clear" => CommandResult::ClearContext,
-            // `/new`, `/hand-off`, `/compact`: sent as messages; the core
+            // `/new`, `/handoff`, `/compact`: sent as messages; the core
             // opens the new context. They shadow skills of the same name.
             name if code_assistant_core::session::new_context::is_command(name) => {
                 CommandResult::Continue
@@ -407,11 +407,7 @@ mod tests {
     #[test]
     fn new_context_commands_are_sent_as_messages() {
         let processor = processor_with_skills(&[]);
-        for line in [
-            "/new write the tests",
-            "/hand-off",
-            "/compact focus on docs",
-        ] {
+        for line in ["/new write the tests", "/handoff", "/compact focus on docs"] {
             assert!(
                 matches!(processor.process_command(line), CommandResult::Continue),
                 "{line}"

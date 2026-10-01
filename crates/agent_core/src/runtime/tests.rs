@@ -606,7 +606,7 @@ async fn generate_handoff_answers_the_request_that_ends_the_history() {
         .append_message(Message::new_assistant("Built"))
         .unwrap();
     runtime
-        .append_message(Message::new_user("/hand-off write the prompt"))
+        .append_message(Message::new_user("/handoff write the prompt"))
         .unwrap();
 
     let prompt = runtime.generate_handoff(None).await.unwrap();
@@ -615,7 +615,7 @@ async fn generate_handoff_answers_the_request_that_ends_the_history() {
     let requests = llm.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].messages.len(), 3);
-    assert_eq!(last_text(&requests[0]), "/hand-off write the prompt");
+    assert_eq!(last_text(&requests[0]), "/handoff write the prompt");
     assert_eq!(
         runtime.conversation.active_messages().count(),
         3,
@@ -650,7 +650,7 @@ async fn generate_handoff_asks_once_more_when_answered_with_tool_calls() {
         vec![ContentBlock::new_text("Next: tests")],
     ]);
     runtime
-        .append_message(Message::new_user("/hand-off"))
+        .append_message(Message::new_user("/handoff"))
         .unwrap();
 
     let prompt = runtime.generate_handoff(None).await.unwrap();
@@ -660,7 +660,7 @@ async fn generate_handoff_asks_once_more_when_answered_with_tool_calls() {
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].messages.len(), 1, "no extra message");
     let retry = last_text(&requests[1]);
-    assert!(retry.starts_with("/hand-off"), "{retry}");
+    assert!(retry.starts_with("/handoff"), "{retry}");
     assert!(retry.contains("Do not call any tools"), "{retry}");
 }
 
@@ -668,7 +668,7 @@ async fn generate_handoff_asks_once_more_when_answered_with_tool_calls() {
 async fn generate_handoff_fails_without_text() {
     let (mut runtime, _) = runtime_answering(vec![vec![call("t1")], vec![call("t2")]]);
     runtime
-        .append_message(Message::new_user("/hand-off"))
+        .append_message(Message::new_user("/handoff"))
         .unwrap();
 
     assert!(runtime.generate_handoff(None).await.is_err());

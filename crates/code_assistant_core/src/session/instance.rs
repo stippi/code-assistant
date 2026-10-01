@@ -186,10 +186,10 @@ pub struct SessionInstance {
     /// Permission requests currently awaiting a user decision.
     pub pending_permission_requests: Arc<crate::session::permissions::PendingPermissionRequests>,
 
-    /// The open `/new` / `/hand-off` target question, if any.
+    /// The open `/new` / `/handoff` target question, if any.
     pub pending_new_context_target: Arc<crate::session::new_context::PendingTargetRequest>,
 
-    /// The last message a hand-off was prepared for while idle, so each
+    /// The last message a handoff was prepared for while idle, so each
     /// state of the session is prepared at most once.
     pub handoff_prepared_for: Option<crate::persistence::NodeId>,
 

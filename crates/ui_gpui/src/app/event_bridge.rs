@@ -302,7 +302,7 @@ impl Gpui {
     }
 }
 
-/// The composer text offering a prepared hand-off.
+/// The composer text offering a prepared handoff.
 fn handoff_draft(prompt: &str) -> String {
     format!("/new {prompt}")
 }

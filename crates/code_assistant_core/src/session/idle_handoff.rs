@@ -1,6 +1,6 @@
-//! Prepared hand-offs (see `docs/hand-off.md`): when a long session goes
+//! Prepared handoffs (see `docs/handoff.md`): when a long session goes
 //! idle, a timer gives the user two minutes; if they stay away, the core has
-//! the agent write a hand-off prompt while the prompt cache is still warm and
+//! the agent write a handoff prompt while the prompt cache is still warm and
 //! offers it in the composer as `/new <prompt>`.
 //!
 //! A timer per session, armed when a run ends and pushed back by user
@@ -20,11 +20,11 @@ use tracing::warn;
 /// How long a session must stay without user activity.
 pub const IDLE_DELAY: Duration = Duration::from_secs(120);
 
-/// Configuration persisted at `<config_dir>/hand-off.json`.
+/// Configuration persisted at `<config_dir>/handoff.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HandoffConfig {
-    /// Prepare a hand-off once the last request's input (input, cache write
+    /// Prepare a handoff once the last request's input (input, cache write
     /// and cache read tokens) reaches this many tokens; 0 disables it.
     pub idle_threshold_tokens: u64,
 }
@@ -40,7 +40,7 @@ impl Default for HandoffConfig {
 impl HandoffConfig {
     /// Path of the config file in the resolved config directory.
     pub fn path() -> PathBuf {
-        crate::config_dir::config_dir().join("hand-off.json")
+        crate::config_dir::config_dir().join("handoff.json")
     }
 
     /// Load the config; a missing or malformed file yields the defaults.
@@ -64,7 +64,7 @@ impl HandoffConfig {
     }
 }
 
-/// Prepares the hand-off of a session whose timer fired. The production
+/// Prepares the handoff of a session whose timer fired. The production
 /// implementation is [`SessionService`]; tests substitute a recorder.
 #[async_trait::async_trait]
 pub trait IdleHandoffSink: Send + Sync + 'static {
@@ -78,7 +78,7 @@ impl IdleHandoffSink for SessionService {
             .prepare_handoff(session_id.to_string(), threshold_tokens)
             .await
         {
-            warn!("Failed to prepare a hand-off for session {session_id}: {e:#}");
+            warn!("Failed to prepare a handoff for session {session_id}: {e:#}");
         }
     }
 }
@@ -101,7 +101,7 @@ struct Inner {
 }
 
 /// Timers firing into `sink` after [`IDLE_DELAY`], with the threshold from
-/// `hand-off.json`.
+/// `handoff.json`.
 pub fn spawn_idle_handoff(sink: impl IdleHandoffSink) -> IdleHandoffTimers {
     IdleHandoffTimers::new(
         sink,
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn config_defaults_and_reads_the_threshold() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("hand-off.json");
+        let path = dir.path().join("handoff.json");
         assert_eq!(
             HandoffConfig::load_from(&path).idle_threshold_tokens,
             150_000

@@ -1192,7 +1192,7 @@ mod tests {
                 vec![
                     "goal".into(),
                     "new".into(),
-                    "hand-off".into(),
+                    "handoff".into(),
                     "compact".into(),
                     "pdf-extraction".into(),
                     "review".into()

@@ -1,4 +1,4 @@
-//! Modal prompt asking where the context opened by `/new` or `/hand-off`
+//! Modal prompt asking where the context opened by `/new` or `/handoff`
 //! continues.
 //!
 //! Like the permission prompt it is not user-initiated: the app event layer

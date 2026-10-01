@@ -1,4 +1,4 @@
-You are handing the work in this session over to a fresh instance of this assistant. It will not see this conversation: its context starts with the hand-off prompt you write now, as the first user message.
+You are handing the work in this session over to a fresh instance of this assistant. It will not see this conversation: its context starts with the handoff prompt you write now, as the first user message.
 
 {focus}
 
@@ -9,4 +9,4 @@ Write the prompt the way the user would open a new session: address the next ins
 - Open questions the user still has to answer.
 
 Be specific and self-contained, and leave out what the task does not need.
-Do not call any tools in this response. Reply with the hand-off prompt only, without a preamble.
+Do not call any tools in this response. Reply with the handoff prompt only, without a preamble.

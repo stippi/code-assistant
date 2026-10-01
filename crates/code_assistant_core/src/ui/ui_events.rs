@@ -275,7 +275,7 @@ pub enum UiEvent {
     /// A permission request was settled (answered, or dropped by a stop
     /// request); open prompts for it should dismiss.
     ToolPermissionRequestResolved { request_id: String },
-    /// `/new` or `/hand-off` asks where the new context continues. Answered
+    /// `/new` or `/handoff` asks where the new context continues. Answered
     /// via `SessionService::respond_new_context_target`; a
     /// [`UiEvent::NewContextTargetResolved`] follows once settled.
     RequestNewContextTarget {
@@ -285,9 +285,9 @@ pub enum UiEvent {
     /// request); an open prompt for it should dismiss.
     NewContextTargetResolved { request_id: String },
     /// The session's work continues in the new session `to` (`/new`,
-    /// `/hand-off`); a frontend viewing this session should switch to it.
+    /// `/handoff`); a frontend viewing this session should switch to it.
     SessionHandedOff { to: String },
-    /// A hand-off prompt was prepared while the session was idle; a
+    /// A handoff prompt was prepared while the session was idle; a
     /// frontend puts `/new <prompt>` into the session's composer if it is
     /// empty.
     HandoffPrepared { prompt: String },

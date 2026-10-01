@@ -1,5 +1,5 @@
 <system-compaction>
-You are performing a context checkpoint compaction: the conversation is nearing the model's context window limit. Write a hand-off for another instance of this assistant that will resume the task without access to the messages above.
+You are performing a context checkpoint compaction: the conversation is nearing the model's context window limit. Write a handoff for another instance of this assistant that will resume the task without access to the messages above.
 
 Include:
 - What the user asked for and what kind of response they expect (an answer, an explanation, a change to the workspace).

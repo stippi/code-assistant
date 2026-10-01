@@ -2,7 +2,7 @@
 //! does with it.
 //!
 //! When the input is a bare `/<query>`, the composer shows the built-in
-//! commands (`/goal`, `/new`, `/hand-off`, `/compact`) plus the session's
+//! commands (`/goal`, `/new`, `/handoff`, `/compact`) plus the session's
 //! skills (read from the [`crate::Gpui`] global, populated via
 //! `BackendEvent::ListSkills`); a skill named like a built-in is shadowed.
 //! Accepting an entry replaces the input with `/<name> `, ready for the
@@ -153,23 +153,23 @@ mod tests {
             [
                 "goal",
                 "new",
-                "hand-off",
+                "handoff",
                 "compact",
                 "pdf-extraction",
                 "review"
             ]
         );
         assert_eq!(items[0].insert, "/goal ");
-        assert_eq!(items[2].insert, "/hand-off ");
+        assert_eq!(items[2].insert, "/handoff ");
         assert_eq!(items[4].insert, "/pdf-extraction ");
         assert_eq!(items[4].detail, "(project) desc");
     }
 
     #[test]
     fn builtins_shadow_skills_of_the_same_name() {
-        let skills = vec![entry("hand-off"), entry("new")];
+        let skills = vec![entry("handoff"), entry("new")];
         let items = slash_menu_items("/hand", &skills);
-        assert_eq!(labels(&items), ["hand-off", "compact"]);
+        assert_eq!(labels(&items), ["handoff", "compact"]);
         assert!(items.iter().all(|item| item.detail != "(project) desc"));
         // Enter completes the built-in instead of submitting the skill.
         assert!(enter_accepts_menu_item("/new", &skills));
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(labels(&slash_menu_items("/crit", &skills)), ["goal"]);
         assert_eq!(
             labels(&slash_menu_items("/hand", &skills)),
-            ["hand-off", "compact"]
+            ["handoff", "compact"]
         );
         assert!(slash_menu_items("/zzz", &skills).is_empty());
     }

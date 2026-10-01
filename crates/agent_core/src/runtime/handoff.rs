@@ -1,8 +1,8 @@
-//! The hand-off message a compacted conversation resumes from.
+//! The handoff message a compacted conversation resumes from.
 //!
 //! After compaction the prompt no longer contains the exchanges before the
 //! summary. The summary is rendered as a single user message that frames it
-//! as a hand-off from a previous instance and carries the user's own
+//! as a handoff from a previous instance and carries the user's own
 //! messages verbatim, so what was asked for survives the compaction.
 use llm::{ContentBlock, Message, MessageContent, MessageRole};
 
@@ -11,7 +11,7 @@ use llm::{ContentBlock, Message, MessageContent, MessageRole};
 const USER_MESSAGES_CHAR_BUDGET: usize = 80_000;
 
 const PREAMBLE: &str = "Another instance of this assistant was working in this session and \
-reached the context limit. It wrote the hand-off below. The user's messages are \
+reached the context limit. It wrote the handoff below. The user's messages are \
 reproduced verbatim so nothing about what they asked for is lost. Build on the \
 work already done instead of repeating it; the workspace reflects everything the \
 previous instance did.";
@@ -46,7 +46,7 @@ pub(super) fn user_message_text(message: &Message) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// Renders the hand-off message from the user's messages and the summary the
+/// Renders the handoff message from the user's messages and the summary the
 /// previous instance wrote.
 pub(super) fn render_handoff(user_messages: &[String], summary: &str) -> String {
     render_handoff_within(user_messages, summary, USER_MESSAGES_CHAR_BUDGET)

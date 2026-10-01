@@ -61,7 +61,7 @@ pub struct SessionSnapshot {
     /// Permission requests still awaiting an answer; a connecting frontend
     /// should render prompts for them.
     pub pending_permission_requests: Vec<permissions::ToolPermissionRequestData>,
-    /// The open `/new` / `/hand-off` target question, if any.
+    /// The open `/new` / `/handoff` target question, if any.
     pub pending_new_context_target: Option<new_context::NewContextTargetRequest>,
 }
 
