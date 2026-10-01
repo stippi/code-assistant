@@ -187,8 +187,8 @@ pub struct MainScreen {
     sessions: Vec<ChatMetadata>,
     plan_collapsed_sessions: HashMap<String, bool>,
     plan_collapsed: bool,
-    /// When composer activity was last reported to the core (throttled).
-    last_activity_report: Option<std::time::Instant>,
+    /// Throttles the composer activity reported to the core.
+    activity_reports: code_assistant_core::session::idle_handoff::ActivityThrottle,
     /// Last worktree data synced to the selector (for change detection).
     last_worktree_data: Option<WorktreeData>,
     /// Modal dialog for creating a new project (shown as overlay when Some)
@@ -290,7 +290,7 @@ impl MainScreen {
             sessions: Vec::new(),
 
             plan_collapsed_sessions: HashMap::new(),
-            last_activity_report: None,
+            activity_reports: Default::default(),
             plan_collapsed: false,
             last_worktree_data: None,
             new_project_dialog: None,
@@ -1084,18 +1084,15 @@ impl MainScreen {
         status_popover::render_status_popover(self, cx)
     }
 
-    /// Tell the core the user is typing in the session, at most every 15
-    /// seconds; it postpones preparing a handoff (two minutes idle).
+    /// Tell the core the user is typing in the session (throttled); it
+    /// postpones preparing a handoff (two minutes idle).
     fn report_user_activity(&mut self, session_id: String, cx: &mut Context<Self>) {
-        const INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
-        let now = std::time::Instant::now();
-        if self
-            .last_activity_report
-            .is_some_and(|last| now.duration_since(last) < INTERVAL)
+        if !self
+            .activity_reports
+            .should_report(&session_id, std::time::Instant::now())
         {
             return;
         }
-        self.last_activity_report = Some(now);
         if let Some(gpui) = cx.try_global::<Gpui>() {
             gpui.cmd_note_user_activity(session_id);
         }

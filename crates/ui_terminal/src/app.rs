@@ -626,8 +626,8 @@ async fn event_loop(
 ) -> Result<()> {
     let mut event_stream = EventStream::new();
     let mut needs_redraw = true; // Draw initial frame
-    const ACTIVITY_REPORT_INTERVAL: Duration = Duration::from_secs(15);
-    let mut last_activity_report: Option<std::time::Instant> = None;
+    let mut activity_reports =
+        code_assistant_core::session::idle_handoff::ActivityThrottle::default();
 
     loop {
         // === PHASE 1: Draw if needed ===
@@ -730,18 +730,15 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(event)) => match event {
                         Event::Key(key_event) => {
-                            // Typing postpones preparing a handoff; told to
-                            // the core at most every 15 seconds.
-                            let now = std::time::Instant::now();
-                            if last_activity_report
-                                .is_none_or(|last| now.duration_since(last) >= ACTIVITY_REPORT_INTERVAL)
+                            // Typing postpones preparing a handoff (reports
+                            // throttled per session).
+                            let current_session =
+                                app_state.lock().await.current_session_id.clone();
+                            if let Some(session_id) = current_session
+                                && activity_reports
+                                    .should_report(&session_id, std::time::Instant::now())
                             {
-                                last_activity_report = Some(now);
-                                if let Some(session_id) =
-                                    app_state.lock().await.current_session_id.clone()
-                                {
-                                    actions.note_user_activity(session_id);
-                                }
+                                actions.note_user_activity(session_id);
                             }
                             // Permission prompts push popups from the backend
                             // event task; resync routing before each key so

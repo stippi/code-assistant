@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::warn;
 
 /// How long a session must stay without user activity.
@@ -61,6 +61,33 @@ impl HandoffConfig {
     /// Persist the config to the resolved config directory.
     pub fn save(&self) -> Result<()> {
         atomic_write_json(&Self::path(), self)
+    }
+}
+
+/// How often a frontend reports activity in the same session at most.
+const ACTIVITY_REPORT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Throttles a frontend's activity reports
+/// (`SessionService::note_user_activity`): at most one per
+/// [`ACTIVITY_REPORT_INTERVAL`] for the same session, but the first one in
+/// another session at once, so its timer is pushed back right away.
+#[derive(Default)]
+pub struct ActivityThrottle {
+    last: Option<(String, Instant)>,
+}
+
+impl ActivityThrottle {
+    /// Whether activity in `session_id` at `now` should be reported; records
+    /// it if so.
+    pub fn should_report(&mut self, session_id: &str, now: Instant) -> bool {
+        if let Some((last_session, last)) = &self.last
+            && last_session == session_id
+            && now.duration_since(*last) < ACTIVITY_REPORT_INTERVAL
+        {
+            return false;
+        }
+        self.last = Some((session_id.to_string(), now));
+        true
     }
 }
 
@@ -255,6 +282,20 @@ mod tests {
 
         advance(300).await;
         assert!(recorder.fired().is_empty());
+    }
+
+    #[test]
+    fn activity_reports_are_throttled_per_session() {
+        let start = std::time::Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let mut throttle = ActivityThrottle::default();
+
+        assert!(throttle.should_report("a", at(0)));
+        assert!(!throttle.should_report("a", at(10)));
+        // Switching sessions reports at once.
+        assert!(throttle.should_report("b", at(11)));
+        assert!(!throttle.should_report("b", at(20)));
+        assert!(throttle.should_report("b", at(26)));
     }
 
     #[test]
