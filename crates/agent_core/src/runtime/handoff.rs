@@ -46,6 +46,46 @@ pub(super) fn user_message_text(message: &Message) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Folds the user messages directly following the opening message of a
+/// context (the compaction handoff or the new context's prompt), e.g. one
+/// queued while it was written, into that message: the request must not
+/// start with consecutive user turns, which some providers reject.
+pub(super) fn fold_into_opening(messages: &mut Vec<Message>) {
+    if !messages
+        .first()
+        .is_some_and(|message| message.is_compaction_summary)
+    {
+        return;
+    }
+    let followers = messages[1..]
+        .iter()
+        .take_while(|message| message.role == MessageRole::User && !has_tool_results(message))
+        .count();
+    if followers == 0 {
+        return;
+    }
+    let folded: Vec<Message> = messages.drain(1..=followers).collect();
+    let opening = &mut messages[0];
+    let content = std::mem::replace(&mut opening.content, MessageContent::Text(String::new()));
+    let mut blocks = into_blocks(content);
+    for message in folded {
+        blocks.extend(into_blocks(message.content));
+    }
+    opening.content = MessageContent::Structured(blocks);
+}
+
+fn has_tool_results(message: &Message) -> bool {
+    matches!(&message.content, MessageContent::Structured(blocks)
+        if blocks.iter().any(|block| matches!(block, ContentBlock::ToolResult { .. })))
+}
+
+fn into_blocks(content: MessageContent) -> Vec<ContentBlock> {
+    match content {
+        MessageContent::Text(text) => vec![ContentBlock::new_text(text)],
+        MessageContent::Structured(blocks) => blocks,
+    }
+}
+
 /// Renders the handoff message from the user's messages and the summary the
 /// previous instance wrote.
 pub(super) fn render_handoff(user_messages: &[String], summary: &str) -> String {

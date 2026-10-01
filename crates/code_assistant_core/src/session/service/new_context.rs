@@ -820,6 +820,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_handoff_skips_an_empty_new_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["built"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+        service
+            .send_user_message(id.clone(), "/new".into(), vec![], None)
+            .await
+            .unwrap();
+        answer_target(
+            &service,
+            &mut subscription,
+            &id,
+            NewContextTarget::SameSession,
+        )
+        .await;
+        idle(&mut subscription, &id).await;
+
+        // The 1000 tokens were used by the context before the boundary.
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+        assert!(!service.is_session_busy(id).await.unwrap());
+        assert_eq!(llm.get_requests().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_handoff_skips_an_unanswered_errored_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Served as a stack: the first answer, then a failing turn.
+        let llm = MockLLMProvider::new(vec![
+            Err(anyhow!("provider unavailable")),
+            text_response("built"),
+        ]);
+        let (service, manager) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+        service
+            .send_user_message(id.clone(), "And Y".into(), vec![], None)
+            .await
+            .unwrap();
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::UpdateSessionActivityState {
+                activity_state: crate::session::instance::SessionActivityState::Errored { .. },
+                ..
+            } => Some(()),
+            _ => None,
+        })
+        .await;
+
+        service.prepare_handoff(id.clone(), 1000).await.unwrap();
+        assert!(!service.is_session_busy(id.clone()).await.unwrap());
+        assert!(matches!(
+            manager
+                .lock()
+                .await
+                .get_session(&id)
+                .unwrap()
+                .get_activity_state(),
+            crate::session::instance::SessionActivityState::Errored { .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn prepare_handoff_skips_short_or_already_prepared_sessions() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&["built", "Next: write the tests"]);

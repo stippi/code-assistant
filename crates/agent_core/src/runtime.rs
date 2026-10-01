@@ -946,9 +946,7 @@ impl AgentRuntime {
             if handoff::user_message_text(&messages[0]).is_none() {
                 messages.remove(0);
             }
-            return messages;
-        }
-        if let Some(summary) = messages
+        } else if let Some(summary) = messages
             .first_mut()
             .filter(|message| message.is_compaction_summary)
         {
@@ -975,6 +973,7 @@ impl AgentRuntime {
             summary.content =
                 MessageContent::Text(handoff::render_handoff(&user_messages, summary_text));
         }
+        handoff::fold_into_opening(&mut messages);
         messages
     }
 

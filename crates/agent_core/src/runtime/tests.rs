@@ -688,3 +688,54 @@ fn append_new_context_appends_the_boundary() {
     assert!(last.is_new_context && last.is_compaction_summary);
     assert_eq!(text(last), "Next step");
 }
+
+fn blocks_text(message: &Message) -> Vec<String> {
+    match &message.content {
+        MessageContent::Text(text) => vec![text.clone()],
+        MessageContent::Structured(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_message_queued_after_a_new_context_joins_its_prompt() {
+    let (mut runtime, _) = runtime();
+    runtime
+        .append_message(Message::new_context("Next step"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_user("Also this"))
+        .unwrap();
+    runtime
+        .append_message(Message::new_assistant("On it"))
+        .unwrap();
+
+    let prompt = runtime.render_tool_results_in_messages();
+
+    assert_eq!(prompt.len(), 2, "no consecutive user messages");
+    assert_eq!(prompt[0].role, MessageRole::User);
+    assert_eq!(blocks_text(&prompt[0]), ["Next step", "Also this"]);
+    assert_eq!(text(&prompt[1]), "On it");
+}
+
+#[test]
+fn a_message_queued_after_compaction_joins_the_handoff() {
+    let (mut runtime, _) = runtime();
+    runtime.append_message(Message::new_user("Ask")).unwrap();
+    runtime.append_message(summary("summary")).unwrap();
+    runtime
+        .append_message(Message::new_user("Also this"))
+        .unwrap();
+
+    let prompt = runtime.render_tool_results_in_messages();
+
+    assert_eq!(prompt.len(), 1);
+    let texts = blocks_text(&prompt[0]);
+    assert!(texts[0].starts_with("<handoff>"), "{texts:?}");
+    assert_eq!(texts[1], "Also this");
+}

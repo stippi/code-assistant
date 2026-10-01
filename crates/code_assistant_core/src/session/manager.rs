@@ -232,9 +232,10 @@ impl SessionManager {
         self.idle_handoff.as_ref()
     }
 
-    /// Whether the session should get a prepared handoff now: idle, its
-    /// last request's input reached `threshold_tokens`, and nothing was
-    /// prepared for its current last message yet. Marks it as prepared.
+    /// Whether the session should get a prepared handoff now: idle (not
+    /// errored), its current context ends with the agent's answer, the
+    /// request for that answer had at least `threshold_tokens` of input, and
+    /// nothing was prepared for this state yet. Marks it as prepared.
     pub(crate) fn claim_handoff_preparation(
         &mut self,
         session_id: &str,
@@ -242,7 +243,7 @@ impl SessionManager {
     ) -> Result<bool> {
         self.ensure_session_loaded(session_id)?;
         let instance = self.active_sessions.get_mut(session_id).unwrap();
-        if !instance.get_activity_state().is_terminal() {
+        if instance.get_activity_state() != crate::session::instance::SessionActivityState::Idle {
             return Ok(false);
         }
         // Runs save through their own manager; read what they stored.
@@ -252,12 +253,22 @@ impl SessionManager {
         if head.is_none() || head == instance.handoff_prepared_for {
             return Ok(false);
         }
-        let input_tokens = session
-            .get_active_messages_cloned()
+        let messages = session.get_active_messages_cloned();
+        // The current context starts after the last compaction or new
+        // context; the size of the one before does not count.
+        let context_start = messages
             .iter()
-            .rev()
-            .find(|message| message.role == llm::MessageRole::Assistant)
-            .and_then(|message| message.usage.as_ref())
+            .rposition(|message| message.is_compaction_summary)
+            .map_or(0, |index| index + 1);
+        let Some(answer) = messages[context_start..]
+            .last()
+            .filter(|message| message.role == llm::MessageRole::Assistant)
+        else {
+            return Ok(false);
+        };
+        let input_tokens = answer
+            .usage
+            .as_ref()
             .map(|usage| {
                 u64::from(usage.input_tokens)
                     + u64::from(usage.cache_creation_input_tokens)

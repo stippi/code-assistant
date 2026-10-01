@@ -2734,9 +2734,12 @@ async fn test_pending_user_message_lands_after_the_compaction_handoff() -> Resul
             .any(|message| message_text(message).contains("Follow-up question")),
         "the compaction request covers only the history before the pending message"
     );
+    // One opening user message: the handoff with the follow-up after it.
     let follow_up = &requests[1].messages;
-    assert!(message_text(&follow_up[0]).starts_with("<handoff>"));
-    assert_eq!(message_text(&follow_up[1]), "Follow-up question");
+    assert_eq!(follow_up.len(), 1);
+    let opening = message_text(&follow_up[0]);
+    assert!(opening.starts_with("<handoff>"), "{opening}");
+    assert!(opening.contains("Follow-up question"), "{opening}");
     Ok(())
 }
 
