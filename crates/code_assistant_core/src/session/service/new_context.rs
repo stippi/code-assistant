@@ -28,9 +28,9 @@ impl SessionService {
             branch_parent_id.is_none() || matches!(command, NewContextCommand::HandOff { .. }),
             "/new can't replace an edited message"
         );
-        let (new_session, handed_over) = tokio::sync::oneshot::channel();
-        let from = session_id.clone();
+        let service = self.clone();
         self.call_session(session_id.clone(), move |ctx| async move {
+            let (new_session, handed_over) = tokio::sync::oneshot::channel();
             start_new_context_impl(
                 &ctx,
                 &session_id,
@@ -39,28 +39,28 @@ impl SessionService {
                 branch_parent_id,
                 new_session,
             )
-            .await
+            .await?;
+            // Spawned here, on the worker's runtime: callers such as GPUI
+            // use the service from their own executor.
+            tokio::spawn(async move {
+                // Dropped without a prompt: the context stayed in this
+                // session, or the run was stopped.
+                let Ok(prompt) = handed_over.await else {
+                    return;
+                };
+                if let Err(error) = service.continue_in_new_session(&session_id, prompt).await {
+                    warn!("Failed to continue {session_id} in a new session: {error:#}");
+                    service.events.publish_ui(
+                        &session_id,
+                        UiEvent::DisplayError {
+                            message: format!("Failed to start the new session: {error:#}"),
+                        },
+                    );
+                }
+            });
+            Ok(())
         })
-        .await?;
-
-        let service = self.clone();
-        tokio::spawn(async move {
-            // Dropped without a prompt: the context stayed in this session,
-            // or the run was stopped.
-            let Ok(prompt) = handed_over.await else {
-                return;
-            };
-            if let Err(error) = service.continue_in_new_session(&from, prompt).await {
-                warn!("Failed to continue {from} in a new session: {error:#}");
-                service.events.publish_ui(
-                    &from,
-                    UiEvent::DisplayError {
-                        message: format!("Failed to start the new session: {error:#}"),
-                    },
-                );
-            }
-        });
-        Ok(())
+        .await
     }
 
     /// Answer the open target question of `/new` or `/hand-off`.
@@ -513,6 +513,27 @@ mod tests {
         // The hand-off was written from the branch, without the edited message.
         let generation = &llm.get_requests()[2];
         assert_eq!(generation.messages.len(), 3);
+    }
+
+    /// GPUI calls the service from its own executor, outside any tokio
+    /// runtime; only the worker runs on one.
+    #[test]
+    fn commands_can_be_sent_from_outside_the_tokio_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) = runtime
+            .block_on(async { test_service_with_llm(tmp.path(), answering(&[]).into_factory()) });
+        let id = runtime
+            .block_on(service.create_session(None, None))
+            .unwrap();
+
+        futures::executor::block_on(service.send_user_message(
+            id,
+            "/new Write the tests".into(),
+            vec![],
+            None,
+        ))
+        .unwrap();
     }
 
     #[tokio::test]
