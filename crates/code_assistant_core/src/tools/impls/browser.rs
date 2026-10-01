@@ -39,7 +39,8 @@ use tools_core::permissions::{
     PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
 };
 use web::{
-    BrowserLaunchConfig, BrowserProfile, BrowserSession, BrowserSessionManager, PageObservation,
+    BrowserLaunchConfig, BrowserProfile, BrowserSession, BrowserSessionManager, BrowserTimeout,
+    PageObservation,
 };
 
 /// The profile label used when the model does not name one: a single reusable
@@ -91,6 +92,10 @@ pub struct BrowserOutput {
     pub screenshot_base64: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Things the model should know that are not failures, e.g. a page that
+    /// did not finish loading but is shown as far as it got.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 impl BrowserOutput {
@@ -100,6 +105,7 @@ impl BrowserOutput {
             observation: None,
             screenshot_base64: None,
             error: Some(error.into()),
+            notes: Vec::new(),
         }
     }
 
@@ -125,7 +131,23 @@ impl BrowserOutput {
         // the text (`observe`) and the screenshot show the same page rather
         // than racing a mid-transition document.
         session.settle().await;
-        let observation = session.observe_with(include_text).await.ok();
+        let observation = match session.observe_with(include_text).await {
+            Ok(observation) => Some(observation),
+            // A page that cannot be read will not render a screenshot either;
+            // report it now instead of waiting out a second timeout.
+            Err(e) if e.downcast_ref::<BrowserTimeout>().is_some() => {
+                return Self::failure(
+                    profile,
+                    format!(
+                        "The page is not responding ({e}). It may be busy or stuck in a \
+                         script; browser_navigate loads it again."
+                    ),
+                );
+            }
+            // Other failures (e.g. a document torn down mid-navigation) still
+            // leave the screenshot worth taking.
+            Err(_) => None,
+        };
         let screenshot_base64 = match session.screenshot(full_page).await {
             Ok(png) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
             Err(_) => None,
@@ -135,6 +157,7 @@ impl BrowserOutput {
             observation,
             screenshot_base64,
             error: None,
+            notes: Vec::new(),
         }
     }
 }
@@ -182,6 +205,9 @@ impl Render for BrowserOutput {
             ));
         }
         push_dialog_notes(&mut out, obs);
+        for note in &self.notes {
+            out.push_str(&format!("\nNote: {note}"));
+        }
         out.push_str("\n\n");
         out.push_str(&text);
         // List the actionable elements with their selectors, so the model can
@@ -249,6 +275,22 @@ fn push_dialog_notes(out: &mut String, obs: &PageObservation) {
             "\nNote: a {} dialog \"{}\" was {verdict}.",
             dialog.kind, dialog.message
         ));
+    }
+}
+
+/// Navigate, treating a load that does not finish in time as a note rather than
+/// a failure: the page is usually usable, and a slow iframe or tracker is what
+/// holds back its `load` event. Returns that note, if any.
+async fn navigate_tolerating_slow_load(
+    session: &BrowserSession,
+    url: &str,
+) -> Result<Option<String>> {
+    match session.navigate(url).await {
+        Ok(()) => Ok(None),
+        Err(e) if e.downcast_ref::<BrowserTimeout>().is_some() => Ok(Some(format!(
+            "the page did not finish loading ({e}); it is shown as far as it got."
+        ))),
+        Err(e) => Err(e),
     }
 }
 
@@ -335,13 +377,18 @@ impl Tool for BrowserNavigateTool {
                 ));
             }
         };
-        if let Err(e) = session.navigate(&input.url).await {
-            return Ok(BrowserOutput::failure(
-                &profile,
-                format!("Navigation failed: {e}"),
-            ));
-        }
-        Ok(BrowserOutput::capture(&profile, &session, false, true).await)
+        let note = match navigate_tolerating_slow_load(&session, &input.url).await {
+            Ok(note) => note,
+            Err(e) => {
+                return Ok(BrowserOutput::failure(
+                    &profile,
+                    format!("Navigation failed: {e}"),
+                ));
+            }
+        };
+        let mut out = BrowserOutput::capture(&profile, &session, false, true).await;
+        out.notes.extend(note);
+        Ok(out)
     }
 }
 
@@ -706,7 +753,10 @@ impl Tool for BrowserActTool {
         // the sequence stopped, but report the failing step.
         let mut out = BrowserOutput::capture(&profile, &session, false, !input.no_text).await;
         session.set_accept_dialogs(false);
-        out.error = failure;
+        out.error = match (failure, out.error.take()) {
+            (Some(failure), Some(capture)) => Some(format!("{failure}. {capture}")),
+            (failure, capture) => failure.or(capture),
+        };
         Ok(out)
     }
 }
@@ -769,6 +819,7 @@ impl Tool for BrowserCloseTool {
                     observation: None,
                     screenshot_base64: None,
                     error: None,
+                    notes: Vec::new(),
                 })
             }
             None => Ok(BrowserOutput::failure(
@@ -817,7 +868,7 @@ async fn login_handoff(
             ));
         }
     };
-    if let Err(e) = session.navigate(url).await {
+    if let Err(e) = navigate_tolerating_slow_load(&session, url).await {
         session.close().await;
         return Ok(BrowserOutput::failure(
             profile,
@@ -912,7 +963,7 @@ async fn finalize_login_headless(
         let _ = headless.navigate(url).await;
         let _ = headless.import_cookies(cookies).await;
     }
-    headless.navigate(url).await?;
+    navigate_tolerating_slow_load(&headless, url).await?;
     Ok(headless)
 }
 
@@ -1575,6 +1626,124 @@ mod tests {
         Ok(())
     }
 
+    /// Serve a page whose iframe never loads (so `load` never fires) and a page
+    /// whose `#spin` button hangs the renderer in a script loop.
+    async fn spawn_hanging_site() -> std::net::SocketAddr {
+        use axum::response::Html;
+        use axum::{Router, routing::get};
+
+        let app = Router::new()
+            .route(
+                "/",
+                get(|| async {
+                    Html(concat!(
+                        "<html><head><title>Busy</title></head><body>",
+                        "<button id=\"spin\" onclick=\"setTimeout(() => { while (true) {} }, 50)\">",
+                        "Spin</button></body></html>"
+                    ))
+                }),
+            )
+            .route(
+                "/slow",
+                get(|| async {
+                    Html(concat!(
+                        "<html><head><title>Slow</title></head><body>",
+                        "<h1>Main content</h1><iframe src=\"/never\"></iframe></body></html>"
+                    ))
+                }),
+            )
+            .route(
+                "/never",
+                get(|| async {
+                    tokio::time::sleep(Duration::from_secs(600)).await;
+                    Html("")
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        addr
+    }
+
+    /// Register a throwaway browser with short limits as the default profile,
+    /// so the tools pick it up instead of launching one with the real limits.
+    async fn register_short_timeout_browser(fixture: &ToolTestFixture) -> Result<()> {
+        let session = BrowserSession::open(BrowserLaunchConfig::default(), DEFAULT_PROFILE)
+            .await?
+            .with_timeouts(web::BrowserTimeouts {
+                command: Duration::from_secs(1),
+                navigation: Duration::from_secs(2),
+            });
+        fixture
+            .browser_sessions()
+            .unwrap()
+            .register(Arc::new(session), DEFAULT_PROFILE);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn navigate_shows_a_page_that_never_finishes_loading() -> Result<()> {
+        let addr = spawn_hanging_site().await;
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        register_short_timeout_browser(&fixture).await?;
+
+        let mut context = fixture.context();
+        let mut nav = BrowserNavigateInput {
+            url: format!("http://{addr}/slow"),
+            profile: None,
+        };
+        let out = BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+        assert!(
+            out.error.is_none(),
+            "a slow load is no failure: {:?}",
+            out.error
+        );
+        let rendered = out.render(&mut ResourcesTracker::default());
+        assert!(rendered.contains("Main content"), "got:\n{rendered}");
+        assert!(
+            rendered.contains("did not finish loading"),
+            "the model should learn the page is incomplete, got:\n{rendered}"
+        );
+        assert_eq!(out.render_images().len(), 1, "screenshot attached");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn act_on_a_hung_page_reports_it_quickly() -> Result<()> {
+        let addr = spawn_hanging_site().await;
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        register_short_timeout_browser(&fixture).await?;
+
+        let mut context = fixture.context();
+        let mut nav = BrowserNavigateInput {
+            url: format!("http://{addr}/"),
+            profile: None,
+        };
+        BrowserNavigateTool.execute(&mut context, &mut nav).await?;
+
+        // The click itself succeeds; the page hangs right after. Capturing the
+        // result must give up on the first unanswered read, not wait out the
+        // screenshot as well.
+        let start = std::time::Instant::now();
+        let mut act = BrowserActInput {
+            actions: vec![BrowserAction::Click {
+                selector: "#spin".into(),
+            }],
+            profile: None,
+            no_text: false,
+            accept_dialogs: false,
+        };
+        let out = BrowserActTool.execute(&mut context, &mut act).await?;
+        assert!(
+            start.elapsed() < Duration::from_millis(4500),
+            "took {:?}",
+            start.elapsed()
+        );
+        let error = out.error.as_deref().expect("a hung page is an error");
+        assert!(error.contains("not responding"), "got: {error}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn act_resolves_a_text_selector_and_a_chord() -> Result<()> {
         // A button targeted by visible text, and a chord recorded on keydown.
@@ -1957,6 +2126,7 @@ mod tests {
             observation: None,
             screenshot_base64: Some("ZmFrZQ==".into()),
             error: Some("Action 1 failed: no such element '#missing'".into()),
+            notes: Vec::new(),
         };
         assert!(!out.is_success());
         assert!(
