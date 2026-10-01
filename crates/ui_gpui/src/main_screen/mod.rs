@@ -1215,14 +1215,14 @@ impl MainScreen {
     fn render_permission_prompts(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         use tools_core::PermissionDecision;
 
+        let session_id = self.current_session_id.clone()?;
         let requests = cx
             .try_global::<Gpui>()
-            .map(|gpui| gpui.get_pending_permission_requests())
+            .map(|gpui| gpui.get_pending_permission_requests(&session_id))
             .unwrap_or_default();
         if requests.is_empty() {
             return None;
         }
-        let session_id = self.current_session_id.clone()?;
 
         let respond = |session_id: &str, request_id: &str, decision: PermissionDecision| {
             let session_id = session_id.to_string();

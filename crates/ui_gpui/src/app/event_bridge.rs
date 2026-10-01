@@ -74,9 +74,10 @@ impl Gpui {
                     | UiEvent::UpdateChatList { .. }
                     | UiEvent::RefreshChatList
                     | UiEvent::ConfigChanged => true,
-                    // A target question kept for the session that asked it
-                    // may be settled while another one is viewed.
-                    UiEvent::NewContextTargetResolved { .. } => true,
+                    // Prompts kept for the session that asked them may be
+                    // settled while another one is viewed.
+                    UiEvent::NewContextTargetResolved { .. }
+                    | UiEvent::ToolPermissionRequestResolved { .. } => true,
                     // Everything else: app-scoped events pass, session-scoped
                     // events only for the viewed session.
                     _ => event.session_id.is_none() || is_current_session,
@@ -91,8 +92,35 @@ impl Gpui {
     /// Apply an owned session snapshot by replaying the canonical connect
     /// sequence through the internal event queue.
     pub fn apply_snapshot(&self, snapshot: &SessionSnapshot) {
+        self.restore_prompts(snapshot);
         for event in snapshot.connect_events() {
             self.push_event(event);
+        }
+    }
+
+    /// Take over the snapshot's open prompts. It is authoritative for its
+    /// session, also after a lag that swallowed a resolution.
+    fn restore_prompts(&self, snapshot: &SessionSnapshot) {
+        let session_id = &snapshot.session_id;
+
+        let mut permissions = self.pending_permission_requests.lock().unwrap();
+        permissions.retain(|(asking, _)| asking != session_id);
+        permissions.extend(
+            snapshot
+                .pending_permission_requests
+                .iter()
+                .map(|request| (session_id.clone(), request.clone())),
+        );
+        drop(permissions);
+
+        let mut target = self.pending_new_context_target.lock().unwrap();
+        if let Some(request) = &snapshot.pending_new_context_target {
+            *target = Some((session_id.clone(), request.clone()));
+        } else if target
+            .as_ref()
+            .is_some_and(|(asking, _)| asking == session_id)
+        {
+            *target = None;
         }
     }
 
@@ -124,16 +152,22 @@ impl Gpui {
                 *self.current_permission_tier.lock().unwrap() = Some(*tier);
             }
             UiEvent::RequestToolPermission { request } => {
-                let mut pending = self.pending_permission_requests.lock().unwrap();
-                if !pending.iter().any(|r| r.request_id == request.request_id) {
-                    pending.push(request.clone());
+                // Only the viewed session's events get here.
+                if let Some(session_id) = self.get_current_session_id() {
+                    let mut pending = self.pending_permission_requests.lock().unwrap();
+                    if !pending
+                        .iter()
+                        .any(|(_, r)| r.request_id == request.request_id)
+                    {
+                        pending.push((session_id, request.clone()));
+                    }
                 }
             }
             UiEvent::ToolPermissionRequestResolved { request_id } => {
                 self.pending_permission_requests
                     .lock()
                     .unwrap()
-                    .retain(|r| &r.request_id != request_id);
+                    .retain(|(_, r)| &r.request_id != request_id);
             }
             UiEvent::RequestNewContextTarget { request } => {
                 // Only the viewed session's events get here.
@@ -318,6 +352,7 @@ fn handoff_draft(prompt: &str) -> String {
 mod tests {
     use super::*;
     use code_assistant_core::session::new_context::NewContextTargetRequest;
+    use code_assistant_core::session::permissions::ToolPermissionRequestData;
 
     fn viewing(session_id: &str) -> Gpui {
         let gpui = Gpui::new();
@@ -336,6 +371,60 @@ mod tests {
         NewContextTargetRequest {
             request_id: id.to_string(),
             options: Vec::new(),
+        }
+    }
+
+    fn permission_request(id: &str) -> ToolPermissionRequestData {
+        ToolPermissionRequestData {
+            request_id: id.to_string(),
+            tool_id: None,
+            tool_name: "delete_files".to_string(),
+            summary: String::new(),
+            metadata: serde_json::Value::Null,
+            options: Vec::new(),
+        }
+    }
+
+    fn pending_permission_ids(gpui: &Gpui, session_id: &str) -> Vec<String> {
+        gpui.get_pending_permission_requests(session_id)
+            .into_iter()
+            .map(|request| request.request_id)
+            .collect()
+    }
+
+    fn snapshot(
+        session_id: &str,
+        pending_permission_requests: Vec<ToolPermissionRequestData>,
+    ) -> SessionSnapshot {
+        let now = std::time::SystemTime::now();
+        SessionSnapshot {
+            session_id: session_id.to_string(),
+            messages: Vec::new(),
+            tool_results: Vec::new(),
+            plan: Default::default(),
+            activity_state: Default::default(),
+            metadata: code_assistant_core::persistence::ChatMetadata {
+                id: session_id.to_string(),
+                name: String::new(),
+                created_at: now,
+                updated_at: now,
+                message_count: 0,
+                total_usage: Default::default(),
+                last_usage: Default::default(),
+                tokens_limit: None,
+                tool_syntax: code_assistant_core::types::ToolSyntax::Native,
+                initial_project: String::new(),
+                plan_collapsed: false,
+                is_resumable: false,
+            },
+            pending_message: None,
+            current_model: String::new(),
+            allowed_models: Vec::new(),
+            sandbox_policy: Default::default(),
+            permission_tier: Default::default(),
+            mcp_servers: Vec::new(),
+            pending_permission_requests,
+            pending_new_context_target: None,
         }
     }
 
@@ -375,6 +464,82 @@ mod tests {
                 request_id: "q1".into(),
             },
         )));
+        assert!(gpui.get_pending_new_context_target("a").is_none());
+    }
+
+    #[test]
+    fn a_permission_prompt_shows_only_in_the_asking_session() {
+        let gpui = viewing("a");
+        futures::executor::block_on(gpui.handle_stream_event(ui_event(
+            "a",
+            UiEvent::RequestToolPermission {
+                request: permission_request("p1"),
+            },
+        )));
+        assert_eq!(pending_permission_ids(&gpui, "a"), ["p1"]);
+
+        // Switching away leaves it with the session that asked.
+        *gpui.current_session_id.lock().unwrap() = Some("b".to_string());
+        assert!(pending_permission_ids(&gpui, "b").is_empty());
+        assert_eq!(pending_permission_ids(&gpui, "a"), ["p1"]);
+    }
+
+    #[test]
+    fn a_permission_prompt_settled_in_the_background_goes_away() {
+        let gpui = viewing("a");
+        for id in ["p1", "p2"] {
+            futures::executor::block_on(gpui.handle_stream_event(ui_event(
+                "a",
+                UiEvent::RequestToolPermission {
+                    request: permission_request(id),
+                },
+            )));
+        }
+
+        *gpui.current_session_id.lock().unwrap() = Some("b".to_string());
+        futures::executor::block_on(gpui.handle_stream_event(ui_event(
+            "a",
+            UiEvent::ToolPermissionRequestResolved {
+                request_id: "p1".into(),
+            },
+        )));
+        assert_eq!(pending_permission_ids(&gpui, "a"), ["p2"]);
+    }
+
+    #[test]
+    fn a_snapshot_restores_the_permission_prompts_of_its_session() {
+        let gpui = viewing("a");
+        for (session_id, id) in [("a", "stale"), ("b", "other")] {
+            *gpui.current_session_id.lock().unwrap() = Some(session_id.to_string());
+            futures::executor::block_on(gpui.handle_stream_event(ui_event(
+                session_id,
+                UiEvent::RequestToolPermission {
+                    request: permission_request(id),
+                },
+            )));
+        }
+
+        // Authoritative for its session, e.g. after a lag swallowed the
+        // resolution of "stale"; other sessions keep theirs.
+        gpui.apply_snapshot(&snapshot(
+            "a",
+            vec![permission_request("p1"), permission_request("p2")],
+        ));
+        assert_eq!(pending_permission_ids(&gpui, "a"), ["p1", "p2"]);
+        assert_eq!(pending_permission_ids(&gpui, "b"), ["other"]);
+    }
+
+    #[test]
+    fn a_snapshot_restores_the_target_question_of_its_session() {
+        // Asked while another session was viewed, so the bridge dropped it.
+        let gpui = viewing("b");
+        let mut connected = snapshot("a", Vec::new());
+        connected.pending_new_context_target = Some(request("q1"));
+
+        gpui.apply_snapshot(&connected);
+        assert!(gpui.get_pending_new_context_target("a").is_some());
+
+        gpui.apply_snapshot(&snapshot("a", Vec::new()));
         assert!(gpui.get_pending_new_context_target("a").is_none());
     }
 }
