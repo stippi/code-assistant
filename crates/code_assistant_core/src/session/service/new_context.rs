@@ -22,14 +22,24 @@ impl SessionService {
             attachments.is_empty(),
             "/new and /hand-off don't take attachments"
         );
+        // `/new` stores no message of its own; its boundary is appended at
+        // the end of the active path and cannot branch off an edited message.
         ensure!(
-            branch_parent_id.is_none(),
-            "/new and /hand-off can't replace an edited message"
+            branch_parent_id.is_none() || matches!(command, NewContextCommand::HandOff { .. }),
+            "/new can't replace an edited message"
         );
         let (new_session, handed_over) = tokio::sync::oneshot::channel();
         let from = session_id.clone();
         self.call_session(session_id.clone(), move |ctx| async move {
-            start_new_context_impl(&ctx, &session_id, &message, command, new_session).await
+            start_new_context_impl(
+                &ctx,
+                &session_id,
+                &message,
+                command,
+                branch_parent_id,
+                new_session,
+            )
+            .await
         })
         .await?;
 
@@ -128,6 +138,7 @@ async fn start_new_context_impl(
     session_id: &str,
     message: &str,
     command: NewContextCommand,
+    branch_parent_id: Option<NodeId>,
     new_session: tokio::sync::oneshot::Sender<String>,
 ) -> Result<()> {
     match command {
@@ -144,7 +155,8 @@ async fn start_new_context_impl(
             start_agent_impl(ctx, session_id, options).await
         }
         // The request to write the hand-off rides along with the typed
-        // message, so the generation request is the history as it is.
+        // message, so the generation request is the history as it is. An
+        // edited message branches off like any other.
         NewContextCommand::HandOff { .. } => {
             let mut blocks = content_blocks_from(message, &[]);
             blocks.push(llm::ContentBlock::new_text(
@@ -157,7 +169,16 @@ async fn start_new_context_impl(
                 }),
                 ..Default::default()
             };
-            append_and_run(ctx, session_id, message, blocks, &[], None, options).await
+            append_and_run(
+                ctx,
+                session_id,
+                message,
+                blocks,
+                &[],
+                branch_parent_id,
+                options,
+            )
+            .await
         }
     }
 }
@@ -437,6 +458,74 @@ mod tests {
         // The new context starts from the generated prompt alone.
         assert_eq!(requests[2].messages.len(), 1);
         assert!(first_text(&requests[2]).starts_with("Next: write the tests"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editing_a_message_into_a_hand_off_branches_from_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["built", "answered", "Next: write the tests", "on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        for message in ["Build X", "/handoff typo"] {
+            service
+                .send_user_message(id.clone(), message.into(), vec![], None)
+                .await
+                .unwrap();
+            idle(&mut subscription, &id).await;
+        }
+        let typo_node = *crate::persistence::FileSessionPersistence::new_with_root_dir(
+            tmp.path().to_path_buf(),
+        )
+        .load_chat_session(&id)
+        .unwrap()
+        .unwrap()
+        .active_path
+        .get(2)
+        .unwrap();
+        let edit = service
+            .start_message_edit(id.clone(), typo_node)
+            .await
+            .unwrap();
+
+        service
+            .send_user_message(
+                id.clone(),
+                "/hand-off focus on tests".into(),
+                vec![],
+                edit.branch_parent_id,
+            )
+            .await
+            .unwrap();
+        answer_target(
+            &service,
+            &mut subscription,
+            &id,
+            NewContextTarget::SameSession,
+        )
+        .await;
+        idle(&mut subscription, &id).await;
+
+        let messages = path(tmp.path(), &id);
+        assert_eq!(messages.len(), 5, "{messages:?}");
+        assert_eq!(texts(&messages[2])[0], "/hand-off focus on tests");
+        assert!(messages[3].is_new_context);
+        // The hand-off was written from the branch, without the edited message.
+        let generation = &llm.get_requests()[2];
+        assert_eq!(generation.messages.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn new_cannot_replace_an_edited_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, _) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        let error = service
+            .send_user_message(id, "/new Write the tests".into(), vec![], Some(1))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("/new can't"), "{error}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

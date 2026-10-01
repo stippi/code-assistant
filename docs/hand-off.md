@@ -29,6 +29,10 @@ The user can read, edit and send it; no second model request is needed.
   typed right after it (like skills).
 - Only accepted while the session is idle; during a run the message is
   rejected with an error (not queued). Attachments are rejected too.
+- Editing a message into `/hand-off` branches off like any edit; the
+  hand-off is written from that branch. `/new` cannot replace an edited
+  message: it stores no message, and its boundary is appended at the end
+  of the active path.
 
 ## Target choice
 
@@ -137,6 +141,8 @@ session never prepare twice.
 ## Known gaps
 
 - ACP bypasses `SessionService`, so the commands are not recognized there.
+- `/new` cannot replace an edited message (the run would have to branch
+  the tree itself and publish branch info).
 - The terminal only fills the current session's composer; a hand-off
   prepared for a background session is not kept for later.
 - A message queued while the target question is open and then answered
