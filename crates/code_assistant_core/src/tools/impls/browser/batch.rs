@@ -40,7 +40,8 @@ impl Tool for BrowserBatchTool {
              \"text\": \"hi\"}}, {\"name\": \"browser_computer\", \"input\": {\"action\": \
              \"screenshot\"}}]. Screenshots come back in order. Use it whenever you can predict \
              two or more steps; coordinates in a step refer to the screenshot taken before this \
-             call.",
+             call. Steps run back to back, so this is also how to time input precisely: the page \
+             keeps running between separate calls.",
             json!({
                 "type": "object",
                 "properties": {

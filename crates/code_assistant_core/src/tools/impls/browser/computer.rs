@@ -28,6 +28,11 @@ pub enum ComputerAction {
     Hover,
     LeftClickDrag,
     Zoom,
+    HoldKey,
+    KeyDown,
+    KeyUp,
+    LeftMouseDown,
+    LeftMouseUp,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
@@ -83,19 +88,25 @@ impl BrowserComputerTool {
              Actions: left_click, right_click, double_click, triple_click (coordinate or ref; \
              `modifiers` like \"ctrl+shift\"), type (`text` into the focused element), key \
              (`text`: space-separated keys or chords like \"Enter\", \"ctrl+a\", \"Backspace\"; \
-             `repeat`), screenshot (`scale` < 1 for a smaller image), wait (`duration` seconds, \
+             `repeat`), hold_key (`text` held down for `duration` seconds), key_down / key_up \
+             (`text` stays down across steps until released, e.g. walk while jumping), \
+             left_mouse_down / left_mouse_up (at coordinate/ref or where the mouse is), screenshot (`scale` < 1 for a smaller image), wait (`duration` seconds, \
              max 10), scroll (`scroll_direction`, `scroll_amount` ticks, at `coordinate`/`ref` or \
              the center), scroll_to (ref), hover (coordinate or ref), left_click_drag \
              (`start_coordinate` → `coordinate`), zoom (`region` [x0, y0, x1, y1] of the \
              screenshot, enlarged).\n\
              JavaScript dialogs are answered automatically and reported: alerts acknowledged, \
-             confirm/prompt dismissed unless `accept_dialogs` is true.",
+             confirm/prompt dismissed unless `accept_dialogs` is true.\n\
+             The page keeps running in real time between calls, also while you think. For \
+             timing-sensitive input (games, animations) put the steps in one browser_batch, \
+             where they run back to back and `wait`/`hold_key` durations are exact.",
             json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": [
                         "left_click", "right_click", "double_click", "triple_click", "type", "key",
-                        "screenshot", "wait", "scroll", "scroll_to", "hover", "left_click_drag", "zoom"
+                        "screenshot", "wait", "scroll", "scroll_to", "hover", "left_click_drag", "zoom",
+                        "hold_key", "key_down", "key_up", "left_mouse_down", "left_mouse_up"
                     ]},
                     "coordinate": {"type": "array", "items": {"type": "number"}, "description": "[x, y] in the latest screenshot's pixels"},
                     "start_coordinate": {"type": "array", "items": {"type": "number"}, "description": "[x, y] where left_click_drag starts"},
@@ -104,7 +115,7 @@ impl BrowserComputerTool {
                     "modifiers": {"type": "string", "description": "Modifier keys held during a click, e.g. \"ctrl\", \"cmd+shift\""},
                     "scroll_direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                     "scroll_amount": {"type": "integer", "description": "Wheel ticks (default 3)"},
-                    "duration": {"type": "number", "description": "Seconds to wait (max 10)"},
+                    "duration": {"type": "number", "description": "Seconds to wait or hold a key (max 10)"},
                     "region": {"type": "array", "items": {"type": "number"}, "description": "[x0, y0, x1, y1] to zoom into"},
                     "repeat": {"type": "integer", "description": "Times to repeat the key sequence"},
                     "scale": {"type": "number", "description": "Image scale for screenshot/zoom, e.g. 0.5"},
@@ -245,6 +256,53 @@ async fn act(tab: &Tab, input: &ComputerInput) -> Result<Acted> {
             tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
             Ok(Acted::text(format!("Waited {seconds}s")))
         }
+        HoldKey => {
+            let keys = input
+                .text
+                .as_deref()
+                .ok_or_else(|| anyhow!("hold_key needs `text`"))?;
+            let seconds = input.duration.unwrap_or(1.0).clamp(0.0, 10.0);
+            tab.hold_keys(keys, Duration::from_secs_f64(seconds))
+                .await?;
+            Ok(Acted::text(format!("Held {keys} for {seconds}s")))
+        }
+        KeyDown => {
+            let keys = input
+                .text
+                .as_deref()
+                .ok_or_else(|| anyhow!("key_down needs `text`"))?;
+            tab.key_down(keys).await?;
+            Ok(Acted::text(format!("Holding {keys} (release with key_up)")))
+        }
+        KeyUp => {
+            let keys = input
+                .text
+                .as_deref()
+                .ok_or_else(|| anyhow!("key_up needs `text`"))?;
+            tab.key_up(keys).await?;
+            Ok(Acted::text(format!("Released {keys}")))
+        }
+        LeftMouseDown | LeftMouseUp => {
+            let at = if input.coordinate.is_some() || input.r#ref.is_some() {
+                Some(point(tab, input).await?)
+            } else {
+                None
+            };
+            if action == LeftMouseDown {
+                tab.mouse_down(at, Button::Left).await?;
+                Ok(Acted::text(format!(
+                    "Holding the left button {} (release with left_mouse_up)",
+                    where_label(input)
+                )))
+            } else {
+                tab.mouse_up(at, Button::Left).await?;
+                tab.settle().await;
+                Ok(Acted::text(format!(
+                    "Released the left button {}",
+                    where_label(input)
+                )))
+            }
+        }
         Scroll => {
             let direction = input.scroll_direction.unwrap_or(ScrollDirection::Down);
             let ticks = input.scroll_amount.unwrap_or(3).clamp(1, 50) as f64;
@@ -312,6 +370,14 @@ fn target_label(input: &ComputerInput) -> String {
         (Some(r), _) => r.clone(),
         (None, Some([x, y])) => format!("at ({x}, {y})"),
         _ => String::new(),
+    }
+}
+
+/// Like [`target_label`], but "where the mouse is" without a target.
+fn where_label(input: &ComputerInput) -> String {
+    match target_label(input) {
+        label if label.is_empty() => "where the mouse is".to_string(),
+        label => label,
     }
 }
 
@@ -477,6 +543,74 @@ mod tests {
             .await?;
         assert!(render(&out).contains("was accepted"), "{}", render(&out));
         assert_eq!(tab.javascript("document.title").await?, "yes");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn keys_are_held_for_a_duration_and_across_steps() -> Result<()> {
+        let page = data_url(
+            "<html><body><script>window.log = [];\
+             for (const t of ['keydown', 'keyup']) {\
+               document.addEventListener(t, (e) => window.log.push(t + ':' + e.code + '@' + Math.round(performance.now())));\
+             }</script></body></html>",
+        );
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        let mut context = fixture.context();
+        BrowserNavigateTool
+            .execute(
+                &mut context,
+                &mut NavigateInput {
+                    url: page,
+                    target: Target::default(),
+                },
+            )
+            .await?;
+
+        let mut hold = computer(ComputerAction::HoldKey);
+        hold.text = Some("w".into());
+        hold.duration = Some(0.3);
+        let out = BrowserComputerTool.execute(&mut context, &mut hold).await?;
+        assert_eq!(render(&out), "Held w for 0.3s");
+
+        for (action, keys) in [
+            (ComputerAction::KeyDown, "w"),
+            (ComputerAction::Key, "space"),
+            (ComputerAction::KeyUp, "w"),
+        ] {
+            let mut step = computer(action);
+            step.text = Some(keys.into());
+            let out = BrowserComputerTool.execute(&mut context, &mut step).await?;
+            assert!(out.error.is_none(), "{:?}", out.error);
+        }
+
+        let session = fixture
+            .browser_sessions()
+            .unwrap()
+            .get_by_label("default")
+            .unwrap();
+        let log = session
+            .active_tab()?
+            .javascript("window.log.join(' ')")
+            .await?;
+        let events: Vec<&str> = log.split(' ').collect();
+        let codes: Vec<&str> = events
+            .iter()
+            .map(|e| e.split('@').next().unwrap())
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                "keydown:KeyW",
+                "keyup:KeyW",
+                "keydown:KeyW",
+                "keydown:Space",
+                "keyup:Space",
+                "keyup:KeyW"
+            ],
+            "{log}"
+        );
+        let at = |i: usize| events[i].split('@').nth(1).unwrap().parse::<f64>().unwrap();
+        assert!(at(1) - at(0) >= 280.0, "{log}");
         Ok(())
     }
 

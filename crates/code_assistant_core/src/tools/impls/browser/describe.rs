@@ -202,6 +202,16 @@ fn describe_computer(param: &dyn Fn(&str) -> Option<String>) -> String {
             Some(direction) => format!("Scroll {direction}"),
             None => "Scroll".to_string(),
         },
+        Some("hold_key") => {
+            let duration = param("duration")
+                .map(|d| format!(" for {d}s"))
+                .unwrap_or_default();
+            format!("Hold {}{duration}", param("text").unwrap_or_default())
+        }
+        Some("key_down") => format!("Hold down {}", param("text").unwrap_or_default()),
+        Some("key_up") => format!("Release {}", param("text").unwrap_or_default()),
+        Some("left_mouse_down") => format!("Press the mouse{target}"),
+        Some("left_mouse_up") => format!("Release the mouse{target}"),
         Some("screenshot") => "Screenshot".to_string(),
         Some("zoom") => "Zoom in".to_string(),
         Some("wait") => match param("duration") {
@@ -273,6 +283,13 @@ mod tests {
         assert_eq!(
             describe("browser_computer", &[("action", "screenshot")]),
             "Screenshot"
+        );
+        assert_eq!(
+            describe(
+                "browser_computer",
+                &[("action", "hold_key"), ("text", "w"), ("duration", "0.5")]
+            ),
+            "Hold w for 0.5s"
         );
     }
 
