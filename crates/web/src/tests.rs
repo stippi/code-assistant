@@ -759,3 +759,62 @@ async fn a_hung_page_fails_fast_instead_of_hanging() {
         start.elapsed()
     );
 }
+
+/// Tabs: a fresh browser has one active tab; tabs can be created, selected
+/// and closed; a page-opened popup (`target=_blank`) is adopted as a new tab.
+#[tokio::test]
+async fn tabs_are_created_selected_closed_and_popups_adopted() {
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tabs = session.tabs().await;
+    assert_eq!(tabs.len(), 1);
+    assert!(tabs[0].active);
+    let first = tabs[0].id.clone();
+
+    // A background tab does not take over; a selected one does.
+    let second = session.create_tab(false).await.unwrap();
+    assert_eq!(session.active_tab().unwrap().id(), first);
+    session.select_tab(second.id()).unwrap();
+    assert_eq!(session.active_tab().unwrap().id(), second.id());
+
+    // Closing the active tab activates another.
+    session.close_tab(second.id()).await.unwrap();
+    assert_eq!(session.active_tab().unwrap().id(), first);
+    assert!(session.tab(Some(second.id())).is_err());
+
+    // A link with target=_blank opens a tab the session adopts.
+    let page = data_url(
+        "<html><body><a id=\"pop\" target=\"_blank\" \
+         href=\"data:text/html,<title>Popup</title>hi\">open</a></body></html>",
+    );
+    session.navigate(&page).await.unwrap();
+    session.click("#pop").await.unwrap();
+    let mut adopted = Vec::new();
+    for _ in 0..30 {
+        adopted.extend(session.sync_tabs().await.unwrap());
+        if !adopted.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(adopted.len(), 1, "the popup should be adopted");
+    assert_eq!(
+        session.active_tab().unwrap().id(),
+        first,
+        "a popup does not steal the active tab"
+    );
+    assert_eq!(session.tabs().await.len(), 2);
+
+    session.close().await;
+}
+
+/// Headless browsers get a desktop-sized viewport, not chromiumoxide's 800×600.
+#[tokio::test]
+async fn headless_viewport_is_desktop_sized() {
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    assert_eq!(session.viewport_size().await.unwrap(), (1280.0, 800.0));
+    session.close().await;
+}
