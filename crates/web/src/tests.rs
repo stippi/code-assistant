@@ -474,10 +474,12 @@ async fn a_hung_page_fails_fast_instead_of_hanging() {
         .ref_point(line.split(['[', ']']).nth(1).unwrap())
         .await
         .unwrap();
-    tab.click_point(spin, super::Button::Left, 1, 0)
+    // Start the endless loop with a margin, so the setup itself never races
+    // the hang (a click on #spin could, on a loaded machine).
+    tab.javascript("setTimeout(() => { while (true) {} }, 100); 0")
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
 
     let limit = Duration::from_secs(3);
     let is_timeout = |e: &anyhow::Error| e.downcast_ref::<super::BrowserTimeout>().is_some();
