@@ -13,5 +13,6 @@ pub use browser_session::{
 pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};
 pub use perplexity::{PerplexityCitation, PerplexityClient, PerplexityMessage, PerplexityResponse};
 pub use tab::{
-    BrowserTimeout, BrowserTimeouts, HandledDialog, InteractiveElement, PageObservation, Tab,
+    BrowserTimeout, BrowserTimeouts, Button, HandledDialog, InteractiveElement,
+    MAX_SCREENSHOT_EDGE, PageObservation, Screenshot, Tab,
 };

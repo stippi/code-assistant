@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 chromiumoxide = "0.9"
 futures = "0.3"
 htmd = "0.1.6"
@@ -22,4 +23,3 @@ url = "2.5"
 
 [dev-dependencies]
 axum = "0.7"
-base64 = "0.22"

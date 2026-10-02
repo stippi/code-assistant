@@ -10,11 +10,13 @@ use chromiumoxide::cdp::browser_protocol::dom::{
     BackendNodeId, GetContentQuadsParams, ScrollIntoViewIfNeededParams,
 };
 use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchKeyEventParams, DispatchKeyEventType, InsertTextParams,
+    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
+    InsertTextParams, MouseButton,
 };
 use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
 use chromiumoxide::cdp::browser_protocol::page::{
-    CaptureScreenshotFormat, DialogType, EventJavascriptDialogOpening, HandleJavaScriptDialogParams,
+    CaptureScreenshotFormat, CaptureScreenshotParams, DialogType, EventJavascriptDialogOpening,
+    HandleJavaScriptDialogParams, Viewport,
 };
 use chromiumoxide::element::Element;
 use chromiumoxide::keys::{KeyDefinition, get_key_definition};
@@ -242,6 +244,24 @@ pub struct Tab {
     timeouts: Arc<Mutex<BrowserTimeouts>>,
     /// `ref_N` handles handed out by `read_page`/`find`.
     refs: Mutex<RefMap>,
+    /// Screenshot pixels per CSS pixel in the latest screenshot: coordinates
+    /// the model reads off it are divided by this.
+    frame_scale: Mutex<f64>,
+}
+
+/// A captured screenshot and the size of its coordinate frame.
+pub struct Screenshot {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A mouse button for [`Tab::click_point`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    Left,
+    Right,
+    Middle,
 }
 
 impl Tab {
@@ -263,6 +283,7 @@ impl Tab {
             dialog_task,
             timeouts,
             refs: Mutex::new(RefMap::default()),
+            frame_scale: Mutex::new(1.0),
         })
     }
 
@@ -401,6 +422,232 @@ impl Tab {
                 x: (quad[0] + quad[2] + quad[4] + quad[6]) / 4.0,
                 y: (quad[1] + quad[3] + quad[5] + quad[7]) / 4.0,
             })
+        })
+        .await
+    }
+
+    /// Capture the viewport. `scale` sizes the image relative to CSS pixels
+    /// (default 1); it is reduced further so neither edge exceeds
+    /// [`MAX_SCREENSHOT_EDGE`], which keeps the image from being resized again
+    /// downstream. The result's size is the coordinate frame for
+    /// [`frame_point`](Self::frame_point) until the next screenshot.
+    pub async fn screenshot_frame(&self, scale: Option<f64>) -> Result<Screenshot> {
+        self.bounded("screenshot", self.timeouts().command, async {
+            let (sx, sy, vw, vh) = self.scroll_and_viewport().await?;
+            let scale = fit_scale(scale.unwrap_or(1.0), vw, vh);
+            let png = self.capture(sx, sy, vw, vh, scale).await?;
+            *self.frame_scale.lock().unwrap() = scale;
+            Ok(Screenshot {
+                png,
+                width: (vw * scale).round() as u32,
+                height: (vh * scale).round() as u32,
+            })
+        })
+        .await
+    }
+
+    /// Capture the region `(x0, y0, x1, y1)` of the latest screenshot's frame,
+    /// enlarged (up to 4×, within [`MAX_SCREENSHOT_EDGE`]) for a closer look.
+    /// Does not change the coordinate frame. `scale` shrinks the result.
+    pub async fn zoom(&self, region: [f64; 4], scale: Option<f64>) -> Result<Screenshot> {
+        let frame = *self.frame_scale.lock().unwrap();
+        let [x0, y0, x1, y1] = region.map(|v| v / frame);
+        if x1 <= x0 || y1 <= y0 {
+            anyhow::bail!("region must be (x0, y0, x1, y1) with x1 > x0 and y1 > y0");
+        }
+        self.bounded("zoom", self.timeouts().command, async {
+            let (sx, sy, _, _) = self.scroll_and_viewport().await?;
+            let (w, h) = (x1 - x0, y1 - y0);
+            let enlarge = (MAX_SCREENSHOT_EDGE as f64 / w.max(h)).min(4.0) * scale.unwrap_or(1.0);
+            let png = self.capture(sx + x0, sy + y0, w, h, enlarge).await?;
+            Ok(Screenshot {
+                png,
+                width: (w * enlarge).round() as u32,
+                height: (h * enlarge).round() as u32,
+            })
+        })
+        .await
+    }
+
+    /// Scroll offset and viewport size, in CSS pixels.
+    async fn scroll_and_viewport(&self) -> Result<(f64, f64, f64, f64)> {
+        Ok(self
+            .page
+            .evaluate("[window.scrollX, window.scrollY, window.innerWidth, window.innerHeight]")
+            .await?
+            .into_value::<(f64, f64, f64, f64)>()?)
+    }
+
+    /// Capture the document rectangle `(x, y, w, h)` (CSS px) as PNG at `scale`.
+    async fn capture(&self, x: f64, y: f64, w: f64, h: f64, scale: f64) -> Result<Vec<u8>> {
+        use base64::Engine;
+        let params = CaptureScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Png)
+            .clip(Viewport {
+                x,
+                y,
+                width: w,
+                height: h,
+                scale,
+            })
+            .build();
+        let data = self.page.execute(params).await?.result.data;
+        Ok(base64::engine::general_purpose::STANDARD.decode(AsRef::<str>::as_ref(&data))?)
+    }
+
+    /// Convert a point in the latest screenshot's frame to CSS pixels.
+    pub fn frame_point(&self, x: f64, y: f64) -> Point {
+        let scale = *self.frame_scale.lock().unwrap();
+        Point {
+            x: x / scale,
+            y: y / scale,
+        }
+    }
+
+    /// Click at a viewport point (CSS px): `count` 2 is a double click, 3 a
+    /// triple click. `modifiers` is the CDP bitmask (Alt=1, Ctrl=2, Meta=4,
+    /// Shift=8).
+    pub async fn click_point(
+        &self,
+        at: Point,
+        button: Button,
+        count: u32,
+        modifiers: i64,
+    ) -> Result<()> {
+        self.bounded("click", self.timeouts().command, async {
+            self.mouse(DispatchMouseEventType::MouseMoved, at, None, 0, modifiers)
+                .await?;
+            for n in 1..=count.max(1) {
+                self.mouse(
+                    DispatchMouseEventType::MousePressed,
+                    at,
+                    Some(button),
+                    n,
+                    modifiers,
+                )
+                .await?;
+                self.mouse(
+                    DispatchMouseEventType::MouseReleased,
+                    at,
+                    Some(button),
+                    n,
+                    modifiers,
+                )
+                .await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Move the mouse to a viewport point (CSS px) without clicking.
+    pub async fn hover_point(&self, at: Point) -> Result<()> {
+        self.bounded("mouse move", self.timeouts().command, async {
+            self.mouse(DispatchMouseEventType::MouseMoved, at, None, 0, 0)
+                .await
+        })
+        .await
+    }
+
+    /// Press the left button at `from`, move to `to` in steps, release.
+    pub async fn drag(&self, from: Point, to: Point) -> Result<()> {
+        self.bounded("drag", self.timeouts().command, async {
+            use DispatchMouseEventType::*;
+            self.mouse(MouseMoved, from, None, 0, 0).await?;
+            self.mouse(MousePressed, from, Some(Button::Left), 1, 0)
+                .await?;
+            const STEPS: u32 = 8;
+            for i in 1..=STEPS {
+                let t = i as f64 / STEPS as f64;
+                let at = Point {
+                    x: from.x + (to.x - from.x) * t,
+                    y: from.y + (to.y - from.y) * t,
+                };
+                self.mouse(MouseMoved, at, Some(Button::Left), 0, 0).await?;
+            }
+            self.mouse(MouseReleased, to, Some(Button::Left), 1, 0)
+                .await
+        })
+        .await
+    }
+
+    /// Turn the mouse wheel at a viewport point (CSS px). Positive `dy`
+    /// scrolls down. The event reaches whatever is under the point, so an
+    /// inner scroll container scrolls, not just the page.
+    pub async fn wheel(&self, at: Point, dx: f64, dy: f64) -> Result<()> {
+        self.bounded("scroll", self.timeouts().command, async {
+            let event = DispatchMouseEventParams::builder()
+                .r#type(DispatchMouseEventType::MouseWheel)
+                .x(at.x)
+                .y(at.y)
+                .delta_x(dx)
+                .delta_y(dy)
+                .build()
+                .map_err(anyhow::Error::msg)?;
+            self.page.execute(event).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn mouse(
+        &self,
+        kind: DispatchMouseEventType,
+        at: Point,
+        button: Option<Button>,
+        click_count: u32,
+        modifiers: i64,
+    ) -> Result<()> {
+        let mut event = DispatchMouseEventParams::builder()
+            .r#type(kind)
+            .x(at.x)
+            .y(at.y)
+            .modifiers(modifiers);
+        if let Some(button) = button {
+            event = event
+                .button(match button {
+                    Button::Left => MouseButton::Left,
+                    Button::Right => MouseButton::Right,
+                    Button::Middle => MouseButton::Middle,
+                })
+                .buttons(match button {
+                    Button::Left => 1,
+                    Button::Right => 2,
+                    Button::Middle => 4,
+                });
+        }
+        if click_count > 0 {
+            event = event.click_count(click_count as i64);
+        }
+        self.page
+            .execute(event.build().map_err(anyhow::Error::msg)?)
+            .await?;
+        Ok(())
+    }
+
+    /// Type `text` into whatever has focus.
+    pub async fn type_into_focused(&self, text: &str) -> Result<()> {
+        self.bounded("typing", self.typing_limit(text), self.type_chars(text))
+            .await
+    }
+
+    /// Press keys: space-separated keys or chords (`"Enter"`, `"ctrl+a"`,
+    /// `"cmd+shift+z"`, `"Backspace Backspace"`), the sequence `repeat` times.
+    /// Common aliases (`Return`, `Esc`, `Space`, `Up`, `PageDown`, …) and any
+    /// case are accepted.
+    pub async fn press_keys(&self, keys: &str, repeat: u32) -> Result<()> {
+        let presses = keys.split_whitespace().count() as u32 * repeat.max(1);
+        let limit = self.timeouts().command + Duration::from_millis(20) * presses;
+        self.bounded("key press", limit, async {
+            for _ in 0..repeat.max(1) {
+                for chord in keys.split_whitespace() {
+                    let (modifiers, key) = parse_chord(chord);
+                    let def = key_definition(key)
+                        .ok_or_else(|| anyhow::anyhow!("unknown key '{key}'"))?;
+                    self.press(def, modifiers).await?;
+                }
+            }
+            Ok(())
         })
         .await
     }
@@ -972,6 +1219,53 @@ impl Tab {
         })
         .await
     }
+}
+
+/// The longest edge a screenshot may have: the image limit of the model
+/// API, past which images are downscaled again (and coordinates would drift).
+pub const MAX_SCREENSHOT_EDGE: u32 = 1568;
+
+/// `requested`, reduced as needed so a `vw`×`vh` capture fits the edge limit.
+fn fit_scale(requested: f64, vw: f64, vh: f64) -> f64 {
+    let requested = if requested > 0.0 { requested } else { 1.0 };
+    let longest = vw.max(vh) * requested;
+    if longest > MAX_SCREENSHOT_EDGE as f64 {
+        requested * MAX_SCREENSHOT_EDGE as f64 / longest
+    } else {
+        requested
+    }
+}
+
+/// Look a key up by name, tolerating case and common aliases, since key names
+/// come from a model (`"return"`, `"Esc"`, `"pagedown"`, `"f5"`).
+fn key_definition(name: &str) -> Option<&'static KeyDefinition> {
+    if let Some(def) = get_key_definition(name) {
+        return Some(def);
+    }
+    let alias = match name.to_ascii_lowercase().as_str() {
+        "return" | "enter" => "Enter",
+        "esc" | "escape" => "Escape",
+        "space" | "spacebar" => " ",
+        "up" | "arrowup" => "ArrowUp",
+        "down" | "arrowdown" => "ArrowDown",
+        "left" | "arrowleft" => "ArrowLeft",
+        "right" | "arrowright" => "ArrowRight",
+        "pageup" | "page_up" => "PageUp",
+        "pagedown" | "page_down" => "PageDown",
+        "home" => "Home",
+        "end" => "End",
+        "tab" => "Tab",
+        "backspace" => "Backspace",
+        "delete" | "del" => "Delete",
+        "insert" => "Insert",
+        other => {
+            // f1..f12 and other names whose canonical form is capitalized.
+            let mut chars = other.chars();
+            let capitalized: String = chars.next()?.to_uppercase().chain(chars).collect();
+            return get_key_definition(&capitalized);
+        }
+    };
+    get_key_definition(alias)
 }
 
 fn stale_ref(r: &str) -> anyhow::Error {

@@ -862,3 +862,135 @@ async fn read_page_lists_elements_with_refs_that_resolve_to_points() {
 
     session.close().await;
 }
+
+/// A page that records mouse events on `#box` (and mouseup anywhere), with an
+/// input, an inner scroll container, and a tall body so the window scrolls.
+#[cfg(test)]
+fn input_lab_url() -> String {
+    data_url(
+        "<html><body style=\"margin:0;height:3000px\">\
+         <input id=\"f\" style=\"position:absolute;left:100px;top:100px;width:200px\">\
+         <div id=\"box\" style=\"position:absolute;left:400px;top:100px;width:100px;height:100px\"></div>\
+         <div id=\"scroller\" style=\"position:absolute;left:600px;top:100px;width:200px;height:100px;overflow:auto\">\
+         <div style=\"height:1000px\">x</div></div>\
+         <script>\
+         window.log = [];\
+         const rec = (e) => window.log.push(e.type + ':' + e.button + ':' + e.detail + ':' \
+           + Math.round(e.clientX) + ',' + Math.round(e.clientY) + (e.ctrlKey ? ':ctrl' : ''));\
+         const box = document.getElementById('box');\
+         ['mousedown', 'dblclick', 'contextmenu', 'mouseover'].forEach((t) => box.addEventListener(t, rec));\
+         document.addEventListener('mouseup', rec);\
+         </script></body></html>",
+    )
+}
+
+#[cfg(test)]
+fn png_size(png: &[u8]) -> (u32, u32) {
+    let be = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    (be(&png[16..20]), be(&png[20..24]))
+}
+
+#[tokio::test]
+async fn mouse_and_keyboard_reach_the_page() {
+    use super::Button;
+    use chromiumoxide::layout::Point;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&input_lab_url()).await.unwrap();
+    let tab = session.active_tab().unwrap();
+    let log = || async { tab.eval("window.log.splice(0).join(' ')").await.unwrap() };
+
+    // Click into the field, type, then fix a typo with repeated Backspace.
+    tab.click_point(Point { x: 150.0, y: 110.0 }, Button::Left, 1, 0)
+        .await
+        .unwrap();
+    tab.type_into_focused("Grüße!!").await.unwrap();
+    tab.press_keys("Backspace", 2).await.unwrap();
+    tab.press_keys("left right End", 1).await.unwrap();
+    assert_eq!(
+        tab.eval("document.getElementById('f').value")
+            .await
+            .unwrap(),
+        "Grüße"
+    );
+    assert!(tab.press_keys("NoSuchKey", 1).await.is_err());
+    log().await;
+
+    // Hover, a ctrl-click, a double click and a right click on the box.
+    let center = Point { x: 450.0, y: 150.0 };
+    tab.hover_point(center).await.unwrap();
+    tab.click_point(center, Button::Left, 1, 2).await.unwrap();
+    tab.click_point(center, Button::Left, 2, 0).await.unwrap();
+    tab.click_point(center, Button::Right, 1, 0).await.unwrap();
+    let events = log().await;
+    let events = events.as_str().unwrap();
+    assert!(events.starts_with("mouseover"), "{events}");
+    assert!(events.contains("mousedown:0:1:450,150:ctrl"), "{events}");
+    assert!(events.contains("dblclick:0:2:450,150"), "{events}");
+    assert!(events.contains("contextmenu:2:"), "{events}");
+
+    // A drag ends where it was released.
+    tab.drag(center, Point { x: 700.0, y: 500.0 })
+        .await
+        .unwrap();
+    let events = log().await;
+    assert!(
+        events.as_str().unwrap().ends_with("mouseup:0:1:700,500"),
+        "{events}"
+    );
+
+    // The wheel scrolls the container under the pointer, not the page.
+    tab.wheel(Point { x: 700.0, y: 150.0 }, 0.0, 200.0)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        tab.eval("[document.getElementById('scroller').scrollTop, window.scrollY]")
+            .await
+            .unwrap(),
+        serde_json::json!([200, 0])
+    );
+
+    session.close().await;
+}
+
+#[tokio::test]
+async fn screenshots_define_the_coordinate_frame() {
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&input_lab_url()).await.unwrap();
+    let tab = session.active_tab().unwrap();
+
+    let shot = tab.screenshot_frame(None).await.unwrap();
+    assert_eq!((shot.width, shot.height), (1280, 800));
+    assert_eq!(png_size(&shot.png), (1280, 800));
+    assert_eq!(tab.frame_point(100.0, 50.0).x, 100.0);
+
+    // A half-size screenshot halves the frame: its coordinates map back up.
+    let half = tab.screenshot_frame(Some(0.5)).await.unwrap();
+    assert_eq!(png_size(&half.png), (640, 400));
+    let p = tab.frame_point(320.0, 200.0);
+    assert_eq!((p.x, p.y), (640.0, 400.0));
+
+    // Zooming into the frame's top-left quarter enlarges it to the edge
+    // limit, and leaves the frame alone.
+    let zoomed = tab.zoom([0.0, 0.0, 320.0, 200.0], None).await.unwrap();
+    assert_eq!(png_size(&zoomed.png), (zoomed.width, zoomed.height));
+    assert_eq!(zoomed.width, super::MAX_SCREENSHOT_EDGE);
+    assert_eq!(tab.frame_point(320.0, 200.0).x, 640.0);
+
+    // On a scrolled page the screenshot shows the viewport, not the top of
+    // the document.
+    tab.eval("window.scrollTo(0, 1000)").await.unwrap();
+    let ours = tab.screenshot_frame(None).await.unwrap();
+    let reference = tab.screenshot(false).await.unwrap();
+    assert!(
+        ours.png == reference,
+        "scrolled screenshot differs from the viewport"
+    );
+
+    session.close().await;
+}
