@@ -18,7 +18,7 @@ use chromiumoxide::cdp::browser_protocol::network::CookieParam;
 use chromiumoxide::cdp::browser_protocol::target::GetTargetsParams;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// A tab as listed for the model.
@@ -240,71 +240,6 @@ impl BrowserSession {
     /// still kills the process (via `kill_on_drop`) but skips the flush.
     pub async fn close(&self) {
         self.launched.lock().await.close().await;
-    }
-
-    // Transitional: the verbs below act on the active tab, for callers that
-    // predate tabs. They go away with the selector-based tools.
-
-    pub async fn navigate(&self, url: &str) -> Result<()> {
-        self.active_tab()?.navigate(url).await
-    }
-    pub async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>> {
-        self.active_tab()?.screenshot(full_page).await
-    }
-    pub async fn scroll(&self, selector: Option<&str>, dx: f64, dy: f64) -> Result<()> {
-        self.active_tab()?.scroll(selector, dx, dy).await
-    }
-    pub async fn observe(&self) -> Result<crate::PageObservation> {
-        self.active_tab()?.observe().await
-    }
-    pub async fn observe_with(&self, include_text: bool) -> Result<crate::PageObservation> {
-        self.active_tab()?.observe_with(include_text).await
-    }
-    pub async fn viewport_size(&self) -> Result<(f64, f64)> {
-        self.active_tab()?.viewport_size().await
-    }
-    pub async fn click(&self, selector: &str) -> Result<()> {
-        self.active_tab()?.click(selector).await
-    }
-    pub async fn click_at(&self, x: f64, y: f64) -> Result<()> {
-        self.active_tab()?.click_at(x, y).await
-    }
-    pub async fn move_mouse(&self, x: f64, y: f64) -> Result<()> {
-        self.active_tab()?.move_mouse(x, y).await
-    }
-    pub async fn type_text(&self, selector: &str, text: &str) -> Result<()> {
-        self.active_tab()?.type_text(selector, text).await
-    }
-    pub async fn fill(&self, selector: &str, text: &str) -> Result<()> {
-        self.active_tab()?.fill(selector, text).await
-    }
-    pub async fn clear(&self, selector: &str) -> Result<()> {
-        self.active_tab()?.clear(selector).await
-    }
-    pub async fn press_key(&self, selector: &str, key: &str) -> Result<()> {
-        self.active_tab()?.press_key(selector, key).await
-    }
-    pub async fn press_key_global(&self, key: &str) -> Result<()> {
-        self.active_tab()?.press_key_global(key).await
-    }
-    pub async fn settle(&self) {
-        if let Ok(tab) = self.active_tab() {
-            tab.settle().await;
-        }
-    }
-    pub async fn wait_for(&self, selector: &str, timeout: Duration) -> Result<bool> {
-        self.active_tab()?.wait_for(selector, timeout).await
-    }
-    pub async fn eval(&self, js: &str) -> Result<serde_json::Value> {
-        self.active_tab()?.eval(js).await
-    }
-    pub async fn import_cookies(&self, cookies: Vec<CookieParam>) -> Result<()> {
-        self.active_tab()?.import_cookies(cookies).await
-    }
-    pub fn set_accept_dialogs(&self, accept: bool) {
-        if let Ok(tab) = self.active_tab() {
-            tab.set_accept_dialogs(accept);
-        }
     }
 }
 

@@ -15,6 +15,5 @@ pub use chromiumoxide::layout::Point;
 pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};
 pub use perplexity::{PerplexityCitation, PerplexityClient, PerplexityMessage, PerplexityResponse};
 pub use tab::{
-    BrowserTimeout, BrowserTimeouts, Button, HandledDialog, InteractiveElement,
-    MAX_SCREENSHOT_EDGE, PageObservation, Screenshot, Tab,
+    BrowserTimeout, BrowserTimeouts, Button, HandledDialog, MAX_SCREENSHOT_EDGE, Screenshot, Tab,
 };
