@@ -1,3 +1,4 @@
+mod ax_tree;
 mod browser;
 mod browser_session;
 mod client;

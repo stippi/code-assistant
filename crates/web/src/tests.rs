@@ -818,3 +818,47 @@ async fn headless_viewport_is_desktop_sized() {
     assert_eq!(session.viewport_size().await.unwrap(), (1280.0, 800.0));
     session.close().await;
 }
+
+/// The accessibility snapshot names elements by role and label and hands out
+/// refs that resolve to clickable points.
+#[tokio::test]
+async fn read_page_lists_elements_with_refs_that_resolve_to_points() {
+    let addr = spawn_form_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+    let tab = session.active_tab().unwrap();
+
+    let tree = tab.read_page(false, None, 15).await.unwrap().join("\n");
+    assert!(
+        tree.contains(r#"- document "Login Demo" [ref_"#),
+        "got:\n{tree}"
+    );
+    assert!(tree.contains(r#"- heading "Welcome""#), "got:\n{tree}");
+
+    let interactive = tab.read_page(true, None, 15).await.unwrap();
+    assert_eq!(
+        interactive.len(),
+        2,
+        "textbox and button, got: {interactive:?}"
+    );
+    assert!(interactive[0].starts_with("- textbox"), "{interactive:?}");
+    assert!(
+        interactive[1].starts_with(r#"- button "Go""#),
+        "{interactive:?}"
+    );
+
+    let found = tab.find("go", 20).await.unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    let go_ref = found[0]
+        .split(['[', ']'])
+        .nth(1)
+        .expect("a ref in the found line")
+        .to_string();
+    let point = tab.ref_point(&go_ref).await.unwrap();
+    assert!(point.x > 0.0 && point.y > 0.0, "{point:?}");
+    assert!(tab.ref_point("ref_999").await.is_err());
+
+    session.close().await;
+}

@@ -4,7 +4,11 @@
 //! [`crate::BrowserSession`] owns the browser and its tabs; every verb that
 //! touches a page lives here.
 
+use crate::ax_tree::{GetFullAxTreeRaw, RefMap, RenderOptions};
 use anyhow::Result;
+use chromiumoxide::cdp::browser_protocol::dom::{
+    BackendNodeId, GetContentQuadsParams, ScrollIntoViewIfNeededParams,
+};
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, InsertTextParams,
 };
@@ -236,6 +240,8 @@ pub struct Tab {
     dialog_task: JoinHandle<()>,
     /// Shared with the session, so changing its limits reaches every tab.
     timeouts: Arc<Mutex<BrowserTimeouts>>,
+    /// `ref_N` handles handed out by `read_page`/`find`.
+    refs: Mutex<RefMap>,
 }
 
 impl Tab {
@@ -256,6 +262,7 @@ impl Tab {
             accept_dialogs,
             dialog_task,
             timeouts,
+            refs: Mutex::new(RefMap::default()),
         })
     }
 
@@ -305,6 +312,97 @@ impl Tab {
             Ok(result) => result,
             Err(_) => Err(BrowserTimeout { what, after: limit }.into()),
         }
+    }
+
+    /// The page's accessibility tree as YAML-style lines, `- role "name"
+    /// [ref_N] attrs`. `interactive_only` gives a flat list of actionable
+    /// elements; `root_ref` limits it to that element's subtree.
+    pub async fn read_page(
+        &self,
+        interactive_only: bool,
+        root_ref: Option<&str>,
+        max_depth: usize,
+    ) -> Result<Vec<String>> {
+        self.bounded("reading the page", self.timeouts().command, async {
+            let tree = self.page.execute(GetFullAxTreeRaw {}).await?.result;
+            let opts = RenderOptions {
+                interactive_only,
+                root_ref,
+                max_depth,
+            };
+            crate::ax_tree::render(&tree.nodes, &mut self.refs.lock().unwrap(), &opts)
+                .map_err(anyhow::Error::msg)
+        })
+        .await
+    }
+
+    /// Lines of the accessibility tree (role, name, ref, attributes) that
+    /// contain `query`, case-insensitively — at most `limit`.
+    pub async fn find(&self, query: &str, limit: usize) -> Result<Vec<String>> {
+        let needle = query.to_lowercase();
+        let lines = self.read_page(false, None, usize::MAX).await?;
+        Ok(lines
+            .into_iter()
+            .map(|l| l.trim_start().to_string())
+            .filter(|l| l.to_lowercase().contains(&needle))
+            .take(limit)
+            .collect())
+    }
+
+    fn backend_node(&self, r: &str) -> Result<BackendNodeId> {
+        self.refs
+            .lock()
+            .unwrap()
+            .backend_id(r)
+            .map(BackendNodeId::new)
+            .ok_or_else(|| anyhow::anyhow!("unknown ref '{r}' (read the page to get current refs)"))
+    }
+
+    /// Scroll the element `r` into view if it is not.
+    pub async fn scroll_to_ref(&self, r: &str) -> Result<()> {
+        let node = self.backend_node(r)?;
+        self.bounded("scrolling into view", self.timeouts().command, async {
+            self.page
+                .execute(
+                    ScrollIntoViewIfNeededParams::builder()
+                        .backend_node_id(node)
+                        .build(),
+                )
+                .await
+                .map_err(|_| stale_ref(r))?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The viewport point (CSS px) at the center of element `r`, scrolled into
+    /// view first — where a click on it lands.
+    pub async fn ref_point(&self, r: &str) -> Result<Point> {
+        self.scroll_to_ref(r).await?;
+        let node = self.backend_node(r)?;
+        self.bounded("locating an element", self.timeouts().command, async {
+            let quads = self
+                .page
+                .execute(
+                    GetContentQuadsParams::builder()
+                        .backend_node_id(node)
+                        .build(),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("{r} is not visible on the page"))?
+                .result
+                .quads;
+            let quad = quads
+                .first()
+                .map(|q| q.inner().clone())
+                .filter(|q| q.len() == 8)
+                .ok_or_else(|| anyhow::anyhow!("{r} is not visible on the page"))?;
+            Ok(Point {
+                x: (quad[0] + quad[2] + quad[4] + quad[6]) / 4.0,
+                y: (quad[1] + quad[3] + quad[5] + quad[7]) / 4.0,
+            })
+        })
+        .await
     }
 
     /// Typing presses a key per character, so long text gets more time.
@@ -486,7 +584,7 @@ impl Tab {
     ///
     /// These are resolved to a concrete node in the page, so a fragile hashed
     /// `#id` is never needed.
-    async fn find(&self, selector: &str) -> Result<Element> {
+    async fn find_element(&self, selector: &str) -> Result<Element> {
         if let Some(css) = self.resolve_semantic_selector(selector).await? {
             return self
                 .page
@@ -582,7 +680,7 @@ impl Tab {
     /// "Node is either not visible or not an HTMLElement".
     pub async fn click(&self, selector: &str) -> Result<()> {
         self.bounded("click", self.timeouts().command, async {
-            let element = self.find(selector).await?;
+            let element = self.find_element(selector).await?;
             let _ = element.scroll_into_view().await;
             element.click().await?;
             Ok(())
@@ -616,7 +714,7 @@ impl Tab {
     /// [`fill`](Self::fill) to replace a prefilled field.
     pub async fn type_text(&self, selector: &str, text: &str) -> Result<()> {
         self.bounded("typing", self.typing_limit(text), async {
-            let element = self.find(selector).await?;
+            let element = self.find_element(selector).await?;
             let _ = element.scroll_into_view().await;
             element.focus().await?;
             self.type_chars(text).await
@@ -630,7 +728,7 @@ impl Tab {
     /// contenteditable elements.
     pub async fn fill(&self, selector: &str, text: &str) -> Result<()> {
         self.bounded("typing", self.typing_limit(text), async {
-            let element = self.find(selector).await?;
+            let element = self.find_element(selector).await?;
             let _ = element.scroll_into_view().await;
             element.focus().await?;
             self.clear_focused(&element).await?;
@@ -660,7 +758,7 @@ impl Tab {
     /// Empty a field's current content.
     pub async fn clear(&self, selector: &str) -> Result<()> {
         self.bounded("clearing a field", self.timeouts().command, async {
-            let element = self.find(selector).await?;
+            let element = self.find_element(selector).await?;
             let _ = element.scroll_into_view().await;
             element.focus().await?;
             self.clear_focused(&element).await?;
@@ -690,7 +788,7 @@ impl Tab {
     /// into view and focused first.
     pub async fn press_key(&self, selector: &str, key: &str) -> Result<()> {
         self.bounded("key press", self.timeouts().command, async {
-            let element = self.find(selector).await?;
+            let element = self.find_element(selector).await?;
             let _ = element.scroll_into_view().await;
             element.focus().await?;
             self.dispatch_key(key).await
@@ -874,6 +972,10 @@ impl Tab {
         })
         .await
     }
+}
+
+fn stale_ref(r: &str) -> anyhow::Error {
+    anyhow::anyhow!("{r} is no longer in the page (read the page to get current refs)")
 }
 
 impl Drop for Tab {
