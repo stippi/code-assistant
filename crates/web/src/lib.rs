@@ -2,6 +2,7 @@ mod ax_tree;
 mod browser;
 mod browser_session;
 mod client;
+mod page_log;
 mod perplexity;
 mod tab;
 #[cfg(test)]

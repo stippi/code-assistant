@@ -5,18 +5,28 @@
 //! touches a page lives here.
 
 use crate::ax_tree::{GetFullAxTreeRaw, RefMap, RenderOptions};
+use crate::page_log::PageLog;
 use anyhow::Result;
+use chromiumoxide::cdp::browser_protocol::dom::ResolveNodeParams;
 use chromiumoxide::cdp::browser_protocol::dom::{
     BackendNodeId, GetContentQuadsParams, ScrollIntoViewIfNeededParams,
+};
+use chromiumoxide::cdp::browser_protocol::emulation::{
+    MediaFeature, SetDeviceMetricsOverrideParams, SetEmulatedMediaParams,
+    SetTouchEmulationEnabledParams, SetUserAgentOverrideParams,
 };
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
     InsertTextParams, MouseButton,
 };
+use chromiumoxide::cdp::browser_protocol::network::GetResponseBodyParams;
 use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, CaptureScreenshotParams, DialogType, EventJavascriptDialogOpening,
     HandleJavaScriptDialogParams, Viewport,
+};
+use chromiumoxide::cdp::js_protocol::runtime::{
+    CallArgument, CallFunctionOnParams, EvaluateParams, RemoteObject,
 };
 use chromiumoxide::element::Element;
 use chromiumoxide::keys::{KeyDefinition, get_key_definition};
@@ -247,6 +257,11 @@ pub struct Tab {
     /// Screenshot pixels per CSS pixel in the latest screenshot: coordinates
     /// the model reads off it are divided by this.
     frame_scale: Mutex<f64>,
+    /// Console messages and network requests, collected in the background.
+    log: Arc<PageLog>,
+    log_tasks: Vec<JoinHandle<()>>,
+    /// The browser's own user agent, to restore after emulating a phone.
+    original_user_agent: Mutex<Option<String>>,
 }
 
 /// A captured screenshot and the size of its coordinate frame.
@@ -275,6 +290,8 @@ impl Tab {
         let accept_dialogs = Arc::new(AtomicBool::new(false));
         let dialog_task =
             spawn_dialog_handler(&page, dialogs.clone(), accept_dialogs.clone()).await?;
+        let log = Arc::new(PageLog::default());
+        let log_tasks = crate::page_log::spawn_listeners(&page, log.clone()).await?;
         Ok(Self {
             id,
             page,
@@ -284,6 +301,9 @@ impl Tab {
             timeouts,
             refs: Mutex::new(RefMap::default()),
             frame_scale: Mutex::new(1.0),
+            log,
+            log_tasks,
+            original_user_agent: Mutex::new(None),
         })
     }
 
@@ -650,6 +670,223 @@ impl Tab {
             Ok(())
         })
         .await
+    }
+
+    /// Console messages, oldest first, at most the last `limit`: only errors
+    /// (and exceptions) if asked, only those containing `pattern` if given.
+    pub fn console_messages(
+        &self,
+        only_errors: bool,
+        pattern: Option<&str>,
+        limit: usize,
+    ) -> Vec<String> {
+        let pattern = pattern.map(str::to_lowercase);
+        let console = self.log.console.lock().unwrap();
+        let matching: Vec<String> = console
+            .iter()
+            .filter(|m| !only_errors || m.is_error())
+            .map(|m| m.line())
+            .filter(|l| {
+                pattern
+                    .as_ref()
+                    .is_none_or(|p| l.to_lowercase().contains(p))
+            })
+            .collect();
+        matching[matching.len().saturating_sub(limit)..].to_vec()
+    }
+
+    /// Network requests, oldest first, at most the last `limit`, only those
+    /// whose URL contains `url_pattern` if given. Each line starts with the
+    /// request id to fetch its body with [`response_body`](Self::response_body).
+    pub fn network_requests(&self, url_pattern: Option<&str>, limit: usize) -> Vec<String> {
+        let network = self.log.network.lock().unwrap();
+        let matching: Vec<String> = network
+            .iter()
+            .filter(|r| url_pattern.is_none_or(|p| r.url.contains(p)))
+            .map(|r| r.line())
+            .collect();
+        matching[matching.len().saturating_sub(limit)..].to_vec()
+    }
+
+    /// The body of a finished response, cut to `max_chars`. Binary bodies are
+    /// described, not returned.
+    pub async fn response_body(&self, request_id: &str, max_chars: usize) -> Result<String> {
+        self.bounded("reading a response body", self.timeouts().command, async {
+            let body = self
+                .page
+                .execute(GetResponseBodyParams::new(request_id.to_string()))
+                .await
+                .map_err(|e| anyhow::anyhow!("no body for request {request_id}: {e}"))?
+                .result;
+            if body.base64_encoded {
+                return Ok(format!(
+                    "(binary body, about {} bytes)",
+                    body.body.len() * 3 / 4
+                ));
+            }
+            Ok(truncate_chars(&body.body, max_chars))
+        })
+        .await
+    }
+
+    /// Run JavaScript in the page with REPL semantics: top-level `await`
+    /// works and the value of the last expression is returned, as JSON when it
+    /// serializes, else as its description. A thrown error is an `Err`.
+    pub async fn javascript(&self, code: &str) -> Result<String> {
+        self.bounded("script evaluation", self.timeouts().command, async {
+            let params = EvaluateParams::builder()
+                .expression(code)
+                .repl_mode(true)
+                .await_promise(true)
+                .return_by_value(true)
+                .user_gesture(true)
+                .build()
+                .map_err(anyhow::Error::msg)?;
+            let result = self.page.execute(params).await?.result;
+            if let Some(details) = result.exception_details {
+                let message = details
+                    .exception
+                    .as_ref()
+                    .and_then(|e| e.description.clone())
+                    .unwrap_or(details.text);
+                anyhow::bail!("{message}");
+            }
+            Ok(describe_value(&result.result))
+        })
+        .await
+    }
+
+    /// Set a form control by ref: a `<select>` by option value or visible
+    /// text (an array for a multi-select), a checkbox/radio/switch by
+    /// `true`/`false`, anything else (inputs, textareas, contenteditable) by
+    /// text. Fires the `input`/`change` events frameworks listen for. Returns
+    /// what was set.
+    pub async fn form_input(&self, r: &str, value: &serde_json::Value) -> Result<String> {
+        let node = self.backend_node(r)?;
+        self.bounded("setting a form field", self.timeouts().command, async {
+            let object = self
+                .page
+                .execute(ResolveNodeParams::builder().backend_node_id(node).build())
+                .await
+                .map_err(|_| stale_ref(r))?
+                .result
+                .object
+                .object_id
+                .ok_or_else(|| stale_ref(r))?;
+            let call = CallFunctionOnParams::builder()
+                .function_declaration(FORM_INPUT_JS)
+                .object_id(object)
+                .argument(CallArgument::builder().value(value.clone()).build())
+                .return_by_value(true)
+                .await_promise(true)
+                .build()
+                .map_err(anyhow::Error::msg)?;
+            let result = self.page.execute(call).await?.result;
+            if let Some(details) = result.exception_details {
+                let message = details
+                    .exception
+                    .as_ref()
+                    .and_then(|e| e.description.clone())
+                    .unwrap_or(details.text);
+                anyhow::bail!("{}", message.trim_start_matches("Error: "));
+            }
+            Ok(describe_value(&result.result))
+        })
+        .await
+    }
+
+    /// Emulate a viewport of `width`×`height` CSS pixels. `mobile` also
+    /// emulates a phone: mobile layout, touch (5 points) and an Android Chrome
+    /// user agent; reload for the page to pick that up.
+    pub async fn set_viewport(&self, width: u32, height: u32, mobile: bool) -> Result<()> {
+        self.bounded("resizing the viewport", self.timeouts().command, async {
+            let metrics = SetDeviceMetricsOverrideParams::builder()
+                .width(width as i64)
+                .height(height as i64)
+                .device_scale_factor(1.0)
+                .mobile(mobile)
+                .build()
+                .map_err(anyhow::Error::msg)?;
+            self.page.execute(metrics).await?;
+            let touch = SetTouchEmulationEnabledParams::builder()
+                .enabled(mobile)
+                .max_touch_points(5)
+                .build()
+                .map_err(anyhow::Error::msg)?;
+            self.page.execute(touch).await?;
+
+            let original = {
+                let known = self.original_user_agent.lock().unwrap().clone();
+                match known {
+                    Some(ua) => ua,
+                    None => {
+                        let ua: String = self
+                            .page
+                            .evaluate("navigator.userAgent")
+                            .await?
+                            .into_value()?;
+                        *self.original_user_agent.lock().unwrap() = Some(ua.clone());
+                        ua
+                    }
+                }
+            };
+            let user_agent = if mobile {
+                MOBILE_USER_AGENT.to_string()
+            } else {
+                original
+            };
+            self.page
+                .execute(SetUserAgentOverrideParams::new(user_agent))
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Emulate `prefers-color-scheme` (`"light"` / `"dark"`); `None` follows
+    /// the browser again.
+    pub async fn set_color_scheme(&self, scheme: Option<&str>) -> Result<()> {
+        self.bounded("setting the color scheme", self.timeouts().command, async {
+            let params = SetEmulatedMediaParams::builder()
+                .feature(MediaFeature::new(
+                    "prefers-color-scheme",
+                    scheme.unwrap_or(""),
+                ))
+                .build();
+            self.page.execute(params).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The page's visible text — its `<main>`/`<article>` if it has one, else
+    /// the whole body — cut to `max_chars`.
+    pub async fn page_text(&self, max_chars: usize) -> Result<String> {
+        self.bounded("reading the page text", self.timeouts().command, async {
+            let text: String = self
+                .page
+                .evaluate(
+                    "(() => { const main = document.querySelector('main, [role=main], article'); \
+                     const el = main && main.innerText.trim() ? main : document.body; \
+                     return el ? el.innerText : ''; })()",
+                )
+                .await?
+                .into_value()?;
+            Ok(truncate_chars(&text, max_chars))
+        })
+        .await
+    }
+
+    /// Go back (`-1`) or forward (`1`) in the tab's history and wait for the
+    /// page to settle.
+    pub async fn history(&self, delta: i32) -> Result<()> {
+        self.bounded("history navigation", self.timeouts().navigation, async {
+            self.page.evaluate(format!("history.go({delta})")).await?;
+            Ok(())
+        })
+        .await?;
+        self.settle().await;
+        Ok(())
     }
 
     /// Typing presses a key per character, so long text gets more time.
@@ -1221,6 +1458,89 @@ impl Tab {
     }
 }
 
+/// Sets a form control (`this`) to `v`; see [`Tab::form_input`].
+const FORM_INPUT_JS: &str = r#"function (v) {
+  const el = this;
+  const fire = () => {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const on = v === true || v === 'true' || v === 'on' || v === 1 || v === 'checked';
+  if (el.tagName === 'SELECT') {
+    const want = (Array.isArray(v) ? v : [v]).map(String);
+    let matched = 0;
+    for (const o of el.options) {
+      const hit = want.includes(o.value) || want.includes(o.text.trim());
+      if (el.multiple) o.selected = hit;
+      else if (hit && !matched) o.selected = true;
+      if (hit) matched++;
+    }
+    if (!matched) {
+      throw new Error('no option matches ' + JSON.stringify(v) + '; options: '
+        + Array.from(el.options).map((o) => o.text.trim()).join(', '));
+    }
+    fire();
+    return 'selected ' + Array.from(el.selectedOptions).map((o) => o.text.trim()).join(', ');
+  }
+  if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
+    // A click toggles like a user would, firing the events frameworks expect.
+    if (el.checked !== on) el.click();
+    return el.checked ? 'checked' : 'unchecked';
+  }
+  const role = el.getAttribute('role');
+  if (role === 'checkbox' || role === 'switch' || role === 'radio') {
+    if ((el.getAttribute('aria-checked') === 'true') !== on) el.click();
+    return el.getAttribute('aria-checked') === 'true' ? 'checked' : 'unchecked';
+  }
+  if (el.isContentEditable) {
+    el.focus();
+    el.textContent = String(v);
+    fire();
+    return 'set text';
+  }
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+    el.focus();
+    // The prototype's setter, so frameworks that track the value (React)
+    // see the change.
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, String(v));
+    fire();
+    return 'set value';
+  }
+  throw new Error('not a form field (' + el.tagName.toLowerCase() + ')');
+}"#;
+
+/// User agent while emulating a phone.
+const MOBILE_USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+
+/// A JS result as text: JSON when it has a value, else its description
+/// (`undefined`, a function, a DOM node, …).
+fn describe_value(object: &RemoteObject) -> String {
+    match &object.value {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(value) => value.to_string(),
+        None => object
+            .description
+            .clone()
+            .or_else(|| {
+                object
+                    .unserializable_value
+                    .as_ref()
+                    .map(|v| v.inner().clone())
+            })
+            .unwrap_or_else(|| object.r#type.as_ref().to_string()),
+    }
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max_chars).collect();
+    format!("{cut}\n… (truncated at {max_chars} characters)")
+}
+
 /// The longest edge a screenshot may have: the image limit of the model
 /// API, past which images are downscaled again (and coordinates would drift).
 pub const MAX_SCREENSHOT_EDGE: u32 = 1568;
@@ -1275,6 +1595,9 @@ fn stale_ref(r: &str) -> anyhow::Error {
 impl Drop for Tab {
     fn drop(&mut self) {
         self.dialog_task.abort();
+        for task in &self.log_tasks {
+            task.abort();
+        }
     }
 }
 

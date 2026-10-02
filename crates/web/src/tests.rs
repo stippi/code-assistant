@@ -994,3 +994,198 @@ async fn screenshots_define_the_coordinate_frame() {
 
     session.close().await;
 }
+
+/// A page that logs to the console, throws, and fetches a JSON API and a
+/// missing resource; plus a form with a select, a checkbox and a text field.
+#[cfg(test)]
+async fn spawn_devtools_site() -> std::net::SocketAddr {
+    use axum::response::{Html, IntoResponse};
+    use axum::{Router, routing::get};
+
+    async fn index() -> Html<&'static str> {
+        Html(
+            "<html><head><title>Devtools</title></head><body>\
+             <main><h1>Main part</h1><p>Only this.</p></main><footer>Footer</footer>\
+             <label>Color <select id=\"color\"><option value=\"r\">Red</option>\
+             <option value=\"g\">Green</option></select></label>\
+             <label><input type=\"checkbox\" id=\"agree\"> Agree</label>\
+             <label>Name <input id=\"name\"></label>\
+             <script>\
+             window.changes = [];\
+             for (const id of ['color', 'agree', 'name']) {\
+               document.getElementById(id).addEventListener('change', (e) => window.changes.push(id));\
+             }\
+             console.log('hello', 42, {a: 1});\
+             console.error('something broke');\
+             setTimeout(() => { throw new Error('uncaught boom'); }, 0);\
+             fetch('/api/items').then((r) => r.json()).then((j) => console.log('items', j.items.length));\
+             fetch('/missing');\
+             </script></body></html>",
+        )
+    }
+    async fn items() -> impl IntoResponse {
+        axum::Json(serde_json::json!({"items": [1, 2, 3]}))
+    }
+
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/api/items", get(items));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+#[tokio::test]
+async fn console_network_and_javascript_are_inspectable() {
+    let addr = spawn_devtools_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+    let tab = session.active_tab().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let all = tab.console_messages(false, None, 50).join("\n");
+    assert!(all.contains("[log] hello 42"), "{all}");
+    assert!(all.contains("[log] items 3"), "{all}");
+    let errors = tab.console_messages(true, None, 50).join("\n");
+    assert!(errors.contains("[error] something broke"), "{errors}");
+    assert!(
+        errors.contains("[exception]") && errors.contains("uncaught boom"),
+        "{errors}"
+    );
+    assert!(
+        errors.contains("404"),
+        "the failed load is logged: {errors}"
+    );
+    assert!(!errors.contains("hello"), "{errors}");
+    assert_eq!(tab.console_messages(false, Some("BOOM"), 50).len(), 1);
+    assert_eq!(tab.console_messages(false, None, 2).len(), 2);
+
+    let requests = tab.network_requests(None, 50).join("\n");
+    assert!(
+        requests.contains("GET 200 fetch") && requests.contains("/api/items"),
+        "{requests}"
+    );
+    assert!(
+        requests.contains("GET 404") && requests.contains("/missing"),
+        "{requests}"
+    );
+    let api = tab.network_requests(Some("/api/"), 50);
+    assert_eq!(api.len(), 1, "{api:?}");
+    let id = api[0].trim_start_matches('[').split(']').next().unwrap();
+    let body = tab.response_body(id, 1000).await.unwrap();
+    assert_eq!(body, r#"{"items":[1,2,3]}"#);
+
+    // REPL semantics: top-level await, the last expression's value.
+    assert_eq!(
+        tab.javascript("const n = await Promise.resolve(21); n * 2")
+            .await
+            .unwrap(),
+        "42"
+    );
+    assert_eq!(tab.javascript("document.title").await.unwrap(), "Devtools");
+    assert_eq!(tab.javascript("undefined").await.unwrap(), "undefined");
+    let err = tab.javascript("null.x").await.unwrap_err().to_string();
+    assert!(err.contains("TypeError"), "{err}");
+
+    assert_eq!(
+        tab.page_text(1000).await.unwrap(),
+        "Main part\n\nOnly this."
+    );
+
+    session.close().await;
+}
+
+#[tokio::test]
+async fn form_input_sets_selects_checkboxes_and_fields_by_ref() {
+    let addr = spawn_devtools_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+    let tab = session.active_tab().unwrap();
+    let ref_of = |line: &str| line.split(['[', ']']).nth(1).unwrap().to_string();
+
+    let tree = tab.read_page(true, None, 15).await.unwrap();
+    let find = |role: &str| ref_of(tree.iter().find(|l| l.starts_with(role)).unwrap());
+    let (color, agree, name) = (find("- combobox"), find("- checkbox"), find("- textbox"));
+
+    assert_eq!(
+        tab.form_input(&color, &serde_json::json!("Green"))
+            .await
+            .unwrap(),
+        "selected Green"
+    );
+    assert_eq!(
+        tab.form_input(&agree, &serde_json::json!(true))
+            .await
+            .unwrap(),
+        "checked"
+    );
+    assert_eq!(
+        tab.form_input(&name, &serde_json::json!("Grüße"))
+            .await
+            .unwrap(),
+        "set value"
+    );
+    let err = tab
+        .form_input(&color, &serde_json::json!("Blue"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("no option matches \"Blue\"; options: Red, Green"),
+        "{err}"
+    );
+
+    assert_eq!(
+        tab.javascript(
+            "[document.getElementById('color').value, document.getElementById('agree').checked, \
+             document.getElementById('name').value, window.changes.join()]"
+        )
+        .await
+        .unwrap(),
+        r#"["g",true,"Grüße","color,agree,name"]"#
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn viewport_and_color_scheme_can_be_emulated() {
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&data_url(
+        "<html><head><meta name=\"viewport\" content=\"width=device-width\"></head>\
+         <body>x</body></html>",
+    ))
+    .await
+    .unwrap();
+
+    tab.set_viewport(375, 812, true).await.unwrap();
+    tab.set_color_scheme(Some("dark")).await.unwrap();
+    tab.page().reload().await.unwrap();
+    assert_eq!(
+        tab.javascript(
+            "[innerWidth, innerHeight, navigator.maxTouchPoints, /Android/.test(navigator.userAgent), \
+             matchMedia('(prefers-color-scheme: dark)').matches]"
+        )
+        .await
+        .unwrap(),
+        "[375,812,5,true,true]"
+    );
+
+    tab.set_viewport(1280, 800, false).await.unwrap();
+    tab.set_color_scheme(None).await.unwrap();
+    tab.page().reload().await.unwrap();
+    assert_eq!(
+        tab.javascript("[innerWidth, /Android/.test(navigator.userAgent)]")
+            .await
+            .unwrap(),
+        "[1280,false]"
+    );
+    session.close().await;
+}
