@@ -7,10 +7,11 @@ mod perplexity;
 mod tab;
 #[cfg(test)]
 mod tests;
-pub use browser::{BrowserLaunchConfig, BrowserProfile, LaunchedBrowser};
+pub use browser::{BrowserLaunchConfig, BrowserProfile, DEFAULT_VIEWPORT, LaunchedBrowser};
 pub use browser_session::{
     BrowserSession, BrowserSessionInfo, BrowserSessionManager, DEFAULT_MAX_SESSIONS, TabInfo,
 };
+pub use chromiumoxide::layout::Point;
 pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};
 pub use perplexity::{PerplexityCitation, PerplexityClient, PerplexityMessage, PerplexityResponse};
 pub use tab::{

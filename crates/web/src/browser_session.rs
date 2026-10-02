@@ -15,6 +15,7 @@ use crate::browser::LaunchedBrowser;
 use crate::tab::{BrowserTimeouts, Tab};
 use anyhow::Result;
 use chromiumoxide::cdp::browser_protocol::network::CookieParam;
+use chromiumoxide::cdp::browser_protocol::target::GetTargetsParams;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -120,8 +121,26 @@ impl BrowserSession {
 
     /// Adopt tabs the page opened itself (`target=_blank`, `window.open`) and
     /// forget tabs that were closed. Returns the ids of newly adopted tabs.
+    ///
+    /// Only pages with an opener are adopted: Chrome's own initial blank tab
+    /// has none and stays out of the list.
     pub async fn sync_tabs(&self) -> Result<Vec<String>> {
-        let pages = self.launched.lock().await.browser.pages().await?;
+        let (pages, opened) = {
+            let launched = self.launched.lock().await;
+            let pages = launched.browser.pages().await?;
+            let targets = launched
+                .browser
+                .execute(GetTargetsParams::default())
+                .await?
+                .result
+                .target_infos;
+            let opened: Vec<_> = targets
+                .into_iter()
+                .filter(|t| t.opener_id.is_some())
+                .map(|t| t.target_id)
+                .collect();
+            (pages, opened)
+        };
         let known: Vec<_> = {
             let tabs = self.tabs.lock().unwrap();
             tabs.list
@@ -130,7 +149,10 @@ impl BrowserSession {
                 .collect()
         };
         let mut adopted = Vec::new();
-        for page in pages.iter().filter(|p| !known.contains(p.target_id())) {
+        for page in pages
+            .iter()
+            .filter(|p| !known.contains(p.target_id()) && opened.contains(p.target_id()))
+        {
             let id = self.tabs.lock().unwrap().mint_id();
             let tab = Arc::new(Tab::new(id.clone(), page.clone(), self.timeouts.clone()).await?);
             self.tabs.lock().unwrap().list.push(tab);

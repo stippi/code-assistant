@@ -311,6 +311,11 @@ impl Tab {
         &self.id
     }
 
+    /// Dialogs answered since the last call (or observation).
+    pub fn take_dialogs(&self) -> Vec<HandledDialog> {
+        std::mem::take(&mut *self.dialogs.lock().unwrap())
+    }
+
     pub(crate) fn page(&self) -> &Page {
         &self.page
     }

@@ -76,13 +76,68 @@ impl InlineToolRenderer {
                 template: "List skills in {project}",
                 fallback: "List skills",
             },
-            // Lightweight browser tools: no card, just a line you can expand
-            // (browser_read shows its screenshot inline; browser_close is a
-            // one-liner). The heavier browser_navigate/act/login use cards.
+            // Browser tools without screenshots: a line you can expand. The
+            // ones that can show the page (navigate, computer, batch, login)
+            // use cards.
             DescribeTemplate {
-                tool_name: "browser_read",
+                tool_name: "browser_read_page",
                 template: "Read browser page",
                 fallback: "Read browser page",
+            },
+            DescribeTemplate {
+                tool_name: "browser_find",
+                template: "Find \"{query}\" on the page",
+                fallback: "Find on the page",
+            },
+            DescribeTemplate {
+                tool_name: "browser_get_page_text",
+                template: "Read page text",
+                fallback: "Read page text",
+            },
+            DescribeTemplate {
+                tool_name: "browser_form_input",
+                template: "Set {ref}",
+                fallback: "Set form field",
+            },
+            DescribeTemplate {
+                tool_name: "browser_javascript",
+                template: "Run JavaScript",
+                fallback: "Run JavaScript",
+            },
+            DescribeTemplate {
+                tool_name: "browser_read_console_messages",
+                template: "Read console messages",
+                fallback: "Read console messages",
+            },
+            DescribeTemplate {
+                tool_name: "browser_read_network_requests",
+                template: "Read network requests",
+                fallback: "Read network requests",
+            },
+            DescribeTemplate {
+                tool_name: "browser_resize_window",
+                template: "Resize browser viewport",
+                fallback: "Resize browser viewport",
+            },
+            DescribeTemplate {
+                tool_name: "browser_tabs_context",
+                template: "List browser tabs",
+                fallback: "List browser tabs",
+            },
+            DescribeTemplate {
+                tool_name: "browser_tabs_create",
+                template: "Open browser tab",
+                fallback: "Open browser tab",
+            },
+            DescribeTemplate {
+                tool_name: "browser_tabs_select",
+                template: "Select tab {tab_id}",
+                fallback: "Select tab",
+            },
+            DescribeTemplate {
+                tool_name: "browser_tabs_close",
+                template: "Close tab {tab_id}",
+                fallback: "Close tab",
             },
             DescribeTemplate {
                 tool_name: "browser_close",

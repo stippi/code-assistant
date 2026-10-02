@@ -1,11 +1,10 @@
-//! Browser card renderer for the heavier `browser_*` tool blocks
-//! (`browser_navigate`, `browser_act`, `browser_login`).
+//! Browser card renderer for the `browser_*` tools that can show the page
+//! (`browser_navigate`, `browser_computer`, `browser_batch`, `browser_login`).
 //!
 //! Each is its own tool call, so it already gets its own block. This renders
 //! that block as a collapsible card: a header with the action and status, and —
-//! on expand — the page screenshot captured at that step, plus a short URL/title
-//! caption. The lightweight `browser_read` / `browser_close` render inline
-//! instead (see [`super::inline_renderer`]).
+//! on expand — the screenshots taken in that call, plus a short caption. The
+//! other browser tools render inline (see [`super::inline_renderer`]).
 
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
@@ -19,9 +18,14 @@ use gpui_kit::{
 };
 use std::time::Duration;
 
-// Only the tools whose screenshot is worth a card. browser_read and
-// browser_close render inline (see InlineToolRenderer).
-const BROWSER_TOOLS: [&str; 3] = ["browser_navigate", "browser_act", "browser_login"];
+// The tools that can return screenshots. The others render inline (see
+// InlineToolRenderer).
+const BROWSER_TOOLS: [&str; 4] = [
+    "browser_navigate",
+    "browser_computer",
+    "browser_batch",
+    "browser_login",
+];
 
 /// Maximum height of a screenshot inside a card body.
 const SCREENSHOT_MAX_HEIGHT: f32 = 380.0;
@@ -272,36 +276,65 @@ fn describe(tool: &ToolUseBlock) -> String {
             Some(url) => format!("Log in at {}", truncate(&url, 60)),
             None => "Log in".to_string(),
         },
-        "browser_act" => describe_act(param("actions").as_deref()),
+        "browser_computer" => describe_computer(&param),
+        "browser_batch" => describe_batch(param("actions").as_deref()),
         other => other.to_string(),
     };
     format!("{base}{profile_suffix}")
 }
 
-/// For `browser_act`, summarize the action count when the JSON parses.
-fn describe_act(actions_json: Option<&str>) -> String {
+/// For `browser_computer`, the action and what it targets.
+fn describe_computer(param: &dyn Fn(&str) -> Option<String>) -> String {
+    let target = param("ref")
+        .or_else(|| param("coordinate"))
+        .map(|t| format!(" {t}"))
+        .unwrap_or_default();
+    match param("action").as_deref() {
+        Some("screenshot") => "Screenshot".to_string(),
+        Some("zoom") => "Zoom into the page".to_string(),
+        Some("left_click") => format!("Click{target}"),
+        Some("right_click") => format!("Right-click{target}"),
+        Some("double_click") => format!("Double-click{target}"),
+        Some("triple_click") => format!("Triple-click{target}"),
+        Some("hover") => format!("Hover{target}"),
+        Some("scroll_to") => format!("Scroll to{target}"),
+        Some("left_click_drag") => "Drag".to_string(),
+        Some("type") => match param("text") {
+            Some(text) => format!("Type \"{}\"", truncate(&text, 40)),
+            None => "Type".to_string(),
+        },
+        Some("key") => match param("text") {
+            Some(keys) => format!("Press {}", truncate(&keys, 40)),
+            None => "Press keys".to_string(),
+        },
+        Some("scroll") => match param("scroll_direction") {
+            Some(direction) => format!("Scroll {direction}"),
+            None => "Scroll".to_string(),
+        },
+        Some("wait") => "Wait".to_string(),
+        _ => "Use the browser".to_string(),
+    }
+}
+
+/// For `browser_batch`, the step count when the JSON parses.
+fn describe_batch(actions_json: Option<&str>) -> String {
     if let Some(json) = actions_json
         && let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(json)
     {
         let n = items.len();
-        return format!("Interact ({n} step{})", if n == 1 { "" } else { "s" });
+        return format!("Browser steps ({n} step{})", if n == 1 { "" } else { "s" });
     }
-    "Interact with page".to_string()
+    "Browser steps".to_string()
 }
 
-/// Show the first few informative lines of the tool output as a caption. For
-/// success that is the `Profile/URL/Title` header the tool emits; for errors it
-/// is the error message.
+/// Show the first lines of the tool output as a caption: the error message,
+/// or the URL and title (or action summary) the tool reported.
 fn caption_from_output(output: &str, is_error: bool) -> String {
+    let lines = output.trim().lines().take(if is_error { 3 } else { 2 });
     if is_error {
-        return output.trim().lines().take(3).collect::<Vec<_>>().join("\n");
+        return lines.collect::<Vec<_>>().join("\n");
     }
-    output
-        .lines()
-        .filter(|l| l.starts_with("URL:") || l.starts_with("Title:"))
-        .take(2)
-        .collect::<Vec<_>>()
-        .join("  ·  ")
+    lines.collect::<Vec<_>>().join("  ·  ")
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -345,28 +378,36 @@ mod tests {
     }
 
     #[test]
-    fn describe_act_counts_steps() {
+    fn describe_batch_counts_steps() {
         let two = make_tool(
-            "browser_act",
+            "browser_batch",
             &[(
                 "actions",
-                r##"[{"click":{"selector":"#a"}},{"type":{"selector":"#b","text":"x"}}]"##,
+                r##"[{"name":"browser_computer","input":{}},{"name":"browser_find","input":{}}]"##,
             )],
         );
-        assert_eq!(describe(&two), "Interact (2 steps)");
-        let one = make_tool(
-            "browser_act",
-            &[("actions", r##"[{"click":{"selector":"#a"}}]"##)],
-        );
-        assert_eq!(describe(&one), "Interact (1 step)");
+        assert_eq!(describe(&two), "Browser steps (2 steps)");
     }
 
     #[test]
-    fn caption_extracts_url_and_title_on_success() {
-        let out = "Profile: default\nURL: https://x.com\nTitle: Hi\n\nbody text";
+    fn describe_computer_names_the_action_and_target() {
+        let click = make_tool(
+            "browser_computer",
+            &[("action", "left_click"), ("ref", "ref_4")],
+        );
+        assert_eq!(describe(&click), "Click ref_4");
+        let key = make_tool("browser_computer", &[("action", "key"), ("text", "ctrl+a")]);
+        assert_eq!(describe(&key), "Press ctrl+a");
+        let shot = make_tool("browser_computer", &[("action", "screenshot")]);
+        assert_eq!(describe(&shot), "Screenshot");
+    }
+
+    #[test]
+    fn caption_shows_the_first_lines_on_success() {
+        let out = "[t1] https://x.com\nTitle: Hi\nNote: something";
         assert_eq!(
             caption_from_output(out, false),
-            "URL: https://x.com  ·  Title: Hi"
+            "[t1] https://x.com  ·  Title: Hi"
         );
     }
 
