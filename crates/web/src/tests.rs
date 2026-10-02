@@ -495,3 +495,267 @@ async fn test_web_fetch() {
     assert!(!page.content.is_empty());
     assert!(page.content.contains("Rust"));
 }
+
+/// A page with an `alert` button and a `confirm` button that writes the user's
+/// answer into `#out`.
+#[cfg(test)]
+async fn spawn_dialog_site() -> std::net::SocketAddr {
+    use axum::response::Html;
+    use axum::{Router, routing::get};
+
+    async fn index() -> Html<&'static str> {
+        Html(
+            "<html><head><title>Dialogs</title></head><body>\
+             <button id=\"alert\" onclick=\"alert('Hallo')\">Alert</button>\
+             <button id=\"confirm\" onclick=\"document.getElementById('out').textContent = \
+             confirm('Sicher?') ? 'yes' : 'no'\">Confirm</button>\
+             <span id=\"out\"></span></body></html>",
+        )
+    }
+
+    let app = Router::new().route("/", get(index));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// A JavaScript dialog blocks the renderer until someone answers it; left open,
+/// the click that raised it and every later CDP command hang for minutes. The
+/// session must answer dialogs itself and report them in the next observation.
+#[tokio::test]
+async fn javascript_dialogs_are_answered_and_reported() {
+    use std::time::Duration;
+
+    let addr = spawn_dialog_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+
+    // An alert is acknowledged; the click returns and the page stays usable.
+    tokio::time::timeout(Duration::from_secs(10), session.click("#alert"))
+        .await
+        .expect("click raising an alert must not hang")
+        .unwrap();
+    let obs = session.observe().await.unwrap();
+    assert_eq!(obs.dialogs.len(), 1, "got: {:?}", obs.dialogs);
+    assert_eq!(obs.dialogs[0].kind, "alert");
+    assert_eq!(obs.dialogs[0].message, "Hallo");
+    assert!(obs.dialogs[0].accepted);
+
+    // Reported once: the next observation starts clean.
+    assert!(session.observe().await.unwrap().dialogs.is_empty());
+
+    // A confirm is dismissed by default — accepting could trigger an outward
+    // action the model never saw the warning for.
+    tokio::time::timeout(Duration::from_secs(10), session.click("#confirm"))
+        .await
+        .expect("click raising a confirm must not hang")
+        .unwrap();
+    let obs = session.observe().await.unwrap();
+    assert_eq!(obs.dialogs.len(), 1, "got: {:?}", obs.dialogs);
+    assert_eq!(obs.dialogs[0].kind, "confirm");
+    assert_eq!(obs.dialogs[0].message, "Sicher?");
+    assert!(!obs.dialogs[0].accepted);
+    assert_eq!(
+        session
+            .eval("document.getElementById('out').textContent")
+            .await
+            .unwrap(),
+        "no"
+    );
+
+    // Opting in accepts it.
+    session.set_accept_dialogs(true);
+    tokio::time::timeout(Duration::from_secs(10), session.click("#confirm"))
+        .await
+        .expect("click raising a confirm must not hang")
+        .unwrap();
+    let obs = session.observe().await.unwrap();
+    assert!(obs.dialogs[0].accepted);
+    assert_eq!(
+        session
+            .eval("document.getElementById('out').textContent")
+            .await
+            .unwrap(),
+        "yes"
+    );
+
+    session.close().await;
+}
+
+/// German (and any non-US-layout) text must type: `ü`, `ß` and `€` are not in
+/// chromiumoxide's US key table, which used to fail with "Key not found".
+#[tokio::test]
+async fn type_and_fill_handle_characters_outside_the_us_layout() {
+    let addr = spawn_form_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+
+    session.type_text("#user", "Grüße, ").await.unwrap();
+    session.type_text("#user", "Straße 5 € ✓").await.unwrap();
+    let value = session
+        .eval("document.getElementById('user').value")
+        .await
+        .unwrap();
+    assert_eq!(value, "Grüße, Straße 5 € ✓");
+
+    session.fill("#user", "Übermut").await.unwrap();
+    let value = session
+        .eval("document.getElementById('user').value")
+        .await
+        .unwrap();
+    assert_eq!(value, "Übermut");
+
+    session.close().await;
+}
+
+/// A page that can be told to hang: `#spin` starts an endless script loop
+/// (after the click has returned), and its iframe never finishes loading, so
+/// the page's `load` event never fires.
+#[cfg(test)]
+async fn spawn_hanging_site() -> std::net::SocketAddr {
+    use axum::response::Html;
+    use axum::{Router, routing::get};
+
+    async fn index() -> Html<&'static str> {
+        Html(
+            "<html><head><title>Busy</title></head><body>\
+             <button id=\"spin\" onclick=\"setTimeout(() => { while (true) {} }, 50)\">Spin</button>\
+             </body></html>",
+        )
+    }
+    async fn slow_frame() -> Html<&'static str> {
+        Html(
+            "<html><head><title>Slow</title></head><body>\
+             <h1>Main content</h1><iframe src=\"/never\"></iframe></body></html>",
+        )
+    }
+    async fn never() -> Html<&'static str> {
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        Html("")
+    }
+
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/slow", get(slow_frame))
+        .route("/never", get(never));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+#[cfg(test)]
+fn short_timeouts() -> super::BrowserTimeouts {
+    use std::time::Duration;
+    super::BrowserTimeouts {
+        command: Duration::from_secs(1),
+        navigation: Duration::from_secs(2),
+    }
+}
+
+/// A page that never fires `load` fails the navigation within the limit with a
+/// `BrowserTimeout`, and what did load is still observable.
+#[tokio::test]
+async fn navigation_that_never_loads_times_out_but_the_page_is_usable() {
+    use std::time::{Duration, Instant};
+
+    let addr = spawn_hanging_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap()
+        .with_timeouts(short_timeouts());
+
+    let start = Instant::now();
+    let err = session
+        .navigate(&format!("http://{addr}/slow"))
+        .await
+        .expect_err("load never fires");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(
+        err.downcast_ref::<super::BrowserTimeout>().is_some(),
+        "{err}"
+    );
+
+    let obs = session.observe().await.unwrap();
+    assert!(obs.text.contains("Main content"), "got: {}", obs.text);
+    session.close().await;
+}
+
+/// A page stuck in a script loop answers no CDP command. Every verb must give
+/// up within its limit instead of hanging the agent for minutes.
+#[tokio::test]
+async fn a_hung_page_fails_fast_instead_of_hanging() {
+    use std::time::{Duration, Instant};
+
+    let addr = spawn_hanging_site().await;
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap()
+        .with_timeouts(short_timeouts());
+    session.navigate(&format!("http://{addr}/")).await.unwrap();
+    session.click("#spin").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let limit = Duration::from_secs(3);
+    let is_timeout = |e: &anyhow::Error| e.downcast_ref::<super::BrowserTimeout>().is_some();
+
+    let start = Instant::now();
+    let err = session.observe().await.expect_err("page is hung");
+    assert!(
+        start.elapsed() < limit,
+        "observe took {:?}",
+        start.elapsed()
+    );
+    assert!(is_timeout(&err), "{err}");
+
+    let start = Instant::now();
+    let err = session.screenshot(false).await.expect_err("page is hung");
+    assert!(
+        start.elapsed() < limit,
+        "screenshot took {:?}",
+        start.elapsed()
+    );
+    assert!(is_timeout(&err), "{err}");
+
+    let start = Instant::now();
+    let err = session.click("#spin").await.expect_err("page is hung");
+    assert!(start.elapsed() < limit, "click took {:?}", start.elapsed());
+    assert!(is_timeout(&err), "{err}");
+
+    let start = Instant::now();
+    let appeared = session
+        .wait_for("#nothing", Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert!(!appeared);
+    assert!(
+        start.elapsed() < limit,
+        "wait_for took {:?}",
+        start.elapsed()
+    );
+
+    let start = Instant::now();
+    session.settle().await;
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "settle took {:?}",
+        start.elapsed()
+    );
+
+    let start = Instant::now();
+    session.close().await;
+    assert!(
+        start.elapsed() < Duration::from_secs(12),
+        "close took {:?}",
+        start.elapsed()
+    );
+}

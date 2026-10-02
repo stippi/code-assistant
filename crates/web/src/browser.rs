@@ -16,6 +16,7 @@ use anyhow::Result;
 use chromiumoxide::{Browser, BrowserConfig};
 use futures::StreamExt;
 use std::path::PathBuf;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
@@ -79,6 +80,10 @@ pub(crate) fn resolve_user_data_dir(
     }
 }
 
+/// How long a graceful [`LaunchedBrowser::close`] may take before the process
+/// is killed.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A launched browser plus the resources that must outlive it: the temp-dir
 /// guard for an ephemeral profile, and the background CDP handler task that
 /// drives the connection (aborted on drop).
@@ -119,10 +124,17 @@ impl LaunchedBrowser {
     /// Close the browser gracefully and wait for the process to exit, so a
     /// persistent profile flushes its cookie store to disk. Chromium only
     /// persists cookies on a clean shutdown, and the flush happens as the
-    /// process exits — hence the `wait` after `close`. Best-effort.
+    /// process exits — hence the `wait` after `close`. Best-effort and
+    /// bounded: a browser that does not exit in time is killed (losing that
+    /// flush) rather than hanging the caller.
     pub async fn close(&mut self) {
-        let _ = self.browser.close().await;
-        let _ = self.browser.wait().await;
+        let graceful = async {
+            let _ = self.browser.close().await;
+            let _ = self.browser.wait().await;
+        };
+        if tokio::time::timeout(CLOSE_TIMEOUT, graceful).await.is_err() {
+            let _ = self.browser.kill().await;
+        }
     }
 }
 
