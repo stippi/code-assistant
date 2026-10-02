@@ -111,6 +111,10 @@ pub struct Tab {
     log_tasks: Vec<JoinHandle<()>>,
     /// The browser's own user agent, to restore after emulating a phone.
     original_user_agent: Mutex<Option<String>>,
+    /// Where the mouse is and which buttons are held (CDP `buttons` mask), so
+    /// a move while a button is down is a drag and a release lands in place.
+    mouse_at: Mutex<Point>,
+    held_buttons: Mutex<i64>,
 }
 
 /// A captured screenshot and the size of its coordinate frame.
@@ -153,6 +157,8 @@ impl Tab {
             log,
             log_tasks,
             original_user_agent: Mutex::new(None),
+            mouse_at: Mutex::new(Point { x: 0.0, y: 0.0 }),
+            held_buttons: Mutex::new(0),
         })
     }
 
@@ -472,23 +478,35 @@ impl Tab {
         click_count: u32,
         modifiers: i64,
     ) -> Result<()> {
+        let mask = |b: Button| match b {
+            Button::Left => 1,
+            Button::Right => 2,
+            Button::Middle => 4,
+        };
+        let held = *self.held_buttons.lock().unwrap();
+        // The buttons down after this event, and the one it is about.
+        let (buttons, button) = match (&kind, button) {
+            (DispatchMouseEventType::MousePressed, Some(b)) => (held | mask(b), Some(b)),
+            (DispatchMouseEventType::MouseReleased, Some(b)) => (held & !mask(b), Some(b)),
+            _ => {
+                let dragging = [Button::Left, Button::Right, Button::Middle]
+                    .into_iter()
+                    .find(|b| held & mask(*b) != 0);
+                (held, button.or(dragging))
+            }
+        };
         let mut event = DispatchMouseEventParams::builder()
             .r#type(kind)
             .x(at.x)
             .y(at.y)
-            .modifiers(modifiers);
+            .modifiers(modifiers)
+            .buttons(buttons);
         if let Some(button) = button {
-            event = event
-                .button(match button {
-                    Button::Left => MouseButton::Left,
-                    Button::Right => MouseButton::Right,
-                    Button::Middle => MouseButton::Middle,
-                })
-                .buttons(match button {
-                    Button::Left => 1,
-                    Button::Right => 2,
-                    Button::Middle => 4,
-                });
+            event = event.button(match button {
+                Button::Left => MouseButton::Left,
+                Button::Right => MouseButton::Right,
+                Button::Middle => MouseButton::Middle,
+            });
         }
         if click_count > 0 {
             event = event.click_count(click_count as i64);
@@ -496,6 +514,8 @@ impl Tab {
         self.page
             .execute(event.build().map_err(anyhow::Error::msg)?)
             .await?;
+        *self.mouse_at.lock().unwrap() = at;
+        *self.held_buttons.lock().unwrap() = buttons;
         Ok(())
     }
 
@@ -512,13 +532,11 @@ impl Tab {
     pub async fn press_keys(&self, keys: &str, repeat: u32) -> Result<()> {
         let presses = keys.split_whitespace().count() as u32 * repeat.max(1);
         let limit = self.timeouts().command + Duration::from_millis(20) * presses;
+        let chords = parse_keys(keys)?;
         self.bounded("key press", limit, async {
             for _ in 0..repeat.max(1) {
-                for chord in keys.split_whitespace() {
-                    let (modifiers, key) = parse_chord(chord);
-                    let def = key_definition(key)
-                        .ok_or_else(|| anyhow::anyhow!("unknown key '{key}'"))?;
-                    self.press(def, modifiers).await?;
+                for (def, modifiers) in &chords {
+                    self.press(def, *modifiers).await?;
                 }
             }
             Ok(())
@@ -743,6 +761,89 @@ impl Tab {
         Ok(())
     }
 
+    /// Press and keep holding keys: space-separated keys or chords, in order.
+    /// They stay down — across tool calls — until [`key_up`](Self::key_up).
+    pub async fn key_down(&self, keys: &str) -> Result<()> {
+        let chords = parse_keys(keys)?;
+        self.bounded("key press", self.timeouts().command, async {
+            for (def, modifiers) in &chords {
+                self.key_event(def, *modifiers, true).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Release keys held with [`key_down`](Self::key_down), last first.
+    pub async fn key_up(&self, keys: &str) -> Result<()> {
+        let chords = parse_keys(keys)?;
+        self.bounded("key release", self.timeouts().command, async {
+            for (def, modifiers) in chords.iter().rev() {
+                self.key_event(def, *modifiers, false).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Hold keys down for `duration`, then release them: the input a game
+    /// reads as "keep walking for half a second".
+    pub async fn hold_keys(&self, keys: &str, duration: Duration) -> Result<()> {
+        let chords = parse_keys(keys)?;
+        let limit = self.timeouts().command + duration;
+        self.bounded("holding keys", limit, async {
+            for (def, modifiers) in &chords {
+                self.key_event(def, *modifiers, true).await?;
+            }
+            tokio::time::sleep(duration).await;
+            for (def, modifiers) in chords.iter().rev() {
+                self.key_event(def, *modifiers, false).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Press a mouse button and keep it down, at `at` (CSS px) or where the
+    /// mouse is. Moves while it is down drag; release with
+    /// [`mouse_up`](Self::mouse_up).
+    pub async fn mouse_down(&self, at: Option<Point>, button: Button) -> Result<()> {
+        self.bounded("mouse press", self.timeouts().command, async {
+            let at = self.move_to(at).await?;
+            self.mouse(DispatchMouseEventType::MousePressed, at, Some(button), 1, 0)
+                .await
+        })
+        .await
+    }
+
+    /// Release a mouse button, at `at` (CSS px) or where the mouse is.
+    pub async fn mouse_up(&self, at: Option<Point>, button: Button) -> Result<()> {
+        self.bounded("mouse release", self.timeouts().command, async {
+            let at = self.move_to(at).await?;
+            self.mouse(
+                DispatchMouseEventType::MouseReleased,
+                at,
+                Some(button),
+                1,
+                0,
+            )
+            .await
+        })
+        .await
+    }
+
+    /// Move to `at` if given; return where the mouse is.
+    async fn move_to(&self, at: Option<Point>) -> Result<Point> {
+        match at {
+            Some(at) => {
+                self.mouse(DispatchMouseEventType::MouseMoved, at, None, 0, 0)
+                    .await?;
+                Ok(at)
+            }
+            None => Ok(*self.mouse_at.lock().unwrap()),
+        }
+    }
+
     /// Typing presses a key per character, so long text gets more time.
     fn typing_limit(&self, text: &str) -> Duration {
         self.timeouts().command + Duration::from_millis(20) * text.chars().count() as u32
@@ -807,6 +908,12 @@ impl Tab {
 
     /// Press and release one key with the given modifier bitmask.
     async fn press(&self, def: &KeyDefinition, modifiers: i64) -> Result<()> {
+        self.key_event(def, modifiers, true).await?;
+        self.key_event(def, modifiers, false).await
+    }
+
+    /// Send one key-down (`down`) or key-up event.
+    async fn key_event(&self, def: &KeyDefinition, modifiers: i64, down: bool) -> Result<()> {
         // Shift makes a letter uppercase in the emitted key/text.
         let shift = modifiers & 8 != 0;
         let key_str = if def.key.len() == 1 && shift {
@@ -828,43 +935,29 @@ impl Tab {
             None
         };
 
-        let down_type = if text.is_some() {
-            DispatchKeyEventType::KeyDown
-        } else {
-            DispatchKeyEventType::RawKeyDown
+        let kind = match (down, text.is_some()) {
+            (true, true) => DispatchKeyEventType::KeyDown,
+            (true, false) => DispatchKeyEventType::RawKeyDown,
+            (false, _) => DispatchKeyEventType::KeyUp,
         };
-
-        let mut down = DispatchKeyEventParams::builder()
-            .r#type(down_type)
-            .key(key_str.clone())
-            .code(def.code)
-            .windows_virtual_key_code(def.key_code)
-            .native_virtual_key_code(def.key_code);
-        if modifiers != 0 {
-            down = down.modifiers(modifiers);
-        }
-        if let Some(t) = &text {
-            down = down.text(t.clone());
-        }
-        let down = down
-            .build()
-            .map_err(|e| anyhow::anyhow!("failed to build key event: {e}"))?;
-
-        let mut up = DispatchKeyEventParams::builder()
-            .r#type(DispatchKeyEventType::KeyUp)
+        // No `nativeVirtualKeyCode`: the table's codes are Windows virtual key
+        // codes, which on macOS name other keys (W's 87 is Keypad 5), and a
+        // held key then made Chrome auto-repeat a stream of Numpad5 keydowns.
+        let mut event = DispatchKeyEventParams::builder()
+            .r#type(kind)
             .key(key_str)
             .code(def.code)
-            .windows_virtual_key_code(def.key_code)
-            .native_virtual_key_code(def.key_code);
+            .windows_virtual_key_code(def.key_code);
         if modifiers != 0 {
-            up = up.modifiers(modifiers);
+            event = event.modifiers(modifiers);
         }
-        let up = up
+        if down && let Some(t) = text {
+            event = event.text(t);
+        }
+        let event = event
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build key event: {e}"))?;
-
-        self.page.execute(down).await?;
-        self.page.execute(up).await?;
+        self.page.execute(event).await?;
         Ok(())
     }
 
@@ -1032,6 +1125,24 @@ fn fit_scale(requested: f64, vw: f64, vh: f64) -> f64 {
     } else {
         requested
     }
+}
+
+/// Parse space-separated keys or chords (`"w"`, `"ctrl+a Enter"`) into key
+/// definitions with their modifier masks; an unknown key is an error.
+fn parse_keys(keys: &str) -> Result<Vec<(&'static KeyDefinition, i64)>> {
+    let chords: Vec<_> = keys
+        .split_whitespace()
+        .map(|chord| {
+            let (modifiers, key) = parse_chord(chord);
+            key_definition(key)
+                .map(|def| (def, modifiers))
+                .ok_or_else(|| anyhow::anyhow!("unknown key '{key}'"))
+        })
+        .collect::<Result<_>>()?;
+    if chords.is_empty() {
+        anyhow::bail!("no keys given");
+    }
+    Ok(chords)
 }
 
 /// Look a key up by name, tolerating case and common aliases, since key names

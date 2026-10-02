@@ -997,3 +997,106 @@ async fn viewport_and_color_scheme_can_be_emulated() {
     );
     session.close().await;
 }
+
+/// Held keys and buttons: a page sees a key go down, stay down and come up
+/// with real time in between, keys held across other presses, and a mouse
+/// button held through a move.
+#[tokio::test]
+async fn keys_and_buttons_can_be_held() {
+    use super::Button;
+    use chromiumoxide::layout::Point;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&data_url(
+        "<html><body style=\"margin:0;height:100vh\"><script>\
+         window.log = [];\
+         for (const t of ['keydown', 'keyup']) {\
+           document.addEventListener(t, (e) => window.log.push([t, e.code, e.repeat, Math.round(performance.now())]));\
+         }\
+         for (const t of ['mousedown', 'mousemove', 'mouseup']) {\
+           document.addEventListener(t, (e) => window.log.push([t, e.buttons, e.clientX, e.clientY]));\
+         }\
+         </script></body></html>",
+    ))
+    .await
+    .unwrap();
+    let log = || async {
+        let json = tab
+            .javascript("JSON.stringify(window.log.splice(0))")
+            .await
+            .unwrap();
+        serde_json::from_str::<Vec<Vec<serde_json::Value>>>(&json).unwrap()
+    };
+
+    // Held for real time: up comes ~300 ms after down.
+    tab.hold_keys("w", std::time::Duration::from_millis(300))
+        .await
+        .unwrap();
+    let events = log().await;
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(
+        events[0][0..2],
+        [serde_json::json!("keydown"), serde_json::json!("KeyW")]
+    );
+    assert_eq!(
+        events[1][0..2],
+        [serde_json::json!("keyup"), serde_json::json!("KeyW")]
+    );
+    let held = events[1][3].as_f64().unwrap() - events[0][3].as_f64().unwrap();
+    assert!((280.0..600.0).contains(&held), "held for {held} ms");
+
+    // Held across another key: walk while jumping.
+    tab.key_down("w").await.unwrap();
+    tab.press_keys("space", 1).await.unwrap();
+    tab.key_up("w").await.unwrap();
+    let order: Vec<String> = log()
+        .await
+        .iter()
+        .map(|e| format!("{}:{}", e[0].as_str().unwrap(), e[1].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        order,
+        ["keydown:KeyW", "keydown:Space", "keyup:Space", "keyup:KeyW"]
+    );
+    assert!(tab.key_down("nosuchkey").await.is_err());
+
+    // A button held through a move, released where the mouse is.
+    tab.mouse_down(Some(Point { x: 100.0, y: 100.0 }), Button::Left)
+        .await
+        .unwrap();
+    tab.hover_point(Point { x: 300.0, y: 200.0 }).await.unwrap();
+    tab.mouse_up(None, Button::Left).await.unwrap();
+    let events = log().await;
+    let pressed = events.iter().find(|e| e[0] == "mousedown").unwrap();
+    assert_eq!(
+        pressed[1..],
+        [
+            serde_json::json!(1),
+            serde_json::json!(100),
+            serde_json::json!(100)
+        ]
+    );
+    let moved = events.iter().rfind(|e| e[0] == "mousemove").unwrap();
+    assert_eq!(
+        moved[1..],
+        [
+            serde_json::json!(1),
+            serde_json::json!(300),
+            serde_json::json!(200)
+        ]
+    );
+    let released = events.iter().find(|e| e[0] == "mouseup").unwrap();
+    assert_eq!(
+        released[1..],
+        [
+            serde_json::json!(0),
+            serde_json::json!(300),
+            serde_json::json!(200)
+        ]
+    );
+
+    session.close().await;
+}
