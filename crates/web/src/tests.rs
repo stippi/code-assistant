@@ -674,6 +674,7 @@ fn input_lab_url() -> String {
          const box = document.getElementById('box');\
          ['mousedown', 'dblclick', 'contextmenu', 'mouseover'].forEach((t) => box.addEventListener(t, rec));\
          document.addEventListener('mouseup', rec);\
+         document.addEventListener('dragstart', rec);\
          </script></body></html>",
     )
 }
@@ -728,7 +729,12 @@ async fn mouse_and_keyboard_reach_the_page() {
     assert!(events.contains("dblclick:0:2:450,150"), "{events}");
     assert!(events.contains("contextmenu:2:"), "{events}");
 
-    // A drag ends where it was released.
+    // A drag ends where it was released. Pressing on selected text starts a
+    // native drag-and-drop instead (no mouseup), and what the double click
+    // above leaves selected differs between platforms — so clear it first.
+    tab.javascript("getSelection().removeAllRanges()")
+        .await
+        .unwrap();
     tab.drag(center, Point { x: 700.0, y: 500.0 })
         .await
         .unwrap();
