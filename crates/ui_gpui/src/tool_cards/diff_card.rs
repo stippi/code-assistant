@@ -9,7 +9,7 @@
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
 use super::diff_prepare::SectionLines;
-use super::diff_rows::{DiffRow, DiffRows, RowGeometry};
+use super::diff_rows::{DiffRow, DiffRows, EndCallback, LineCallback, RowGeometry, RowSelection};
 use super::diff_syntax::DiffSyntax;
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
@@ -17,10 +17,12 @@ use crate::shared::file_icons;
 use code_assistant_core::ui::ToolStatus;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    ClickEvent, Context, Element, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
+    App, ClickEvent, Context, Element, FocusHandle, FontWeight, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    WeakEntity, Window, div, px, rems,
 };
 use similar::{ChangeTag, TextDiff};
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // DiffCardRenderer
@@ -174,6 +176,31 @@ impl ToolBlockRenderer for DiffCardRenderer {
                     .child(label),
             );
         }
+        // Copy button — shown only while a selection exists in this card's
+        // diff. Copies the selected whole lines (Cmd/Ctrl-C does the same).
+        if card_ctx.diff_selection.is_some() {
+            header_right = header_right.child(
+                div()
+                    .id(SharedString::from(format!("diff-copy-{}", tool.id)))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px_1p5()
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(header_text_color.opacity(0.1)))
+                    .text_size(rems(0.6875))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.accent)
+                    .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                        view.copy_diff_selection(cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(SharedString::from("copy")),
+            );
+        }
         // Chevron — highlights on header hover via group
         header_right = header_right.child(
             div()
@@ -223,6 +250,16 @@ impl ToolBlockRenderer for DiffCardRenderer {
         if scale > 0.0 {
             let body_bg = diff_body_bg(theme);
 
+            // Selectable diff rows: wired to the owning BlockView so a
+            // drag-select drives its selection and Cmd/Ctrl-C / the Copy
+            // button read from it.
+            let selection = DiffCardSelection {
+                entity: cx.entity().downgrade(),
+                focus: card_ctx.diff_focus_handle.clone(),
+                range: card_ctx.diff_selection,
+                color: theme.selection,
+            };
+
             let body_content = match (tool.name.as_str(), &card_ctx.diff.sections) {
                 ("delete_files", _) => render_delete_body(tool, theme),
                 (_, Some(sections)) => Some(render_prepared_diff(
@@ -230,6 +267,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
                     card_ctx.diff.syntax.as_deref().map(Vec::as_slice),
                     theme,
                     rem_size,
+                    Some(&selection),
                 )),
                 // Still streaming, or a large diff is being computed.
                 ("edit", None) => render_streaming_edit(tool, theme),
@@ -288,7 +326,90 @@ impl ToolBlockRenderer for DiffCardRenderer {
             }
         }
 
+        // Focus + Cmd/Ctrl-C so a drag-selected diff can be copied from the
+        // keyboard (the drag's start focuses the card; see `DiffCardSelection`).
+        let card = card
+            .track_focus(&card_ctx.diff_focus_handle)
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
+                let ks = &event.keystroke;
+                if ks.modifiers.secondary() && ks.key == "c" {
+                    view.copy_diff_selection(cx);
+                    cx.stop_propagation();
+                }
+            }));
+
         Some(card.into_any_element())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Selectable diff rows (chat-thread diff cards)
+// ---------------------------------------------------------------------------
+
+/// Wiring that makes a diff card's rows selectable: the owning `BlockView`
+/// (via a weak handle so the row closures never borrow it), its focus handle,
+/// the current selection range and the highlight color. Mirrors the Review
+/// panel's selection, but indices are flat across the card's sections.
+pub(crate) struct DiffCardSelection {
+    entity: WeakEntity<BlockView>,
+    focus: FocusHandle,
+    /// Inclusive flat-line range currently selected, if any.
+    range: Option<(usize, usize)>,
+    color: Hsla,
+}
+
+impl DiffCardSelection {
+    /// The [`RowSelection`] for one section whose first row is flat line
+    /// `base_line` and which has `row_count` rows.
+    fn row_selection(&self, base_line: usize, row_count: usize) -> RowSelection {
+        let highlight = self
+            .range
+            .map(|(lo, hi)| {
+                let start = lo.max(base_line);
+                let end = hi.min(base_line + row_count.saturating_sub(1));
+                if row_count > 0 && start <= end {
+                    (start - base_line)..(end - base_line + 1)
+                } else {
+                    0..0
+                }
+            })
+            .unwrap_or(0..0);
+
+        let entity = self.entity.clone();
+        let on_start: LineCallback = {
+            let entity = entity.clone();
+            let focus = self.focus.clone();
+            Rc::new(move |line, window, cx: &mut App| {
+                window.focus(&focus, cx);
+                if let Some(view) = entity.upgrade() {
+                    view.update(cx, |this, cx| this.begin_diff_selection(line, cx));
+                }
+            })
+        };
+        let on_drag: LineCallback = {
+            let entity = entity.clone();
+            Rc::new(move |line, _window, cx| {
+                if let Some(view) = entity.upgrade() {
+                    view.update(cx, |this, cx| this.extend_diff_selection(line, cx));
+                }
+            })
+        };
+        let on_end: EndCallback = {
+            Rc::new(move |_window, cx| {
+                if let Some(view) = entity.upgrade() {
+                    view.update(cx, |this, _cx| this.end_diff_selection());
+                }
+            })
+        };
+
+        RowSelection {
+            base_line,
+            highlight,
+            color: self.color,
+            on_start,
+            on_drag,
+            on_end,
+        }
     }
 }
 
@@ -303,20 +424,30 @@ fn render_prepared_diff(
     syntax: Option<&[DiffSyntax]>,
     theme: &gpui_kit::component::theme::Theme,
     rem_size: gpui_kit::Pixels,
+    selection: Option<&DiffCardSelection>,
 ) -> gpui_kit::AnyElement {
+    // Flat line index of each section's first row: selection indices run
+    // across the whole card, so each section needs its own base.
+    let mut base_line = 0usize;
+    let mut children = Vec::with_capacity(sections.len());
+    for (ix, section) in sections.iter().enumerate() {
+        let row_count = section.lines.len();
+        let row_selection = selection.map(|sel| sel.row_selection(base_line, row_count));
+        children.push(render_diff_lines(
+            &section.lines,
+            theme,
+            section.start_line,
+            rem_size,
+            syntax.and_then(|syntax| syntax.get(ix)),
+            row_selection,
+        ));
+        base_line += row_count;
+    }
     div()
         .flex()
         .flex_col()
         .gap_1()
-        .children(sections.iter().enumerate().map(|(ix, section)| {
-            render_diff_lines(
-                &section.lines,
-                theme,
-                section.start_line,
-                rem_size,
-                syntax.and_then(|syntax| syntax.get(ix)),
-            )
-        }))
+        .children(children)
         .into_any()
 }
 
@@ -753,7 +884,8 @@ pub fn chunk_hunks(hunks: &[DiffHunk], max_lines: usize) -> ChunkedHunks {
 
 /// Render one chunk of already-computed hunks with real new-file line
 /// numbers, preceded by a slim "⋯" separator where a later hunk begins.
-/// With `syntax`, rows are syntax highlighted.
+/// With `syntax`, rows are syntax highlighted. `selection` makes the rows
+/// selectable (the Review panel passes it; tool cards do not).
 pub(crate) fn render_diff_chunk(
     hunks: &[DiffHunk],
     chunk: &DiffChunk,
@@ -761,6 +893,7 @@ pub(crate) fn render_diff_chunk(
     syntax: Option<&DiffSyntax>,
     theme: &gpui_kit::component::theme::Theme,
     rem_size: gpui_kit::Pixels,
+    selection: Option<RowSelection>,
 ) -> gpui_kit::AnyElement {
     let Some(lines) = hunks
         .get(chunk.hunk)
@@ -781,6 +914,7 @@ pub(crate) fn render_diff_chunk(
                 new: chunk.new_start,
             },
         }),
+        selection,
     );
     if !chunk.starts_later_hunk() {
         return rows;
@@ -810,6 +944,7 @@ pub(crate) fn render_diff_lines(
     start_line: Option<usize>,
     rem_size: gpui_kit::Pixels,
     syntax: Option<&DiffSyntax>,
+    selection: Option<RowSelection>,
 ) -> gpui_kit::AnyElement {
     // Compute the gutter width (number of digits) based on new-file line numbers
     let gutter_width = if let Some(start) = start_line {
@@ -832,6 +967,7 @@ pub(crate) fn render_diff_lines(
             syntax,
             start: LineCounter::default(),
         }),
+        selection,
     )
 }
 
@@ -886,6 +1022,7 @@ fn render_diff_rows(
     gutter_width: usize,
     rem_size: gpui_kit::Pixels,
     syntax: Option<RowSyntax>,
+    selection: Option<RowSelection>,
 ) -> gpui_kit::AnyElement {
     let mut gutter_lines = LineCounter {
         old: 1,
@@ -960,7 +1097,11 @@ fn render_diff_rows(
         })
         .collect();
 
-    DiffRows::new(rows, geometry).into_any()
+    let element = DiffRows::new(rows, geometry);
+    match selection {
+        Some(selection) => element.selectable(selection).into_any(),
+        None => element.into_any(),
+    }
 }
 
 fn render_streaming_block(

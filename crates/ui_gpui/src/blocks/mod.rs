@@ -8,7 +8,7 @@ pub use data::*;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::text::{SelectionFormat, TextView, TextViewState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, Pixels, Task, px};
+use gpui_kit::{ClipboardItem, Context, Entity, FocusHandle, Pixels, SharedString, Task, px};
 
 use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
 use crate::tool_cards::diff_syntax::language_for_path;
@@ -188,6 +188,23 @@ impl MarkdownSync {
     }
 }
 
+/// A whole-line text selection within a diff card's body. `anchor` and `head`
+/// are indices into the card's flattened section lines (the concatenation of
+/// every section's diff lines, in render order), either end may be the
+/// smaller. Copying (Cmd/Ctrl-C or the header button) reads from this.
+#[derive(Clone, Copy)]
+struct DiffSelection {
+    anchor: usize,
+    head: usize,
+}
+
+impl DiffSelection {
+    /// Inclusive `(low, high)` line range.
+    fn range(&self) -> (usize, usize) {
+        (self.anchor.min(self.head), self.anchor.max(self.head))
+    }
+}
+
 /// A diff card's [`PreparedDiff`] and what it was computed from.
 struct DiffCache {
     /// [`ToolUseBlock::revision`] last seen; the per-frame check.
@@ -230,6 +247,15 @@ pub struct BlockView {
     /// Timer that clears [`Self::copied_feedback_until`] after the checkmark
     /// feedback window elapses. Dropped/replaced on each copy.
     copied_feedback_task: Option<Task<()>>,
+    /// Current whole-line selection within this block's diff card body, if
+    /// any. Drag-selecting rows sets it; the header's Copy button and
+    /// Cmd/Ctrl-C read from it. Only meaningful for file-editing tool blocks.
+    diff_selection: Option<DiffSelection>,
+    /// Whether the pointer button is down for an in-progress drag-select.
+    diff_dragging: bool,
+    /// Focus target so a drag-select in the diff card can focus the block and
+    /// Cmd/Ctrl-C reaches [`Self::copy_diff_selection`].
+    focus_handle: FocusHandle,
 }
 
 impl BlockView {
@@ -280,7 +306,21 @@ impl BlockView {
             write_file_diff_mode,
             copied_feedback_until: None,
             copied_feedback_task: None,
+            diff_selection: None,
+            diff_dragging: false,
+            focus_handle: _cx.focus_handle(),
         }
+    }
+
+    /// The block's focus handle (used by the diff card for Cmd/Ctrl-C).
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
+    /// The current inclusive flat-line selection range in this block's diff
+    /// card, if any.
+    pub(crate) fn diff_selection_range(&self) -> Option<(usize, usize)> {
+        self.diff_selection.map(|s| s.range())
     }
 
     /// Mutable access to the block. `render` has dropped its handle by the
@@ -433,6 +473,78 @@ impl BlockView {
         cx.notify();
     }
 
+    // ------------------------------------------------------------------
+    // Diff-card whole-line selection
+    // ------------------------------------------------------------------
+
+    /// Begin a new selection at flat line `line`, replacing any previous one
+    /// and marking a drag as in progress.
+    pub(crate) fn begin_diff_selection(&mut self, line: usize, cx: &mut Context<Self>) {
+        self.diff_selection = Some(DiffSelection {
+            anchor: line,
+            head: line,
+        });
+        self.diff_dragging = true;
+        cx.notify();
+    }
+
+    /// Extend the in-progress selection to flat line `line`, but only while a
+    /// drag is active.
+    pub(crate) fn extend_diff_selection(&mut self, line: usize, cx: &mut Context<Self>) {
+        if !self.diff_dragging {
+            return;
+        }
+        if let Some(sel) = &mut self.diff_selection
+            && sel.head != line
+        {
+            sel.head = line;
+            cx.notify();
+        }
+    }
+
+    /// End the current drag; the selection itself is kept for copying.
+    pub(crate) fn end_diff_selection(&mut self) {
+        self.diff_dragging = false;
+    }
+
+    /// This block's diff lines flattened across its sections in render order —
+    /// the same order the rendered rows (and thus selection indices) use.
+    fn diff_lines_flat(&self) -> Option<Vec<SharedString>> {
+        let sections = self.diff_cache.as_ref()?.prepared.sections.as_ref()?;
+        Some(
+            sections
+                .iter()
+                .flat_map(|s| s.lines.iter().map(|l| l.text.clone()))
+                .collect(),
+        )
+    }
+
+    /// The selected lines joined by newlines, or `None` when there is nothing
+    /// to copy (no selection, or the diff is no longer prepared).
+    fn diff_selected_text(&self) -> Option<String> {
+        let sel = self.diff_selection.as_ref()?;
+        let lines = self.diff_lines_flat()?;
+        if lines.is_empty() {
+            return None;
+        }
+        let (lo, hi) = sel.range();
+        let hi = hi.min(lines.len() - 1);
+        (lo <= hi).then(|| {
+            lines[lo..=hi]
+                .iter()
+                .map(|s| s.as_ref())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    }
+
+    /// Copy the selected diff lines to the clipboard, joined by newlines.
+    pub(crate) fn copy_diff_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.diff_selected_text().filter(|t| !t.is_empty()) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
     /// Check if this block is an image block
     pub fn is_image_block(&self) -> bool {
         matches!(*self.block, BlockData::ImageBlock(_))
@@ -504,6 +616,10 @@ impl BlockView {
     /// Toggle between diff view and plain new-file view for write_file tool blocks.
     pub fn toggle_write_file_diff_mode(&mut self, cx: &mut Context<Self>) {
         self.write_file_diff_mode = !self.write_file_diff_mode;
+        // The two views have different line counts, so flat selection indices
+        // from the old view no longer line up.
+        self.diff_selection = None;
+        self.diff_dragging = false;
 
         // Persist the new state
         if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool())
@@ -1145,6 +1261,46 @@ mod tests {
         let second = view.update(cx, |view, cx| view.prepared_diff(cx));
         assert!(second.sections.is_some());
         assert!(second.syntax.is_none(), "no grammar for .txt");
+    }
+
+    #[gpui_kit::test]
+    fn diff_selection_copies_whole_lines(cx: &mut TestAppContext) {
+        let view = diff_tool_view(RUST_EDIT, cx);
+        // Prepare the diff; a small edit is diffed synchronously, so its
+        // sections (and thus flat lines) are available right away.
+        view.update(cx, |view, cx| {
+            let _ = view.prepared_diff(cx);
+        });
+        cx.run_until_parked();
+
+        view.update(cx, |view, cx| {
+            // Nothing selected yet → nothing to copy.
+            assert!(view.diff_selected_text().is_none());
+
+            // Drag-select both rows: the deletion and the insertion.
+            view.begin_diff_selection(0, cx);
+            view.extend_diff_selection(1, cx);
+            assert_eq!(
+                view.diff_selected_text().as_deref(),
+                Some("fn a() {}\nfn b() {}")
+            );
+
+            // A reversed drag selects the same lines.
+            view.begin_diff_selection(1, cx);
+            view.extend_diff_selection(0, cx);
+            assert_eq!(
+                view.diff_selected_text().as_deref(),
+                Some("fn a() {}\nfn b() {}")
+            );
+
+            // Extending only takes effect while a drag is active.
+            view.end_diff_selection();
+            view.extend_diff_selection(0, cx);
+            assert_eq!(
+                view.diff_selected_text().as_deref(),
+                Some("fn a() {}\nfn b() {}")
+            );
+        });
     }
 
     #[gpui_kit::test]

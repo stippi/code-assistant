@@ -74,6 +74,12 @@ pub struct CardRenderContext {
     /// The block's cached diff; empty unless this is a finished file-editing
     /// tool (see `BlockView::prepared_diff`).
     pub diff: diff_prepare::PreparedDiff,
+    /// Focus handle of the owning `BlockView`. A drag-select in the diff card
+    /// focuses it so Cmd/Ctrl-C can copy the selected lines.
+    pub diff_focus_handle: gpui_kit::FocusHandle,
+    /// Current inclusive flat-line selection range in this card's diff, if
+    /// any. The rows paint it as selected and the header shows a Copy button.
+    pub diff_selection: Option<(usize, usize)>,
 }
 
 // ---------------------------------------------------------------------------

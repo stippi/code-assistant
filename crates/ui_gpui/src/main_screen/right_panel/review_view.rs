@@ -31,6 +31,7 @@ use super::review_rows::{
 };
 use crate::shared::file_icons;
 use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_chunk};
+use crate::tool_cards::diff_rows::{EndCallback, LineCallback, RowSelection};
 use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
@@ -41,11 +42,13 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnimationExt, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ListAlignment,
-    ListState, Render, Subscription, Task, Window, div, list, prelude::*, px, rems,
+    AnimationExt, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    KeyDownEvent, ListAlignment, ListState, Render, Subscription, Task, Window, div, list,
+    prelude::*, px, rems,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // Compare-mode dropdown
@@ -165,6 +168,24 @@ struct LoadedDiff {
     stamp: u64,
 }
 
+/// A whole-line text selection within a single file's diff. `anchor` and
+/// `head` are indices into that file's flattened hunk lines (the concatenation
+/// of every hunk's lines, which is exactly what the diff chunks render); either
+/// end may be the smaller. Selection never spans files.
+#[derive(Clone)]
+struct DiffSelection {
+    file: FileKey,
+    anchor: usize,
+    head: usize,
+}
+
+impl DiffSelection {
+    /// Inclusive `(low, high)` line range.
+    fn range(&self) -> (usize, usize) {
+        (self.anchor.min(self.head), self.anchor.max(self.head))
+    }
+}
+
 pub struct ReviewView {
     session_id: Option<String>,
     mode_state: Entity<SelectState<Vec<ModeOption>>>,
@@ -198,6 +219,12 @@ pub struct ReviewView {
     /// keeps both in step with the fields above.
     rows: Vec<ReviewRow>,
     list_state: ListState,
+
+    /// Current whole-line text selection in a file's diff, if any. Copying
+    /// (Cmd/Ctrl-C or the header button) reads from this.
+    selection: Option<DiffSelection>,
+    /// Whether the pointer button is down for an in-progress drag-select.
+    dragging: bool,
 
     /// Filesystem watcher on the listed repos (keyed by their roots so a
     /// changed set restarts it). Dropping it stops watching.
@@ -246,6 +273,8 @@ impl ReviewView {
             next_diff_stamp: 0,
             rows: Vec::new(),
             list_state: ListState::new(0, ListAlignment::Top, REVIEW_LIST_OVERDRAW).measure_all(),
+            selection: None,
+            dragging: false,
             watcher: None,
             watch_task: None,
             listing_generation: GENERATION_UNSEEN,
@@ -270,6 +299,8 @@ impl ReviewView {
         // Start the new session scrolled to the top.
         self.rows.clear();
         self.list_state.reset(0);
+        self.selection = None;
+        self.dragging = false;
         // A new session lists its own repos; the watcher follows the listing.
         self.watcher = None;
         self.watch_task = None;
@@ -519,6 +550,12 @@ impl ReviewView {
             && !live.contains(in_flight)
         {
             self.in_flight = None;
+        }
+        if let Some(sel) = &self.selection
+            && !live.contains(&sel.file)
+        {
+            self.selection = None;
+            self.dragging = false;
         }
 
         // Apply the persisted default base to any repo that has no explicit
@@ -833,13 +870,14 @@ impl ReviewView {
             ReviewRow::Chunk {
                 repo, file, chunk, ..
             } => {
-                let prepared = self.repos.get(repo).and_then(|section| {
-                    let file = section.files.get(file)?;
-                    let key = (section.repo_root.clone(), file.path.clone());
-                    Some(&self.file_diffs.get(&key)?.prepared)
+                let resolved = self.repos.get(repo).and_then(|section| {
+                    let f = section.files.get(file)?;
+                    let key = (section.repo_root.clone(), f.path.clone());
+                    let prepared = &self.file_diffs.get(&key)?.prepared;
+                    Some((key, prepared))
                 });
-                match prepared {
-                    Some(prepared) => Self::render_chunk(prepared, chunk, window, cx),
+                match resolved {
+                    Some((key, prepared)) => self.render_chunk(&key, prepared, chunk, window, cx),
                     None => empty(),
                 }
             }
@@ -1056,9 +1094,79 @@ impl ReviewView {
             .into_any_element()
     }
 
+    /// Begin a new selection at flat line `line` in `file`, replacing any
+    /// previous one and marking a drag as in progress.
+    fn begin_selection(&mut self, file: FileKey, line: usize, cx: &mut Context<Self>) {
+        self.selection = Some(DiffSelection {
+            file,
+            anchor: line,
+            head: line,
+        });
+        self.dragging = true;
+        cx.notify();
+    }
+
+    /// Extend the in-progress selection to flat line `line`, but only while a
+    /// drag that started in the same file is active.
+    fn extend_selection(&mut self, file: &FileKey, line: usize, cx: &mut Context<Self>) {
+        if !self.dragging {
+            return;
+        }
+        if let Some(sel) = &mut self.selection
+            && &sel.file == file
+            && sel.head != line
+        {
+            sel.head = line;
+            cx.notify();
+        }
+    }
+
+    /// End the current drag; the selection itself is kept for copying.
+    fn end_selection(&mut self) {
+        self.dragging = false;
+    }
+
+    /// A file's diff lines flattened across its hunks in render order — the
+    /// same order the diff chunks (and thus selection indices) use.
+    fn file_lines(&self, key: &FileKey) -> Option<Vec<String>> {
+        let loaded = self.file_diffs.get(key)?;
+        Some(
+            loaded
+                .prepared
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter().map(|l| l.text.to_string()))
+                .collect(),
+        )
+    }
+
+    /// The selected lines joined by newlines, or `None` when there is nothing
+    /// to copy (no selection, or the file's diff is no longer loaded).
+    fn selected_text(&self) -> Option<String> {
+        let sel = self.selection.as_ref()?;
+        let lines = self.file_lines(&sel.file)?;
+        if lines.is_empty() {
+            return None;
+        }
+        let (lo, hi) = sel.range();
+        let hi = hi.min(lines.len() - 1);
+        (lo <= hi).then(|| lines[lo..=hi].join("\n"))
+    }
+
+    /// Copy the selected lines to the clipboard, joined by newlines.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
     /// One chunk of a file's diff body. The first and last chunk carry the
-    /// body's vertical padding, so the chunks read as one block.
+    /// body's vertical padding, so the chunks read as one block. The rows are
+    /// selectable: pointer events map to flat line indices in `key`'s diff and
+    /// drive the view's [`DiffSelection`].
     fn render_chunk(
+        &self,
+        key: &FileKey,
         prepared: &PreparedReviewDiff,
         chunk_ix: usize,
         window: &Window,
@@ -1077,6 +1185,71 @@ impl ReviewView {
             gpui_kit::hsla(0.0, 0.0, 0.97, 1.0)
         };
         let line_height_px = rems(1.25).to_pixels(rem_size).round();
+
+        // Flat line index of this chunk's first row within the file's hunks,
+        // and the local rows (relative to this chunk) to paint as selected.
+        let base_line: usize = prepared.hunks[..chunk.hunk]
+            .iter()
+            .map(|h| h.lines.len())
+            .sum::<usize>()
+            + chunk.lines.start;
+        let row_count = chunk.lines.len();
+        let highlight = self
+            .selection
+            .as_ref()
+            .filter(|s| &s.file == key)
+            .map(|s| {
+                let (lo, hi) = s.range();
+                let start = lo.max(base_line);
+                let end = hi.min(base_line + row_count.saturating_sub(1));
+                if row_count > 0 && start <= end {
+                    (start - base_line)..(end - base_line + 1)
+                } else {
+                    0..0
+                }
+            })
+            .unwrap_or(0..0);
+
+        // Pointer callbacks reach the view through a weak handle, so the
+        // (static) closures held by the element never borrow it.
+        let entity = cx.entity().downgrade();
+        let on_start: LineCallback = {
+            let entity = entity.clone();
+            let focus = self.focus_handle.clone();
+            let key = key.clone();
+            Rc::new(move |line, window, cx: &mut gpui_kit::App| {
+                window.focus(&focus, cx);
+                if let Some(view) = entity.upgrade() {
+                    view.update(cx, |this, cx| this.begin_selection(key.clone(), line, cx));
+                }
+            })
+        };
+        let on_drag: LineCallback = {
+            let entity = entity.clone();
+            let key = key.clone();
+            Rc::new(move |line, _window, cx| {
+                if let Some(view) = entity.upgrade() {
+                    view.update(cx, |this, cx| this.extend_selection(&key, line, cx));
+                }
+            })
+        };
+        let on_end: EndCallback = {
+            Rc::new(move |_window, cx| {
+                if let Some(view) = entity.upgrade() {
+                    view.update(cx, |this, _cx| this.end_selection());
+                }
+            })
+        };
+
+        let selection = RowSelection {
+            base_line,
+            highlight,
+            color: theme.selection,
+            on_start,
+            on_drag,
+            on_end,
+        };
+
         div()
             .w_full()
             .when(chunk_ix == 0, |d| d.pt_1())
@@ -1095,6 +1268,7 @@ impl ReviewView {
                 prepared.syntax.as_deref(),
                 theme,
                 rem_size,
+                Some(selection),
             ))
             .into_any_element()
     }
@@ -1144,7 +1318,31 @@ impl Render for ReviewView {
                 .into_any_element();
         }
 
-        // Header: compare-mode selector only (base selectors live per repo).
+        // A "Copy" button appears while there is a selection; it (and Cmd/Ctrl-C
+        // on the focused panel) copies the selected lines.
+        let copy_button = self.selection.is_some().then(|| {
+            let theme = cx.theme();
+            div()
+                .id("review-copy-selection")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_0p5()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .bg(theme.muted)
+                .hover(|s| s.bg(theme.border))
+                .text_xs()
+                .text_color(theme.foreground)
+                .child("Copy")
+                .on_click(cx.listener(|this, _ev, _window, cx| this.copy_selection(cx)))
+                .into_any_element()
+        });
+
+        // Header: compare-mode selector (base selectors live per repo), plus
+        // the copy button when a selection exists.
         let header = div()
             .flex()
             .flex_row()
@@ -1164,7 +1362,8 @@ impl Render for ReviewView {
                             .text_color(muted),
                     )
                     .min_w(px(130.)),
-            );
+            )
+            .children(copy_button);
 
         // The render callback only runs for rows in (or near) the viewport.
         self.sync_rows();
@@ -1176,6 +1375,14 @@ impl Render for ReviewView {
 
         v_flex()
             .size_full()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                let ks = &event.keystroke;
+                if ks.modifiers.secondary() && ks.key == "c" {
+                    this.copy_selection(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .child(header)
             .child(
                 div()
@@ -1328,6 +1535,68 @@ mod tests {
                     ReviewRow::FileHeader { repo: 0, file: 1 },
                 ]
             );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn selected_text_joins_whole_lines_across_chunks(cx: &mut TestAppContext) {
+        let root = PathBuf::from("/repo");
+        let key: FileKey = (root.clone(), "a.rs".into());
+        let (view, cx) = view_with_files(vec![added_file("a.rs")], cx);
+
+        // 100 added lines "line 0".."line 99", split into 40-line chunks, so a
+        // selection spanning a chunk boundary exercises the flat indexing.
+        view.update(cx, |view, cx| {
+            view.file_diffs.insert(
+                key.clone(),
+                LoadedDiff {
+                    file: added_file("a.rs"),
+                    prepared: prepared(100),
+                    stamp: 1,
+                },
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        view.update(cx, |view, cx| {
+            view.begin_selection(key.clone(), 38, cx);
+            view.extend_selection(&key, 42, cx);
+            assert_eq!(
+                view.selected_text().as_deref(),
+                Some("line 38\nline 39\nline 40\nline 41\nline 42")
+            );
+
+            // A reversed drag (head before anchor) selects the same lines.
+            view.begin_selection(key.clone(), 42, cx);
+            view.extend_selection(&key, 40, cx);
+            assert_eq!(
+                view.selected_text().as_deref(),
+                Some("line 40\nline 41\nline 42")
+            );
+
+            // Extending only takes effect while a drag is active.
+            view.end_selection();
+            view.extend_selection(&key, 10, cx);
+            assert_eq!(
+                view.selected_text().as_deref(),
+                Some("line 40\nline 41\nline 42")
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn selected_text_is_none_without_a_loaded_diff(cx: &mut TestAppContext) {
+        let root = PathBuf::from("/repo");
+        let key: FileKey = (root.clone(), "a.rs".into());
+        let (view, cx) = view_with_files(vec![added_file("a.rs")], cx);
+
+        // A selection whose file has no (longer a) loaded diff yields nothing
+        // to copy, so copying is a safe no-op.
+        view.update(cx, |view, cx| {
+            view.begin_selection(key.clone(), 1, cx);
+            assert!(view.selection.is_some());
+            assert!(view.selected_text().is_none());
         });
     }
 }
