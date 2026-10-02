@@ -632,6 +632,8 @@ impl BlockView {
                                     write_file_diff_mode: self.write_file_diff_mode,
                                     markdown_state: Some(markdown_state),
                                     diff,
+                                    diff_focus_handle: self.focus_handle(),
+                                    diff_selection: self.diff_selection_range(),
                                 };
 
                                 if let Some(element) = renderer.render(
