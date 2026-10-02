@@ -9,7 +9,7 @@
 //! Replaces the old parameter-renderer-based rendering for these tools.
 
 use super::diff_prepare::SectionLines;
-use super::diff_rows::{DiffRow, DiffRows, RowGeometry};
+use super::diff_rows::{DiffRow, DiffRows, RowGeometry, RowSelection};
 use super::diff_syntax::DiffSyntax;
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_body};
 use crate::blocks::{BlockView, ToolUseBlock};
@@ -753,7 +753,8 @@ pub fn chunk_hunks(hunks: &[DiffHunk], max_lines: usize) -> ChunkedHunks {
 
 /// Render one chunk of already-computed hunks with real new-file line
 /// numbers, preceded by a slim "⋯" separator where a later hunk begins.
-/// With `syntax`, rows are syntax highlighted.
+/// With `syntax`, rows are syntax highlighted. `selection` makes the rows
+/// selectable (the Review panel passes it; tool cards do not).
 pub(crate) fn render_diff_chunk(
     hunks: &[DiffHunk],
     chunk: &DiffChunk,
@@ -761,6 +762,7 @@ pub(crate) fn render_diff_chunk(
     syntax: Option<&DiffSyntax>,
     theme: &gpui_kit::component::theme::Theme,
     rem_size: gpui_kit::Pixels,
+    selection: Option<RowSelection>,
 ) -> gpui_kit::AnyElement {
     let Some(lines) = hunks
         .get(chunk.hunk)
@@ -781,6 +783,7 @@ pub(crate) fn render_diff_chunk(
                 new: chunk.new_start,
             },
         }),
+        selection,
     );
     if !chunk.starts_later_hunk() {
         return rows;
@@ -832,6 +835,7 @@ pub(crate) fn render_diff_lines(
             syntax,
             start: LineCounter::default(),
         }),
+        None,
     )
 }
 
@@ -886,6 +890,7 @@ fn render_diff_rows(
     gutter_width: usize,
     rem_size: gpui_kit::Pixels,
     syntax: Option<RowSyntax>,
+    selection: Option<RowSelection>,
 ) -> gpui_kit::AnyElement {
     let mut gutter_lines = LineCounter {
         old: 1,
@@ -960,7 +965,11 @@ fn render_diff_rows(
         })
         .collect();
 
-    DiffRows::new(rows, geometry).into_any()
+    let element = DiffRows::new(rows, geometry);
+    match selection {
+        Some(selection) => element.selectable(selection).into_any(),
+        None => element.into_any(),
+    }
 }
 
 fn render_streaming_block(

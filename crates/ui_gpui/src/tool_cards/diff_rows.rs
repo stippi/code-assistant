@@ -5,10 +5,10 @@
 //! per chunk and the text system's line cache does the rest.
 
 use gpui_kit::{
-    App, AvailableSpace, Bounds, Element, GlobalElementId, HighlightStyle, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, Point, ShapedLine, SharedString,
-    Size, Style, TextAlign, TextRun, TextStyle, Window, WrappedLine, fill, point, px, relative,
-    size,
+    App, AvailableSpace, Bounds, DispatchPhase, Element, GlobalElementId, HighlightStyle, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Length, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size, Style, TextAlign, TextRun,
+    TextStyle, Window, WrappedLine, fill, point, px, relative, size,
 };
 use std::cell::RefCell;
 use std::ops::Range;
@@ -43,11 +43,43 @@ impl RowGeometry {
     }
 }
 
+/// Makes a [`DiffRows`] participate in whole-line text selection. The element
+/// maps a pointer position to a flat line index (`base_line` plus the row
+/// under the pointer) and reports it through the callbacks; the owner keeps
+/// the actual selection and hands back the local rows (`highlight`) to paint
+/// as selected. Selection is line-granular, which suits grabbing code to paste
+/// elsewhere and keeps painting trivial over a wrapped, virtualized list.
+/// Reports a flat line index (`base_line` + row) when selection starts or
+/// extends over a row.
+pub(crate) type LineCallback = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+/// Reports that a selection drag has ended.
+pub(crate) type EndCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+
+#[derive(Clone)]
+pub(crate) struct RowSelection {
+    /// Flat line index of this element's first row (row 0).
+    pub base_line: usize,
+    /// Local rows (indices into `rows`) to paint as selected.
+    pub highlight: Range<usize>,
+    /// Highlight color (usually the theme's selection background).
+    pub color: Hsla,
+    /// Pointer pressed on a row: `base_line + row`.
+    pub on_start: LineCallback,
+    /// Pointer dragged over a row while the button is held.
+    pub on_drag: LineCallback,
+    /// Button released (anywhere) — ends the drag.
+    pub on_end: EndCallback,
+}
+
 pub(crate) struct DiffRows {
     rows: Rc<Vec<DiffRow>>,
     geometry: RowGeometry,
     /// Filled by the measure closure, read by prepaint and paint.
     cell: LayoutCell,
+    /// Present when the rows are selectable (the Review panel); drives
+    /// highlight painting and pointer handling in [`DiffRows::paint`].
+    selection: Option<RowSelection>,
 }
 
 impl DiffRows {
@@ -56,13 +88,35 @@ impl DiffRows {
             rows: Rc::new(rows),
             geometry,
             cell: Rc::default(),
+            selection: None,
         }
+    }
+
+    /// Enable whole-line selection on these rows.
+    pub(crate) fn selectable(mut self, selection: RowSelection) -> Self {
+        self.selection = Some(selection);
+        self
     }
 
     #[cfg(test)]
     fn layout_cell(&self) -> LayoutCell {
         self.cell.clone()
     }
+}
+
+/// Map an absolute `y` to a flat line index: `base` plus the row whose band
+/// contains `y`, clamped to `[0, row_count)`. `tops` holds the absolute top of
+/// each row plus a final bottom (so it has `row_count + 1` entries).
+fn local_line(tops: &[Pixels], base: usize, row_count: usize, y: Pixels) -> usize {
+    if row_count == 0 {
+        return base;
+    }
+    let row = tops[..row_count]
+        .iter()
+        .rposition(|&top| y >= top)
+        .unwrap_or(0)
+        .min(row_count - 1);
+    base + row
 }
 
 /// Shaped rows for one width.
@@ -206,12 +260,13 @@ fn paint_rows(
     layout: &RowsLayout,
     geometry: RowGeometry,
     bounds: Bounds<Pixels>,
+    selection: Option<(&Range<usize>, Hsla)>,
     window: &mut Window,
     cx: &mut App,
 ) {
     let line_height = layout.line_height;
     let mut y = bounds.origin.y;
-    for (row, row_layout) in rows.iter().zip(&layout.rows) {
+    for (ix, (row, row_layout)) in rows.iter().zip(&layout.rows).enumerate() {
         if let Some(background) = row.background {
             window.paint_quad(fill(
                 Bounds::new(
@@ -219,6 +274,19 @@ fn paint_rows(
                     size(bounds.size.width, row_layout.height),
                 ),
                 background,
+            ));
+        }
+        // Selection sits above the add/delete tint but below the glyphs, so
+        // the selected text stays readable.
+        if let Some((range, color)) = selection
+            && range.contains(&ix)
+        {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(bounds.origin.x, y),
+                    size(bounds.size.width, row_layout.height),
+                ),
+                color,
             ));
         }
         if let Some(gutter) = &row_layout.gutter {
@@ -321,8 +389,79 @@ impl Element for DiffRows {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(layout) = cell.borrow().as_ref() {
-            paint_rows(&self.rows, layout, self.geometry, bounds, window, cx);
+        let borrow = cell.borrow();
+        let Some(layout) = borrow.as_ref() else {
+            return;
+        };
+
+        let selection = self
+            .selection
+            .as_ref()
+            .map(|s| (s.highlight.clone(), s.color));
+        paint_rows(
+            &self.rows,
+            layout,
+            self.geometry,
+            bounds,
+            selection.as_ref().map(|(range, color)| (range, *color)),
+            window,
+            cx,
+        );
+
+        // Pointer handling for selectable rows. The absolute top of each row
+        // (plus a final bottom) lets the listeners below map a pointer y to a
+        // row without re-reading the layout at event time.
+        if let Some(sel) = &self.selection {
+            let mut tops = Vec::with_capacity(layout.rows.len() + 1);
+            let mut y = bounds.origin.y;
+            for row in &layout.rows {
+                tops.push(y);
+                y += row.height;
+            }
+            tops.push(y);
+            let tops = Rc::new(tops);
+            let base = sel.base_line;
+            let row_count = layout.rows.len();
+            let (on_start, on_drag, on_end) = (
+                sel.on_start.clone(),
+                sel.on_drag.clone(),
+                sel.on_end.clone(),
+            );
+            drop(borrow);
+
+            let tops_down = tops.clone();
+            window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble
+                    && e.button == MouseButton::Left
+                    && bounds.contains(&e.position)
+                {
+                    on_start(
+                        local_line(&tops_down, base, row_count, e.position.y),
+                        window,
+                        cx,
+                    );
+                }
+            });
+
+            let tops_move = tops.clone();
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble
+                    && e.pressed_button == Some(MouseButton::Left)
+                    && bounds.contains(&e.position)
+                {
+                    on_drag(
+                        local_line(&tops_move, base, row_count, e.position.y),
+                        window,
+                        cx,
+                    );
+                }
+            });
+
+            window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble && e.button == MouseButton::Left {
+                    on_end(window, cx);
+                }
+            });
         }
     }
 }
@@ -334,6 +473,20 @@ mod tests {
         Context, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, div,
         red, white,
     };
+
+    #[test]
+    fn local_line_maps_y_to_a_row_and_clamps() {
+        // Three rows at tops 0,10,20 with bottom 30; base 100.
+        let tops = [px(0.), px(10.), px(20.), px(30.)];
+        assert_eq!(local_line(&tops, 100, 3, px(5.)), 100);
+        assert_eq!(local_line(&tops, 100, 3, px(10.)), 101);
+        assert_eq!(local_line(&tops, 100, 3, px(25.)), 102);
+        // Above the first row and below the last clamp to the ends.
+        assert_eq!(local_line(&tops, 100, 3, px(-5.)), 100);
+        assert_eq!(local_line(&tops, 100, 3, px(999.)), 102);
+        // No rows: the base line.
+        assert_eq!(local_line(&[px(0.)], 7, 0, px(5.)), 7);
+    }
 
     #[test]
     fn row_runs_cover_the_text_exactly() {
