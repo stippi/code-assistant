@@ -17,9 +17,11 @@
 //! - [`tabs`] — `browser_tabs_*`, `browser_resize_window`
 //! - [`batch`] — `browser_batch`: several steps in one call
 //! - [`profiles`] — `browser_close`, `browser_login`, `browser_profiles`
+//! - [`describe`] — one-line descriptions of calls, for the frontends
 
 mod batch;
 mod computer;
+pub mod describe;
 mod devtools;
 mod page;
 mod profiles;
