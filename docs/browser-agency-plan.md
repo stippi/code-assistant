@@ -189,6 +189,13 @@ coordinates (`"40vw"`/`"50%"`/`"640px"`, `rem`/`em` rejected) with the viewport
 size disclosed in the observation. Checkpoint 5 (pal wiring) and the
 outward-gating note below remain.
 
+**Update (2026-10):** the tool surface was reworked after the computer-use style
+browser tools models are trained on: accessibility tree with `ref_N` handles,
+screenshot-frame coordinates, tabs, console/network, observation on demand.
+`browser_read`/`browser_act` and the CSS/`text=` selectors and `vw`/`%`
+coordinate units described below are gone. The current tools are documented in
+`docs/browser-tools.md`.
+
 Following the repo's TDD/checkpoint working style — each step compiles, is
 tested, and is committable on its own:
 
@@ -226,18 +233,21 @@ tested, and is committable on its own:
 
 ## Known limitation — outward gating
 
-Capability tags are static per tool, so `browser_act` cannot know per-call
+Capability tags are static per tool, so `browser_computer` (formerly
+`browser_act`) cannot know per-call
 whether a click merely navigates or *submits* (an outward effect). It ships as a
 normal write tool (not `read_only`, not `outward`): in code-assistant's default
 `bypass-all` tier it runs freely. An embedder that wants consequential browser
 actions gated (pal, in `outward-tools` tier) adds the `outward` tag to
-`browser_act` through the extra-capabilities hook rather than us hardcoding a
+`browser_computer` and `browser_form_input` through the extra-capabilities
+hook rather than us hardcoding a
 prompt on every click. `browser_login` is the exception — it always prompts, via
 its own explicit handoff request, independent of the tier.
 
 ## Open questions
 
-- **Selector strategy for the model:** *(resolved — CP-B/C/D)* a mix, as
+- **Selector strategy for the model:** *(superseded by accessibility refs, see
+  `docs/browser-tools.md`)* a mix, as
   expected. `observe`/`read` surface a bounded list of interactive elements with
   CSS selectors (`#id` preferred, else an `:nth-of-type` path) and role/label, so
   the model targets stable selectors; coordinate clicks (`click_at`/`move_at`) and
