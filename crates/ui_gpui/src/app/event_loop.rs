@@ -587,7 +587,7 @@ impl Gpui {
                 // Update the project sidebar entity specifically
                 let persisted = self.persisted_projects.lock().unwrap().clone();
                 self.update_project_sidebar(cx, |sidebar, cx| {
-                    sidebar.set_persisted_projects(persisted);
+                    sidebar.set_persisted_projects(persisted, cx);
                     // Get updated sessions list
                     let updated_sessions = self.chat_sessions.lock().unwrap().clone();
                     let lifecycles = self.session_lifecycles.lock().unwrap().clone();

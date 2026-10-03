@@ -1509,7 +1509,7 @@ impl Render for MainScreen {
                 .map(|g| g.persisted_projects.lock().unwrap().clone())
                 .unwrap_or_default();
             self.project_sidebar.update(cx, |sidebar, cx| {
-                sidebar.set_persisted_projects(persisted_projects);
+                sidebar.set_persisted_projects(persisted_projects, cx);
                 sidebar.update_sessions(sessions.clone(), session_lifecycles, cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });

@@ -7,6 +7,7 @@
 //! structure of the list: each row names its project, and the header's
 //! "+" opens a picker to choose where a new session starts.
 
+mod project_picker;
 mod session_item;
 
 pub use session_item::{SessionListItem, SessionListItemEvent};
@@ -14,16 +15,18 @@ pub use session_item::{SessionListItem, SessionListItemEvent};
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::lifecycle::SessionLifecycle;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::{
-    Animation, AnimationExt, AnyElement, App, AppContext, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, Pixels, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Window, canvas, div, ease_out_quint, prelude::*, px, rems,
+    Animation, AnimationExt, AnyElement, AppContext, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, Pixels, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, canvas, div, ease_out_quint, prelude::*, px, rems,
 };
+use project_picker::{ProjectEntry, ProjectPicker, ProjectPickerEvent};
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt, tooltip::Tooltip};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
@@ -56,70 +59,6 @@ pub enum SessionSidebarEvent {
     AddProjectRequested,
 }
 
-/// What the project picker offers: a project, no project, or adding one.
-#[derive(Clone, Debug, PartialEq)]
-enum ProjectPickValue {
-    Project(String),
-    NoProject,
-    AddProject,
-}
-
-#[derive(Clone)]
-struct ProjectPick {
-    title: SharedString,
-    value: ProjectPickValue,
-    /// Known only from sessions, not saved in projects.json.
-    temporary: bool,
-}
-
-impl SelectItem for ProjectPick {
-    type Value = ProjectPickValue;
-
-    fn title(&self) -> SharedString {
-        self.title.clone()
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.value
-    }
-
-    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .w_full()
-            .child(
-                gpui_kit::svg()
-                    .flex_none()
-                    .size(rems(0.75))
-                    .path(match self.value {
-                        ProjectPickValue::Project(_) => "icons/file_icons/folder.svg",
-                        ProjectPickValue::NoProject => "icons/file_generic.svg",
-                        ProjectPickValue::AddProject => "icons/plus.svg",
-                    })
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(self.title.clone()),
-            )
-            .when(self.temporary, |el| {
-                el.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground.opacity(0.7))
-                        .child("temporary"),
-                )
-            })
-    }
-}
-
 pub struct SessionSidebar {
     sessions: Vec<ChatMetadata>,
     lifecycles: HashMap<String, SessionLifecycle>,
@@ -142,10 +81,8 @@ pub struct SessionSidebar {
     /// How many settled rows are rendered; grows with "Show more".
     settled_shown: usize,
     /// The header's project picker for new sessions.
-    project_picker: Entity<SelectState<SearchableVec<ProjectPick>>>,
-    /// The picker's items follow the sessions; they are refreshed on the
-    /// next render because updating them needs the window.
-    picker_dirty: bool,
+    project_picker: Entity<ProjectPicker>,
+    picker_open: bool,
 
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
@@ -157,16 +94,8 @@ pub struct SessionSidebar {
 
 impl SessionSidebar {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let project_picker = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(Vec::<ProjectPick>::new()),
-                None,
-                window,
-                cx,
-            )
-            .searchable(true)
-        });
-        let picker_subscription = cx.subscribe_in(&project_picker, window, Self::on_project_picked);
+        let project_picker = cx.new(|cx| ProjectPicker::new(window, cx));
+        let picker_subscription = cx.subscribe(&project_picker, Self::on_project_picker_event);
         Self {
             sessions: Vec::new(),
             lifecycles: HashMap::new(),
@@ -180,7 +109,7 @@ impl SessionSidebar {
             settled_content_height: None,
             settled_shown: SETTLED_PAGE,
             project_picker,
-            picker_dirty: true,
+            picker_open: false,
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
             activity_states: HashMap::new(),
@@ -202,7 +131,7 @@ impl SessionSidebar {
         }
         self.sessions = sessions;
         self.lifecycles = lifecycles;
-        self.picker_dirty = true;
+        self.refresh_picker(cx);
         self.sync_items(cx);
         self.relayout(cx);
     }
@@ -331,9 +260,8 @@ impl SessionSidebar {
         cx.notify();
     }
 
-    /// The picker's choices: projects most recently active first, then no
-    /// project, then adding one.
-    fn project_picks(&self) -> Vec<ProjectPick> {
+    /// The picker's choices: projects most recently active first.
+    fn project_entries(&self) -> Vec<ProjectEntry> {
         let mut latest: HashMap<String, std::time::SystemTime> = HashMap::new();
         for session in &self.sessions {
             if session.initial_project.is_empty() {
@@ -351,25 +279,19 @@ impl SessionSidebar {
         }
         let mut projects: Vec<(String, std::time::SystemTime)> = latest.into_iter().collect();
         projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let mut picks: Vec<ProjectPick> = projects
+        projects
             .into_iter()
-            .map(|(name, _)| ProjectPick {
-                title: name.clone().into(),
+            .map(|(name, _)| ProjectEntry {
                 temporary: !self.persisted_projects.contains(&name),
-                value: ProjectPickValue::Project(name),
+                name,
             })
-            .collect();
-        picks.push(ProjectPick {
-            title: "No project".into(),
-            value: ProjectPickValue::NoProject,
-            temporary: false,
-        });
-        picks.push(ProjectPick {
-            title: "Add project…".into(),
-            value: ProjectPickValue::AddProject,
-            temporary: false,
-        });
-        picks
+            .collect()
+    }
+
+    fn refresh_picker(&mut self, cx: &mut Context<Self>) {
+        let entries = self.project_entries();
+        self.project_picker
+            .update(cx, |picker, cx| picker.set_projects(entries, cx));
     }
 
     pub fn set_selected_session(&mut self, session_id: Option<String>, cx: &mut Context<Self>) {
@@ -410,42 +332,46 @@ impl SessionSidebar {
         cx.notify();
     }
 
-    pub fn set_persisted_projects(&mut self, projects: HashSet<String>) {
+    pub fn set_persisted_projects(&mut self, projects: HashSet<String>, cx: &mut Context<Self>) {
         if self.persisted_projects != projects {
             self.persisted_projects = projects;
-            self.picker_dirty = true;
+            self.refresh_picker(cx);
         }
     }
 
-    fn on_project_picked(
+    fn set_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_open == open {
+            return;
+        }
+        self.picker_open = open;
+        if open {
+            self.project_picker
+                .update(cx, |picker, cx| picker.reset(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn on_project_picker_event(
         &mut self,
-        picker: &Entity<SelectState<SearchableVec<ProjectPick>>>,
-        event: &SelectEvent<SearchableVec<ProjectPick>>,
-        window: &mut Window,
+        _: Entity<ProjectPicker>,
+        event: &ProjectPickerEvent,
         cx: &mut Context<Self>,
     ) {
-        let SelectEvent::Confirm(Some(value)) = event else {
-            return;
-        };
-        match value {
-            ProjectPickValue::Project(project) => {
-                debug!("New session in project: {project}");
+        match event {
+            ProjectPickerEvent::Picked { project } => {
+                debug!("New session in {:?}", project);
                 cx.emit(SessionSidebarEvent::NewSessionRequested {
                     name: None,
-                    initial_project: Some(project.clone()),
+                    initial_project: project.clone(),
                 });
             }
-            ProjectPickValue::NoProject => {
-                debug!("New session without project");
-                cx.emit(SessionSidebarEvent::NewSessionRequested {
-                    name: None,
-                    initial_project: None,
-                });
+            ProjectPickerEvent::AddProjectRequested => {
+                cx.emit(SessionSidebarEvent::AddProjectRequested)
             }
-            ProjectPickValue::AddProject => cx.emit(SessionSidebarEvent::AddProjectRequested),
+            ProjectPickerEvent::Dismissed => {}
         }
-        // The picker launches; it does not hold a selection.
-        picker.update(cx, |state, cx| state.set_selected_index(None, window, cx));
+        self.picker_open = false;
+        cx.notify();
     }
 
     fn on_chat_list_item_event(
@@ -639,14 +565,6 @@ impl Focusable for SessionSidebar {
 
 impl Render for SessionSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.picker_dirty {
-            let picks = self.project_picks();
-            self.project_picker.update(cx, |state, cx| {
-                state.set_items(SearchableVec::new(picks), window, cx)
-            });
-            self.picker_dirty = false;
-        }
-
         let mut children: Vec<AnyElement> = Vec::new();
 
         // Inbox
@@ -702,29 +620,31 @@ impl Render for SessionSidebar {
                             .text_color(cx.theme().foreground)
                             .child("Sessions"),
                     )
-                    .child(
-                        div()
-                            .id("new-session-picker")
-                            .flex_none()
-                            .w(px(30.))
-                            .rounded_sm()
-                            .hover(|s| s.bg(cx.theme().muted))
-                            .tooltip(|window, cx| Tooltip::new("New session in…").build(window, cx))
-                            .child(
-                                Select::new(&self.project_picker)
-                                    .placeholder("")
-                                    .search_placeholder("Project")
-                                    .with_size(Size::XSmall)
-                                    .appearance(false)
-                                    .menu_width(px(230.))
+                    .child({
+                        let picker = self.project_picker.clone();
+                        let input_focus = picker.read(cx).input_focus_handle(cx);
+                        let sidebar = cx.entity().downgrade();
+                        Popover::new("new-session-popover")
+                            .anchor(gpui_kit::Anchor::TopRight)
+                            .trigger(
+                                Button::new("new-session")
                                     .icon(
                                         Icon::default()
                                             .path(SharedString::from("icons/plus.svg"))
-                                            .with_size(Size::Small)
-                                            .text_color(cx.theme().muted_foreground),
-                                    ),
-                            ),
-                    ),
+                                            .with_size(Size::Small),
+                                    )
+                                    .ghost()
+                                    .xsmall(),
+                            )
+                            .open(self.picker_open)
+                            .on_open_change(move |open, window, cx| {
+                                let open = *open;
+                                let _ = sidebar
+                                    .update(cx, |this, cx| this.set_picker_open(open, window, cx));
+                            })
+                            .track_focus(&input_focus)
+                            .content(move |_, _, _| picker.clone())
+                    }),
             )
             // Scrollable list
             .child(

@@ -1,0 +1,318 @@
+//! The popover behind the sidebar's "+": where does the new session start?
+//!
+//! A header with a search field and the "+ Project" button, then the
+//! projects most recently active first and "No project" last. Typing
+//! filters, Up/Down move the highlight, Enter picks it, Escape closes.
+
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::{
+    Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::*, px,
+    rems,
+};
+
+#[derive(Clone, Debug)]
+pub enum ProjectPickerEvent {
+    /// Start a session in the project, or without one.
+    Picked {
+        project: Option<String>,
+    },
+    AddProjectRequested,
+    /// Escape: close without picking.
+    Dismissed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectEntry {
+    pub name: String,
+    /// Known only from sessions, not saved in projects.json.
+    pub temporary: bool,
+}
+
+/// One row of the filtered list.
+#[derive(Clone)]
+enum Row {
+    Project(ProjectEntry),
+    NoProject,
+}
+
+pub struct ProjectPicker {
+    input: Entity<InputState>,
+    projects: Vec<ProjectEntry>,
+    highlighted: usize,
+    focus_handle: FocusHandle,
+    _input_subscription: Subscription,
+}
+
+impl ProjectPicker {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects"));
+        let subscription = cx.subscribe_in(&input, window, Self::on_input_event);
+        Self {
+            input,
+            projects: Vec::new(),
+            highlighted: 0,
+            focus_handle: cx.focus_handle(),
+            _input_subscription: subscription,
+        }
+    }
+
+    /// The search field's focus handle; the popover stays open while it
+    /// has focus.
+    pub fn input_focus_handle(&self, cx: &gpui_kit::App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+
+    pub fn set_projects(&mut self, projects: Vec<ProjectEntry>, cx: &mut Context<Self>) {
+        if self.projects != projects {
+            self.projects = projects;
+            self.highlighted = 0;
+            cx.notify();
+        }
+    }
+
+    /// Prepare for opening: empty search, first row highlighted, focus in
+    /// the search field.
+    pub fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.focus(window, cx);
+        });
+        self.highlighted = 0;
+        cx.notify();
+    }
+
+    fn rows(&self, cx: &gpui_kit::App) -> Vec<Row> {
+        let query = self.input.read(cx).value().trim().to_lowercase();
+        let mut rows: Vec<Row> = self
+            .projects
+            .iter()
+            .filter(|p| query.is_empty() || p.name.to_lowercase().contains(&query))
+            .cloned()
+            .map(Row::Project)
+            .collect();
+        if query.is_empty() || "no project".contains(&query) {
+            rows.push(Row::NoProject);
+        }
+        rows
+    }
+
+    fn pick(&mut self, row: &Row, cx: &mut Context<Self>) {
+        let project = match row {
+            Row::Project(entry) => Some(entry.name.clone()),
+            Row::NoProject => None,
+        };
+        cx.emit(ProjectPickerEvent::Picked { project });
+    }
+
+    fn pick_highlighted(&mut self, cx: &mut Context<Self>) {
+        let rows = self.rows(cx);
+        if let Some(row) = rows.get(self.highlighted.min(rows.len().saturating_sub(1))) {
+            let row = row.clone();
+            self.pick(&row, cx);
+        }
+    }
+
+    fn on_input_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change => {
+                self.highlighted = 0;
+                cx.notify();
+            }
+            InputEvent::PressEnter { .. } => self.pick_highlighted(cx),
+            InputEvent::Focus | InputEvent::Blur => {}
+        }
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let count = self.rows(cx).len();
+        match event.keystroke.key.as_str() {
+            "down" if count > 0 => {
+                self.highlighted = (self.highlighted + 1) % count;
+            }
+            "up" if count > 0 => {
+                self.highlighted = (self.highlighted + count - 1) % count;
+            }
+            "escape" => cx.emit(ProjectPickerEvent::Dismissed),
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn render_row(&self, index: usize, row: &Row, cx: &mut Context<Self>) -> impl IntoElement {
+        let highlighted = index == self.highlighted;
+        let (icon, title, temporary) = match row {
+            Row::Project(entry) => (
+                "icons/file_icons/folder.svg",
+                entry.name.clone(),
+                entry.temporary,
+            ),
+            Row::NoProject => ("icons/file_generic.svg", "No project".to_string(), false),
+        };
+        let row_for_click = row.clone();
+        div()
+            .id(SharedString::from(format!("project-pick-{index}")))
+            .w_full()
+            .px_2()
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded_sm()
+            .cursor_pointer()
+            .when(highlighted, |el| el.bg(cx.theme().muted.opacity(0.5)))
+            .when(!highlighted, |el| {
+                el.hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
+            })
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered && this.highlighted != index {
+                    this.highlighted = index;
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| this.pick(&row_for_click, cx)))
+            .child(
+                gpui_kit::svg()
+                    .flex_none()
+                    .size(rems(0.75))
+                    .path(icon)
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(SharedString::from(title)),
+            )
+            .when(temporary, |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground.opacity(0.7))
+                        .child("temporary"),
+                )
+            })
+    }
+}
+
+impl EventEmitter<ProjectPickerEvent> for ProjectPicker {}
+
+impl Focusable for ProjectPicker {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for ProjectPicker {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.rows(cx);
+        if self.highlighted >= rows.len() {
+            self.highlighted = rows.len().saturating_sub(1);
+        }
+        let row_elements: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| self.render_row(index, row, cx).into_any_element())
+            .collect();
+
+        div()
+            .id("project-picker")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .w(px(260.))
+            .flex()
+            .flex_col()
+            // Header: search and the add-project button
+            .child(
+                div()
+                    .flex_none()
+                    .px_2()
+                    .py(px(6.))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.input)
+                                .with_size(Size::Small)
+                                .prefix(
+                                    Icon::default()
+                                        .path(SharedString::from("icons/magnifying_glass.svg"))
+                                        .with_size(Size::XSmall)
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .appearance(false)
+                                .p_0(),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .id("project-picker-add")
+                            .flex_none()
+                            .h(px(24.))
+                            .px_2()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(cx.theme().muted))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(ProjectPickerEvent::AddProjectRequested)
+                            }))
+                            .child(
+                                gpui_kit::svg()
+                                    .size(rems(0.7))
+                                    .path("icons/plus.svg")
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().foreground)
+                                    .child("Project"),
+                            ),
+                    ),
+            )
+            // Filtered projects
+            .child(
+                div()
+                    .id("project-picker-list")
+                    .w_full()
+                    .max_h(px(320.))
+                    .p_1()
+                    .overflow_y_scrollbar()
+                    .flex()
+                    .flex_col()
+                    .children(row_elements)
+                    .when(rows.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .px_2()
+                                .py_2()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No matching project"),
+                        )
+                    }),
+            )
+    }
+}
