@@ -1105,22 +1105,28 @@ async fn keys_and_buttons_can_be_held() {
     session.close().await;
 }
 
-/// Where the red box is in cell `i` of a contact sheet: the mean x of its
-/// red pixels, in cell pixels.
+/// Where the red box is in cell `i` of a contact sheet and its size: the
+/// mean x of its red pixels and their bounding box, in cell pixels.
 #[cfg(test)]
-fn red_x_in_cell(sheet: &image::RgbaImage, rec: &super::Recording, i: usize) -> Option<f64> {
+fn red_box_in_cell(
+    sheet: &image::RgbaImage,
+    rec: &super::Recording,
+    i: usize,
+) -> Option<(f64, u32, u32)> {
     let (cx, cy, cw, ch) = rec.cell_rect(i);
     let (mut sum, mut n) = (0u64, 0u64);
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
     for y in cy..cy + ch {
         for x in cx..cx + cw {
             let p = sheet.get_pixel(x, y);
             if p[0] > 200 && p[1] < 60 && p[2] < 60 {
                 sum += (x - cx) as u64;
                 n += 1;
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
             }
         }
     }
-    (n > 0).then(|| sum as f64 / n as f64)
+    (n > 0).then(|| (sum as f64 / n as f64, x1 - x0 + 1, y1 - y0 + 1))
 }
 
 /// A page with a red box sliding across at `top`, wrapping around.
@@ -1171,9 +1177,14 @@ async fn recording_makes_a_contact_sheet_of_the_motion() {
     let fresh = rec.frames[1..].iter().filter(|f| !f.repeated).count();
     assert!(fresh >= 6, "{:?}", rec.frames);
     let sheet = image::load_from_memory(&rec.png).unwrap().to_rgba8();
-    let xs: Vec<f64> = (0..9)
-        .map(|i| red_x_in_cell(&sheet, &rec, i).unwrap_or_else(|| panic!("no box in cell {i}")))
+    let boxes: Vec<(f64, u32, u32)> = (0..9)
+        .map(|i| red_box_in_cell(&sheet, &rec, i).unwrap_or_else(|| panic!("no box in cell {i}")))
         .collect();
+    // Square in every cell: frames are cut to the viewport, not stretched.
+    for (_, w, h) in &boxes {
+        assert!(w.abs_diff(*h) <= 2, "{boxes:?}");
+    }
+    let xs: Vec<f64> = boxes.iter().map(|b| b.0).collect();
     for i in 1..9 {
         let moved = (xs[i] - xs[i - 1]).abs() > 2.0;
         assert_eq!(
@@ -1196,7 +1207,36 @@ async fn recording_makes_a_contact_sheet_of_the_motion() {
         rec.received
     );
 
-    // A still page: the sheet repeats what little the browser sent.
+    // A window too small for the viewport grows as soon as a frame shows it;
+    // from then on the frames cover the viewport.
+    tab.set_viewport(1280, 800, false).await.unwrap();
+    tab.navigate(&sliding_box_url(600)).await.unwrap();
+    let window = tab
+        .page()
+        .execute(chromiumoxide::cdp::browser_protocol::browser::GetWindowForTargetParams::default())
+        .await
+        .unwrap()
+        .result;
+    tab.page()
+        .execute(
+            chromiumoxide::cdp::browser_protocol::browser::SetWindowBoundsParams::new(
+                window.window_id,
+                chromiumoxide::cdp::browser_protocol::browser::Bounds::builder()
+                    .width(1280)
+                    .height(600)
+                    .build(),
+            ),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rec = tab.record(Duration::from_secs(1), 4, None).await.unwrap();
+    assert!(!rec.frames[3].repeated, "{:?}", rec.frames);
+    let sheet = image::load_from_memory(&rec.png).unwrap().to_rgba8();
+    let (_, w, h) = red_box_in_cell(&sheet, &rec, 3).expect("the box low in the viewport");
+    assert!(w.abs_diff(h) <= 2, "{w}×{h}");
+
+    // A still page: every cell looks like the one before.
     tab.javascript("document.getElementById('box').remove(); 0")
         .await
         .unwrap();
@@ -1206,8 +1246,7 @@ async fn recording_makes_a_contact_sheet_of_the_motion() {
         .await
         .unwrap();
     assert_eq!((rec.columns, rec.rows), (2, 2));
-    assert_eq!(rec.cell_rect(0).2, 250, "a quarter of 1000 px");
-    assert!(rec.received >= 1);
+    assert_eq!(rec.cell_rect(0).2, 320, "a quarter of 1280 px");
     assert!(
         rec.frames[1..].iter().all(|f| f.repeated),
         "{:?}",

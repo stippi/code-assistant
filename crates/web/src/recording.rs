@@ -17,7 +17,7 @@ const BAND: u32 = 18;
 const GLYPH_SCALE: u32 = 2;
 const BACKGROUND: Rgba<u8> = Rgba([40, 40, 40, 255]);
 const LABEL: Rgba<u8> = Rgba([255, 255, 255, 255]);
-/// Labels of cells that repeat the previous one are dimmed.
+/// Labels of cells that look like the one before are dimmed.
 const LABEL_REPEATED: Rgba<u8> = Rgba([140, 140, 140, 255]);
 
 /// A recording laid out as a contact sheet, cells left to right, top to
@@ -33,7 +33,8 @@ pub struct Recording {
     pub cell_height: u32,
     /// One per cell.
     pub frames: Vec<SheetFrame>,
-    /// Frames the browser sent: it only sends one when the page repaints.
+    /// Frames the page painted during the recording (the browser only sends
+    /// one when something changed), not counting the one it started with.
     pub received: usize,
 }
 
@@ -42,8 +43,8 @@ pub struct Recording {
 pub struct SheetFrame {
     /// Seconds after the start of the recording that the cell stands for.
     pub at: f64,
-    /// The cell shows the same frame as the one before: nothing was painted
-    /// in between.
+    /// The cell looks the same as the one before: nothing visible changed in
+    /// between.
     pub repeated: bool,
 }
 
@@ -95,6 +96,18 @@ pub(crate) fn cell_times(n: usize, duration: f64) -> Vec<f64> {
         .collect()
 }
 
+/// One captured frame.
+pub(crate) struct Frame {
+    /// Seconds after the start of the recording that it was painted.
+    pub at: f64,
+    /// The image, as JPEG or PNG.
+    pub encoded: Vec<u8>,
+    /// The part of the image that is the viewport, from its top left, as a
+    /// fraction of its width and height: a screencast frame shows the whole
+    /// window, which can be larger.
+    pub viewport: (f64, f64),
+}
+
 /// For each moment in `times`, the frame on screen then: the last one painted
 /// at or before it, else (before the first paint) the first. `frame_times`
 /// are ascending.
@@ -110,22 +123,23 @@ pub(crate) fn pick_frames(frame_times: &[f64], times: &[f64]) -> Vec<usize> {
         .collect()
 }
 
-/// Lay out `frames` (encoded images, decoded here) for the cells at `times`
-/// as a contact sheet of `columns`×`rows` cells of `cell` size.
+/// Lay out `frames` (encoded images, decoded here; the first is the page as
+/// the recording started) for the cells at `times` as a contact sheet of
+/// `columns`×`rows` cells of `cell` size.
 pub(crate) fn contact_sheet(
-    frames: &[(f64, Vec<u8>)],
+    frames: &[Frame],
     times: &[f64],
     columns: u32,
     rows: u32,
     cell: (u32, u32),
 ) -> Result<Recording> {
-    anyhow::ensure!(!frames.is_empty(), "the page sent no frames");
+    anyhow::ensure!(!frames.is_empty(), "no frames to lay out");
     let (cw, ch) = cell;
     let width = GAP + columns * (cw + GAP);
     let height = GAP + rows * (BAND + ch + GAP);
     let mut sheet = RgbaImage::from_pixel(width, height, BACKGROUND);
 
-    let frame_times: Vec<f64> = frames.iter().map(|(t, _)| *t).collect();
+    let frame_times: Vec<f64> = frames.iter().map(|f| f.at).collect();
     let picks = pick_frames(&frame_times, times);
     let mut recording = Recording {
         png: Vec::new(),
@@ -136,16 +150,29 @@ pub(crate) fn contact_sheet(
         cell_width: cw,
         cell_height: ch,
         frames: Vec::with_capacity(times.len()),
-        received: frames.len(),
+        received: frames.len() - 1,
     };
     let mut decoded: Option<(usize, RgbaImage)> = None;
     for (i, (&at, &pick)) in times.iter().zip(&picks).enumerate() {
-        let repeated = i > 0 && picks[i - 1] == pick;
+        let mut repeated = i > 0;
         if decoded.as_ref().is_none_or(|(n, _)| *n != pick) {
-            let mut img = image::load_from_memory(&frames[pick].1)?.to_rgba8();
+            let frame = &frames[pick];
+            let mut img = image::load_from_memory(&frame.encoded)?.to_rgba8();
+            let (fw, fh) = img.dimensions();
+            let (rx, ry) = frame.viewport;
+            let (vw, vh) = (
+                ((fw as f64 * rx).round() as u32).clamp(1, fw),
+                ((fh as f64 * ry).round() as u32).clamp(1, fh),
+            );
+            if (vw, vh) != (fw, fh) {
+                img = imageops::crop_imm(&img, 0, 0, vw, vh).to_image();
+            }
             if img.dimensions() != (cw, ch) {
                 img = imageops::resize(&img, cw, ch, imageops::FilterType::Triangle);
             }
+            repeated &= decoded
+                .as_ref()
+                .is_some_and(|(_, before)| looks_same(before, &img));
             decoded = Some((pick, img));
         }
         let (x, y, _, _) = recording.cell_rect(i);
@@ -166,6 +193,21 @@ pub(crate) fn contact_sheet(
     sheet.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)?;
     recording.png = png;
     Ok(recording)
+}
+
+/// Whether two frames show the same picture. A repaint can leave the page as
+/// it was, and frames are JPEGs, so this tolerates compression noise: only a
+/// clearly different pixel (or a few) counts as a change.
+fn looks_same(a: &RgbaImage, b: &RgbaImage) -> bool {
+    const NOISE: u8 = 40;
+    const PIXELS: usize = 3;
+    a.dimensions() == b.dimensions()
+        && a.pixels()
+            .zip(b.pixels())
+            .filter(|(p, q)| p.0.iter().zip(q.0).any(|(x, y)| x.abs_diff(y) > NOISE))
+            .take(PIXELS + 1)
+            .count()
+            <= PIXELS
 }
 
 /// Draw `text` with its top-left at `(x, y)`; characters without a glyph
@@ -223,6 +265,19 @@ fn glyph(c: char) -> Option<[u8; 7]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_few_noisy_pixels_are_no_change() {
+        let white = RgbaImage::from_pixel(50, 40, Rgba([255, 255, 255, 255]));
+        let mut noisy = white.clone();
+        noisy.put_pixel(3, 3, Rgba([230, 240, 255, 255]));
+        assert!(looks_same(&white, &noisy));
+        let mut moved = white.clone();
+        for y in 10..20 {
+            moved.put_pixel(25, y, Rgba([255, 0, 0, 255]));
+        }
+        assert!(!looks_same(&white, &moved));
+    }
 
     #[test]
     fn grids_are_square_or_wider() {

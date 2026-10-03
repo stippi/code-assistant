@@ -9,7 +9,7 @@ use crate::page_log::PageLog;
 use crate::recording::{self, Recording};
 use anyhow::Result;
 use chromiumoxide::cdp::browser_protocol::browser::{
-    Bounds, GetWindowForTargetParams, SetWindowBoundsParams,
+    Bounds, GetWindowForTargetParams, SetWindowBoundsParams, WindowId,
 };
 use chromiumoxide::cdp::browser_protocol::dom::ResolveNodeParams;
 use chromiumoxide::cdp::browser_protocol::dom::{
@@ -323,7 +323,9 @@ impl Tab {
         self.bounded("screenshot", self.timeouts().command, async {
             let (sx, sy, vw, vh) = self.scroll_and_viewport().await?;
             let scale = fit_scale(scale.unwrap_or(1.0), vw, vh);
-            let png = self.capture(sx, sy, vw, vh, scale).await?;
+            let png = self
+                .capture(sx, sy, vw, vh, scale, CaptureScreenshotFormat::Png)
+                .await?;
             *self.frame_scale.lock().unwrap() = scale;
             Ok(Screenshot {
                 png,
@@ -347,7 +349,16 @@ impl Tab {
             let (sx, sy, _, _) = self.scroll_and_viewport().await?;
             let (w, h) = (x1 - x0, y1 - y0);
             let enlarge = (MAX_SCREENSHOT_EDGE as f64 / w.max(h)).min(4.0) * scale.unwrap_or(1.0);
-            let png = self.capture(sx + x0, sy + y0, w, h, enlarge).await?;
+            let png = self
+                .capture(
+                    sx + x0,
+                    sy + y0,
+                    w,
+                    h,
+                    enlarge,
+                    CaptureScreenshotFormat::Png,
+                )
+                .await?;
             Ok(Screenshot {
                 png,
                 width: (w * enlarge).round() as u32,
@@ -361,9 +372,8 @@ impl Tab {
     /// evenly spread from start to end, out as one contact sheet. Each cell
     /// is a frame the page painted, its size `scale` × CSS pixels (default:
     /// as large as fits [`MAX_SCREENSHOT_EDGE`]). The browser only sends a
-    /// frame when the page repaints; a cell with nothing new since the one
-    /// before repeats it and is marked so. Does not change the coordinate
-    /// frame.
+    /// frame when the page repaints; a cell that looks the same as the one
+    /// before is marked so. Does not change the coordinate frame.
     pub async fn record(
         &self,
         duration: Duration,
@@ -373,28 +383,43 @@ impl Tab {
         anyhow::ensure!(frames > 0, "a recording needs at least one frame");
         let limit = self.timeouts().command * 2 + duration;
         self.bounded("recording", limit, async {
-            let (_, _, vw, vh) = self.scroll_and_viewport().await?;
+            let (sx, sy, vw, vh) = self.scroll_and_viewport().await?;
             let (columns, rows) = recording::grid(frames as u32);
             let (cw, ch) = recording::cell_size(vw, vh, columns, rows, scale);
             let mut events = self.page.event_listener::<EventScreencastFrame>().await?;
-            let start = std::time::SystemTime::now();
-            let started = Instant::now();
-            self.page
-                .execute(
-                    StartScreencastParams::builder()
-                        .format(StartScreencastFormat::Jpeg)
-                        .quality(90)
-                        .max_width(cw as i64)
-                        .max_height(ch as i64)
-                        .build(),
-                )
-                .await?;
-            let collected = self
-                .collect_frames(&mut events, start, started, duration)
-                .await;
-            // Stop even when collecting failed, so frames do not keep coming.
+            // A frame shows the whole window, which can be larger than the
+            // viewport and is cut to it afterwards: frames sized for the
+            // window at the cell scale leave the viewport at least cell size.
+            let scale = cw as f64 / vw;
+            let mut screencast = StartScreencastParams::builder()
+                .format(StartScreencastFormat::Jpeg)
+                .quality(JPEG_QUALITY);
+            if let Some((_, w, h)) = self.window_bounds().await {
+                screencast = screencast
+                    .max_width((w as f64 * scale).ceil() as i64)
+                    .max_height((h as f64 * scale).ceil() as i64);
+            }
+            self.page.execute(screencast.build()).await?;
+            let captured = async {
+                // The page as the recording starts: the screencast only sends
+                // what is painted from now on, and a still page paints nothing.
+                // A JPEG like the screencast's, so the same picture compares
+                // as the same.
+                let first = self
+                    .capture(sx, sy, vw, vh, scale, CaptureScreenshotFormat::Jpeg)
+                    .await?;
+                let first = recording::Frame {
+                    at: 0.0,
+                    encoded: first,
+                    viewport: (1.0, 1.0),
+                };
+                let painted = self.collect_frames(&mut events, duration, (vw, vh)).await?;
+                Ok::<_, anyhow::Error>(std::iter::once(first).chain(painted).collect())
+            }
+            .await;
+            // Stop even when capturing failed, so frames do not keep coming.
             let stopped = self.page.execute(StopScreencastParams::default()).await;
-            let captured = collected?;
+            let captured: Vec<recording::Frame> = captured?;
             stopped?;
             let times = recording::cell_times(frames, duration.as_secs_f64());
             recording::contact_sheet(&captured, &times, columns, rows, (cw, ch))
@@ -402,23 +427,31 @@ impl Tab {
         .await
     }
 
-    /// Screencast frames until `duration` after `started`, acknowledged as
-    /// they come (the browser sends no more until it is), each with its time
-    /// in seconds since the start.
+    /// Screencast frames painted from now until `duration` from now,
+    /// acknowledged as they come (the browser sends no more until it is),
+    /// each with its time in seconds from now. Frames painted earlier are
+    /// dropped.
+    ///
+    /// A frame shows the browser window, which can be smaller than the
+    /// `viewport` (CSS px) when it is emulated. Then the window grows by what
+    /// is missing, and frames that do not show the whole viewport are
+    /// dropped.
     async fn collect_frames(
         &self,
         events: &mut (impl futures::Stream<Item = Arc<EventScreencastFrame>> + Unpin),
-        start: std::time::SystemTime,
-        started: Instant,
         duration: Duration,
-    ) -> Result<Vec<(f64, Vec<u8>)>> {
+        viewport: (f64, f64),
+    ) -> Result<Vec<recording::Frame>> {
         use base64::Engine;
-        let start_epoch = start
+        let (vw, vh) = viewport;
+        let started = Instant::now();
+        let start_epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
         let deadline = tokio::time::Instant::from_std(started + duration);
         let mut frames = Vec::new();
+        let mut grown_for = None;
         loop {
             let event = match tokio::time::timeout_at(deadline, events.next()).await {
                 Ok(Some(event)) => event,
@@ -427,16 +460,32 @@ impl Tab {
             self.page
                 .execute(ScreencastFrameAckParams::new(event.session_id))
                 .await?;
+            let meta = &event.metadata;
             // When the frame was painted; its arrival if the browser omits that.
-            let at = event
-                .metadata
+            let at = meta
                 .timestamp
                 .as_ref()
                 .map(|t| *t.inner() - start_epoch)
                 .unwrap_or_else(|| started.elapsed().as_secs_f64());
-            let jpeg = base64::engine::general_purpose::STANDARD
-                .decode(AsRef::<str>::as_ref(&event.data))?;
-            frames.push((at, jpeg));
+            if at < 0.0 {
+                continue;
+            }
+            let (dw, dh) = (meta.device_width, meta.device_height);
+            if dw + 0.5 < vw || dh + 0.5 < vh {
+                // Once per size: growing takes a moment to show in frames.
+                if grown_for != Some((dw, dh)) {
+                    grown_for = Some((dw, dh));
+                    self.grow_window_by((vw - dw).max(0.0), (vh - dh).max(0.0))
+                        .await;
+                }
+                continue;
+            }
+            frames.push(recording::Frame {
+                at,
+                encoded: base64::engine::general_purpose::STANDARD
+                    .decode(AsRef::<str>::as_ref(&event.data))?,
+                viewport: (vw / dw, vh / dh),
+            });
         }
         Ok(frames)
     }
@@ -450,11 +499,19 @@ impl Tab {
             .into_value::<(f64, f64, f64, f64)>()?)
     }
 
-    /// Capture the document rectangle `(x, y, w, h)` (CSS px) as PNG at `scale`.
-    async fn capture(&self, x: f64, y: f64, w: f64, h: f64, scale: f64) -> Result<Vec<u8>> {
+    /// Capture the document rectangle `(x, y, w, h)` (CSS px) at `scale`, a
+    /// JPEG at the quality recordings use or a PNG.
+    async fn capture(
+        &self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        scale: f64,
+        format: CaptureScreenshotFormat,
+    ) -> Result<Vec<u8>> {
         use base64::Engine;
-        let params = CaptureScreenshotParams::builder()
-            .format(CaptureScreenshotFormat::Png)
+        let mut params = CaptureScreenshotParams::builder()
             .clip(Viewport {
                 x,
                 y,
@@ -463,6 +520,10 @@ impl Tab {
                 scale,
             })
             .build();
+        if format == CaptureScreenshotFormat::Jpeg {
+            params.quality = Some(JPEG_QUALITY);
+        }
+        params.format = Some(format);
         let data = self.page.execute(params).await?.result.data;
         Ok(base64::engine::general_purpose::STANDARD.decode(AsRef::<str>::as_ref(&data))?)
     }
@@ -808,26 +869,50 @@ impl Tab {
         .await
     }
 
-    /// Make the browser window at least `width`×`height`. Headless Chrome
-    /// only reports repaints inside its window to a screencast, so an emulated
-    /// viewport larger than the window would record as frozen where it
-    /// sticks out. Best effort: a window that cannot be resized stays as is.
+    /// Make the browser window large enough for a `width`×`height` viewport.
+    /// Headless Chrome only shows a screencast what is inside its window, and
+    /// its window has room for browser UI (143 px of its height on macOS), so
+    /// the window gets [`WINDOW_UI_ALLOWANCE`] on top; a recording grows it
+    /// further if that is not enough. Best effort: a window that cannot be
+    /// resized stays as is.
     async fn grow_window(&self, width: u32, height: u32) {
-        let Ok(window) = self.page.execute(GetWindowForTargetParams::default()).await else {
+        let Some((id, w, h)) = self.window_bounds().await else {
             return;
         };
-        let bounds = &window.result.bounds;
-        let (w, h) = (bounds.width.unwrap_or(0), bounds.height.unwrap_or(0));
-        if w >= width as i64 && h >= height as i64 {
-            return;
+        let (width, height) = (width as i64, (height + WINDOW_UI_ALLOWANCE) as i64);
+        if w < width || h < height {
+            self.set_window_size(id, w.max(width), h.max(height)).await;
         }
-        let grown = Bounds::builder()
-            .width(w.max(width as i64))
-            .height(h.max(height as i64))
-            .build();
+    }
+
+    /// Make the browser window `dw` × `dh` pixels larger.
+    async fn grow_window_by(&self, dw: f64, dh: f64) {
+        if let Some((id, w, h)) = self.window_bounds().await {
+            let (w, h) = (w + dw.ceil() as i64, h + dh.ceil() as i64);
+            self.set_window_size(id, w, h).await;
+        }
+    }
+
+    async fn window_bounds(&self) -> Option<(WindowId, i64, i64)> {
+        let window = self
+            .page
+            .execute(GetWindowForTargetParams::default())
+            .await
+            .ok()?
+            .result;
+        let bounds = &window.bounds;
+        Some((
+            window.window_id,
+            bounds.width.unwrap_or(0),
+            bounds.height.unwrap_or(0),
+        ))
+    }
+
+    async fn set_window_size(&self, id: WindowId, width: i64, height: i64) {
+        let bounds = Bounds::builder().width(width).height(height).build();
         let _ = self
             .page
-            .execute(SetWindowBoundsParams::new(window.result.window_id, grown))
+            .execute(SetWindowBoundsParams::new(id, bounds))
             .await;
     }
 
@@ -1258,6 +1343,13 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 /// The longest edge a screenshot may have: the image limit of the model
 /// API, past which images are downscaled again (and coordinates would drift).
 pub const MAX_SCREENSHOT_EDGE: u32 = 1568;
+
+/// Room a headless browser window gets beyond its viewport for the browser
+/// UI it reserves (143 px of its height on macOS).
+pub(crate) const WINDOW_UI_ALLOWANCE: u32 = 200;
+
+/// JPEG quality of recorded frames.
+const JPEG_QUALITY: i64 = 90;
 
 /// `requested`, reduced as needed so a `vw`×`vh` capture fits the edge limit.
 fn fit_scale(requested: f64, vw: f64, vh: f64) -> f64 {
