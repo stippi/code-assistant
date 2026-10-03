@@ -1104,3 +1104,115 @@ async fn keys_and_buttons_can_be_held() {
 
     session.close().await;
 }
+
+/// Where the red box is in cell `i` of a contact sheet: the mean x of its
+/// red pixels, in cell pixels.
+#[cfg(test)]
+fn red_x_in_cell(sheet: &image::RgbaImage, rec: &super::Recording, i: usize) -> Option<f64> {
+    let (cx, cy, cw, ch) = rec.cell_rect(i);
+    let (mut sum, mut n) = (0u64, 0u64);
+    for y in cy..cy + ch {
+        for x in cx..cx + cw {
+            let p = sheet.get_pixel(x, y);
+            if p[0] > 200 && p[1] < 60 && p[2] < 60 {
+                sum += (x - cx) as u64;
+                n += 1;
+            }
+        }
+    }
+    (n > 0).then(|| sum as f64 / n as f64)
+}
+
+/// A page with a red box sliding across at `top`, wrapping around.
+#[cfg(test)]
+fn sliding_box_url(top: u32) -> String {
+    data_url(&format!(
+        "<html><body style=\"margin:0;background:#fff\">\
+         <div id=\"box\" style=\"position:absolute;top:{top}px;left:0;width:120px;height:120px;background:#f00\"></div>\
+         <script>\
+         const box = document.getElementById('box');\
+         const step = (t) => {{ box.style.left = (40 + (t * 0.9) % 1100) + 'px'; requestAnimationFrame(step); }};\
+         requestAnimationFrame(step);\
+         </script></body></html>"
+    ))
+}
+
+/// A recording turns the next second of the page into one contact sheet:
+/// frames spread evenly over the time, each labelled with its offset, the
+/// moving box in a different place in each — also where the viewport extends
+/// past headless Chrome's default 800×600 window. A page that does not
+/// repaint sends few frames; the sheet repeats the last one and says so.
+#[tokio::test]
+async fn recording_makes_a_contact_sheet_of_the_motion() {
+    use std::time::Duration;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&sliding_box_url(300)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let rec = tab.record(Duration::from_secs(1), 9, None).await.unwrap();
+    let rate = rec.received;
+    assert_eq!((rec.columns, rec.rows), (3, 3));
+    assert_eq!(png_size(&rec.png), (rec.width, rec.height));
+    assert!(rec.width <= super::MAX_SCREENSHOT_EDGE && rec.height <= super::MAX_SCREENSHOT_EDGE);
+    let at: Vec<f64> = rec.frames.iter().map(|f| f.at).collect();
+    assert_eq!(at, [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]);
+    // About 60 frames a second. A loaded machine paints fewer and may skip
+    // a cell, which then repeats the one before; every fresh cell shows the
+    // box somewhere new.
+    assert!(
+        rec.received >= 9,
+        "only {} frames for a moving page",
+        rec.received
+    );
+    let fresh = rec.frames[1..].iter().filter(|f| !f.repeated).count();
+    assert!(fresh >= 6, "{:?}", rec.frames);
+    let sheet = image::load_from_memory(&rec.png).unwrap().to_rgba8();
+    let xs: Vec<f64> = (0..9)
+        .map(|i| red_x_in_cell(&sheet, &rec, i).unwrap_or_else(|| panic!("no box in cell {i}")))
+        .collect();
+    for i in 1..9 {
+        let moved = (xs[i] - xs[i - 1]).abs() > 2.0;
+        assert_eq!(
+            moved, !rec.frames[i].repeated,
+            "cell {i}: {xs:?} {:?}",
+            rec.frames
+        );
+    }
+
+    // A viewport taller than the window: the box below 800 px still records
+    // at the full rate (outside the window, only a fraction of the frames
+    // came).
+    tab.set_viewport(1000, 1100, false).await.unwrap();
+    tab.navigate(&sliding_box_url(950)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rec = tab.record(Duration::from_secs(1), 4, None).await.unwrap();
+    assert!(
+        rec.received * 3 >= rate * 2,
+        "{} frames, {rate} in the default viewport",
+        rec.received
+    );
+
+    // A still page: the sheet repeats what little the browser sent.
+    tab.javascript("document.getElementById('box').remove(); 0")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let rec = tab
+        .record(Duration::from_millis(500), 4, Some(0.25))
+        .await
+        .unwrap();
+    assert_eq!((rec.columns, rec.rows), (2, 2));
+    assert_eq!(rec.cell_rect(0).2, 250, "a quarter of 1000 px");
+    assert!(rec.received >= 1);
+    assert!(
+        rec.frames[1..].iter().all(|f| f.repeated),
+        "{:?}",
+        rec.frames
+    );
+
+    session.close().await;
+}

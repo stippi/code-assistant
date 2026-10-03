@@ -113,12 +113,16 @@ impl LaunchedBrowser {
                 .viewport(None)
                 .window_size(DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1 + 100);
         } else {
-            builder = builder.viewport(Viewport {
-                width: DEFAULT_VIEWPORT.0,
-                height: DEFAULT_VIEWPORT.1,
-                device_scale_factor: Some(1.0),
-                ..Viewport::default()
-            });
+            // The window as large as the viewport: headless Chrome's default
+            // 800×600 window would cut off what a screencast sees.
+            builder = builder
+                .viewport(Viewport {
+                    width: DEFAULT_VIEWPORT.0,
+                    height: DEFAULT_VIEWPORT.1,
+                    device_scale_factor: Some(1.0),
+                    ..Viewport::default()
+                })
+                .window_size(DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1);
         }
         let browser_config = builder.build().map_err(|e| anyhow::anyhow!("{e}"))?;
 

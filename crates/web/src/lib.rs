@@ -4,6 +4,7 @@ mod browser_session;
 mod client;
 mod page_log;
 mod perplexity;
+mod recording;
 mod tab;
 #[cfg(test)]
 mod tests;
@@ -14,6 +15,7 @@ pub use browser_session::{
 pub use chromiumoxide::layout::Point;
 pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};
 pub use perplexity::{PerplexityCitation, PerplexityClient, PerplexityMessage, PerplexityResponse};
+pub use recording::{Recording, SheetFrame};
 pub use tab::{
     BrowserTimeout, BrowserTimeouts, Button, HandledDialog, MAX_SCREENSHOT_EDGE, Screenshot, Tab,
 };

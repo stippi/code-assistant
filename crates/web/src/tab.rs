@@ -6,7 +6,11 @@
 
 use crate::ax_tree::{GetFullAxTreeRaw, RefMap, RenderOptions};
 use crate::page_log::PageLog;
+use crate::recording::{self, Recording};
 use anyhow::Result;
+use chromiumoxide::cdp::browser_protocol::browser::{
+    Bounds, GetWindowForTargetParams, SetWindowBoundsParams,
+};
 use chromiumoxide::cdp::browser_protocol::dom::ResolveNodeParams;
 use chromiumoxide::cdp::browser_protocol::dom::{
     BackendNodeId, GetContentQuadsParams, ScrollIntoViewIfNeededParams,
@@ -23,7 +27,8 @@ use chromiumoxide::cdp::browser_protocol::network::GetResponseBodyParams;
 use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, CaptureScreenshotParams, DialogType, EventJavascriptDialogOpening,
-    HandleJavaScriptDialogParams, Viewport,
+    EventScreencastFrame, HandleJavaScriptDialogParams, ScreencastFrameAckParams,
+    StartScreencastFormat, StartScreencastParams, StopScreencastParams, Viewport,
 };
 use chromiumoxide::cdp::js_protocol::runtime::{
     CallArgument, CallFunctionOnParams, EvaluateParams, RemoteObject,
@@ -350,6 +355,90 @@ impl Tab {
             })
         })
         .await
+    }
+
+    /// Record the page for `duration` of real time and lay `frames` moments,
+    /// evenly spread from start to end, out as one contact sheet. Each cell
+    /// is a frame the page painted, its size `scale` × CSS pixels (default:
+    /// as large as fits [`MAX_SCREENSHOT_EDGE`]). The browser only sends a
+    /// frame when the page repaints; a cell with nothing new since the one
+    /// before repeats it and is marked so. Does not change the coordinate
+    /// frame.
+    pub async fn record(
+        &self,
+        duration: Duration,
+        frames: usize,
+        scale: Option<f64>,
+    ) -> Result<Recording> {
+        anyhow::ensure!(frames > 0, "a recording needs at least one frame");
+        let limit = self.timeouts().command * 2 + duration;
+        self.bounded("recording", limit, async {
+            let (_, _, vw, vh) = self.scroll_and_viewport().await?;
+            let (columns, rows) = recording::grid(frames as u32);
+            let (cw, ch) = recording::cell_size(vw, vh, columns, rows, scale);
+            let mut events = self.page.event_listener::<EventScreencastFrame>().await?;
+            let start = std::time::SystemTime::now();
+            let started = Instant::now();
+            self.page
+                .execute(
+                    StartScreencastParams::builder()
+                        .format(StartScreencastFormat::Jpeg)
+                        .quality(90)
+                        .max_width(cw as i64)
+                        .max_height(ch as i64)
+                        .build(),
+                )
+                .await?;
+            let collected = self
+                .collect_frames(&mut events, start, started, duration)
+                .await;
+            // Stop even when collecting failed, so frames do not keep coming.
+            let stopped = self.page.execute(StopScreencastParams::default()).await;
+            let captured = collected?;
+            stopped?;
+            let times = recording::cell_times(frames, duration.as_secs_f64());
+            recording::contact_sheet(&captured, &times, columns, rows, (cw, ch))
+        })
+        .await
+    }
+
+    /// Screencast frames until `duration` after `started`, acknowledged as
+    /// they come (the browser sends no more until it is), each with its time
+    /// in seconds since the start.
+    async fn collect_frames(
+        &self,
+        events: &mut (impl futures::Stream<Item = Arc<EventScreencastFrame>> + Unpin),
+        start: std::time::SystemTime,
+        started: Instant,
+        duration: Duration,
+    ) -> Result<Vec<(f64, Vec<u8>)>> {
+        use base64::Engine;
+        let start_epoch = start
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let deadline = tokio::time::Instant::from_std(started + duration);
+        let mut frames = Vec::new();
+        loop {
+            let event = match tokio::time::timeout_at(deadline, events.next()).await {
+                Ok(Some(event)) => event,
+                Ok(None) | Err(_) => break,
+            };
+            self.page
+                .execute(ScreencastFrameAckParams::new(event.session_id))
+                .await?;
+            // When the frame was painted; its arrival if the browser omits that.
+            let at = event
+                .metadata
+                .timestamp
+                .as_ref()
+                .map(|t| *t.inner() - start_epoch)
+                .unwrap_or_else(|| started.elapsed().as_secs_f64());
+            let jpeg = base64::engine::general_purpose::STANDARD
+                .decode(AsRef::<str>::as_ref(&event.data))?;
+            frames.push((at, jpeg));
+        }
+        Ok(frames)
     }
 
     /// Scroll offset and viewport size, in CSS pixels.
@@ -689,6 +778,7 @@ impl Tab {
                 .build()
                 .map_err(anyhow::Error::msg)?;
             self.page.execute(touch).await?;
+            self.grow_window(width, height).await;
 
             let original = {
                 let known = self.original_user_agent.lock().unwrap().clone();
@@ -716,6 +806,29 @@ impl Tab {
             Ok(())
         })
         .await
+    }
+
+    /// Make the browser window at least `width`×`height`. Headless Chrome
+    /// only reports repaints inside its window to a screencast, so an emulated
+    /// viewport larger than the window would record as frozen where it
+    /// sticks out. Best effort: a window that cannot be resized stays as is.
+    async fn grow_window(&self, width: u32, height: u32) {
+        let Ok(window) = self.page.execute(GetWindowForTargetParams::default()).await else {
+            return;
+        };
+        let bounds = &window.result.bounds;
+        let (w, h) = (bounds.width.unwrap_or(0), bounds.height.unwrap_or(0));
+        if w >= width as i64 && h >= height as i64 {
+            return;
+        }
+        let grown = Bounds::builder()
+            .width(w.max(width as i64))
+            .height(h.max(height as i64))
+            .build();
+        let _ = self
+            .page
+            .execute(SetWindowBoundsParams::new(window.result.window_id, grown))
+            .await;
     }
 
     /// Emulate `prefers-color-scheme` (`"light"` / `"dark"`); `None` follows
