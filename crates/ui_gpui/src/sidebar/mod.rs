@@ -121,9 +121,13 @@ impl SessionSidebar {
         lifecycles: HashMap<String, SessionLifecycle>,
         cx: &mut Context<Self>,
     ) {
+        if self.sessions == sessions && self.lifecycles == lifecycles {
+            return;
+        }
         self.sessions = sessions;
         self.lifecycles = lifecycles;
-        self.rebuild(cx);
+        self.sync_items(cx);
+        self.relayout(cx);
     }
 
     /// One session's lifecycle changed (visited, settled, un-settled).
@@ -136,13 +140,19 @@ impl SessionSidebar {
         if self.lifecycles.get(&session_id) == Some(&lifecycle) {
             return;
         }
+        if let Some(item) = self.items.get(&session_id) {
+            let lifecycle = lifecycle.clone();
+            item.update(cx, |item, cx| item.update_lifecycle(lifecycle, cx));
+        }
         self.lifecycles.insert(session_id, lifecycle);
-        self.rebuild(cx);
+        // Only this row moved; the other rows' entities are untouched. A
+        // startup sweep can settle hundreds of sessions in a row.
+        self.relayout(cx);
     }
 
-    /// Rebuild the inbox, the settled shelf and the project anchors from
-    /// the stored sessions, reusing row entities.
-    fn rebuild(&mut self, cx: &mut Context<Self>) {
+    /// Bring the row entities in line with the stored sessions, reusing
+    /// existing ones.
+    fn sync_items(&mut self, cx: &mut Context<Self>) {
         self._item_subscriptions.clear();
         let mut existing = std::mem::take(&mut self.items);
 
@@ -186,7 +196,11 @@ impl SessionSidebar {
             items.insert(session.id.clone(), entity);
         }
         self.items = items;
+    }
 
+    /// Recompute the inbox, the settled shelf and the project anchors from
+    /// the stored sessions and lifecycles. Touches no row entity.
+    fn relayout(&mut self, cx: &mut Context<Self>) {
         // Projects: every project with a session plus the persisted ones,
         // most recently active first.
         let mut latest: HashMap<String, std::time::SystemTime> = HashMap::new();
@@ -477,7 +491,7 @@ impl SessionSidebar {
                 } else {
                     Some(name)
                 };
-                this.rebuild(cx);
+                this.relayout(cx);
             }))
             .child(
                 gpui_kit::svg()
@@ -758,7 +772,7 @@ impl Render for SessionSidebar {
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.project_scope = None;
-                                    this.rebuild(cx);
+                                    this.relayout(cx);
                                 })),
                         )
                     })
