@@ -529,9 +529,16 @@ impl SessionService {
         self.call_session(session_id.clone(), move |ctx| async move {
             let snapshot = {
                 let mut manager = ctx.manager.lock().await;
-                manager
+                let snapshot = manager
                     .set_active_session(session_id.clone(), edit_until_node_id)
-                    .await?
+                    .await?;
+                // Showing a session is visiting it: the unread mark clears.
+                if let Err(e) = manager.update_session_lifecycle(&session_id, |lifecycle| {
+                    lifecycle.visit(std::time::SystemTime::now())
+                }) {
+                    warn!("Failed to record the visit of {session_id}: {e:#}");
+                }
+                snapshot
             };
             Ok(snapshot)
         })
@@ -2136,6 +2143,7 @@ async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::Own
     drop(permit);
 }
 
+mod lifecycle;
 mod new_context;
 
 #[cfg(test)]

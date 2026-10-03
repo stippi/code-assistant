@@ -66,11 +66,28 @@ impl Gpui {
                     self.save_draft_for_session(&session_id, &handoff_draft(&prompt), &[], None);
                 }
             }
+            EventPayload::Ui(UiEvent::RequestToolPermission { request }) => {
+                // Kept for the session that asked, whichever one is viewed:
+                // that session's prompt renders it, the sidebar flags it.
+                if let Some(session_id) = event.session_id {
+                    let mut pending = self.pending_permission_requests.lock().unwrap();
+                    if !pending
+                        .iter()
+                        .any(|(_, r)| r.request_id == request.request_id)
+                    {
+                        pending.push((session_id, request.clone()));
+                    }
+                }
+                let _ = self
+                    .handle_app_event(UiEvent::RequestToolPermission { request })
+                    .await;
+            }
             EventPayload::Ui(ui_event) => {
                 let forward = match &ui_event {
                     // Sidebar state: relevant for every session, always.
                     UiEvent::UpdateSessionActivityState { .. }
                     | UiEvent::UpdateSessionMetadata { .. }
+                    | UiEvent::UpdateSessionLifecycle { .. }
                     | UiEvent::UpdateChatList { .. }
                     | UiEvent::RefreshChatList
                     | UiEvent::ConfigChanged => true,
@@ -150,18 +167,6 @@ impl Gpui {
             }
             UiEvent::UpdatePermissionTier { tier } => {
                 *self.current_permission_tier.lock().unwrap() = Some(*tier);
-            }
-            UiEvent::RequestToolPermission { request } => {
-                // Only the viewed session's events get here.
-                if let Some(session_id) = self.get_current_session_id() {
-                    let mut pending = self.pending_permission_requests.lock().unwrap();
-                    if !pending
-                        .iter()
-                        .any(|(_, r)| r.request_id == request.request_id)
-                    {
-                        pending.push((session_id, request.clone()));
-                    }
-                }
             }
             UiEvent::ToolPermissionRequestResolved { request_id } => {
                 self.pending_permission_requests

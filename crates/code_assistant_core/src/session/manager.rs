@@ -1907,6 +1907,66 @@ impl SessionManager {
         Ok(())
     }
 
+    // ── Lifecycle ────────────────────────────────────────────────────────
+
+    /// Every session's lifecycle record (visits, settlement). Sessions
+    /// absent from the map have the default record.
+    pub fn session_lifecycles(
+        &self,
+    ) -> Result<HashMap<String, crate::session::lifecycle::SessionLifecycle>> {
+        self.persistence.load_lifecycles()
+    }
+
+    /// Change a session's lifecycle record and tell every view about it.
+    pub fn update_session_lifecycle(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&mut crate::session::lifecycle::SessionLifecycle),
+    ) -> Result<crate::session::lifecycle::SessionLifecycle> {
+        let lifecycle = self.persistence.update_lifecycle(session_id, update)?;
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionLifecycle {
+                session_id: session_id.to_string(),
+                lifecycle: lifecycle.clone(),
+            },
+        );
+        Ok(lifecycle)
+    }
+
+    /// The unsettled sessions, with what the automatic settlement rules need
+    /// to know about each. A session is busy while an agent runs it here or
+    /// in another process. The repository root is resolved only for sessions
+    /// on a branch, since only those face the merge rule.
+    pub fn settlement_candidates(&self) -> Result<Vec<crate::session::lifecycle::SettlementInput>> {
+        let lifecycles = self.persistence.load_lifecycles()?;
+        let mut candidates = Vec::new();
+        for metadata in self.persistence.list_chat_sessions()? {
+            let lifecycle = lifecycles.get(&metadata.id).cloned().unwrap_or_default();
+            if lifecycle.is_settled() {
+                continue;
+            }
+            let running_here = self
+                .active_sessions
+                .get(&metadata.id)
+                .is_some_and(|instance| !instance.get_activity_state().is_terminal());
+            let busy = running_here || self.is_agent_locked_externally(&metadata.id);
+            let repo_root = metadata
+                .branch
+                .as_ref()
+                .and_then(|_| self.resolve_project_path(&metadata.initial_project));
+            candidates.push(crate::session::lifecycle::SettlementInput {
+                session_id: metadata.id,
+                updated_at: metadata.updated_at,
+                lifecycle,
+                busy,
+                branch: metadata.branch,
+                repo_root,
+            });
+        }
+        Ok(candidates)
+    }
+
     /// Resolve a project name to its filesystem path.
     ///
     /// Checks `projects.json` first.  If the name isn't a persisted project,

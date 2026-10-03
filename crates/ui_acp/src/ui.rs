@@ -941,6 +941,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::StreamingStopped { .. }
             | UiEvent::RefreshChatList
             | UiEvent::UpdateChatList { .. }
+            | UiEvent::UpdateSessionLifecycle { .. }
             | UiEvent::ClearMessages
             | UiEvent::UpdateSessionActivityState { .. }
             | UiEvent::UpdatePendingMessage { .. }

@@ -221,6 +221,10 @@ pub struct Gpui {
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
+    /// Visits and settlement per session, mirrored from the core for the
+    /// sidebar. Sessions absent here have the default lifecycle.
+    session_lifecycles:
+        Arc<Mutex<HashMap<String, code_assistant_core::session::lifecycle::SessionLifecycle>>>,
     current_session_activity_state:
         Arc<Mutex<Option<code_assistant_core::session::instance::SessionActivityState>>>,
     // Track which session has requested streaming to stop
@@ -592,6 +596,7 @@ impl Gpui {
 
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
+            session_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             current_session_activity_state: Arc::new(Mutex::new(None)),
             session_stop_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
 
@@ -902,6 +907,23 @@ impl Gpui {
     // Get current chat state for UI components
     pub fn get_chat_sessions(&self) -> Vec<ChatMetadata> {
         self.chat_sessions.lock().unwrap().clone()
+    }
+
+    pub fn get_session_lifecycles(
+        &self,
+    ) -> HashMap<String, code_assistant_core::session::lifecycle::SessionLifecycle> {
+        self.session_lifecycles.lock().unwrap().clone()
+    }
+
+    /// The sessions with a permission request still open, whichever session
+    /// is viewed. The sidebar flags them as needing the user now.
+    pub fn sessions_awaiting_permission(&self) -> std::collections::HashSet<String> {
+        self.pending_permission_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(asking, _)| asking.clone())
+            .collect()
     }
 
     pub fn get_current_session_id(&self) -> Option<String> {

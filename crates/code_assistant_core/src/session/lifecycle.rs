@@ -18,13 +18,15 @@
 //! (`sessions/lifecycle.json`), never inside the session file: a visit must
 //! not rewrite a multi-megabyte conversation.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
+use crate::session::SessionService;
 use crate::session::instance::SessionActivityState;
 use crate::utils::file_utils::atomic_write_json;
 
@@ -242,11 +244,108 @@ pub fn auto_settlement(
     (idle_for >= threshold).then_some(SettledReason::Inactivity)
 }
 
+/// What the settlement sweep knows about one unsettled session.
+#[derive(Debug, Clone)]
+pub struct SettlementInput {
+    pub session_id: String,
+    pub updated_at: SystemTime,
+    pub lifecycle: SessionLifecycle,
+    /// An agent runs the session, here or in another process.
+    pub busy: bool,
+    /// The branch the session works on, if it was switched to one.
+    pub branch: Option<String>,
+    /// The repository to check the branch against, when known.
+    pub repo_root: Option<PathBuf>,
+}
+
+/// A session working on the base branch itself is never "merged into" it.
+/// `base` may be a remote-tracking name such as `origin/main`.
+pub fn is_base_branch(branch: &str, base: &str) -> bool {
+    branch == base || base.split_once('/').map(|(_, name)| name) == Some(branch)
+}
+
+/// The sessions among `inputs` whose branch is merged into their
+/// repository's base branch. Repositories are opened once each; a session
+/// whose branch cannot be checked is left out.
+pub(crate) async fn sessions_with_merged_branch(inputs: &[SettlementInput]) -> HashSet<String> {
+    let mut by_repo: HashMap<&PathBuf, Vec<(&str, &str)>> = HashMap::new();
+    for input in inputs {
+        if let (Some(branch), Some(root)) = (&input.branch, &input.repo_root)
+            && !input.busy
+        {
+            by_repo
+                .entry(root)
+                .or_default()
+                .push((input.session_id.as_str(), branch.as_str()));
+        }
+    }
+    let mut merged = HashSet::new();
+    for (root, sessions) in by_repo {
+        let repo = match git::GitRepository::open(root) {
+            Ok(repo) => repo,
+            Err(e) => {
+                debug!("Settlement: cannot open {}: {e:#}", root.display());
+                continue;
+            }
+        };
+        let Some(base) = repo.default_base_branch() else {
+            debug!("Settlement: no base branch in {}", root.display());
+            continue;
+        };
+        for (session_id, branch) in sessions {
+            if is_base_branch(branch, &base) {
+                continue;
+            }
+            match repo.is_branch_merged(branch, &base).await {
+                Ok(true) => {
+                    merged.insert(session_id.to_string());
+                }
+                Ok(false) => {}
+                Err(e) => debug!(
+                    "Settlement: cannot check {branch} in {}: {e:#}",
+                    root.display()
+                ),
+            }
+        }
+    }
+    merged
+}
+
+/// How often the automatic settlement rules run.
+pub const SETTLEMENT_SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Run the automatic settlement rules now and then every
+/// [`SETTLEMENT_SWEEP_INTERVAL`], reading the config fresh each time so a
+/// settings change applies without a restart. Wiring layers spawn this on
+/// the backend runtime.
+pub async fn run_settlement_sweeper(service: SessionService) {
+    loop {
+        let config = LifecycleConfig::load();
+        match service.sweep_settlement(&config).await {
+            Ok(settled) if !settled.is_empty() => {
+                debug!("Settlement sweep settled {} session(s)", settled.len())
+            }
+            Ok(_) => {}
+            Err(e) => warn!("Settlement sweep failed: {e:#}"),
+        }
+        tokio::time::sleep(SETTLEMENT_SWEEP_INTERVAL).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    #[test]
+    fn the_base_branch_is_recognised_under_its_remote_name() {
+        assert!(is_base_branch("main", "main"));
+        assert!(is_base_branch("main", "origin/main"));
+        assert!(is_base_branch("feature/x", "origin/feature/x"));
+        assert!(!is_base_branch("feature/main", "origin/main"));
+        assert!(!is_base_branch("develop", "origin/main"));
+    }
 
     fn t(seconds: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
