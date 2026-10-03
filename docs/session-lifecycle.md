@@ -146,8 +146,10 @@ T3 keeps its shelf inside the one scrolling list and pushes the header to
 the bottom with a flexible margin, so it only "opens as far as there is
 room" while the list is shorter than the viewport. Projects are not a structure of
 the list: every row names its project, and the header's "+" opens a
-searchable picker (projects most recently active first, then "No project",
-then "Add project…") that starts a session where it is chosen. A project
+popover (`sidebar/project_picker.rs`) with a search field and a
+"+ Project" button in its header and the projects below, most recently
+active first, "No project" last. Typing filters, Up/Down and Enter pick,
+Escape closes; the chosen project starts a session. A project
 scope filter was tried and dropped: a filter that stays on hides exactly
 the cross-project attention the inbox exists for.
 
