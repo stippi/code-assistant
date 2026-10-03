@@ -209,6 +209,39 @@ mod tests {
                 .contains("Browser error: Step 5")
         );
 
+        // Input held across a recording: the page moves while it is filmed.
+        let mut walk = BatchInput {
+            actions: vec![
+                step(
+                    "browser_javascript",
+                    json!({"text": "window.x = 0; let held = false, last = 0;\
+                      document.addEventListener('keydown', () => held = true);\
+                      document.addEventListener('keyup', () => held = false);\
+                      const step = (t) => { if (held) window.x += t - last; last = t; \
+                        requestAnimationFrame(step); };\
+                      requestAnimationFrame(step); 0"}),
+                ),
+                step("computer", json!({"action": "key_down", "text": "w"})),
+                step(
+                    "computer",
+                    json!({"action": "record", "duration": 0.4, "frames": 4, "scale": 0.2}),
+                ),
+                step("computer", json!({"action": "key_up", "text": "w"})),
+                step("javascript", json!({"text": "window.x"})),
+            ],
+        };
+        let out = BrowserBatchTool.execute(&mut context, &mut walk).await?;
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let text = out.text.clone();
+        assert!(
+            text.contains("[3] computer record\n4 frames over 0.4s"),
+            "{text}"
+        );
+        assert!(text.contains("Note: Still held down: w"), "{text}");
+        assert_eq!(out.images.len(), 1);
+        let walked: f64 = text.rsplit('\n').next().unwrap().parse()?;
+        assert!(walked >= 350.0, "held for {walked} ms\n{text}");
+
         let mut bad = BatchInput {
             actions: vec![step("browser_login", json!({}))],
         };

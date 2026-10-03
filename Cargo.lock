@@ -12680,6 +12680,7 @@ dependencies = [
  "chromiumoxide",
  "futures",
  "htmd",
+ "image",
  "percent-encoding",
  "rand 0.9.4",
  "regex",

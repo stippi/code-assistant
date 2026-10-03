@@ -17,7 +17,7 @@ The history and the login design are in `docs/browser-agency-plan.md`.
 | `browser_read_page` | accessibility tree, `- role "name" [ref_N] state` | yes |
 | `browser_find` | tree lines matching a query (max 20) | yes |
 | `browser_get_page_text` | main/article text, else the body | yes |
-| `browser_computer` | click/type/key/scroll/hover/drag/wait, screenshot, zoom | no |
+| `browser_computer` | click/type/key/scroll/hover/drag/wait, screenshot, zoom, record | no |
 | `browser_form_input` | set a select, checkbox or field by ref | no |
 | `browser_javascript` | run JS with REPL semantics | no |
 | `browser_read_console_messages` | console, exceptions, browser log | yes |
@@ -58,11 +58,32 @@ Together the definitions are about 12.8k characters (~3.3k tokens).
   Closing the last tab closes the browser.
 - **Console and network** are collected per tab in the background (last 500
   each), so they can be read after the fact.
+- **Real time.** The page keeps running between calls, also while the model
+  thinks. Timing-sensitive input goes in one `browser_batch`, whose steps run
+  back to back (`key_down w`, `record`, `key_up w`).
+- **Recording.** `browser_computer` `record` films `duration` seconds (max 5)
+  and returns one contact sheet: `frames` cells (default 9, 3×3) evenly spread
+  from start to end, left to right, top to bottom, each labelled `#n +0.25s`.
+  The sheet starts from a screenshot of the page as the recording begins;
+  after that, frames come from a CDP screencast (`Page.startScreencast`),
+  which only sends a frame when the page repaints. A cell shows the last
+  frame painted by its moment. Cells that look like the one before are listed
+  as unchanged in the text and dimmed in the sheet. The sheet stays within the
+  1568 px edge limit; `scale` shrinks its cells. It does not change the
+  coordinate frame.
+- **Window size for recordings.** A screencast frame shows the browser
+  window, not the emulated viewport, and `--window-size` sets the outer size
+  (headless Chrome reserves part of it for browser UI; its default window is
+  800×600). So `record` first fits the window contents to the viewport with
+  `Browser.setContentsSize`, which needs **Chrome 140 or newer**; frames are
+  still cut to the viewport, and any from before the fit are dropped.
 
 ## Engine (`web` crate)
 
 - `BrowserSession` — one launched browser and its tabs.
 - `Tab` (`tab.rs`) — one page and its state: refs, screenshot frame, dialogs,
   console/network log (`page_log.rs`), and every page verb.
+- `recording.rs` — contact sheets: which frame each cell shows, layout, and
+  a built-in 5×7 bitmap font for the labels (pure, unit-tested).
 - `ax_tree.rs` — the accessibility tree, read through a raw CDP command with
   lenient structs, and its rendering (pure, unit-tested).
