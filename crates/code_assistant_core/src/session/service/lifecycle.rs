@@ -67,15 +67,22 @@ impl SessionService {
         &self,
         config: &LifecycleConfig,
     ) -> Result<Vec<(String, SettledReason)>> {
-        let candidates = self
+        // What needs no lookup settles in one write; the rest below.
+        let config_for_batch = config.clone();
+        let mut settled = self
+            .call(move |ctx| async move {
+                let manager = ctx.manager.lock().await;
+                manager.settle_inactive(&config_for_batch, SystemTime::now())
+            })
+            .await?;
+        let mut candidates = self
             .call(move |ctx| async move {
                 let manager = ctx.manager.lock().await;
                 manager.settlement_candidates()
             })
             .await?;
 
-        // Pull requests first: a merged one is the strongest merge signal.
-        let mut candidates = candidates;
+        // Pull requests: a merged one is the strongest merge signal.
         let mut gh_available = true;
         for candidate in candidates.iter_mut() {
             let (Some(branch), Some(root)) = (&candidate.branch, &candidate.repo_root) else {
@@ -115,7 +122,6 @@ impl SessionService {
             HashSet::new()
         };
         let now = SystemTime::now();
-        let mut settled = Vec::new();
         for candidate in candidates {
             let decision = auto_settlement(
                 SettlementCandidate {
@@ -131,8 +137,12 @@ impl SessionService {
             let Some(reason) = decision else {
                 continue;
             };
+            let at = match reason {
+                SettledReason::Inactivity => candidate.updated_at,
+                _ => now,
+            };
             self.update_lifecycle(candidate.session_id.clone(), move |lifecycle| {
-                lifecycle.settle(reason, now)
+                lifecycle.settle(reason, at)
             })
             .await?;
             settled.push((candidate.session_id, reason));
@@ -252,6 +262,56 @@ mod tests {
         assert!(!lifecycles.contains_key(&fresh));
         // A second sweep changes nothing.
         assert!(service.sweep_lifecycle(&config).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn inactive_sessions_settle_in_one_batch_dated_by_their_last_activity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let mut ids = Vec::new();
+        for days in [20u32, 30, 40] {
+            let id = service.create_session(None, None).await.unwrap();
+            age_session(tmp.path(), &id, DAY * days);
+            ids.push(id);
+        }
+        let fresh = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        let config = LifecycleConfig {
+            auto_settle_after_days: 14,
+            auto_settle_on_merge: false,
+        };
+
+        let settled = manager
+            .lock()
+            .await
+            .settle_inactive(&config, SystemTime::now())
+            .unwrap();
+
+        assert_eq!(settled.len(), 3);
+        let lifecycles = service.list_session_lifecycles().await.unwrap();
+        let listed = service.list_sessions().await.unwrap();
+        for id in &ids {
+            let settlement = lifecycles[id].settled.unwrap();
+            let updated_at = listed.iter().find(|s| &s.id == id).unwrap().updated_at;
+            assert_eq!(settlement.reason, SettledReason::Inactivity);
+            assert_eq!(settlement.at, updated_at);
+        }
+        assert!(!lifecycles.contains_key(&fresh));
+        // One reload request instead of one event per session.
+        let event = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+            .await
+            .expect("no event")
+            .unwrap();
+        assert!(matches!(
+            event.payload,
+            EventPayload::Ui(UiEvent::RefreshChatList)
+        ));
+        assert!(event.session_id.is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), subscription.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

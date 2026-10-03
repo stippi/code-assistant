@@ -1248,6 +1248,13 @@ impl TerminalTuiApp {
             }),
             events,
         );
+        // Long-unused sessions settle before the first listing, in one write.
+        if let Err(e) = multi_session_manager.lock().await.settle_inactive(
+            &code_assistant_core::session::lifecycle::LifecycleConfig::load(),
+            std::time::SystemTime::now(),
+        ) {
+            tracing::warn!("Startup settlement failed: {e:#}");
+        }
         let backend_task = tokio::spawn(service_worker);
 
         // Wakeup scheduler: lets agents arm timed continuations of their

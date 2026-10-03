@@ -1939,6 +1939,56 @@ impl SessionManager {
         Ok(lifecycle)
     }
 
+    /// Apply the settlement rules that need no lookup — inactivity, and a
+    /// pull request already known to be merged — to every candidate in one
+    /// write, then ask the views to reload their list. Run before the first
+    /// listing so a long-unused store does not paint a thousand rows that
+    /// settle one by one; the sweep calls it again every round.
+    pub fn settle_inactive(
+        &self,
+        config: &crate::session::lifecycle::LifecycleConfig,
+        now: std::time::SystemTime,
+    ) -> Result<Vec<(String, crate::session::lifecycle::SettledReason)>> {
+        use crate::session::lifecycle::{SettledReason, SettlementCandidate, auto_settlement};
+        let mut decisions: HashMap<String, (SettledReason, std::time::SystemTime)> = HashMap::new();
+        for candidate in self.settlement_candidates()? {
+            let reason = auto_settlement(
+                SettlementCandidate {
+                    lifecycle: &candidate.lifecycle,
+                    updated_at: candidate.updated_at,
+                    busy: candidate.busy,
+                    branch_merged: candidate.lifecycle.pull_request_merged(),
+                },
+                now,
+                config,
+            );
+            if let Some(reason) = reason {
+                // Inactive work ended when it was last touched; a merge
+                // settles it now.
+                let at = match reason {
+                    SettledReason::Inactivity => candidate.updated_at,
+                    _ => now,
+                };
+                decisions.insert(candidate.session_id, (reason, at));
+            }
+        }
+        if decisions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = decisions.keys().cloned().collect();
+        let changed = self.persistence.update_lifecycles(&ids, |id, lifecycle| {
+            let (reason, at) = decisions[id];
+            lifecycle.settle(reason, at);
+        })?;
+        if !changed.is_empty() {
+            self.events.publish_app(UiEvent::RefreshChatList);
+        }
+        Ok(changed
+            .into_iter()
+            .map(|(id, _)| (id.clone(), decisions[&id].0))
+            .collect())
+    }
+
     /// Remember the branch a session works on when it has none yet: the
     /// branch checked out in its project after a run, unless that is the
     /// base branch. Sessions switched to a worktree already carry theirs.

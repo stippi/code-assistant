@@ -131,6 +131,14 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 }
             }
 
+            // Long-unused sessions settle before the first listing, in one
+            // write, so the sidebar does not paint them only to sweep them.
+            if let Err(e) = manager_for_mcp.lock().await.settle_inactive(
+                &code_assistant_core::session::lifecycle::LifecycleConfig::load(),
+                std::time::SystemTime::now(),
+            ) {
+                tracing::warn!("Startup settlement failed: {e:#}");
+            }
             let worker = tokio::spawn(service_worker);
 
             startup(&service, &gui_for_thread, task).await;

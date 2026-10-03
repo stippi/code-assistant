@@ -61,12 +61,19 @@ automatic rules then wait for activity newer than that moment, so a session
 the user deliberately keeps does not sink again the next day. An un-settled
 session re-anchors at the top of the inbox.
 
-The rules are evaluated by `SessionService::sweep_lifecycle`, run by
+The rules are evaluated in two steps. `SessionManager::settle_inactive`
+applies what needs no lookup — inactivity, and a pull request already known
+to be merged — to every candidate in one write and asks the views to reload
+their list once. The wiring layers run it before the first listing, so a
+long-unused store does not paint a thousand rows that then settle one by
+one. `SessionService::sweep_lifecycle`, run by
 `lifecycle::run_lifecycle_sweeper` at startup and every ten minutes while a
-frontend is open. The sweep collects candidates under the session lock,
-refreshes pull requests and runs the git checks outside it, then settles
-through the normal lifecycle update. Several processes sweeping at once is
-harmless: writes are idempotent and locked.
+frontend is open, calls it again and then handles the rest: it refreshes
+pull requests and runs the git merge checks outside the session lock and
+settles those sessions one by one. An inactivity settlement is dated by the
+session's last activity, so the settled shelf reads as "when work ended";
+a merge settles at the time it was noticed. Several processes sweeping at
+once is harmless: writes are idempotent and locked.
 
 ## Branch and pull request
 
@@ -126,12 +133,18 @@ Sessions                      [+]   ← header; "+" opens the project picker
     project · #220 feature/x · approved
   ⌥ Title                        3d    ← branch without a pull request
     project · feature/y
-▸ Settled (12)
+
+▴ Settled (12)                      ← docked at the bottom
 ```
 
 The inbox order is static: newest first by creation time, re-anchored only
 when a session is un-settled. Activity changes emphasis, not position. The
-settled shelf orders by settlement time. Projects are not a structure of
+settled shelf is docked at the bottom of the sidebar and opens upward with
+a short animation, up to half the window height; beyond that its rows
+scroll, thirty at a time with "Show more". It orders by settlement time.
+T3 keeps its shelf inside the one scrolling list and pushes the header to
+the bottom with a flexible margin, so it only "opens as far as there is
+room" while the list is shorter than the viewport. Projects are not a structure of
 the list: every row names its project, and the header's "+" opens a
 searchable picker (projects most recently active first, then "No project",
 then "Add project…") that starts a session where it is chosen. A project

@@ -1010,6 +1010,33 @@ impl FileSessionPersistence {
         Ok(lifecycle)
     }
 
+    /// Change several sessions' lifecycles under one lock and one write.
+    /// The closure runs per session with the latest record (or the
+    /// default); unchanged records are not stored. Returns the records
+    /// that changed.
+    pub fn update_lifecycles(
+        &self,
+        session_ids: &[String],
+        mut update: impl FnMut(&str, &mut SessionLifecycle),
+    ) -> Result<Vec<(String, SessionLifecycle)>> {
+        let _lock = lock_exclusive(&self.lifecycle_lock_path()?)?;
+        let mut lifecycles = self.read_lifecycles_unlocked()?;
+        let mut changed = Vec::new();
+        for session_id in session_ids {
+            let before = lifecycles.get(session_id).cloned().unwrap_or_default();
+            let mut lifecycle = before.clone();
+            update(session_id, &mut lifecycle);
+            if lifecycle != before {
+                lifecycles.insert(session_id.clone(), lifecycle.clone());
+                changed.push((session_id.clone(), lifecycle));
+            }
+        }
+        if !changed.is_empty() {
+            atomic_write_json(&self.lifecycle_file_path()?, &lifecycles)?;
+        }
+        Ok(changed)
+    }
+
     fn remove_lifecycle(&self, session_id: &str) -> Result<()> {
         let _lock = lock_exclusive(&self.lifecycle_lock_path()?)?;
         let mut lifecycles = self.read_lifecycles_unlocked()?;
