@@ -272,7 +272,7 @@ async fn act(tab: &Tab, input: &ComputerInput) -> Result<Acted> {
                 .as_deref()
                 .ok_or_else(|| anyhow!("key_down needs `text`"))?;
             tab.key_down(keys).await?;
-            Ok(Acted::text(format!("Holding {keys} (release with key_up)")))
+            Ok(Acted::text(format!("Pressed {keys} down")))
         }
         KeyUp => {
             let keys = input
@@ -291,7 +291,7 @@ async fn act(tab: &Tab, input: &ComputerInput) -> Result<Acted> {
             if action == LeftMouseDown {
                 tab.mouse_down(at, Button::Left).await?;
                 Ok(Acted::text(format!(
-                    "Holding the left button {} (release with left_mouse_up)",
+                    "Pressed the left button {}",
                     where_label(input)
                 )))
             } else {
@@ -572,15 +572,22 @@ mod tests {
         let out = BrowserComputerTool.execute(&mut context, &mut hold).await?;
         assert_eq!(render(&out), "Held w for 0.3s");
 
-        for (action, keys) in [
-            (ComputerAction::KeyDown, "w"),
-            (ComputerAction::Key, "space"),
-            (ComputerAction::KeyUp, "w"),
+        // While w is held, every result says so; after key_up it stops.
+        for (action, keys, held_note) in [
+            (ComputerAction::KeyDown, "w", true),
+            (ComputerAction::Key, "space", true),
+            (ComputerAction::KeyUp, "w", false),
         ] {
             let mut step = computer(action);
             step.text = Some(keys.into());
             let out = BrowserComputerTool.execute(&mut context, &mut step).await?;
             assert!(out.error.is_none(), "{:?}", out.error);
+            assert_eq!(
+                render(&out).contains("Note: Still held down: w (release with"),
+                held_note,
+                "{}",
+                render(&out)
+            );
         }
 
         let session = fixture

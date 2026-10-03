@@ -115,6 +115,8 @@ pub struct Tab {
     /// a move while a button is down is a drag and a release lands in place.
     mouse_at: Mutex<Point>,
     held_buttons: Mutex<i64>,
+    /// Keys pressed with `key_down` and not released yet: (code, name).
+    held_keys: Mutex<Vec<(&'static str, String)>>,
 }
 
 /// A captured screenshot and the size of its coordinate frame.
@@ -159,6 +161,7 @@ impl Tab {
             original_user_agent: Mutex::new(None),
             mouse_at: Mutex::new(Point { x: 0.0, y: 0.0 }),
             held_buttons: Mutex::new(0),
+            held_keys: Mutex::new(Vec::new()),
         })
     }
 
@@ -766,8 +769,12 @@ impl Tab {
     pub async fn key_down(&self, keys: &str) -> Result<()> {
         let chords = parse_keys(keys)?;
         self.bounded("key press", self.timeouts().command, async {
-            for (def, modifiers) in &chords {
+            for ((def, modifiers), name) in chords.iter().zip(keys.split_whitespace()) {
                 self.key_event(def, *modifiers, true).await?;
+                let mut held = self.held_keys.lock().unwrap();
+                if !held.iter().any(|(code, _)| *code == def.code) {
+                    held.push((def.code, name.to_string()));
+                }
             }
             Ok(())
         })
@@ -780,10 +787,33 @@ impl Tab {
         self.bounded("key release", self.timeouts().command, async {
             for (def, modifiers) in chords.iter().rev() {
                 self.key_event(def, *modifiers, false).await?;
+                self.held_keys
+                    .lock()
+                    .unwrap()
+                    .retain(|(code, _)| *code != def.code);
             }
             Ok(())
         })
         .await
+    }
+
+    /// What is still held down: keys from `key_down` and mouse buttons from
+    /// `mouse_down`, by name (`"w"`, `"left mouse button"`).
+    pub fn held_inputs(&self) -> Vec<String> {
+        let mut held: Vec<String> = self
+            .held_keys
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect();
+        let buttons = *self.held_buttons.lock().unwrap();
+        for (mask, name) in [(1, "left"), (2, "right"), (4, "middle")] {
+            if buttons & mask != 0 {
+                held.push(format!("{name} mouse button"));
+            }
+        }
+        held
     }
 
     /// Hold keys down for `duration`, then release them: the input a game

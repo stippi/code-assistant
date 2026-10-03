@@ -1051,7 +1051,9 @@ async fn keys_and_buttons_can_be_held() {
     // Held across another key: walk while jumping.
     tab.key_down("w").await.unwrap();
     tab.press_keys("space", 1).await.unwrap();
-    tab.key_up("w").await.unwrap();
+    assert_eq!(tab.held_inputs(), ["w"]);
+    tab.key_up("W").await.unwrap();
+    assert!(tab.held_inputs().is_empty(), "released by code, any case");
     let order: Vec<String> = log()
         .await
         .iter()
@@ -1068,7 +1070,9 @@ async fn keys_and_buttons_can_be_held() {
         .await
         .unwrap();
     tab.hover_point(Point { x: 300.0, y: 200.0 }).await.unwrap();
+    assert_eq!(tab.held_inputs(), ["left mouse button"]);
     tab.mouse_up(None, Button::Left).await.unwrap();
+    assert!(tab.held_inputs().is_empty());
     let events = log().await;
     let pressed = events.iter().find(|e| e[0] == "mousedown").unwrap();
     assert_eq!(

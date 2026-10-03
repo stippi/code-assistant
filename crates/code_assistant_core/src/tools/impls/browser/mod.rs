@@ -206,6 +206,13 @@ impl Resolved {
                 ));
             }
         }
+        let held = self.tab.held_inputs();
+        if !held.is_empty() {
+            notes.push(format!(
+                "Still held down: {} (release with key_up / left_mouse_up).",
+                held.join(", ")
+            ));
+        }
         let (url, title) = self.tab.location().await;
         if url != self.url_before {
             notes.push(format!("The page navigated to {url} — {title}"));
