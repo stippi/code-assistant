@@ -15,7 +15,7 @@
 //!   with meaningful visual output (e.g. `execute_command`, `edit`).
 
 pub mod animated_card;
-pub mod browser_card;
+pub mod browser_renderer;
 pub mod code_card;
 pub mod diff_card;
 pub mod diff_prepare;
@@ -106,14 +106,6 @@ pub trait ToolBlockRenderer: Send + Sync {
 
     /// Whether this tool renders as inline or card.
     fn style(&self) -> ToolBlockStyle;
-
-    /// Whether the block starts collapsed when there is no stored user override.
-    /// Inline tools start collapsed, cards start expanded; a card renderer can
-    /// override this to start collapsed (e.g. browser cards, so a run's many
-    /// screenshots don't flood the transcript until expanded).
-    fn starts_collapsed(&self) -> bool {
-        self.style() == ToolBlockStyle::Inline
-    }
 
     /// Generate a one-line description from parameters (for inline tools).
     fn describe(&self, tool: &ToolUseBlock) -> String {

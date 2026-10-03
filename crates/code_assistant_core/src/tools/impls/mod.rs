@@ -26,10 +26,6 @@ pub mod write_file;
 pub mod write_stdin;
 
 // Re-export all tools for registration
-pub use browser::{
-    BrowserActTool, BrowserCloseTool, BrowserLoginTool, BrowserNavigateTool, BrowserProfilesTool,
-    BrowserReadTool,
-};
 pub use delete_files::DeleteFilesTool;
 pub use edit::EditTool;
 pub use execute_command::ExecuteCommandTool;

@@ -13,6 +13,7 @@
 //! default preserves the old behavior.
 
 use anyhow::Result;
+use chromiumoxide::handler::viewport::Viewport;
 use chromiumoxide::{Browser, BrowserConfig};
 use futures::StreamExt;
 use std::path::PathBuf;
@@ -80,6 +81,11 @@ pub(crate) fn resolve_user_data_dir(
     }
 }
 
+/// Viewport of a headless browser in CSS pixels: a common laptop size, so
+/// pages lay out as for a desktop user (chromiumoxide defaults to 800×600).
+/// The device scale factor stays 1, so screenshot pixels are CSS pixels.
+pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
+
 /// How long a graceful [`LaunchedBrowser::close`] may take before the process
 /// is killed.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -100,7 +106,19 @@ impl LaunchedBrowser {
 
         let mut builder = BrowserConfig::builder().user_data_dir(&data_dir);
         if config.headful {
-            builder = builder.with_head();
+            // A window a human uses: let the page fill it instead of emulating
+            // a fixed viewport inside it.
+            builder = builder
+                .with_head()
+                .viewport(None)
+                .window_size(DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1 + 100);
+        } else {
+            builder = builder.viewport(Viewport {
+                width: DEFAULT_VIEWPORT.0,
+                height: DEFAULT_VIEWPORT.1,
+                device_scale_factor: Some(1.0),
+                ..Viewport::default()
+            });
         }
         let browser_config = builder.build().map_err(|e| anyhow::anyhow!("{e}"))?;
 

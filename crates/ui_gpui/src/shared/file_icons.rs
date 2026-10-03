@@ -244,8 +244,7 @@ impl FileIcons {
             "glob_files" => TOOL_GLOB_FILES,
             "web_search" => TOOL_WEB_SEARCH,
             "web_fetch" => TOOL_WEB_FETCH,
-            "browser_navigate" | "browser_read" | "browser_act" | "browser_close"
-            | "browser_login" | "browser_profiles" => TOOL_WEB_FETCH,
+            name if name.starts_with("browser_") => TOOL_WEB_FETCH,
             "delete_files" => TOOL_DELETE_FILES,
             "open_project" => TOOL_OPEN_PROJECT,
             "user_input" => TOOL_USER_INPUT,

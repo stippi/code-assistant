@@ -3,6 +3,7 @@
 //! Each tool (or group of tools) can register a custom renderer that controls
 //! how the tool block appears in both the live viewport and scrollback history.
 
+pub mod browser_renderer;
 pub mod command_renderer;
 pub mod compact_renderer;
 pub mod diff_renderer;
@@ -183,6 +184,7 @@ pub fn push_error_history_line(tool_block: &ToolUseBlock, lines: &mut Vec<Line<'
 pub fn init_registry() {
     let mut registry = ToolRendererRegistry::default();
     registry.register(Arc::new(compact_renderer::CompactToolRenderer));
+    registry.register(Arc::new(browser_renderer::BrowserToolRenderer));
     registry.register(Arc::new(diff_renderer::DiffToolRenderer));
     registry.register(Arc::new(command_renderer::CommandToolRenderer));
     registry.register(Arc::new(sub_agent_renderer::SubAgentToolRenderer));
