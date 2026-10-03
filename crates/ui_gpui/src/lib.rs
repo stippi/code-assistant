@@ -851,7 +851,7 @@ impl Gpui {
                         }
 
                         // Create SessionSidebar and store it in Gpui
-                        let project_sidebar = cx.new(sidebar::SessionSidebar::new);
+                        let project_sidebar = cx.new(|cx| sidebar::SessionSidebar::new(window, cx));
                         *gpui_clone.project_sidebar.lock().unwrap() = Some(project_sidebar.clone());
 
                         // Create RootView

@@ -860,24 +860,4 @@ impl Gpui {
             }
         });
     }
-
-    /// Persist a temporary project to projects.json.
-    pub(crate) fn cmd_persist_project(&self, project_name: String) {
-        let Some(service) = self.session_service() else {
-            return;
-        };
-        let gpui = self.clone();
-        self.dispatch(async move {
-            match service.persist_project(project_name.clone()).await {
-                Ok(()) => {
-                    // Update the set of persisted projects so the sidebar can
-                    // remove the "pin" icon for this project; the chat-list
-                    // refresh triggers the re-render.
-                    gpui.persisted_projects.lock().unwrap().insert(project_name);
-                    gpui.cmd_refresh_chat_list();
-                }
-                Err(e) => gpui.display_error(format!("Failed to persist project: {e:#}")),
-            }
-        });
-    }
 }

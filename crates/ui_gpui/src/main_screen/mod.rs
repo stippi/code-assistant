@@ -863,9 +863,6 @@ impl MainScreen {
                 gpui.cmd_create_session(name.clone(), initial_project.clone());
             }
 
-            SessionSidebarEvent::PersistProjectRequested { project_name } => {
-                gpui.cmd_persist_project(project_name.clone());
-            }
             SessionSidebarEvent::SessionSettleRequested { session_id } => {
                 gpui.cmd_settle_session(session_id.clone());
             }

@@ -117,9 +117,8 @@ its record. The rules live in `<config_dir>/lifecycle.json`
 ## Sidebar layout (GPUI)
 
 ```
-Sessions                      [+]   ← header; "+" starts a session in the
-                                       scoped project, else the selected
-  ⛉ Title                      2m      session's project
+Sessions                      [+]   ← header; "+" opens the project picker
+  ⛉ Title                      2m
     project · Needs approval
   ◌ Title                     14m
     project · Working
@@ -128,16 +127,16 @@ Sessions                      [+]   ← header; "+" starts a session in the
   ⌥ Title                        3d    ← branch without a pull request
     project · feature/y
 ▸ Settled (12)
-▾ Projects                    [+]
-  ▸ code-assistant     3   (hover: pin, +)
-  ▸ lunar-walk         1
 ```
 
 The inbox order is static: newest first by creation time, re-anchored only
 when a session is un-settled. Activity changes emphasis, not position. The
-settled shelf orders by settlement time. Clicking a project row scopes the
-inbox and the shelf to that project (click again, or the header's "×", to
-clear); the row's "+" starts a session there.
+settled shelf orders by settlement time. Projects are not a structure of
+the list: every row names its project, and the header's "+" opens a
+searchable picker (projects most recently active first, then "No project",
+then "Add project…") that starts a session where it is chosen. A project
+scope filter was tried and dropped: a filter that stays on hides exactly
+the cross-project attention the inbox exists for.
 
 The left column shows the status glyph while the agent is busy or blocked
 (shield: approval, alert: failed, spinner: working, lock: elsewhere) and
@@ -151,6 +150,8 @@ before the date.
 ## Deferred
 
 - Snooze, pinning and manual reordering.
+- Saving a temporary project to projects.json has no UI since the project
+  rows left the sidebar; `SessionService::persist_project` remains.
 - Per-session opt-out from automatic settlement (un-settle covers the
   common case).
 - Only GitHub pull requests; GitLab and others show the branch alone.

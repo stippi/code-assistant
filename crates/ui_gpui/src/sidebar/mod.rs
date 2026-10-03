@@ -1,12 +1,11 @@
 //! The session sidebar: an inbox, not a file tree.
 //!
-//! The top of the sidebar lists every session that is not settled, across
-//! projects, newest first. The order is static — activity does not move
-//! rows; what a session needs from the user shows as emphasis (see
-//! [`SessionListItem`]). Settled sessions wait in a collapsed shelf below.
-//! The projects keep their place at the bottom as anchors: a project row
-//! starts a new session there, and clicking it narrows the inbox and the
-//! shelf to that project.
+//! The list holds every session that is not settled, across projects,
+//! newest first. The order is static — activity does not move rows; what a
+//! session needs from the user shows as emphasis (see [`SessionListItem`]).
+//! Settled sessions wait in a collapsed shelf below. Projects are not a
+//! structure of the list: each row names its project, and the header's
+//! "+" opens a picker to choose where a new session starts.
 
 mod session_item;
 
@@ -16,34 +15,16 @@ use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::lifecycle::SessionLifecycle;
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription, div,
-    prelude::*, px, rems,
+    AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
+    div, prelude::*, px, rems,
 };
 
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt, tooltip::Tooltip};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
-
-/// Display name of sessions without a project.
-const NO_PROJECT: &str = "(no project)";
-
-fn project_name(session: &ChatMetadata) -> String {
-    if session.initial_project.is_empty() {
-        NO_PROJECT.to_string()
-    } else {
-        session.initial_project.clone()
-    }
-}
-
-/// One project in the anchors section at the bottom.
-struct ProjectRow {
-    name: String,
-    /// Sessions of this project in the inbox.
-    inbox_count: usize,
-    is_hovered: bool,
-}
 
 /// Events emitted by the SessionSidebar component
 #[derive(Clone, Debug)]
@@ -61,10 +42,72 @@ pub enum SessionSidebarEvent {
         name: Option<String>,
         initial_project: Option<String>,
     },
-    /// User clicked the "+" button in the projects header to add a new project
+    /// User chose "Add project…" in the project picker
     AddProjectRequested,
-    /// User clicked the "pin" icon on a temporary project row to persist it
-    PersistProjectRequested { project_name: String },
+}
+
+/// What the project picker offers: a project, no project, or adding one.
+#[derive(Clone, Debug, PartialEq)]
+enum ProjectPickValue {
+    Project(String),
+    NoProject,
+    AddProject,
+}
+
+#[derive(Clone)]
+struct ProjectPick {
+    title: SharedString,
+    value: ProjectPickValue,
+    /// Known only from sessions, not saved in projects.json.
+    temporary: bool,
+}
+
+impl SelectItem for ProjectPick {
+    type Value = ProjectPickValue;
+
+    fn title(&self) -> SharedString {
+        self.title.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+
+    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .w_full()
+            .child(
+                gpui_kit::svg()
+                    .flex_none()
+                    .size(rems(0.75))
+                    .path(match self.value {
+                        ProjectPickValue::Project(_) => "icons/file_icons/folder.svg",
+                        ProjectPickValue::NoProject => "icons/file_generic.svg",
+                        ProjectPickValue::AddProject => "icons/plus.svg",
+                    })
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(self.title.clone()),
+            )
+            .when(self.temporary, |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground.opacity(0.7))
+                        .child("temporary"),
+                )
+            })
+    }
 }
 
 pub struct SessionSidebar {
@@ -72,45 +115,56 @@ pub struct SessionSidebar {
     lifecycles: HashMap<String, SessionLifecycle>,
     /// Row entities by session id, reused across rebuilds.
     items: HashMap<String, Entity<SessionListItem>>,
-    /// Unsettled sessions in display order (within the project scope).
+    /// Unsettled sessions in display order.
     inbox: Vec<Entity<SessionListItem>>,
-    /// Settled sessions in display order (within the project scope).
+    /// Settled sessions in display order.
     settled: Vec<Entity<SessionListItem>>,
-    /// Projects, most recently active first.
-    projects: Vec<ProjectRow>,
     /// Project names that are persisted in projects.json.
-    /// Projects not in this set are "temporary" and get a pin icon.
+    /// Projects not in this set are "temporary".
     persisted_projects: HashSet<String>,
-    /// Narrows the inbox and the settled shelf to one project.
-    project_scope: Option<String>,
     settled_expanded: bool,
-    projects_expanded: bool,
+    /// The header's project picker for new sessions.
+    project_picker: Entity<SelectState<SearchableVec<ProjectPick>>>,
+    /// The picker's items follow the sessions; they are refreshed on the
+    /// next render because updating them needs the window.
+    picker_dirty: bool,
 
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
     activity_states: HashMap<String, SessionActivityState>,
     awaiting_permission: HashSet<String>,
     _item_subscriptions: Vec<Subscription>,
+    _picker_subscription: Subscription,
 }
 
 impl SessionSidebar {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let project_picker = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(Vec::<ProjectPick>::new()),
+                None,
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let picker_subscription = cx.subscribe_in(&project_picker, window, Self::on_project_picked);
         Self {
             sessions: Vec::new(),
             lifecycles: HashMap::new(),
             items: HashMap::new(),
             inbox: Vec::new(),
             settled: Vec::new(),
-            projects: Vec::new(),
             persisted_projects: HashSet::new(),
-            project_scope: None,
             settled_expanded: false,
-            projects_expanded: true,
+            project_picker,
+            picker_dirty: true,
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
             activity_states: HashMap::new(),
             awaiting_permission: HashSet::new(),
             _item_subscriptions: Vec::new(),
+            _picker_subscription: picker_subscription,
         }
     }
 
@@ -126,6 +180,7 @@ impl SessionSidebar {
         }
         self.sessions = sessions;
         self.lifecycles = lifecycles;
+        self.picker_dirty = true;
         self.sync_items(cx);
         self.relayout(cx);
     }
@@ -198,59 +253,14 @@ impl SessionSidebar {
         self.items = items;
     }
 
-    /// Recompute the inbox, the settled shelf and the project anchors from
-    /// the stored sessions and lifecycles. Touches no row entity.
+    /// Recompute the inbox and the settled shelf from the stored sessions
+    /// and lifecycles. Touches no row entity.
     fn relayout(&mut self, cx: &mut Context<Self>) {
-        // Projects: every project with a session plus the persisted ones,
-        // most recently active first.
-        let mut latest: HashMap<String, std::time::SystemTime> = HashMap::new();
-        let mut inbox_counts: HashMap<String, usize> = HashMap::new();
-        for session in &self.sessions {
-            let project = project_name(session);
-            latest
-                .entry(project.clone())
-                .and_modify(|at| *at = (*at).max(session.updated_at))
-                .or_insert(session.updated_at);
-            if !self.is_settled(&session.id) {
-                *inbox_counts.entry(project).or_default() += 1;
-            }
-        }
-        for project in &self.persisted_projects {
-            latest
-                .entry(project.clone())
-                .or_insert(std::time::UNIX_EPOCH);
-        }
-        let hovered: HashSet<String> = self
-            .projects
-            .iter()
-            .filter(|row| row.is_hovered)
-            .map(|row| row.name.clone())
-            .collect();
-        let mut projects: Vec<(String, std::time::SystemTime)> = latest.into_iter().collect();
-        projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        self.projects = projects
-            .into_iter()
-            .map(|(name, _)| ProjectRow {
-                inbox_count: inbox_counts.get(&name).copied().unwrap_or(0),
-                is_hovered: hovered.contains(&name),
-                name,
-            })
-            .collect();
-        if let Some(scope) = &self.project_scope
-            && !self.projects.iter().any(|row| &row.name == scope)
-        {
-            self.project_scope = None;
-        }
-
         // Inbox: static order, newest first; an un-settled session surfaces
         // at the top. Settled shelf: most recently settled first.
-        let in_scope = |session: &ChatMetadata| match &self.project_scope {
-            Some(scope) => &project_name(session) == scope,
-            None => true,
-        };
         let mut inbox: Vec<(std::time::SystemTime, &ChatMetadata)> = Vec::new();
         let mut settled: Vec<(std::time::SystemTime, &ChatMetadata)> = Vec::new();
-        for session in self.sessions.iter().filter(|s| in_scope(s)) {
+        for session in &self.sessions {
             let lifecycle = self.lifecycles.get(&session.id);
             match lifecycle.and_then(|l| l.settled) {
                 Some(settlement) => settled.push((settlement.at, session)),
@@ -275,10 +285,45 @@ impl SessionSidebar {
         cx.notify();
     }
 
-    fn is_settled(&self, session_id: &str) -> bool {
-        self.lifecycles
-            .get(session_id)
-            .is_some_and(SessionLifecycle::is_settled)
+    /// The picker's choices: projects most recently active first, then no
+    /// project, then adding one.
+    fn project_picks(&self) -> Vec<ProjectPick> {
+        let mut latest: HashMap<String, std::time::SystemTime> = HashMap::new();
+        for session in &self.sessions {
+            if session.initial_project.is_empty() {
+                continue;
+            }
+            latest
+                .entry(session.initial_project.clone())
+                .and_modify(|at| *at = (*at).max(session.updated_at))
+                .or_insert(session.updated_at);
+        }
+        for project in &self.persisted_projects {
+            latest
+                .entry(project.clone())
+                .or_insert(std::time::UNIX_EPOCH);
+        }
+        let mut projects: Vec<(String, std::time::SystemTime)> = latest.into_iter().collect();
+        projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut picks: Vec<ProjectPick> = projects
+            .into_iter()
+            .map(|(name, _)| ProjectPick {
+                title: name.clone().into(),
+                temporary: !self.persisted_projects.contains(&name),
+                value: ProjectPickValue::Project(name),
+            })
+            .collect();
+        picks.push(ProjectPick {
+            title: "No project".into(),
+            value: ProjectPickValue::NoProject,
+            temporary: false,
+        });
+        picks.push(ProjectPick {
+            title: "Add project…".into(),
+            value: ProjectPickValue::AddProject,
+            temporary: false,
+        });
+        picks
     }
 
     pub fn set_selected_session(&mut self, session_id: Option<String>, cx: &mut Context<Self>) {
@@ -320,46 +365,41 @@ impl SessionSidebar {
     }
 
     pub fn set_persisted_projects(&mut self, projects: HashSet<String>) {
-        self.persisted_projects = projects;
-    }
-
-    /// The project a new session from the header button goes to: the
-    /// scoped project, else the selected session's, else none.
-    fn project_for_new_session(&self) -> Option<String> {
-        if let Some(scope) = &self.project_scope {
-            return (scope != NO_PROJECT).then(|| scope.clone());
+        if self.persisted_projects != projects {
+            self.persisted_projects = projects;
+            self.picker_dirty = true;
         }
-        let selected = self.selected_session_id.as_deref()?;
-        self.sessions
-            .iter()
-            .find(|s| s.id == selected)
-            .map(|s| s.initial_project.clone())
-            .filter(|p| !p.is_empty())
     }
 
-    fn on_add_project_click(
+    fn on_project_picked(
         &mut self,
-        _: &ClickEvent,
-        _window: &mut gpui_kit::Window,
+        picker: &Entity<SelectState<SearchableVec<ProjectPick>>>,
+        event: &SelectEvent<SearchableVec<ProjectPick>>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.stop_propagation();
-        debug!("Add project button clicked");
-        cx.emit(SessionSidebarEvent::AddProjectRequested);
-    }
-
-    fn on_new_session_click(
-        &mut self,
-        _: &ClickEvent,
-        _window: &mut gpui_kit::Window,
-        cx: &mut Context<Self>,
-    ) {
-        let initial_project = self.project_for_new_session();
-        debug!("New session requested in {:?}", initial_project);
-        cx.emit(SessionSidebarEvent::NewSessionRequested {
-            name: None,
-            initial_project,
-        });
+        let SelectEvent::Confirm(Some(value)) = event else {
+            return;
+        };
+        match value {
+            ProjectPickValue::Project(project) => {
+                debug!("New session in project: {project}");
+                cx.emit(SessionSidebarEvent::NewSessionRequested {
+                    name: None,
+                    initial_project: Some(project.clone()),
+                });
+            }
+            ProjectPickValue::NoProject => {
+                debug!("New session without project");
+                cx.emit(SessionSidebarEvent::NewSessionRequested {
+                    name: None,
+                    initial_project: None,
+                });
+            }
+            ProjectPickValue::AddProject => cx.emit(SessionSidebarEvent::AddProjectRequested),
+        }
+        // The picker launches; it does not hold a selection.
+        picker.update(cx, |state, cx| state.set_selected_index(None, window, cx));
     }
 
     fn on_chat_list_item_event(
@@ -395,23 +435,14 @@ impl SessionSidebar {
 
     // ── rendering helpers ────────────────────────────────────────────────
 
-    /// A collapsible section header with an optional trailing element.
-    fn render_section_header(
-        &self,
-        id: &'static str,
-        label: String,
-        expanded: bool,
-        on_toggle: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-        trailing: Option<gpui_kit::AnyElement>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let chevron = if expanded {
+    fn render_settled_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let chevron = if self.settled_expanded {
             "icons/chevron_down.svg"
         } else {
             "icons/chevron_right.svg"
         };
         div()
-            .id(SharedString::from(id))
+            .id("settled-header")
             .w_full()
             .px_2()
             .h(px(28.))
@@ -421,8 +452,8 @@ impl SessionSidebar {
             .cursor_pointer()
             .rounded_sm()
             .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                on_toggle(this, cx);
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.settled_expanded = !this.settled_expanded;
                 cx.notify();
             }))
             .child(
@@ -436,171 +467,14 @@ impl SessionSidebar {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
                     .text_xs()
                     .font_medium()
                     .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(label)),
+                    .child(SharedString::from(format!(
+                        "Settled ({})",
+                        self.settled.len()
+                    ))),
             )
-            .children(trailing)
-    }
-
-    fn render_project_row(
-        &self,
-        row_idx: usize,
-        row: &ProjectRow,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let project_name = row.name.clone();
-        let is_hovered = row.is_hovered;
-        let is_scoped = self.project_scope.as_deref() == Some(project_name.as_str());
-        let is_temporary =
-            !self.persisted_projects.contains(&project_name) && project_name != NO_PROJECT;
-        let project_for_new = project_name.clone();
-
-        div()
-            .id(SharedString::from(format!("project-row-{}", row_idx)))
-            .w_full()
-            .px_2()
-            .h(px(28.))
-            .flex()
-            .items_center()
-            .gap_1()
-            .cursor_pointer()
-            .rounded_sm()
-            .when(is_scoped, |el| el.bg(cx.theme().muted.opacity(0.5)))
-            .when(!is_scoped, |el| {
-                el.hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
-            })
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if let Some(row) = this.projects.get_mut(row_idx)
-                    && row.is_hovered != *hovered
-                {
-                    row.is_hovered = *hovered;
-                    cx.notify();
-                }
-            }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let Some(row) = this.projects.get(row_idx) else {
-                    return;
-                };
-                let name = row.name.clone();
-                this.project_scope = if this.project_scope.as_deref() == Some(name.as_str()) {
-                    None
-                } else {
-                    Some(name)
-                };
-                this.relayout(cx);
-            }))
-            .child(
-                gpui_kit::svg()
-                    .flex_none()
-                    .size(rems(0.875))
-                    .path("icons/file_icons/folder.svg")
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_xs()
-                    .font_medium()
-                    .text_color(if is_scoped {
-                        cx.theme().foreground
-                    } else {
-                        cx.theme().muted_foreground
-                    })
-                    .child(SharedString::from(project_name)),
-            )
-            .when(row.inbox_count > 0 && !is_hovered, |el| {
-                el.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground.opacity(0.7))
-                        .child(SharedString::from(row.inbox_count.to_string())),
-                )
-            })
-            // Pin button for temporary projects (persist to projects.json)
-            .when(is_temporary && is_hovered, |el| {
-                let project_for_pin = row.name.clone();
-                el.child(
-                    div()
-                        .id(SharedString::from(format!("pin-project-{}", row_idx)))
-                        .flex_none()
-                        .size(rems(1.25))
-                        .rounded_sm()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(cx.theme().muted))
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(
-                                "Temporary project — save to make it a first-class project \
-                                 that can be referenced by tool calls in other sessions",
-                            )
-                            .build(window, cx)
-                        })
-                        .child(
-                            gpui_kit::svg()
-                                .size(rems(0.75))
-                                .path("icons/pin.svg")
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                        .on_click(cx.listener(move |_this, _, _, cx| {
-                            cx.stop_propagation();
-                            debug!("Persist project: {}", project_for_pin);
-                            cx.emit(SessionSidebarEvent::PersistProjectRequested {
-                                project_name: project_for_pin.clone(),
-                            });
-                        })),
-                )
-            })
-            // New session in this project
-            .when(is_hovered, |el| {
-                el.child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "new-session-project-{}",
-                            row_idx
-                        )))
-                        .flex_none()
-                        .size(rems(1.25))
-                        .rounded_sm()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(cx.theme().muted))
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(format!("New session in {}", project_for_new.clone()))
-                                .build(window, cx)
-                        })
-                        .child(
-                            gpui_kit::svg()
-                                .size(rems(0.75))
-                                .path("icons/plus.svg")
-                                .text_color(cx.theme().primary),
-                        )
-                        .on_click({
-                            let project = row.name.clone();
-                            cx.listener(move |_this, _, _, cx| {
-                                cx.stop_propagation();
-                                debug!("New session in project: {}", project);
-                                let initial_project =
-                                    (project != NO_PROJECT).then(|| project.clone());
-                                cx.emit(SessionSidebarEvent::NewSessionRequested {
-                                    name: None,
-                                    initial_project,
-                                });
-                            })
-                        }),
-                )
-            })
     }
 
     fn render_empty_hint(&self, text: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
@@ -622,12 +496,16 @@ impl Focusable for SessionSidebar {
 }
 
 impl Render for SessionSidebar {
-    fn render(
-        &mut self,
-        _window: &mut gpui_kit::Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.picker_dirty {
+            let picks = self.project_picks();
+            self.project_picker.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(picks), window, cx)
+            });
+            self.picker_dirty = false;
+        }
+
+        let mut children: Vec<AnyElement> = Vec::new();
 
         // Inbox
         if self.inbox.is_empty() {
@@ -647,14 +525,7 @@ impl Render for SessionSidebar {
             children.push(
                 div()
                     .mt(px(6.))
-                    .child(self.render_section_header(
-                        "settled-header",
-                        format!("Settled ({})", self.settled.len()),
-                        self.settled_expanded,
-                        |this, _| this.settled_expanded = !this.settled_expanded,
-                        None,
-                        cx,
-                    ))
+                    .child(self.render_settled_header(cx))
                     .into_any_element(),
             );
             if self.settled_expanded {
@@ -664,56 +535,7 @@ impl Render for SessionSidebar {
             }
         }
 
-        // Projects
-        let add_project = div()
-            .id("add-project-btn")
-            .flex_none()
-            .size(rems(1.25))
-            .rounded_sm()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|s| s.bg(cx.theme().muted))
-            .tooltip(|window, cx| Tooltip::new("Add project").build(window, cx))
-            .child(
-                gpui_kit::svg()
-                    .size(rems(0.75))
-                    .path("icons/plus.svg")
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .on_click(cx.listener(Self::on_add_project_click))
-            .into_any_element();
-        children.push(
-            div()
-                .mt(px(10.))
-                .child(self.render_section_header(
-                    "projects-header",
-                    "Projects".to_string(),
-                    self.projects_expanded,
-                    |this, _| this.projects_expanded = !this.projects_expanded,
-                    Some(add_project),
-                    cx,
-                ))
-                .into_any_element(),
-        );
-        if self.projects_expanded {
-            if self.projects.is_empty() {
-                children.push(
-                    self.render_empty_hint("No projects yet", cx)
-                        .into_any_element(),
-                );
-            }
-            for (idx, row) in self.projects.iter().enumerate() {
-                children.push(self.render_project_row(idx, row, cx).into_any_element());
-            }
-        }
-
         let scale = cx.theme().font_size / px(16.);
-        let title = match &self.project_scope {
-            Some(scope) => scope.clone(),
-            None => "Sessions".to_string(),
-        };
 
         div()
             .id("chat-sidebar")
@@ -725,12 +547,12 @@ impl Render for SessionSidebar {
             .border_color(cx.theme().sidebar_border)
             .flex()
             .flex_col()
-            // Header: the current scope and the new-session button
+            // Header: title and the project picker that starts a session
             .child(
                 div()
                     .flex_none()
                     .pl(px(20.))
-                    .pr(px(14.))
+                    .pr(px(10.))
                     .py_3()
                     .border_b_1()
                     .border_color(cx.theme().sidebar_border)
@@ -742,59 +564,33 @@ impl Render for SessionSidebar {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
                             .text_sm()
                             .font_medium()
                             .text_color(cx.theme().foreground)
-                            .child(SharedString::from(title)),
+                            .child("Sessions"),
                     )
-                    .when(self.project_scope.is_some(), |el| {
-                        el.child(
-                            div()
-                                .id("clear-scope-btn")
-                                .flex_none()
-                                .size(rems(1.5))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().muted))
-                                .tooltip(|window, cx| {
-                                    Tooltip::new("Show all projects").build(window, cx)
-                                })
-                                .child(
-                                    Icon::default()
-                                        .path(SharedString::from("icons/close.svg"))
-                                        .with_size(Size::Small)
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.project_scope = None;
-                                    this.relayout(cx);
-                                })),
-                        )
-                    })
                     .child(
                         div()
-                            .id("new-session-btn")
+                            .id("new-session-picker")
                             .flex_none()
-                            .size(rems(1.5))
+                            .w(px(30.))
                             .rounded_sm()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
                             .hover(|s| s.bg(cx.theme().muted))
-                            .tooltip(|window, cx| Tooltip::new("New session").build(window, cx))
+                            .tooltip(|window, cx| Tooltip::new("New session in…").build(window, cx))
                             .child(
-                                Icon::default()
-                                    .path(SharedString::from("icons/plus.svg"))
-                                    .with_size(Size::Small)
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .on_click(cx.listener(Self::on_new_session_click)),
+                                Select::new(&self.project_picker)
+                                    .placeholder("")
+                                    .search_placeholder("Project")
+                                    .with_size(Size::XSmall)
+                                    .appearance(false)
+                                    .menu_width(px(230.))
+                                    .icon(
+                                        Icon::default()
+                                            .path(SharedString::from("icons/plus.svg"))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
+                            ),
                     ),
             )
             // Scrollable list
