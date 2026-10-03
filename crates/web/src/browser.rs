@@ -113,20 +113,12 @@ impl LaunchedBrowser {
                 .viewport(None)
                 .window_size(DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1 + 100);
         } else {
-            // A window with room for the viewport: a screencast sees only
-            // what is inside the window, and headless Chrome's default is
-            // 800×600, part of it reserved for browser UI.
-            builder = builder
-                .viewport(Viewport {
-                    width: DEFAULT_VIEWPORT.0,
-                    height: DEFAULT_VIEWPORT.1,
-                    device_scale_factor: Some(1.0),
-                    ..Viewport::default()
-                })
-                .window_size(
-                    DEFAULT_VIEWPORT.0,
-                    DEFAULT_VIEWPORT.1 + crate::tab::WINDOW_UI_ALLOWANCE,
-                );
+            builder = builder.viewport(Viewport {
+                width: DEFAULT_VIEWPORT.0,
+                height: DEFAULT_VIEWPORT.1,
+                device_scale_factor: Some(1.0),
+                ..Viewport::default()
+            });
         }
         let browser_config = builder.build().map_err(|e| anyhow::anyhow!("{e}"))?;
 

@@ -9,7 +9,7 @@ use crate::page_log::PageLog;
 use crate::recording::{self, Recording};
 use anyhow::Result;
 use chromiumoxide::cdp::browser_protocol::browser::{
-    Bounds, GetWindowForTargetParams, SetWindowBoundsParams, WindowId,
+    GetWindowForTargetParams, SetContentsSizeParams,
 };
 use chromiumoxide::cdp::browser_protocol::dom::ResolveNodeParams;
 use chromiumoxide::cdp::browser_protocol::dom::{
@@ -387,24 +387,24 @@ impl Tab {
             let (columns, rows) = recording::grid(frames as u32);
             let (cw, ch) = recording::cell_size(vw, vh, columns, rows, scale);
             let mut events = self.page.event_listener::<EventScreencastFrame>().await?;
-            // A frame shows the whole window, which can be larger than the
-            // viewport and is cut to it afterwards: frames sized for the
-            // window at the cell scale leave the viewport at least cell size.
-            let scale = cw as f64 / vw;
-            let mut screencast = StartScreencastParams::builder()
-                .format(StartScreencastFormat::Jpeg)
-                .quality(JPEG_QUALITY);
-            if let Some((_, w, h)) = self.window_bounds().await {
-                screencast = screencast
-                    .max_width((w as f64 * scale).ceil() as i64)
-                    .max_height((h as f64 * scale).ceil() as i64);
-            }
-            self.page.execute(screencast.build()).await?;
+            // A screencast shows the window, not the emulated viewport.
+            self.fit_window_to(vw, vh).await?;
+            self.page
+                .execute(
+                    StartScreencastParams::builder()
+                        .format(StartScreencastFormat::Jpeg)
+                        .quality(JPEG_QUALITY)
+                        .max_width(cw as i64)
+                        .max_height(ch as i64)
+                        .build(),
+                )
+                .await?;
             let captured = async {
                 // The page as the recording starts: the screencast only sends
                 // what is painted from now on, and a still page paints nothing.
                 // A JPEG like the screencast's, so the same picture compares
                 // as the same.
+                let scale = cw as f64 / vw;
                 let first = self
                     .capture(sx, sy, vw, vh, scale, CaptureScreenshotFormat::Jpeg)
                     .await?;
@@ -432,10 +432,9 @@ impl Tab {
     /// each with its time in seconds from now. Frames painted earlier are
     /// dropped.
     ///
-    /// A frame shows the browser window, which can be smaller than the
-    /// `viewport` (CSS px) when it is emulated. Then the window grows by what
-    /// is missing, and frames that do not show the whole viewport are
-    /// dropped.
+    /// A frame shows the browser window, fitted to the `viewport` (CSS px)
+    /// beforehand; frames from before it fitted, which do not show the whole
+    /// viewport, are dropped, and larger ones are cut to it.
     async fn collect_frames(
         &self,
         events: &mut (impl futures::Stream<Item = Arc<EventScreencastFrame>> + Unpin),
@@ -451,7 +450,6 @@ impl Tab {
             .as_secs_f64();
         let deadline = tokio::time::Instant::from_std(started + duration);
         let mut frames = Vec::new();
-        let mut grown_for = None;
         loop {
             let event = match tokio::time::timeout_at(deadline, events.next()).await {
                 Ok(Some(event)) => event,
@@ -472,12 +470,6 @@ impl Tab {
             }
             let (dw, dh) = (meta.device_width, meta.device_height);
             if dw + 0.5 < vw || dh + 0.5 < vh {
-                // Once per size: growing takes a moment to show in frames.
-                if grown_for != Some((dw, dh)) {
-                    grown_for = Some((dw, dh));
-                    self.grow_window_by((vw - dw).max(0.0), (vh - dh).max(0.0))
-                        .await;
-                }
                 continue;
             }
             frames.push(recording::Frame {
@@ -839,7 +831,6 @@ impl Tab {
                 .build()
                 .map_err(anyhow::Error::msg)?;
             self.page.execute(touch).await?;
-            self.grow_window(width, height).await;
 
             let original = {
                 let known = self.original_user_agent.lock().unwrap().clone();
@@ -869,51 +860,27 @@ impl Tab {
         .await
     }
 
-    /// Make the browser window large enough for a `width`×`height` viewport.
-    /// Headless Chrome only shows a screencast what is inside its window, and
-    /// its window has room for browser UI (143 px of its height on macOS), so
-    /// the window gets [`WINDOW_UI_ALLOWANCE`] on top; a recording grows it
-    /// further if that is not enough. Best effort: a window that cannot be
-    /// resized stays as is.
-    async fn grow_window(&self, width: u32, height: u32) {
-        let Some((id, w, h)) = self.window_bounds().await else {
-            return;
-        };
-        let (width, height) = (width as i64, (height + WINDOW_UI_ALLOWANCE) as i64);
-        if w < width || h < height {
-            self.set_window_size(id, w.max(width), h.max(height)).await;
-        }
-    }
-
-    /// Make the browser window `dw` × `dh` pixels larger.
-    async fn grow_window_by(&self, dw: f64, dh: f64) {
-        if let Some((id, w, h)) = self.window_bounds().await {
-            let (w, h) = (w + dw.ceil() as i64, h + dh.ceil() as i64);
-            self.set_window_size(id, w, h).await;
-        }
-    }
-
-    async fn window_bounds(&self) -> Option<(WindowId, i64, i64)> {
+    /// Size the browser window so its contents are `width`×`height` CSS px:
+    /// a screencast shows the window, which neither follows an emulated
+    /// viewport nor is the size `--window-size` asks for (headless Chrome
+    /// reserves part of it for browser UI). Needs `Browser.setContentsSize`,
+    /// Chrome 140 or newer.
+    async fn fit_window_to(&self, width: f64, height: f64) -> Result<()> {
         let window = self
             .page
             .execute(GetWindowForTargetParams::default())
-            .await
-            .ok()?
+            .await?
             .result;
-        let bounds = &window.bounds;
-        Some((
-            window.window_id,
-            bounds.width.unwrap_or(0),
-            bounds.height.unwrap_or(0),
-        ))
-    }
-
-    async fn set_window_size(&self, id: WindowId, width: i64, height: i64) {
-        let bounds = Bounds::builder().width(width).height(height).build();
-        let _ = self
-            .page
-            .execute(SetWindowBoundsParams::new(id, bounds))
-            .await;
+        let size = SetContentsSizeParams::builder()
+            .window_id(window.window_id)
+            .width(width.round() as i64)
+            .height(height.round() as i64)
+            .build()
+            .map_err(anyhow::Error::msg)?;
+        self.page.execute(size).await.map_err(|e| {
+            anyhow::anyhow!("recording needs Chrome 140 or newer (Browser.setContentsSize): {e}")
+        })?;
+        Ok(())
     }
 
     /// Emulate `prefers-color-scheme` (`"light"` / `"dark"`); `None` follows
@@ -1343,10 +1310,6 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 /// The longest edge a screenshot may have: the image limit of the model
 /// API, past which images are downscaled again (and coordinates would drift).
 pub const MAX_SCREENSHOT_EDGE: u32 = 1568;
-
-/// Room a headless browser window gets beyond its viewport for the browser
-/// UI it reserves (143 px of its height on macOS).
-pub(crate) const WINDOW_UI_ALLOWANCE: u32 = 200;
 
 /// JPEG quality of recorded frames.
 const JPEG_QUALITY: i64 = 90;

@@ -71,13 +71,12 @@ Together the definitions are about 12.8k characters (~3.3k tokens).
   as unchanged in the text and dimmed in the sheet. The sheet stays within the
   1568 px edge limit; `scale` shrinks its cells. It does not change the
   coordinate frame.
-- **Headless window.** A screencast frame shows the browser window, not the
-  emulated viewport, and headless Chrome reserves part of its window for
-  browser UI (143 px of its height on macOS; its default window is 800×600).
-  So a headless browser gets a window 200 px taller than its viewport,
-  emulating a larger viewport grows it, frames are cut to the viewport, and a
-  frame that still shows less than the viewport grows the window by what is
-  missing (that frame is dropped).
+- **Window size for recordings.** A screencast frame shows the browser
+  window, not the emulated viewport, and `--window-size` sets the outer size
+  (headless Chrome reserves part of it for browser UI; its default window is
+  800×600). So `record` first fits the window contents to the viewport with
+  `Browser.setContentsSize`, which needs **Chrome 140 or newer**; frames are
+  still cut to the viewport, and any from before the fit are dropped.
 
 ## Engine (`web` crate)
 
