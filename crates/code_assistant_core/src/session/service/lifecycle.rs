@@ -9,6 +9,7 @@ use crate::session::lifecycle::{
     LifecycleConfig, SessionLifecycle, SettledReason, SettlementCandidate, auto_settlement,
     sessions_with_merged_branch,
 };
+use crate::session::pull_request::{PullRequestError, PullRequestSnapshot, fetch_pull_request};
 
 impl SessionService {
     /// Every session's lifecycle record, keyed by session id.
@@ -58,22 +59,56 @@ impl SessionService {
         .await
     }
 
-    /// Apply the automatic settlement rules once and return what settled.
-    /// Git lookups run outside the session lock so a slow repository never
-    /// stalls other commands.
-    pub async fn sweep_settlement(
+    /// Refresh the pull request of every unsettled session on a branch, then
+    /// apply the automatic settlement rules once; returns what settled. Git
+    /// and `gh` run outside the session lock so a slow repository or host
+    /// never stalls other commands.
+    pub async fn sweep_lifecycle(
         &self,
         config: &LifecycleConfig,
     ) -> Result<Vec<(String, SettledReason)>> {
-        if config.auto_settle_after_days == 0 && !config.auto_settle_on_merge {
-            return Ok(Vec::new());
-        }
         let candidates = self
             .call(move |ctx| async move {
                 let manager = ctx.manager.lock().await;
                 manager.settlement_candidates()
             })
             .await?;
+
+        // Pull requests first: a merged one is the strongest merge signal.
+        let mut candidates = candidates;
+        let mut gh_available = true;
+        for candidate in candidates.iter_mut() {
+            let (Some(branch), Some(root)) = (&candidate.branch, &candidate.repo_root) else {
+                continue;
+            };
+            if candidate.busy || !gh_available {
+                continue;
+            }
+            let fetched = match fetch_pull_request(root, branch).await {
+                Ok(fetched) => fetched,
+                Err(PullRequestError::GhUnavailable) => {
+                    debug!("Lifecycle sweep: gh is not installed, skipping pull requests");
+                    gh_available = false;
+                    continue;
+                }
+                Err(e) => {
+                    debug!("Lifecycle sweep: cannot read the pull request of {branch}: {e}");
+                    continue;
+                }
+            };
+            if same_pull_request(candidate.lifecycle.pull_request.as_ref(), fetched.as_ref()) {
+                continue;
+            }
+            let session_id = candidate.session_id.clone();
+            let update = fetched.clone();
+            self.update_lifecycle(session_id, move |lifecycle| lifecycle.pull_request = update)
+                .await?;
+            candidate.lifecycle.pull_request = fetched;
+        }
+
+        if config.auto_settle_after_days == 0 && !config.auto_settle_on_merge {
+            return Ok(Vec::new());
+        }
         let merged = if config.auto_settle_on_merge {
             sessions_with_merged_branch(&candidates).await
         } else {
@@ -87,7 +122,8 @@ impl SessionService {
                     lifecycle: &candidate.lifecycle,
                     updated_at: candidate.updated_at,
                     busy: candidate.busy,
-                    branch_merged: merged.contains(&candidate.session_id),
+                    branch_merged: merged.contains(&candidate.session_id)
+                        || candidate.lifecycle.pull_request_merged(),
                 },
                 now,
                 config,
@@ -102,6 +138,23 @@ impl SessionService {
             settled.push((candidate.session_id, reason));
         }
         Ok(settled)
+    }
+}
+
+/// Equal apart from when they were fetched.
+fn same_pull_request(
+    current: Option<&PullRequestSnapshot>,
+    fetched: Option<&PullRequestSnapshot>,
+) -> bool {
+    match (current, fetched) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            PullRequestSnapshot {
+                fetched_at: b.fetched_at,
+                ..a.clone()
+            } == *b
+        }
+        _ => false,
     }
 }
 
@@ -191,14 +244,14 @@ mod tests {
             auto_settle_on_merge: false,
         };
 
-        let settled = service.sweep_settlement(&config).await.unwrap();
+        let settled = service.sweep_lifecycle(&config).await.unwrap();
 
         assert_eq!(settled, vec![(old.clone(), SettledReason::Inactivity)]);
         let lifecycles = service.list_session_lifecycles().await.unwrap();
         assert!(lifecycles[&old].is_settled());
         assert!(!lifecycles.contains_key(&fresh));
         // A second sweep changes nothing.
-        assert!(service.sweep_settlement(&config).await.unwrap().is_empty());
+        assert!(service.sweep_lifecycle(&config).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -214,7 +267,88 @@ mod tests {
             auto_settle_on_merge: false,
         };
 
-        assert!(service.sweep_settlement(&config).await.unwrap().is_empty());
+        assert!(service.sweep_lifecycle(&config).await.unwrap().is_empty());
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// A repository on `main` with a `feature/x` branch checked out.
+    fn repo_on_feature_branch(dir: &std::path::Path) {
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["config", "user.email", "t@t.t"]);
+        git(dir, &["config", "user.name", "t"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        git(dir, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(dir, &["checkout", "-q", "-b", "feature/x"]);
+    }
+
+    #[tokio::test]
+    async fn a_run_remembers_the_branch_checked_out_in_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        repo_on_feature_branch(&repo);
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let config = crate::session::SessionConfig {
+            init_path: Some(repo.clone()),
+            ..crate::session::SessionConfig::default()
+        };
+        let id = service
+            .create_session_with_config(None, config, None)
+            .await
+            .unwrap();
+        service.load_session(id.clone(), None).await.unwrap();
+
+        let observed = manager.lock().await.record_observed_branch(&id).unwrap();
+
+        let root = observed
+            .as_ref()
+            .map(|(root, _)| root.canonicalize().unwrap());
+        assert_eq!(root, Some(repo.canonicalize().unwrap()));
+        assert_eq!(
+            observed.map(|(_, branch)| branch).as_deref(),
+            Some("feature/x")
+        );
+        let listed = service.list_sessions().await.unwrap();
+        let session = listed.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(session.branch.as_deref(), Some("feature/x"));
+    }
+
+    #[tokio::test]
+    async fn a_run_on_the_base_branch_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        repo_on_feature_branch(&repo);
+        git(&repo, &["checkout", "-q", "main"]);
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let config = crate::session::SessionConfig {
+            init_path: Some(repo.clone()),
+            ..crate::session::SessionConfig::default()
+        };
+        let id = service
+            .create_session_with_config(None, config, None)
+            .await
+            .unwrap();
+        service.load_session(id.clone(), None).await.unwrap();
+
+        assert!(
+            manager
+                .lock()
+                .await
+                .record_observed_branch(&id)
+                .unwrap()
+                .is_none()
+        );
+        let listed = service.list_sessions().await.unwrap();
+        assert_eq!(listed.iter().find(|s| s.id == id).unwrap().branch, None);
     }
 
     #[tokio::test]
@@ -228,6 +362,6 @@ mod tests {
             auto_settle_on_merge: false,
         };
 
-        assert!(service.sweep_settlement(&config).await.unwrap().is_empty());
+        assert!(service.sweep_lifecycle(&config).await.unwrap().is_empty());
     }
 }

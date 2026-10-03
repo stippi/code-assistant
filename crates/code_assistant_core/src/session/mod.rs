@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod manager;
 pub mod new_context;
 pub mod permissions;
+pub mod pull_request;
 pub mod service;
 pub mod sleep_inhibitor;
 pub mod turn;

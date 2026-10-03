@@ -47,27 +47,51 @@ is deleted and a settled session comes back on request (hover action
 - **Manual** — the row's hover action "Settle".
 - **Inactivity** — no activity (`updated_at`) for
   `auto_settle_after_days` days; default 14, `0` turns the rule off.
-- **Branch merged** — the session was switched to a branch
-  (`SessionConfig::branch`, mirrored as `ChatMetadata::branch`) and that
-  branch is merged into the repository's base branch.
-  `git::GitRepository::is_branch_merged` recognises fast-forward and rebase
-  merges by ancestry and squash merges by comparing the branch's diff
-  against the base patch-wise (`git cherry`). The base is `origin/HEAD`'s
-  target when the remote declares one, otherwise `origin/main`,
-  `origin/master`, `main`, `master`. A session on the base branch itself
-  never settles by this rule.
+- **Branch merged** — the session works on a branch (see below) and that
+  branch is merged: either the host reports its pull request as merged, or
+  `git::GitRepository::is_branch_merged` finds it merged locally. The local
+  check recognises fast-forward and rebase merges by ancestry and squash
+  merges by comparing the branch's diff against the base patch-wise
+  (`git cherry`). The base is `origin/HEAD`'s target when the remote
+  declares one, otherwise `origin/main`, `origin/master`, `main`, `master`.
+  A session on the base branch itself never settles by this rule.
 
 Busy sessions never settle. **Un-settling** records `unsettled_at`; the
 automatic rules then wait for activity newer than that moment, so a session
 the user deliberately keeps does not sink again the next day. An un-settled
 session re-anchors at the top of the inbox.
 
-The rules are evaluated by `SessionService::sweep_settlement`, run by
-`lifecycle::run_settlement_sweeper` at startup and every ten minutes while a
-frontend is open. The sweep collects candidates under the session lock, runs
-the git checks outside it, then settles through the normal lifecycle update.
-Several processes sweeping at once is harmless: writes are idempotent and
-locked.
+The rules are evaluated by `SessionService::sweep_lifecycle`, run by
+`lifecycle::run_lifecycle_sweeper` at startup and every ten minutes while a
+frontend is open. The sweep collects candidates under the session lock,
+refreshes pull requests and runs the git checks outside it, then settles
+through the normal lifecycle update. Several processes sweeping at once is
+harmless: writes are idempotent and locked.
+
+## Branch and pull request
+
+A session is associated with a branch in two ways:
+
+- **Explicitly**, when it is switched to or created in a worktree
+  (`SessionManager::set_session_worktree` sets `SessionConfig::branch`).
+- **By observation**, after a run: `record_observed_branch` reads the branch
+  checked out in the session's project and keeps it when the session has
+  none yet and it is not the base branch. So a session that ran
+  `git checkout -b feature/x` in the main checkout learns its branch at the
+  end of that run. The first observed branch sticks; the user switching the
+  checkout later does not relabel old sessions.
+
+`ChatMetadata::branch` mirrors the config field for the sidebar.
+
+The pull request behind the branch is read with the GitHub CLI
+(`gh pr view <branch> --json …`, `session::pull_request`) and stored as a
+`PullRequestSnapshot` (number, url, title, open/draft/merged/closed, review
+decision, checks verdict) in the lifecycle record. It is refreshed after
+each run of the session and by the sweep for every unsettled session on a
+branch. Without `gh`, or without a login, sessions show only their branch.
+The `fetch_pull_request` seam is the place to swap in an API client
+(octocrab) later; what that needs on top is a token and the owner/repo
+parsed from the remote.
 
 ## Storage
 
@@ -95,12 +119,14 @@ its record. The rules live in `<config_dir>/lifecycle.json`
 ```
 Sessions                      [+]   ← header; "+" starts a session in the
                                        scoped project, else the selected
-  ● Title                      2m      session's project
+  ⛉ Title                      2m      session's project
     project · Needs approval
   ◌ Title                     14m
     project · Working
-  Title                        1d
-    project
+  ⑂ Title                    ●  1d    ← open pull request, unread
+    project · #220 feature/x · approved
+  ⌥ Title                        3d    ← branch without a pull request
+    project · feature/y
 ▸ Settled (12)
 ▾ Projects                    [+]
   ▸ code-assistant     3   (hover: pin, +)
@@ -113,12 +139,22 @@ settled shelf orders by settlement time. Clicking a project row scopes the
 inbox and the shelf to that project (click again, or the header's "×", to
 clear); the row's "+" starts a session there.
 
+The left column shows the status glyph while the agent is busy or blocked
+(shield: approval, alert: failed, spinner: working, lock: elsewhere) and
+otherwise the git glyph: pull request open (green), draft (grey), merged
+(violet), closed (red), or a plain branch (violet). Clicking a pull request
+glyph opens it. The subtitle names the project, then the status, or the
+branch with its pull request number and what the pull request waits for
+(checks failing, changes requested, approved). An unread row shows a dot
+before the date.
+
 ## Deferred
 
 - Snooze, pinning and manual reordering.
 - Per-session opt-out from automatic settlement (un-settle covers the
   common case).
-- Sessions on the main worktree have no `branch`, so only worktree
-  sessions see the merge rule.
+- Only GitHub pull requests; GitLab and others show the branch alone.
+- A branch observed after a run is never replaced; a session that moves to
+  a second branch keeps the first.
 - The terminal frontend lists sessions as before; it reads the same
   lifecycle data if it wants to.

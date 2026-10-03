@@ -1456,6 +1456,11 @@ impl SessionManager {
                             activity_state: crate::session::instance::SessionActivityState::Idle,
                         },
                     );
+                    crate::session::lifecycle::refresh_branch_after_run(
+                        &manager_for_outcome,
+                        &session_id_clone,
+                    )
+                    .await;
                 }
                 Err(e) => {
                     error!("Agent failed for session {}: {}", session_id_clone, e);
@@ -1932,6 +1937,54 @@ impl SessionManager {
             },
         );
         Ok(lifecycle)
+    }
+
+    /// Remember the branch a session works on when it has none yet: the
+    /// branch checked out in its project after a run, unless that is the
+    /// base branch. Sessions switched to a worktree already carry theirs.
+    /// Returns the repository root and branch to look a pull request up for.
+    pub fn record_observed_branch(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<(PathBuf, String)>> {
+        let Some(instance) = self.active_sessions.get(session_id) else {
+            return Ok(None);
+        };
+        let Some(path) = instance.session.config.effective_project_path().cloned() else {
+            return Ok(None);
+        };
+        let Ok(repo) = git::GitRepository::open(&path) else {
+            return Ok(None);
+        };
+        let root = repo.workdir().to_path_buf();
+        if let Some(branch) = &instance.session.config.branch {
+            return Ok(Some((root, branch.clone())));
+        }
+        let Some(branch) = repo.current_branch() else {
+            return Ok(None);
+        };
+        if repo
+            .default_base_branch()
+            .is_some_and(|base| crate::session::lifecycle::is_base_branch(&branch, &base))
+        {
+            return Ok(None);
+        }
+        let session = self.persistence.update_entry(session_id, |session| {
+            if session.config.branch.is_none() {
+                session.config.branch = Some(branch.clone());
+            }
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.config.branch = session.config.branch.clone();
+        }
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionMetadata {
+                metadata: session.metadata(),
+            },
+        );
+        Ok(Some((root, branch)))
     }
 
     /// The unsettled sessions, with what the automatic settlement rules need

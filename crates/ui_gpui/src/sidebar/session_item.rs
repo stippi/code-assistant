@@ -9,14 +9,31 @@
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::lifecycle::{SessionLifecycle, SessionStatus};
+use code_assistant_core::session::pull_request::{ChecksState, PullRequestState, ReviewDecision};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, StyledExt};
 use gpui_kit::{
     Animation, AnimationExt, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla,
     InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window,
-    div, percentage, prelude::*, px,
+    div, hsla, percentage, prelude::*, px,
 };
 use std::time::SystemTime;
+
+/// Where a session's work lives, shown in the left column while the agent
+/// is neither busy nor blocked: its pull request, or just its branch.
+struct GitGlyph {
+    icon: &'static str,
+    color: Hsla,
+    tooltip: String,
+    /// The pull request page; clicking the glyph opens it.
+    url: Option<String>,
+}
+
+/// The violet GitHub and other tools use for merged work and branches; the
+/// theme has no token for it.
+fn violet() -> Hsla {
+    hsla(0.75, 0.55, 0.65, 1.)
+}
 
 /// Events emitted by individual SessionListItem components
 #[derive(Clone, Debug)]
@@ -100,6 +117,38 @@ impl SessionListItem {
 
     pub(super) fn status(&self) -> SessionStatus {
         SessionStatus::resolve(&self.activity_state, self.awaiting_permission)
+    }
+
+    fn git_glyph(&self, cx: &Context<Self>) -> Option<GitGlyph> {
+        let branch = self.metadata.branch.as_deref()?;
+        let Some(pr) = &self.lifecycle.pull_request else {
+            return Some(GitGlyph {
+                icon: "icons/git_branch.svg",
+                color: violet().opacity(0.8),
+                tooltip: branch.to_string(),
+                url: None,
+            });
+        };
+        let (icon, color, label) = match pr.state {
+            PullRequestState::Open => ("icons/git_pull_request.svg", cx.theme().success, "open"),
+            PullRequestState::Draft => (
+                "icons/git_pull_request_draft.svg",
+                cx.theme().muted_foreground,
+                "draft",
+            ),
+            PullRequestState::Merged => ("icons/git_merge.svg", violet(), "merged"),
+            PullRequestState::Closed => (
+                "icons/git_pull_request_closed.svg",
+                cx.theme().danger,
+                "closed",
+            ),
+        };
+        Some(GitGlyph {
+            icon,
+            color,
+            tooltip: format!("#{} {} ({label})", pr.number, pr.title),
+            url: Some(pr.url.clone()),
+        })
     }
 
     pub(super) fn format_relative_date(timestamp: SystemTime) -> String {
@@ -218,24 +267,55 @@ impl Render for SessionListItem {
             }
             SessionStatus::Ready => (None, cx.theme().muted_foreground),
         };
-        let project = self.metadata.initial_project.clone();
-        let subtitle = match (project.is_empty(), status_label) {
-            (false, Some(label)) => format!("{project} · {label}"),
-            (false, None) => project,
-            (true, Some(label)) => label.to_string(),
-            (true, None) => String::new(),
-        };
+        let git = self.git_glyph(cx);
+
+        // Subtitle: the project, then what outranks the rest — the status
+        // while the agent is busy or blocked, otherwise the branch and what
+        // its pull request waits for.
+        let mut parts: Vec<String> = Vec::new();
+        let mut subtitle_color = cx.theme().muted_foreground.opacity(0.7);
+        // What the pull request waits for, kept visible when the rest is cut.
+        let mut attention: Option<(&'static str, Hsla)> = None;
+        if !self.metadata.initial_project.is_empty() {
+            parts.push(self.metadata.initial_project.clone());
+        }
+        if let Some(label) = status_label {
+            parts.push(label.to_string());
+            subtitle_color = status_color;
+        } else if let Some(branch) = &self.metadata.branch {
+            match &self.lifecycle.pull_request {
+                Some(pr) => parts.push(format!("#{} {branch}", pr.number)),
+                None => parts.push(branch.clone()),
+            }
+            if let Some(pr) = &self.lifecycle.pull_request
+                && pr.state != PullRequestState::Merged
+                && pr.state != PullRequestState::Closed
+            {
+                attention = if pr.checks == Some(ChecksState::Failing) {
+                    Some(("checks failing", cx.theme().danger))
+                } else if pr.review == Some(ReviewDecision::ChangesRequested) {
+                    Some(("changes requested", cx.theme().warning))
+                } else if pr.review == Some(ReviewDecision::Approved) {
+                    Some(("approved", cx.theme().success))
+                } else {
+                    None
+                };
+            }
+        }
+        let subtitle = parts.join(" · ");
 
         // Left column width: aligned with the section headers' icons.
         let left_col_width = px(24.);
         // Fixed-width right column so actions and the date don't shift the title.
-        let date_col_width = px(50.);
+        let date_col_width = px(56.);
 
         let title_color = if self.is_selected || unread {
             cx.theme().foreground
         } else {
             cx.theme().muted_foreground
         };
+        let show_unread_dot =
+            unread && matches!(status, SessionStatus::Ready | SessionStatus::Failed);
 
         div()
             .id(SharedString::from(format!(
@@ -266,7 +346,8 @@ impl Render for SessionListItem {
                 el.hover(|s| s.bg(cx.theme().muted.opacity(0.4)))
             })
             .on_click(cx.listener(Self::on_session_click))
-            // Left column: what the session is doing, or that it is unread.
+            // Left column: what the agent is doing while it is busy or
+            // blocked; otherwise where the work lives (pull request, branch).
             .child(
                 div()
                     .flex_none()
@@ -277,14 +358,14 @@ impl Render for SessionListItem {
                     .map(|el| match status {
                         SessionStatus::NeedsApproval => el.child(
                             gpui_kit::svg()
-                                .size(px(12.))
-                                .path("icons/info.svg")
+                                .size(px(13.))
+                                .path("icons/shield_question.svg")
                                 .text_color(status_color),
                         ),
                         SessionStatus::Failed => el.child(
                             gpui_kit::svg()
-                                .size(px(12.))
-                                .path("icons/circle_stop.svg")
+                                .size(px(13.))
+                                .path("icons/circle_alert.svg")
                                 .text_color(status_color),
                         ),
                         SessionStatus::RunningElsewhere => el.child(
@@ -315,9 +396,36 @@ impl Render for SessionListItem {
                                     },
                                 ),
                         ),
-                        SessionStatus::Ready => el.when(unread, |el| {
-                            el.child(div().size(px(7.)).rounded_full().bg(cx.theme().primary))
-                        }),
+                        SessionStatus::Ready => el.children(git.map(|glyph| {
+                            let tooltip = glyph.tooltip.clone();
+                            let url = glyph.url.clone();
+                            div()
+                                .id(SharedString::from(format!("git-{}", self.metadata.id)))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(18.))
+                                .rounded_sm()
+                                .when(url.is_some(), |el| {
+                                    el.hover(|s| s.bg(cx.theme().muted)).on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            if let Some(url) = &url {
+                                                cx.stop_propagation();
+                                                cx.open_url(url);
+                                            }
+                                        },
+                                    ))
+                                })
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                })
+                                .child(
+                                    gpui_kit::svg()
+                                        .size(px(13.))
+                                        .path(glyph.icon)
+                                        .text_color(glyph.color),
+                                )
+                        })),
                     }),
             )
             // Title and subtitle
@@ -339,23 +447,31 @@ impl Render for SessionListItem {
                             .when(!unread, |el| el.font_medium())
                             .child(SharedString::from(name)),
                     )
-                    .when(!subtitle.is_empty(), |el| {
+                    .when(!subtitle.is_empty() || attention.is_some(), |el| {
                         el.child(
                             div()
                                 .w_full()
-                                .overflow_hidden()
-                                .text_ellipsis()
+                                .flex()
+                                .items_center()
                                 .text_size(px(11.))
-                                .text_color(if status_label.is_some() {
-                                    status_color
-                                } else {
-                                    cx.theme().muted_foreground.opacity(0.7)
-                                })
-                                .child(SharedString::from(subtitle)),
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_color(subtitle_color)
+                                        .child(SharedString::from(subtitle)),
+                                )
+                                .children(attention.map(|(text, color)| {
+                                    div()
+                                        .flex_none()
+                                        .text_color(color)
+                                        .child(SharedString::from(format!(" · {text}")))
+                                })),
                         )
                     }),
             )
-            // Right column: actions on hover, date otherwise
+            // Right column: actions on hover; otherwise the unread mark and the date
             .child(
                 div()
                     .flex_none()
@@ -364,7 +480,7 @@ impl Render for SessionListItem {
                     .flex()
                     .items_center()
                     .justify_end()
-                    .gap(px(2.))
+                    .gap(px(4.))
                     .map(|el| {
                         if self.is_hovered {
                             let (icon, tooltip) = if settled {
@@ -389,7 +505,16 @@ impl Render for SessionListItem {
                                 cx,
                             ))
                         } else {
-                            el.child(
+                            el.when(show_unread_dot, |el| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(cx.theme().primary),
+                                )
+                            })
+                            .child(
                                 div()
                                     .flex_none()
                                     .text_xs()

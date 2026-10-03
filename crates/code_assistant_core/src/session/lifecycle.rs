@@ -28,6 +28,7 @@ use tracing::{debug, warn};
 
 use crate::session::SessionService;
 use crate::session::instance::SessionActivityState;
+use crate::session::pull_request::{PullRequestSnapshot, PullRequestState};
 use crate::utils::file_utils::atomic_write_json;
 
 /// Per-session lifecycle record.
@@ -41,6 +42,9 @@ pub struct SessionLifecycle {
     /// When the user last pulled the session back out of the settled shelf.
     /// Automatic settlement waits for activity newer than this.
     pub unsettled_at: Option<SystemTime>,
+    /// The pull request behind the session's branch, as last read from the
+    /// GitHub CLI. Refreshed by the lifecycle sweep and after each run.
+    pub pull_request: Option<PullRequestSnapshot>,
 }
 
 /// How and when a session settled.
@@ -64,6 +68,13 @@ pub enum SettledReason {
 impl SessionLifecycle {
     pub fn is_settled(&self) -> bool {
         self.settled.is_some()
+    }
+
+    /// Whether the host reports the session's pull request as merged.
+    pub fn pull_request_merged(&self) -> bool {
+        self.pull_request
+            .as_ref()
+            .is_some_and(|pr| pr.state == PullRequestState::Merged)
     }
 
     /// The user looked at the session.
@@ -311,24 +322,55 @@ pub(crate) async fn sessions_with_merged_branch(inputs: &[SettlementInput]) -> H
     merged
 }
 
-/// How often the automatic settlement rules run.
-pub const SETTLEMENT_SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
+/// After a run: remember the branch the session worked on and read its
+/// pull request, so the sidebar shows a pull request opened during the run
+/// without waiting for the next sweep. The lookup runs without the lock.
+pub(crate) async fn refresh_branch_after_run(
+    manager: &std::sync::Arc<tokio::sync::Mutex<crate::session::SessionManager>>,
+    session_id: &str,
+) {
+    let observed = manager.lock().await.record_observed_branch(session_id);
+    let (root, branch) = match observed {
+        Ok(Some(observed)) => observed,
+        Ok(None) => return,
+        Err(e) => {
+            debug!("Cannot record the branch of {session_id}: {e:#}");
+            return;
+        }
+    };
+    let fetched = match crate::session::pull_request::fetch_pull_request(&root, &branch).await {
+        Ok(fetched) => fetched,
+        Err(e) => {
+            debug!("Cannot read the pull request of {branch}: {e}");
+            return;
+        }
+    };
+    let manager = manager.lock().await;
+    if let Err(e) =
+        manager.update_session_lifecycle(session_id, |lifecycle| lifecycle.pull_request = fetched)
+    {
+        debug!("Cannot store the pull request of {session_id}: {e:#}");
+    }
+}
 
-/// Run the automatic settlement rules now and then every
-/// [`SETTLEMENT_SWEEP_INTERVAL`], reading the config fresh each time so a
-/// settings change applies without a restart. Wiring layers spawn this on
-/// the backend runtime.
-pub async fn run_settlement_sweeper(service: SessionService) {
+/// How often the lifecycle sweep runs.
+pub const LIFECYCLE_SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Refresh pull requests and apply the automatic settlement rules now and
+/// then every [`LIFECYCLE_SWEEP_INTERVAL`], reading the config fresh each
+/// time so a settings change applies without a restart. Wiring layers spawn
+/// this on the backend runtime.
+pub async fn run_lifecycle_sweeper(service: SessionService) {
     loop {
         let config = LifecycleConfig::load();
-        match service.sweep_settlement(&config).await {
+        match service.sweep_lifecycle(&config).await {
             Ok(settled) if !settled.is_empty() => {
-                debug!("Settlement sweep settled {} session(s)", settled.len())
+                debug!("Lifecycle sweep settled {} session(s)", settled.len())
             }
             Ok(_) => {}
-            Err(e) => warn!("Settlement sweep failed: {e:#}"),
+            Err(e) => warn!("Lifecycle sweep failed: {e:#}"),
         }
-        tokio::time::sleep(SETTLEMENT_SWEEP_INTERVAL).await;
+        tokio::time::sleep(LIFECYCLE_SWEEP_INTERVAL).await;
     }
 }
 

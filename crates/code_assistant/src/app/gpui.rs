@@ -103,10 +103,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 code_assistant_core::session::idle_handoff::spawn_idle_handoff(service.clone()),
             );
 
-            // Settlement: finished sessions leave the inbox on their own
-            // (inactivity, merged branch) while the app is open.
+            // Lifecycle: pull requests stay current and finished sessions
+            // leave the inbox on their own (inactivity, merged branch).
             tokio::spawn(
-                code_assistant_core::session::lifecycle::run_settlement_sweeper(service.clone()),
+                code_assistant_core::session::lifecycle::run_lifecycle_sweeper(service.clone()),
             );
 
             // Goal controller: while the app is open, drives the sessions'
