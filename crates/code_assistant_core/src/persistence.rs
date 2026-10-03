@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 use crate::session::SessionConfig;
+use crate::session::lifecycle::SessionLifecycle;
 use crate::types::{PlanState, ToolSyntax};
 use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 
@@ -597,6 +598,7 @@ impl ChatSession {
             tokens_limit,
             tool_syntax: self.tool_syntax(),
             initial_project: self.initial_project().to_string(),
+            branch: self.config.branch.clone(),
             plan_collapsed: self.plan_collapsed,
             is_resumable: self.is_resumable(),
         }
@@ -716,6 +718,9 @@ pub struct ChatMetadata {
 
     /// Initial project name
     pub initial_project: String,
+    /// The git branch the session works on, when it was switched to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// Whether the plan UI is collapsed for this session
     #[serde(default)]
     pub plan_collapsed: bool,
@@ -771,6 +776,14 @@ impl FileSessionPersistence {
     fn metadata_lock_path(&self) -> Result<PathBuf> {
         let chats_dir = self.ensure_chats_dir()?;
         Ok(chats_dir.join("metadata.lock"))
+    }
+
+    fn lifecycle_file_path(&self) -> Result<PathBuf> {
+        Ok(self.ensure_chats_dir()?.join("lifecycle.json"))
+    }
+
+    fn lifecycle_lock_path(&self) -> Result<PathBuf> {
+        Ok(self.ensure_chats_dir()?.join("lifecycle.lock"))
     }
 
     /// Returns the sessions directory path.
@@ -943,7 +956,66 @@ impl FileSessionPersistence {
 
             atomic_write_json(&metadata_path, &metadata_list)?;
         }
+        drop(_lock);
 
+        self.remove_lifecycle(session_id)?;
+
+        Ok(())
+    }
+
+    // ── Session lifecycle (`lifecycle.json`) ────────────────────────────
+    //
+    // Visits and settlement live next to the index, not in the session
+    // file: a visit must not rewrite a multi-megabyte conversation. The file
+    // is a map from session id to [`SessionLifecycle`], guarded by its own
+    // cross-process lock.
+
+    fn read_lifecycles_unlocked(&self) -> Result<HashMap<String, SessionLifecycle>> {
+        let path = self.lifecycle_file_path()?;
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+        let content = std::fs::read_to_string(&path)?;
+        Ok(serde_json::from_str(&content).unwrap_or_else(|e| {
+            warn!("Failed to parse {}: {e}; starting empty", path.display());
+            HashMap::new()
+        }))
+    }
+
+    /// The lifecycle of every session that has one. Sessions absent from the
+    /// map have the default lifecycle.
+    pub fn load_lifecycles(&self) -> Result<HashMap<String, SessionLifecycle>> {
+        let _lock = lock_exclusive(&self.lifecycle_lock_path()?)?;
+        self.read_lifecycles_unlocked()
+    }
+
+    /// Change one session's lifecycle under the cross-process lock. The
+    /// closure sees the latest on-disk record (or the default) and the
+    /// updated record is returned. Nothing is written when the closure
+    /// leaves the record unchanged.
+    pub fn update_lifecycle(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&mut SessionLifecycle),
+    ) -> Result<SessionLifecycle> {
+        let _lock = lock_exclusive(&self.lifecycle_lock_path()?)?;
+        let mut lifecycles = self.read_lifecycles_unlocked()?;
+        let before = lifecycles.get(session_id).cloned().unwrap_or_default();
+        let mut lifecycle = before.clone();
+        update(&mut lifecycle);
+        if lifecycle != before {
+            lifecycles.insert(session_id.to_string(), lifecycle.clone());
+            atomic_write_json(&self.lifecycle_file_path()?, &lifecycles)?;
+        }
+        Ok(lifecycle)
+    }
+
+    fn remove_lifecycle(&self, session_id: &str) -> Result<()> {
+        let _lock = lock_exclusive(&self.lifecycle_lock_path()?)?;
+        let mut lifecycles = self.read_lifecycles_unlocked()?;
+        if lifecycles.remove(session_id).is_some() {
+            atomic_write_json(&self.lifecycle_file_path()?, &lifecycles)?;
+        }
         Ok(())
     }
 
@@ -991,6 +1063,7 @@ impl FileSessionPersistence {
                     tokens_limit,
                     tool_syntax: session.tool_syntax(),
                     initial_project: session.initial_project().to_string(),
+                    branch: session.config.branch.clone(),
                     plan_collapsed: session.plan_collapsed,
                     is_resumable: session.is_resumable(),
                 };
@@ -1830,5 +1903,61 @@ mod tests {
         // Verify we can still switch back to branch 2
         session.switch_branch(6).unwrap();
         assert_eq!(session.active_path, vec![1, 2, 5, 6]);
+    }
+
+    #[test]
+    fn lifecycle_round_trips_and_leaves_with_its_session() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        persistence
+            .create_chat_session(&ChatSession::new_empty(
+                "s1".into(),
+                "s1".into(),
+                SessionConfig::default(),
+                None,
+            ))
+            .unwrap();
+        assert!(persistence.load_lifecycles().unwrap().is_empty());
+
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let updated = persistence
+            .update_lifecycle("s1", |lifecycle| lifecycle.visit(now))
+            .unwrap();
+        assert_eq!(updated.last_visited_at, Some(now));
+
+        let other = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let loaded = other.load_lifecycles().unwrap();
+        assert_eq!(loaded.get("s1"), Some(&updated));
+
+        persistence.delete_chat_session("s1").unwrap();
+        assert!(persistence.load_lifecycles().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_lifecycle_update_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        persistence.update_lifecycle("ghost", |_| {}).unwrap();
+        assert!(!dir.path().join("sessions").join("lifecycle.json").exists());
+    }
+
+    #[test]
+    fn metadata_carries_the_session_branch() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let config = SessionConfig {
+            branch: Some("feature/x".into()),
+            ..SessionConfig::default()
+        };
+        persistence
+            .create_chat_session(&ChatSession::new_empty(
+                "s1".into(),
+                "s1".into(),
+                config,
+                None,
+            ))
+            .unwrap();
+        let listed = persistence.list_chat_sessions().unwrap();
+        assert_eq!(listed[0].branch.as_deref(), Some("feature/x"));
     }
 }

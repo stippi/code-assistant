@@ -13,6 +13,7 @@ use tools_core::permissions::PermissionTier;
 pub mod event_stream;
 pub mod idle_handoff;
 pub mod instance;
+pub mod lifecycle;
 pub mod manager;
 pub mod new_context;
 pub mod permissions;
