@@ -12,6 +12,9 @@ use web::{BrowserSessionManager, Button, Tab};
 /// Pixels one wheel tick scrolls.
 const TICK_PX: f64 = 100.0;
 
+/// Longest recording, in seconds.
+const MAX_RECORD_SECS: f64 = 5.0;
+
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputerAction {
@@ -33,6 +36,7 @@ pub enum ComputerAction {
     KeyUp,
     LeftMouseDown,
     LeftMouseUp,
+    Record,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
@@ -68,6 +72,8 @@ pub struct ComputerInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<f64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub accept_dialogs: bool,
@@ -90,11 +96,13 @@ impl BrowserComputerTool {
              (`text`: space-separated keys or chords like \"Enter\", \"ctrl+a\", \"Backspace\"; \
              `repeat`), hold_key (`text` held down for `duration` seconds), key_down / key_up \
              (`text` stays down across steps until released, e.g. walk while jumping), \
-             left_mouse_down / left_mouse_up (at coordinate/ref or where the mouse is), screenshot (`scale` < 1 for a smaller image), wait (`duration` seconds, \
-             max 10), scroll (`scroll_direction`, `scroll_amount` ticks, at `coordinate`/`ref` or \
-             the center), scroll_to (ref), hover (coordinate or ref), left_click_drag \
-             (`start_coordinate` → `coordinate`), zoom (`region` [x0, y0, x1, y1] of the \
-             screenshot, enlarged).\n\
+             left_mouse_down / left_mouse_up (at coordinate/ref or where the mouse is), screenshot \
+             (`scale` < 1 for a smaller image), wait (`duration` seconds, max 10), scroll \
+             (`scroll_direction`, `scroll_amount` ticks, at `coordinate`/`ref` or the center), \
+             scroll_to (ref), hover (coordinate or ref), left_click_drag (`start_coordinate` → \
+             `coordinate`), zoom (`region` [x0, y0, x1, y1] of the screenshot, enlarged), record \
+             (`duration` seconds, max 5, as one contact sheet of `frames` evenly spaced frames, \
+             to judge motion and animations).\n\
              JavaScript dialogs are answered automatically and reported: alerts acknowledged, \
              confirm/prompt dismissed unless `accept_dialogs` is true.\n\
              The page keeps running in real time between calls, also while you think. For \
@@ -106,7 +114,7 @@ impl BrowserComputerTool {
                     "action": {"type": "string", "enum": [
                         "left_click", "right_click", "double_click", "triple_click", "type", "key",
                         "screenshot", "wait", "scroll", "scroll_to", "hover", "left_click_drag", "zoom",
-                        "hold_key", "key_down", "key_up", "left_mouse_down", "left_mouse_up"
+                        "hold_key", "key_down", "key_up", "left_mouse_down", "left_mouse_up", "record"
                     ]},
                     "coordinate": {"type": "array", "items": {"type": "number"}, "description": "[x, y] in the latest screenshot's pixels"},
                     "start_coordinate": {"type": "array", "items": {"type": "number"}, "description": "[x, y] where left_click_drag starts"},
@@ -115,10 +123,11 @@ impl BrowserComputerTool {
                     "modifiers": {"type": "string", "description": "Modifier keys held during a click, e.g. \"ctrl\", \"cmd+shift\""},
                     "scroll_direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                     "scroll_amount": {"type": "integer", "description": "Wheel ticks (default 3)"},
-                    "duration": {"type": "number", "description": "Seconds to wait or hold a key (max 10)"},
+                    "duration": {"type": "number", "description": "Seconds to wait or hold a key (max 10), or to record (max 5)"},
                     "region": {"type": "array", "items": {"type": "number"}, "description": "[x0, y0, x1, y1] to zoom into"},
                     "repeat": {"type": "integer", "description": "Times to repeat the key sequence"},
-                    "scale": {"type": "number", "description": "Image scale for screenshot/zoom, e.g. 0.5"},
+                    "frames": {"type": "integer", "description": "Frames in a recording (2-16, default 9)"},
+                    "scale": {"type": "number", "description": "Image scale for screenshot/zoom/recorded frames, e.g. 0.5"},
                     "accept_dialogs": {"type": "boolean", "description": "Accept (OK) confirm/prompt dialogs this action raises"}
                 },
                 "required": ["action"]
@@ -251,6 +260,22 @@ async fn act(tab: &Tab, input: &ComputerInput) -> Result<Acted> {
                 image: Some(shot.png),
             })
         }
+        Record => {
+            let seconds = input.duration.unwrap_or(1.0);
+            if !(seconds > 0.0 && seconds <= MAX_RECORD_SECS) {
+                return Err(anyhow!(
+                    "record `duration` must be more than 0 and at most {MAX_RECORD_SECS} seconds"
+                ));
+            }
+            let frames = input.frames.unwrap_or(9).clamp(2, 16) as usize;
+            let rec = tab
+                .record(Duration::from_secs_f64(seconds), frames, input.scale)
+                .await?;
+            Ok(Acted {
+                text: describe_recording(&rec, seconds),
+                image: Some(rec.png),
+            })
+        }
         Wait => {
             let seconds = input.duration.unwrap_or(1.0).clamp(0.0, 10.0);
             tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
@@ -353,6 +378,43 @@ async fn act(tab: &Tab, input: &ComputerInput) -> Result<Acted> {
     }
 }
 
+/// What a contact sheet shows: its layout and timing, and which cells look
+/// the same as the one before.
+fn describe_recording(rec: &web::Recording, seconds: f64) -> String {
+    let n = rec.frames.len();
+    let mut text = format!(
+        "{n} frames over {seconds}s ({}×{}, left to right, top to bottom), one every {}s",
+        rec.columns,
+        rec.rows,
+        round_ms(seconds / (n - 1) as f64)
+    );
+    let repeated: Vec<String> = rec
+        .frames
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.repeated)
+        .map(|(i, _)| format!("#{}", i + 1))
+        .collect();
+    if !repeated.is_empty() {
+        text.push_str(&format!(
+            "\nUnchanged from the frame before: {} (the page painted {} frame{} in {seconds}s)",
+            repeated.join(", "),
+            rec.received,
+            if rec.received == 1 { "" } else { "s" }
+        ));
+    }
+    text.push_str(&format!(
+        "\nContact sheet {}×{} px (click coordinates still refer to the last screenshot)",
+        rec.width, rec.height
+    ));
+    text
+}
+
+/// Seconds to the millisecond, without trailing zeros.
+fn round_ms(seconds: f64) -> f64 {
+    (seconds * 1000.0).round() / 1000.0
+}
+
 /// Where an action lands: the center of `ref`, or `coordinate` mapped from
 /// the screenshot frame to CSS pixels.
 async fn point(tab: &Tab, input: &ComputerInput) -> Result<web::Point> {
@@ -433,6 +495,7 @@ mod tests {
             duration: None,
             region: None,
             repeat: None,
+            frames: None,
             scale: None,
             accept_dialogs: false,
             target: Target::default(),
@@ -441,6 +504,33 @@ mod tests {
 
     fn render(out: &BrowserOutput) -> String {
         out.render(&mut ResourcesTracker::default())
+    }
+
+    #[test]
+    fn a_recording_names_its_layout_and_unchanged_frames() {
+        let frame = |at, repeated| web::SheetFrame { at, repeated };
+        let rec = web::Recording {
+            png: Vec::new(),
+            width: 652,
+            height: 452,
+            columns: 2,
+            rows: 2,
+            cell_width: 320,
+            cell_height: 200,
+            frames: vec![
+                frame(0.0, false),
+                frame(1.0 / 3.0, false),
+                frame(2.0 / 3.0, true),
+                frame(1.0, true),
+            ],
+            received: 1,
+        };
+        assert_eq!(
+            describe_recording(&rec, 1.0),
+            "4 frames over 1s (2×2, left to right, top to bottom), one every 0.333s\n\
+             Unchanged from the frame before: #3, #4 (the page painted 1 frame in 1s)\n\
+             Contact sheet 652×452 px (click coordinates still refer to the last screenshot)"
+        );
     }
 
     #[test]
@@ -618,6 +708,53 @@ mod tests {
         );
         let at = |i: usize| events[i].split('@').nth(1).unwrap().parse::<f64>().unwrap();
         assert!(at(1) - at(0) >= 280.0, "{log}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_recording_comes_back_as_one_contact_sheet() -> Result<()> {
+        let page = data_url(
+            "<html><body style=\"margin:0\"><div id=\"box\" style=\"position:absolute;top:100px;\
+             width:80px;height:80px;background:red\"></div><script>\
+             const box = document.getElementById('box');\
+             const step = (t) => { box.style.left = (t * 0.5) % 1000 + 'px'; requestAnimationFrame(step); };\
+             requestAnimationFrame(step);</script></body></html>",
+        );
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        let mut context = fixture.context();
+        BrowserNavigateTool
+            .execute(
+                &mut context,
+                &mut NavigateInput {
+                    url: page,
+                    target: Target::default(),
+                },
+            )
+            .await?;
+
+        let mut record = computer(ComputerAction::Record);
+        record.duration = Some(0.6);
+        record.frames = Some(4);
+        record.scale = Some(0.25);
+        let out = BrowserComputerTool
+            .execute(&mut context, &mut record)
+            .await?;
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let text = render(&out);
+        assert!(
+            text.starts_with(
+                "4 frames over 0.6s (2×2, left to right, top to bottom), one every 0.2s"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("click coordinates still refer to"), "{text}");
+        assert_eq!(out.render_images().len(), 1);
+
+        // Too long a recording is refused rather than cut short.
+        let mut long = computer(ComputerAction::Record);
+        long.duration = Some(30.0);
+        let out = BrowserComputerTool.execute(&mut context, &mut long).await?;
+        assert!(out.error.unwrap().contains("at most 5 seconds"));
         Ok(())
     }
 
