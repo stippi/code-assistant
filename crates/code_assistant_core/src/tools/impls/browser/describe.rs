@@ -214,6 +214,10 @@ fn describe_computer(param: &dyn Fn(&str) -> Option<String>) -> String {
         Some("left_mouse_up") => format!("Release the mouse{target}"),
         Some("screenshot") => "Screenshot".to_string(),
         Some("zoom") => "Zoom in".to_string(),
+        Some("record") => match param("duration") {
+            Some(s) => format!("Record {s}s"),
+            None => "Record 1s".to_string(),
+        },
         Some("wait") => match param("duration") {
             Some(s) => format!("Wait {s}s"),
             None => "Wait".to_string(),
@@ -290,6 +294,17 @@ mod tests {
                 &[("action", "hold_key"), ("text", "w"), ("duration", "0.5")]
             ),
             "Hold w for 0.5s"
+        );
+        assert_eq!(
+            describe(
+                "browser_computer",
+                &[("action", "record"), ("duration", "2")]
+            ),
+            "Record 2s"
+        );
+        assert_eq!(
+            describe("browser_computer", &[("action", "record")]),
+            "Record 1s"
         );
     }
 
