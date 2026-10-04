@@ -426,6 +426,7 @@ impl SessionInstance {
             tokens_limit: None, // Will be updated by persistence layer if available
             tool_syntax: self.session.config.tool_syntax,
             initial_project: self.session.config.initial_project.clone(),
+            branch: self.session.config.branch.clone(),
             plan_collapsed: self.session.plan_collapsed,
             is_resumable: self.session.is_resumable(),
         }

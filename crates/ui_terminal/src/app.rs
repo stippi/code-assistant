@@ -1248,6 +1248,13 @@ impl TerminalTuiApp {
             }),
             events,
         );
+        // Long-unused sessions settle before the first listing, in one write.
+        if let Err(e) = multi_session_manager.lock().await.settle_inactive(
+            &code_assistant_core::session::lifecycle::LifecycleConfig::load(),
+            std::time::SystemTime::now(),
+        ) {
+            tracing::warn!("Startup settlement failed: {e:#}");
+        }
         let backend_task = tokio::spawn(service_worker);
 
         // Wakeup scheduler: lets agents arm timed continuations of their
@@ -1265,6 +1272,12 @@ impl TerminalTuiApp {
                 code_assistant_core::session::idle_handoff::spawn_idle_handoff(service.clone()),
             );
         }
+
+        // Lifecycle: pull requests stay current and finished sessions
+        // leave the inbox on their own (inactivity, merged branch).
+        tokio::spawn(
+            code_assistant_core::session::lifecycle::run_lifecycle_sweeper(service.clone()),
+        );
 
         // Goal controller: while the app is open, drives the sessions'
         // user-set durable goals (/goal) one bounded turn at a time. The verdicts

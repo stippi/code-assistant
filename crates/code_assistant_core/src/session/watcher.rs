@@ -7,7 +7,7 @@
 //!
 //! | File pattern | Trigger | UI effect |
 //! |---|---|---|
-//! | `metadata.json` | Create / Modify / Remove | Refresh sidebar session list |
+//! | `metadata.json`, `lifecycle.json` | Create / Modify / Remove | Refresh sidebar session list |
 //! | `<session_id>.json` | Modify | Reload session if currently viewed |
 //! | `<session_id>.agent.lock` | Create / Remove | Update activity state (agent running elsewhere) |
 //!
@@ -55,7 +55,7 @@ pub struct SessionWatcher {
 /// Categorised dirty-file set, accumulated between debounce flushes.
 #[derive(Default)]
 struct DirtySet {
-    /// `metadata.json` was touched → refresh sidebar.
+    /// `metadata.json` or `lifecycle.json` was touched → refresh sidebar.
     metadata_dirty: bool,
     /// Session JSON files that changed on disk.
     /// We only reload the currently-viewed one, but we track all of them
@@ -225,8 +225,8 @@ fn accumulate_event(dirty: &Mutex<DirtySet>, event: &Event) {
 
         let mut set = dirty.lock().unwrap();
 
-        if file_name == "metadata.json" {
-            trace!("Watcher: metadata.json changed ({:?})", event.kind);
+        if file_name == "metadata.json" || file_name == "lifecycle.json" {
+            trace!("Watcher: {file_name} changed ({:?})", event.kind);
             set.metadata_dirty = true;
             continue;
         }

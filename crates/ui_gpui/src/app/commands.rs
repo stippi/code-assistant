@@ -66,12 +66,57 @@ impl Gpui {
         };
         let gpui = self.clone();
         self.dispatch(async move {
+            let lifecycles = match service.list_session_lifecycles().await {
+                Ok(lifecycles) => lifecycles,
+                Err(e) => {
+                    gpui.display_error(format!("Failed to list session lifecycles: {e:#}"));
+                    return;
+                }
+            };
             match service.list_sessions().await {
                 Ok(sessions) => {
+                    *gpui.session_lifecycles.lock().unwrap() = lifecycles;
                     *gpui.chat_sessions.lock().unwrap() = sessions.clone();
                     gpui.push_event(UiEvent::UpdateChatList { sessions });
                 }
                 Err(e) => gpui.display_error(format!("Failed to list sessions: {e:#}")),
+            }
+        });
+    }
+
+    /// The user is looking at the session while it changed (its agent
+    /// finished): clear the unread mark.
+    pub(crate) fn cmd_mark_session_visited(&self, session_id: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        self.dispatch(async move {
+            if let Err(e) = service.mark_session_visited(session_id).await {
+                debug!("Failed to record a session visit: {e:#}");
+            }
+        });
+    }
+
+    pub(crate) fn cmd_settle_session(&self, session_id: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service.settle_session(session_id).await {
+                gpui.display_error(format!("Failed to settle the session: {e:#}"));
+            }
+        });
+    }
+
+    pub(crate) fn cmd_unsettle_session(&self, session_id: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service.unsettle_session(session_id).await {
+                gpui.display_error(format!("Failed to un-settle the session: {e:#}"));
             }
         });
     }

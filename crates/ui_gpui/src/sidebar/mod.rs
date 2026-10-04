@@ -1,62 +1,39 @@
+//! The session sidebar: two views of the same sessions.
+//!
+//! The inbox holds every session that is not settled, across projects,
+//! newest first. Its order is static — activity does not move rows; what a
+//! session needs from the user shows as emphasis (see [`SessionListItem`]).
+//! The projects view holds every session, settled or not, in its project's
+//! folder; folders keep a stable order the user rearranges by dragging. The
+//! header switches between the two ("Active" and "Projects"); its buttons start a session (a picker
+//! asks where) and add a project.
+
+mod project_order;
+mod project_picker;
+mod projects_view;
 mod session_item;
+mod view_switch;
 
 pub use session_item::{SessionListItem, SessionListItemEvent};
 
+use crate::shared::settings::SidebarView;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
+use code_assistant_core::session::lifecycle::SessionLifecycle;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription, div,
-    prelude::*, px, rems,
+    AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
+    div, prelude::*, px,
 };
-
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt, tooltip::Tooltip};
-use std::collections::HashMap;
+use project_picker::{ProjectPicker, ProjectPickerEvent, animated_surface};
+use projects_view::ProjectFolder;
+use std::collections::{HashMap, HashSet};
+use std::time::SystemTime;
 use tracing::debug;
-
-/// Maximum number of sessions shown per project before "Show more" appears
-const DEFAULT_VISIBLE_LIMIT: usize = 5;
-
-// ─── ProjectGroup ────────────────────────────────────────────────────────────
-
-/// Tracks the UI state for one project group in the sidebar.
-struct ProjectGroup {
-    /// Project name (derived from session metadata)
-    name: String,
-    /// Session entities in this group, sorted by updated_at desc
-    items: Vec<Entity<SessionListItem>>,
-    /// Whether this group is expanded
-    is_expanded: bool,
-    /// Whether "Show more" has been clicked (show all items)
-    show_all: bool,
-    /// Whether the project header is hovered
-    is_hovered: bool,
-}
-
-impl ProjectGroup {
-    fn visible_items(&self) -> &[Entity<SessionListItem>] {
-        if self.show_all || self.items.len() <= DEFAULT_VISIBLE_LIMIT {
-            &self.items
-        } else {
-            &self.items[..DEFAULT_VISIBLE_LIMIT]
-        }
-    }
-
-    fn has_more(&self) -> bool {
-        !self.show_all && self.items.len() > DEFAULT_VISIBLE_LIMIT
-    }
-
-    fn hidden_count(&self) -> usize {
-        if self.has_more() {
-            self.items.len() - DEFAULT_VISIBLE_LIMIT
-        } else {
-            0
-        }
-    }
-}
-
-// ─── SessionSidebar ─────────────────────────────────────────────────────────────
 
 /// Events emitted by the SessionSidebar component
 #[derive(Clone, Debug)]
@@ -65,152 +42,236 @@ pub enum SessionSidebarEvent {
     SessionSelected { session_id: String },
     /// User requested deletion of a chat session
     SessionDeleteRequested { session_id: String },
+    /// User settled a session: it leaves the inbox
+    SessionSettleRequested { session_id: String },
+    /// User pulled a settled session back into the inbox
+    SessionUnsettleRequested { session_id: String },
     /// User requested creation of a new chat session in a specific project
     NewSessionRequested {
         name: Option<String>,
         initial_project: Option<String>,
     },
-    /// User clicked the "+" button in the sidebar header to add a new project
+    /// User clicked "New project" in the header
     AddProjectRequested,
-    /// User clicked the "pin" icon on a temporary project header to persist it
+    /// User saved a temporary project to projects.json
     PersistProjectRequested { project_name: String },
 }
 
-/// Main project sidebar component — groups sessions by project.
 pub struct SessionSidebar {
-    /// Project groups, sorted by most-recently-updated session
-    groups: Vec<ProjectGroup>,
-    /// Preserved UI state per project: (is_expanded, show_all)
-    group_ui_state: HashMap<String, (bool, bool)>,
+    sessions: Vec<ChatMetadata>,
+    /// Whether a session list arrived yet; until then no project is new.
+    sessions_loaded: bool,
+    lifecycles: HashMap<String, SessionLifecycle>,
+    /// Row entities by session id, shared by both views.
+    items: HashMap<String, Entity<SessionListItem>>,
+    /// Unsettled sessions in display order.
+    inbox: Vec<Entity<SessionListItem>>,
+    /// Project folders in display order, "No project" last.
+    folders: Vec<ProjectFolder>,
+    view: SidebarView,
+    /// Stored folder order; may name projects that are gone.
+    project_order: Vec<String>,
+    collapsed_projects: HashSet<String>,
+    /// Folders showing all their sessions after "Show more".
+    expanded_lists: HashSet<String>,
+    hovered_folder: Option<String>,
     /// Project names that are persisted in projects.json.
-    /// Projects not in this set are "temporary" and get a pin icon.
-    persisted_projects: std::collections::HashSet<String>,
+    /// Projects not in this set are "temporary".
+    persisted_projects: HashSet<String>,
+    /// The header's project picker for new sessions.
+    project_picker: Entity<ProjectPicker>,
+    picker_open: bool,
 
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
     activity_states: HashMap<String, SessionActivityState>,
+    awaiting_permission: HashSet<String>,
     _item_subscriptions: Vec<Subscription>,
+    _picker_subscription: Subscription,
 }
 
 impl SessionSidebar {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let project_picker = cx.new(|cx| ProjectPicker::new(window, cx));
+        let picker_subscription = cx.subscribe(&project_picker, Self::on_project_picker_event);
+        let settings = cx
+            .try_global::<crate::UiSettingsGlobal>()
+            .map(|settings| settings.0.sidebar.clone())
+            .unwrap_or_default();
         Self {
-            groups: Vec::new(),
-            group_ui_state: HashMap::new(),
-            persisted_projects: std::collections::HashSet::new(),
-
+            sessions: Vec::new(),
+            sessions_loaded: false,
+            lifecycles: HashMap::new(),
+            items: HashMap::new(),
+            inbox: Vec::new(),
+            folders: Vec::new(),
+            view: settings.view,
+            project_order: settings.project_order,
+            collapsed_projects: settings.collapsed_projects.into_iter().collect(),
+            expanded_lists: HashSet::new(),
+            hovered_folder: None,
+            persisted_projects: HashSet::new(),
+            project_picker,
+            picker_open: false,
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
             activity_states: HashMap::new(),
+            awaiting_permission: HashSet::new(),
             _item_subscriptions: Vec::new(),
+            _picker_subscription: picker_subscription,
         }
     }
 
-    /// Rebuild all groups from a flat list of session metadata.
-    pub fn update_sessions(&mut self, sessions: Vec<ChatMetadata>, cx: &mut Context<Self>) {
+    /// Replace the session list and every lifecycle record.
+    pub fn update_sessions(
+        &mut self,
+        sessions: Vec<ChatMetadata>,
+        lifecycles: HashMap<String, SessionLifecycle>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sessions_loaded && self.sessions == sessions && self.lifecycles == lifecycles {
+            return;
+        }
+        self.sessions = sessions;
+        self.sessions_loaded = true;
+        self.lifecycles = lifecycles;
+        self.sync_items(cx);
+        self.relayout(cx);
+    }
+
+    /// One session's lifecycle changed (visited, settled, un-settled).
+    pub fn update_session_lifecycle(
+        &mut self,
+        session_id: String,
+        lifecycle: SessionLifecycle,
+        cx: &mut Context<Self>,
+    ) {
+        if self.lifecycles.get(&session_id) == Some(&lifecycle) {
+            return;
+        }
+        if let Some(item) = self.items.get(&session_id) {
+            let lifecycle = lifecycle.clone();
+            item.update(cx, |item, cx| item.update_lifecycle(lifecycle, cx));
+        }
+        self.lifecycles.insert(session_id, lifecycle);
+        // Only this row moved; the other rows' entities are untouched. A
+        // startup sweep can settle hundreds of sessions in a row.
+        self.relayout(cx);
+    }
+
+    /// Bring the row entities in line with the stored sessions, reusing
+    /// existing ones.
+    fn sync_items(&mut self, cx: &mut Context<Self>) {
         self._item_subscriptions.clear();
+        let mut existing = std::mem::take(&mut self.items);
+        let show_project = self.view == SidebarView::Inbox;
 
-        // Collect existing item entities for reuse (keyed by session id)
-        let mut existing_items: HashMap<String, Entity<SessionListItem>> = HashMap::new();
-        for group in self.groups.drain(..) {
-            for item in group.items {
-                let id = cx.read_entity(&item, |item, _| item.metadata.id.clone());
-                existing_items.insert(id, item);
-            }
-        }
-
-        // Group sessions by project
-        let mut project_sessions: HashMap<String, Vec<ChatMetadata>> = HashMap::new();
-        for session in sessions {
-            let project = if session.initial_project.is_empty() {
-                "(no project)".to_string()
-            } else {
-                session.initial_project.clone()
-            };
-            project_sessions.entry(project).or_default().push(session);
-        }
-
-        // Ensure persisted projects appear even when they have zero sessions
-        for project_name in &self.persisted_projects {
-            project_sessions.entry(project_name.clone()).or_default();
-        }
-
-        // Sort projects by the most recent session's updated_at
-        let mut project_order: Vec<(String, Vec<ChatMetadata>)> =
-            project_sessions.into_iter().collect();
-        project_order.sort_by(|a, b| {
-            let a_latest = a.1.iter().map(|s| s.updated_at).max();
-            let b_latest = b.1.iter().map(|s| s.updated_at).max();
-            b_latest.cmp(&a_latest)
-        });
-
-        // Build groups
-        let mut new_groups: Vec<ProjectGroup> = Vec::new();
-
-        for (project_name, sessions) in project_order {
-            let mut items: Vec<Entity<SessionListItem>> = Vec::new();
-
-            for session in &sessions {
-                let entity = if let Some(existing) = existing_items.remove(&session.id) {
-                    existing.update(cx, |item, cx| {
+        let mut items = HashMap::new();
+        for session in &self.sessions {
+            let lifecycle = self
+                .lifecycles
+                .get(&session.id)
+                .cloned()
+                .unwrap_or_default();
+            let activity = self.activity_states.get(&session.id).cloned();
+            let awaiting = self.awaiting_permission.contains(&session.id);
+            let entity = match existing.remove(&session.id) {
+                Some(entity) => {
+                    entity.update(cx, |item, cx| {
                         item.update_metadata(session.clone(), cx);
-                        if let Some(state) = self.activity_states.get(&session.id) {
-                            item.update_activity_state(state.clone(), cx);
-                        }
+                        item.update_lifecycle(lifecycle, cx);
                     });
-                    existing
-                } else {
+                    entity
+                }
+                None => {
                     let is_selected = self.selected_session_id.as_deref() == Some(&session.id);
-                    let new_item =
-                        cx.new(|cx| SessionListItem::new(session.clone(), is_selected, cx));
-                    if let Some(state) = self.activity_states.get(&session.id) {
-                        new_item.update(cx, |item, cx| {
-                            item.update_activity_state(state.clone(), cx);
-                        });
-                    }
-                    new_item
-                };
-
-                self._item_subscriptions
-                    .push(cx.subscribe(&entity, Self::on_chat_list_item_event));
-                items.push(entity);
-            }
-
-            // Inherit UI state from the old group with the same name
-            let (is_expanded, show_all) = self
-                .group_ui_state
-                .get(&project_name)
-                .copied()
-                .unwrap_or((true, false));
-
-            new_groups.push(ProjectGroup {
-                name: project_name,
-                items,
-                is_expanded,
-                show_all,
-                is_hovered: false,
+                    cx.new(|cx| SessionListItem::new(session.clone(), lifecycle, is_selected, cx))
+                }
+            };
+            entity.update(cx, |item, cx| {
+                if let Some(state) = activity {
+                    item.update_activity_state(state, cx);
+                }
+                item.set_awaiting_permission(awaiting, cx);
+                item.set_show_project(show_project, cx);
             });
+            self._item_subscriptions
+                .push(cx.subscribe(&entity, Self::on_chat_list_item_event));
+            items.insert(session.id.clone(), entity);
         }
+        self.items = items;
+    }
 
-        // Save UI state for next rebuild
-        self.group_ui_state = new_groups
+    /// Recompute the inbox, the project folders and the picker's projects
+    /// from the stored sessions and lifecycles. Touches no row entity.
+    fn relayout(&mut self, cx: &mut Context<Self>) {
+        // Inbox: static order, newest first; an un-settled session surfaces
+        // at the top.
+        let mut inbox: Vec<(SystemTime, &ChatMetadata)> = self
+            .sessions
             .iter()
-            .map(|g| (g.name.clone(), (g.is_expanded, g.show_all)))
+            .filter_map(|session| {
+                let lifecycle = self.lifecycles.get(&session.id);
+                if lifecycle.is_some_and(SessionLifecycle::is_settled) {
+                    return None;
+                }
+                let anchor = lifecycle
+                    .map(|l| l.inbox_anchor(session.created_at))
+                    .unwrap_or(session.created_at);
+                Some((anchor, session))
+            })
+            .collect();
+        inbox.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.id.cmp(&a.1.id)));
+        self.inbox = inbox
+            .into_iter()
+            .map(|(_, session)| self.items[&session.id].clone())
             .collect();
 
-        self.groups = new_groups;
+        self.relayout_folders(cx);
+        cx.notify();
+    }
+
+    /// The projects' latest activity: those with sessions and those saved in
+    /// projects.json.
+    fn known_projects(&self) -> Vec<(String, SystemTime)> {
+        let mut latest: HashMap<String, SystemTime> = HashMap::new();
+        for session in &self.sessions {
+            if session.initial_project.is_empty() {
+                continue;
+            }
+            latest
+                .entry(session.initial_project.clone())
+                .and_modify(|at| *at = (*at).max(session.updated_at))
+                .or_insert(session.updated_at);
+        }
+        for project in &self.persisted_projects {
+            latest
+                .entry(project.clone())
+                .or_insert(std::time::UNIX_EPOCH);
+        }
+        latest.into_iter().collect()
+    }
+
+    fn set_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        let show_project = view == SidebarView::Inbox;
+        for item in self.items.values() {
+            item.update(cx, |item, cx| item.set_show_project(show_project, cx));
+        }
+        crate::update_ui_settings(cx, |settings| settings.sidebar.view = view);
         cx.notify();
     }
 
     pub fn set_selected_session(&mut self, session_id: Option<String>, cx: &mut Context<Self>) {
         self.selected_session_id = session_id.clone();
-        for group in &self.groups {
-            for item in &group.items {
-                item.update(cx, |item, cx| {
-                    let selected = session_id.as_deref() == Some(&item.metadata.id);
-                    item.update_selection(selected, cx);
-                });
-            }
+        for item in self.items.values() {
+            item.update(cx, |item, cx| {
+                let selected = session_id.as_deref() == Some(&item.metadata.id);
+                item.update_selection(selected, cx);
+            });
         }
     }
 
@@ -220,42 +281,67 @@ impl SessionSidebar {
         activity_state: SessionActivityState,
         cx: &mut Context<Self>,
     ) {
-        self.activity_states
-            .insert(session_id.clone(), activity_state.clone());
+        if let Some(item) = self.items.get(&session_id) {
+            item.update(cx, |item, cx| {
+                item.update_activity_state(activity_state.clone(), cx);
+            });
+        }
+        self.activity_states.insert(session_id, activity_state);
+        // A collapsed folder's attention mark may change.
+        cx.notify();
+    }
 
-        for group in &self.groups {
-            for item_entity in &group.items {
-                cx.update_entity(item_entity, |item, cx| {
-                    if item.metadata.id == session_id {
-                        item.update_activity_state(activity_state.clone(), cx);
-                    }
-                });
-            }
+    /// The sessions with an open permission request.
+    pub fn set_awaiting_permission(&mut self, sessions: HashSet<String>, cx: &mut Context<Self>) {
+        if self.awaiting_permission == sessions {
+            return;
+        }
+        for (id, item) in &self.items {
+            let awaiting = sessions.contains(id);
+            item.update(cx, |item, cx| item.set_awaiting_permission(awaiting, cx));
+        }
+        self.awaiting_permission = sessions;
+        cx.notify();
+    }
+
+    pub fn set_persisted_projects(&mut self, projects: HashSet<String>, cx: &mut Context<Self>) {
+        if self.persisted_projects != projects {
+            self.persisted_projects = projects;
+            self.relayout_folders(cx);
+            cx.notify();
+        }
+    }
+
+    fn set_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_open == open {
+            return;
+        }
+        self.picker_open = open;
+        if open {
+            self.project_picker
+                .update(cx, |picker, cx| picker.reset(window, cx));
         }
         cx.notify();
     }
 
-    pub fn set_persisted_projects(&mut self, projects: std::collections::HashSet<String>) {
-        self.persisted_projects = projects;
-    }
-
-    fn on_add_project_click(
+    fn on_project_picker_event(
         &mut self,
-        _: &ClickEvent,
-        _window: &mut gpui_kit::Window,
+        _: Entity<ProjectPicker>,
+        event: &ProjectPickerEvent,
         cx: &mut Context<Self>,
     ) {
-        debug!("Add project button clicked");
-        cx.emit(SessionSidebarEvent::AddProjectRequested);
-    }
-
-    #[allow(dead_code)]
-    pub fn request_new_session(&mut self, cx: &mut Context<Self>) {
-        debug!("Requesting new chat session");
-        cx.emit(SessionSidebarEvent::NewSessionRequested {
-            name: None,
-            initial_project: None,
-        });
+        match event {
+            ProjectPickerEvent::Picked { project } => {
+                debug!("New session in {:?}", project);
+                cx.emit(SessionSidebarEvent::NewSessionRequested {
+                    name: None,
+                    initial_project: project.clone(),
+                });
+            }
+            ProjectPickerEvent::Dismissed => {}
+        }
+        self.picker_open = false;
+        cx.notify();
     }
 
     fn on_chat_list_item_event(
@@ -264,205 +350,147 @@ impl SessionSidebar {
         event: &SessionListItemEvent,
         cx: &mut Context<Self>,
     ) {
-        match event {
+        let event = match event {
             SessionListItemEvent::SessionClicked { session_id } => {
-                cx.emit(SessionSidebarEvent::SessionSelected {
+                SessionSidebarEvent::SessionSelected {
                     session_id: session_id.clone(),
-                });
+                }
             }
             SessionListItemEvent::DeleteClicked { session_id } => {
-                cx.emit(SessionSidebarEvent::SessionDeleteRequested {
+                SessionSidebarEvent::SessionDeleteRequested {
                     session_id: session_id.clone(),
-                });
+                }
             }
-        }
+            SessionListItemEvent::SettleClicked { session_id } => {
+                SessionSidebarEvent::SessionSettleRequested {
+                    session_id: session_id.clone(),
+                }
+            }
+            SessionListItemEvent::UnsettleClicked { session_id } => {
+                SessionSidebarEvent::SessionUnsettleRequested {
+                    session_id: session_id.clone(),
+                }
+            }
+        };
+        cx.emit(event);
     }
 
     // ── rendering helpers ────────────────────────────────────────────────
 
-    fn render_project_header(
-        &self,
-        group_idx: usize,
-        group: &ProjectGroup,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let project_name = group.name.clone();
-        let is_expanded = group.is_expanded;
-        let is_hovered = group.is_hovered;
-        let project_for_new = project_name.clone();
-        let is_temporary =
-            !self.persisted_projects.contains(&project_name) && project_name != "(no project)";
-
-        let folder_icon = if is_expanded {
-            "icons/file_icons/folder_open.svg"
-        } else {
-            "icons/file_icons/folder.svg"
-        };
-
-        // Fixed height so the plus icon appearing on hover doesn't shift layout
-        let header_height = px(28.);
-
+    /// The view switch and the two buttons: new session, new project.
+    fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let picker = self.project_picker.clone();
+        let input_focus = picker.read(cx).input_focus_handle(cx);
+        let sidebar = cx.entity().downgrade();
         div()
-            .id(SharedString::from(format!("project-hdr-{}", group_idx)))
-            .w_full()
-            .px_2()
-            .h(header_height)
-            .mt(if group_idx > 0 { px(6.) } else { px(0.) })
+            .flex_none()
+            // In line with the rows below: the list's 12px plus a row's 2px.
+            .px(px(14.))
+            .py(px(8.))
+            .bg(cx.theme().title_bar)
+            .border_b_1()
+            .border_color(cx.theme().sidebar_border)
             .flex()
             .items_center()
-            .gap_1()
-            .cursor_pointer()
-            .rounded_sm()
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if let Some(g) = this.groups.get_mut(group_idx)
-                    && g.is_hovered != *hovered
-                {
-                    g.is_hovered = *hovered;
-                    cx.notify();
-                }
-            }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(g) = this.groups.get_mut(group_idx) {
-                    g.is_expanded = !g.is_expanded;
-                    this.group_ui_state
-                        .insert(g.name.clone(), (g.is_expanded, g.show_all));
-                    cx.notify();
-                }
-            }))
-            // Folder icon
-            .child(
-                gpui_kit::svg()
-                    .flex_none()
-                    .size(rems(0.875))
-                    .path(folder_icon)
-                    .text_color(cx.theme().muted_foreground),
-            )
-            // Project name
+            .justify_between()
+            .gap_2()
+            .child(self.render_view_switch(window, cx))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_xs()
-                    .font_medium()
-                    .text_color(cx.theme().foreground)
-                    .child(SharedString::from(project_name)),
-            )
-            // Pin button for temporary projects (persist to projects.json)
-            .when(is_temporary, |el| {
-                let project_for_pin = group.name.clone();
-                el.child(
-                    div()
-                        .id(SharedString::from(format!("pin-project-{}", group_idx)))
-                        .flex_none()
-                        .size(rems(1.25))
-                        .rounded_sm()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .when(is_hovered, |el| el.hover(|s| s.bg(cx.theme().muted)))
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(
-                                "Temporary project — save to make it a first-class project \
-                                 that can be referenced by tool calls in other sessions",
-                            )
-                            .build(window, cx)
-                        })
-                        .child(
-                            gpui_kit::svg()
-                                .size(rems(0.75))
-                                .path("icons/pin.svg")
-                                .text_color(if is_hovered {
-                                    cx.theme().muted_foreground
-                                } else {
-                                    cx.theme().transparent
-                                }),
-                        )
-                        .on_click(cx.listener(move |_this, _, _, cx| {
-                            cx.stop_propagation();
-                            debug!("Persist project: {}", project_for_pin);
-                            cx.emit(SessionSidebarEvent::PersistProjectRequested {
-                                project_name: project_for_pin.clone(),
-                            });
-                        })),
-                )
-            })
-            // New session button (always present but invisible when not hovered,
-            // so it doesn't change layout)
-            .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "new-session-project-{}",
-                        group_idx
-                    )))
                     .flex_none()
-                    .size(rems(1.25))
-                    .rounded_sm()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .when(is_hovered, |el| el.hover(|s| s.bg(cx.theme().muted)))
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(format!("New chat in {}", project_for_new.clone()))
-                            .build(window, cx)
-                    })
+                    .gap_1()
                     .child(
-                        gpui_kit::svg()
-                            .size(rems(0.75))
-                            .path("icons/plus.svg")
-                            .text_color(if is_hovered {
-                                cx.theme().primary
-                            } else {
-                                cx.theme().transparent
-                            }),
+                        Popover::new("new-session-popover")
+                            .anchor(gpui_kit::Anchor::TopRight)
+                            .trigger(
+                                Button::new("new-session")
+                                    .icon(
+                                        Icon::default()
+                                            .path(SharedString::from(
+                                                "icons/message_circle_plus.svg",
+                                            ))
+                                            .with_size(Size::Medium),
+                                    )
+                                    .ghost()
+                                    .small()
+                                    .tooltip("New session"),
+                            )
+                            .open(self.picker_open)
+                            .on_open_change(move |open, window, cx| {
+                                let open = *open;
+                                let _ = sidebar
+                                    .update(cx, |this, cx| this.set_picker_open(open, window, cx));
+                            })
+                            .track_focus(&input_focus)
+                            .appearance(false)
+                            .content(move |_, _, cx| animated_surface(picker.clone(), cx)),
                     )
-                    .on_click({
-                        let project = group.name.clone();
-                        cx.listener(move |_this, _, _, cx| {
-                            cx.stop_propagation();
-                            debug!("New session in project: {}", project);
-                            cx.emit(SessionSidebarEvent::NewSessionRequested {
-                                name: None,
-                                initial_project: Some(project.clone()),
-                            });
-                        })
-                    }),
+                    .child(
+                        Button::new("new-project")
+                            .icon(
+                                Icon::default()
+                                    .path(SharedString::from("icons/folder_plus.svg"))
+                                    .with_size(Size::Medium),
+                            )
+                            .ghost()
+                            .small()
+                            .tooltip("New project")
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(SessionSidebarEvent::AddProjectRequested)
+                            })),
+                    ),
             )
     }
 
-    fn render_show_more(
-        &self,
-        group_idx: usize,
-        hidden_count: usize,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .id(SharedString::from(format!("show-more-{}", group_idx)))
-            .w_full()
-            .pl(px(26.))
-            .pr_2()
-            .py(px(4.))
-            .cursor_pointer()
-            .rounded_sm()
-            .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(g) = this.groups.get_mut(group_idx) {
-                    g.show_all = true;
-                    this.group_ui_state
-                        .insert(g.name.clone(), (g.is_expanded, g.show_all));
-                    cx.notify();
-                }
-            }))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground.opacity(0.8))
-                    .child(SharedString::from(format!("Show {} more", hidden_count))),
-            )
+    fn render_inbox(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if !self.inbox.is_empty() {
+            return self
+                .inbox
+                .iter()
+                .map(|item| item.clone().into_any_element())
+                .collect();
+        }
+        if self.sessions.is_empty() {
+            return vec![render_hint("No sessions yet", cx).into_any_element()];
+        }
+        vec![
+            div()
+                .px_2()
+                .py_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .text_xs()
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground.opacity(0.7))
+                        .child("Nothing needs you"),
+                )
+                .child(
+                    div()
+                        .id("inbox-browse-projects")
+                        .cursor_pointer()
+                        .text_color(cx.theme().link)
+                        .hover(|s| s.underline())
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.set_view(SidebarView::Projects, cx)),
+                        )
+                        .child("Browse projects"),
+                )
+                .into_any_element(),
+        ]
     }
+}
+
+fn render_hint(text: &'static str, cx: &App) -> impl IntoElement {
+    div()
+        .px_2()
+        .py_3()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground.opacity(0.7))
+        .child(text)
 }
 
 impl EventEmitter<SessionSidebarEvent> for SessionSidebar {}
@@ -474,39 +502,13 @@ impl Focusable for SessionSidebar {
 }
 
 impl Render for SessionSidebar {
-    fn render(
-        &mut self,
-        _window: &mut gpui_kit::Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        // Build the list of project groups with their items
-        let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
-
-        for (idx, group) in self.groups.iter().enumerate() {
-            // Project header
-            children.push(
-                self.render_project_header(idx, group, cx)
-                    .into_any_element(),
-            );
-
-            // Items (if expanded)
-            if group.is_expanded {
-                for item in group.visible_items() {
-                    children.push(item.clone().into_any_element());
-                }
-                // "Show more" link
-                if group.has_more() {
-                    children.push(
-                        self.render_show_more(idx, group.hidden_count(), cx)
-                            .into_any_element(),
-                    );
-                }
-            }
-        }
-
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let children = match self.view {
+            SidebarView::Inbox => self.render_inbox(cx),
+            SidebarView::Projects => self.render_folders(cx),
+        };
         let scale = cx.theme().font_size / px(16.);
 
-        // Full sidebar view
         div()
             .id("chat-sidebar")
             .flex_none()
@@ -517,66 +519,19 @@ impl Render for SessionSidebar {
             .border_color(cx.theme().sidebar_border)
             .flex()
             .flex_col()
-            // Header
-            .child(
-                div()
-                    .flex_none()
-                    .px(px(20.))
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_medium()
-                            .text_color(cx.theme().foreground)
-                            .child("Projects"),
-                    )
-                    .child(
-                        div()
-                            .id("add-project-btn")
-                            .size(rems(1.5))
-                            .rounded_sm()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(cx.theme().muted))
-                            .child(
-                                Icon::default()
-                                    .path(SharedString::from("icons/plus.svg"))
-                                    .with_size(Size::Small)
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .on_click(cx.listener(Self::on_add_project_click)),
-                    ),
-            )
-            // Scrollable list
+            .child(self.render_header(window, cx))
             .child(
                 div().flex_1().min_h(px(0.)).w_full().child(
                     div()
                         .id("chat-items")
                         .px(px(12.))
+                        .py(px(6.))
                         .w_full()
                         .h_full()
                         .overflow_y_scrollbar()
                         .flex()
                         .flex_col()
-                        .children(children)
-                        .when(self.groups.is_empty(), |s| {
-                            s.child(
-                                div()
-                                    .px_1()
-                                    .py_4()
-                                    .text_center()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("No projects yet"),
-                            )
-                        }),
+                        .children(children),
                 ),
             )
     }

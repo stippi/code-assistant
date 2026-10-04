@@ -1,8 +1,10 @@
 //! General settings section — theme, scale, and other global preferences.
 
 use code_assistant_core::session::idle_handoff::HandoffConfig;
-use gpui_kit::component::ActiveTheme;
+use code_assistant_core::session::lifecycle::LifecycleConfig;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{ActiveTheme, Sizable, Size};
 use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, div, prelude::*, px,
 };
@@ -14,6 +16,11 @@ pub struct GeneralSection {
     /// gets a prepared handoff; stored in `handoff.json`.
     handoff_threshold_input: Entity<InputState>,
     _handoff_threshold_subscription: Subscription,
+    /// Days of inactivity after which a session settles; stored in
+    /// `lifecycle.json` together with the merge rule.
+    settle_days_input: Entity<InputState>,
+    _settle_days_subscription: Subscription,
+    settle_on_merge: bool,
 }
 
 impl GeneralSection {
@@ -29,10 +36,57 @@ impl GeneralSection {
             window,
             Self::on_handoff_threshold_input,
         );
+        let lifecycle = LifecycleConfig::load();
+        let settle_days_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("14")
+                .default_value(lifecycle.auto_settle_after_days.to_string())
+        });
+        let settle_days_subscription =
+            cx.subscribe_in(&settle_days_input, window, Self::on_settle_days_input);
         Self {
             focus_handle: cx.focus_handle(),
             handoff_threshold_input,
             _handoff_threshold_subscription: subscription,
+            settle_days_input,
+            _settle_days_subscription: settle_days_subscription,
+            settle_on_merge: lifecycle.auto_settle_on_merge,
+        }
+    }
+
+    fn on_settle_days_input(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let Ok(days) = input.read(cx).value().trim().parse::<u32>() else {
+            return;
+        };
+        self.save_lifecycle_config(|config| config.auto_settle_after_days = days, cx);
+    }
+
+    fn set_settle_on_merge(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.settle_on_merge = enabled;
+        self.save_lifecycle_config(|config| config.auto_settle_on_merge = enabled, cx);
+        cx.notify();
+    }
+
+    /// Change one rule on top of the stored config, so the other stays as
+    /// another instance may have left it.
+    fn save_lifecycle_config(
+        &self,
+        change: impl FnOnce(&mut LifecycleConfig),
+        _cx: &mut Context<Self>,
+    ) {
+        let mut config = LifecycleConfig::load();
+        change(&mut config);
+        if let Err(e) = config.save() {
+            warn!("Failed to save the lifecycle settings: {e:#}");
         }
     }
 
@@ -179,6 +233,72 @@ impl Render for GeneralSection {
                                  input tokens stays idle for two minutes, the agent prepares \
                                  a /new prompt for a follow-up session while the prompt cache \
                                  is still warm. 0 turns this off.",
+                            ),
+                    ),
+            )
+            // Settled sessions
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Settled sessions"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().w(px(80.)).child(Input::new(&self.settle_days_input)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().foreground)
+                                    .child("days without activity"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Switch::new("settle-on-merge")
+                                    .checked(self.settle_on_merge)
+                                    .with_size(Size::Small)
+                                    .on_click({
+                                        let view = cx.entity();
+                                        move |enabled, _window, app| {
+                                            let enabled = *enabled;
+                                            view.update(app, |this, cx| {
+                                                this.set_settle_on_merge(enabled, cx);
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().foreground)
+                                    .child("Settle a session once its branch is merged"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                "A session that saw no activity for this many days leaves \
+                                 the inbox for the Settled shelf; 0 keeps every session in \
+                                 the inbox. The merge rule applies to sessions that work on \
+                                 a branch of their own and also recognises squash merges. \
+                                 Un-settling a session keeps it in the inbox until it is \
+                                 active again.",
                             ),
                     ),
             )

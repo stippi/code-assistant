@@ -587,13 +587,26 @@ impl Gpui {
                 // Update the project sidebar entity specifically
                 let persisted = self.persisted_projects.lock().unwrap().clone();
                 self.update_project_sidebar(cx, |sidebar, cx| {
-                    sidebar.set_persisted_projects(persisted);
+                    sidebar.set_persisted_projects(persisted, cx);
                     // Get updated sessions list
                     let updated_sessions = self.chat_sessions.lock().unwrap().clone();
-                    sidebar.update_sessions(updated_sessions, cx);
+                    let lifecycles = self.session_lifecycles.lock().unwrap().clone();
+                    sidebar.update_sessions(updated_sessions, lifecycles, cx);
                     cx.notify();
                 });
                 debug!("UI: Updated project sidebar for session metadata change");
+            }
+            UiEvent::UpdateSessionLifecycle {
+                session_id,
+                lifecycle,
+            } => {
+                self.session_lifecycles
+                    .lock()
+                    .unwrap()
+                    .insert(session_id.clone(), lifecycle.clone());
+                self.update_project_sidebar(cx, |sidebar, cx| {
+                    sidebar.update_session_lifecycle(session_id, lifecycle, cx);
+                });
             }
             UiEvent::UpdateSessionActivityState {
                 session_id,
@@ -605,13 +618,23 @@ impl Gpui {
                 );
 
                 // Update the project sidebar
+                let awaiting = self.sessions_awaiting_permission();
                 self.update_project_sidebar(cx, |sidebar, cx| {
                     sidebar.update_single_session_activity_state(
                         session_id.clone(),
                         activity_state.clone(),
                         cx,
                     );
+                    sidebar.set_awaiting_permission(awaiting, cx);
                 });
+                // The viewed session's agent stopped under the user's eyes:
+                // that counts as having seen the result.
+                if activity_state
+                    == code_assistant_core::session::instance::SessionActivityState::Idle
+                    && self.get_current_session_id().as_deref() == Some(session_id.as_str())
+                {
+                    self.cmd_mark_session_visited(session_id.clone());
+                }
 
                 // Update current session activity state for messages view
                 if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref()
@@ -803,10 +826,17 @@ impl Gpui {
                 *self.current_mcp_servers.lock().unwrap() = servers;
                 cx.refresh();
             }
-            // State tracked by the event bridge; the main screen renders it.
+            // State tracked by the event bridge; the main screen renders the
+            // prompt and the sidebar flags the asking session.
             UiEvent::RequestToolPermission { .. }
-            | UiEvent::ToolPermissionRequestResolved { .. }
-            | UiEvent::RequestNewContextTarget { .. }
+            | UiEvent::ToolPermissionRequestResolved { .. } => {
+                let awaiting = self.sessions_awaiting_permission();
+                self.update_project_sidebar(cx, |sidebar, cx| {
+                    sidebar.set_awaiting_permission(awaiting, cx);
+                });
+                cx.refresh();
+            }
+            UiEvent::RequestNewContextTarget { .. }
             | UiEvent::NewContextTargetResolved { .. }
             | UiEvent::HandoffPrepared { .. } => cx.refresh(),
             UiEvent::SessionHandedOff { .. } => {}

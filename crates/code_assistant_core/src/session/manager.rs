@@ -1456,6 +1456,11 @@ impl SessionManager {
                             activity_state: crate::session::instance::SessionActivityState::Idle,
                         },
                     );
+                    crate::session::lifecycle::refresh_branch_after_run(
+                        &manager_for_outcome,
+                        &session_id_clone,
+                    )
+                    .await;
                 }
                 Err(e) => {
                     error!("Agent failed for session {}: {}", session_id_clone, e);
@@ -1905,6 +1910,164 @@ impl SessionManager {
         }
 
         Ok(())
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────
+
+    /// Every session's lifecycle record (visits, settlement). Sessions
+    /// absent from the map have the default record.
+    pub fn session_lifecycles(
+        &self,
+    ) -> Result<HashMap<String, crate::session::lifecycle::SessionLifecycle>> {
+        self.persistence.load_lifecycles()
+    }
+
+    /// Change a session's lifecycle record and tell every view about it.
+    pub fn update_session_lifecycle(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&mut crate::session::lifecycle::SessionLifecycle),
+    ) -> Result<crate::session::lifecycle::SessionLifecycle> {
+        let lifecycle = self.persistence.update_lifecycle(session_id, update)?;
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionLifecycle {
+                session_id: session_id.to_string(),
+                lifecycle: lifecycle.clone(),
+            },
+        );
+        Ok(lifecycle)
+    }
+
+    /// Apply the settlement rules that need no lookup — inactivity, and a
+    /// pull request already known to be merged — to every candidate in one
+    /// write, then ask the views to reload their list. Run before the first
+    /// listing so a long-unused store does not paint a thousand rows that
+    /// settle one by one; the sweep calls it again every round.
+    pub fn settle_inactive(
+        &self,
+        config: &crate::session::lifecycle::LifecycleConfig,
+        now: std::time::SystemTime,
+    ) -> Result<Vec<(String, crate::session::lifecycle::SettledReason)>> {
+        use crate::session::lifecycle::{SettledReason, SettlementCandidate, auto_settlement};
+        let mut decisions: HashMap<String, (SettledReason, std::time::SystemTime)> = HashMap::new();
+        for candidate in self.settlement_candidates()? {
+            let reason = auto_settlement(
+                SettlementCandidate {
+                    lifecycle: &candidate.lifecycle,
+                    updated_at: candidate.updated_at,
+                    busy: candidate.busy,
+                    branch_merged: candidate.lifecycle.pull_request_merged(),
+                },
+                now,
+                config,
+            );
+            if let Some(reason) = reason {
+                // Inactive work ended when it was last touched; a merge
+                // settles it now.
+                let at = match reason {
+                    SettledReason::Inactivity => candidate.updated_at,
+                    _ => now,
+                };
+                decisions.insert(candidate.session_id, (reason, at));
+            }
+        }
+        if decisions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = decisions.keys().cloned().collect();
+        let changed = self.persistence.update_lifecycles(&ids, |id, lifecycle| {
+            let (reason, at) = decisions[id];
+            lifecycle.settle(reason, at);
+        })?;
+        if !changed.is_empty() {
+            self.events.publish_app(UiEvent::RefreshChatList);
+        }
+        Ok(changed
+            .into_iter()
+            .map(|(id, _)| (id.clone(), decisions[&id].0))
+            .collect())
+    }
+
+    /// Remember the branch a session works on when it has none yet: the
+    /// branch checked out in its project after a run, unless that is the
+    /// base branch. Sessions switched to a worktree already carry theirs.
+    /// Returns the repository root and branch to look a pull request up for.
+    pub fn record_observed_branch(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<(PathBuf, String)>> {
+        let Some(instance) = self.active_sessions.get(session_id) else {
+            return Ok(None);
+        };
+        let Some(path) = instance.session.config.effective_project_path().cloned() else {
+            return Ok(None);
+        };
+        let Ok(repo) = git::GitRepository::open(&path) else {
+            return Ok(None);
+        };
+        let root = repo.workdir().to_path_buf();
+        if let Some(branch) = &instance.session.config.branch {
+            return Ok(Some((root, branch.clone())));
+        }
+        let Some(branch) = repo.current_branch() else {
+            return Ok(None);
+        };
+        if repo
+            .default_base_branch()
+            .is_some_and(|base| crate::session::lifecycle::is_base_branch(&branch, &base))
+        {
+            return Ok(None);
+        }
+        let session = self.persistence.update_entry(session_id, |session| {
+            if session.config.branch.is_none() {
+                session.config.branch = Some(branch.clone());
+            }
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.config.branch = session.config.branch.clone();
+        }
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionMetadata {
+                metadata: session.metadata(),
+            },
+        );
+        Ok(Some((root, branch)))
+    }
+
+    /// The unsettled sessions, with what the automatic settlement rules need
+    /// to know about each. A session is busy while an agent runs it here or
+    /// in another process. The repository root is resolved only for sessions
+    /// on a branch, since only those face the merge rule.
+    pub fn settlement_candidates(&self) -> Result<Vec<crate::session::lifecycle::SettlementInput>> {
+        let lifecycles = self.persistence.load_lifecycles()?;
+        let mut candidates = Vec::new();
+        for metadata in self.persistence.list_chat_sessions()? {
+            let lifecycle = lifecycles.get(&metadata.id).cloned().unwrap_or_default();
+            if lifecycle.is_settled() {
+                continue;
+            }
+            let running_here = self
+                .active_sessions
+                .get(&metadata.id)
+                .is_some_and(|instance| !instance.get_activity_state().is_terminal());
+            let busy = running_here || self.is_agent_locked_externally(&metadata.id);
+            let repo_root = metadata
+                .branch
+                .as_ref()
+                .and_then(|_| self.resolve_project_path(&metadata.initial_project));
+            candidates.push(crate::session::lifecycle::SettlementInput {
+                session_id: metadata.id,
+                updated_at: metadata.updated_at,
+                lifecycle,
+                busy,
+                branch: metadata.branch,
+                repo_root,
+            });
+        }
+        Ok(candidates)
     }
 
     /// Resolve a project name to its filesystem path.

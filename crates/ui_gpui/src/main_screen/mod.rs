@@ -9,6 +9,7 @@ use crate::sidebar::{SessionSidebar, SessionSidebarEvent};
 use crate::input::{InputArea, InputAreaEvent};
 use crate::messages::MessagesView;
 use code_assistant_core::persistence::ChatMetadata;
+use code_assistant_core::session::lifecycle::SessionLifecycle;
 
 use crate::shared::plan_banner;
 use crate::shared::settings;
@@ -185,6 +186,7 @@ pub struct MainScreen {
     sidebar_collapsed: bool,
     current_session_id: Option<String>,
     sessions: Vec<ChatMetadata>,
+    session_lifecycles: HashMap<String, SessionLifecycle>,
     plan_collapsed_sessions: HashMap<String, bool>,
     plan_collapsed: bool,
     /// Throttles the composer activity reported to the core.
@@ -288,6 +290,7 @@ impl MainScreen {
             sidebar_collapsed: false, // Project sidebar is visible by default
             current_session_id: None,
             sessions: Vec::new(),
+            session_lifecycles: HashMap::new(),
 
             plan_collapsed_sessions: HashMap::new(),
             activity_reports: Default::default(),
@@ -860,6 +863,12 @@ impl MainScreen {
                 gpui.cmd_create_session(name.clone(), initial_project.clone());
             }
 
+            SessionSidebarEvent::SessionSettleRequested { session_id } => {
+                gpui.cmd_settle_session(session_id.clone());
+            }
+            SessionSidebarEvent::SessionUnsettleRequested { session_id } => {
+                gpui.cmd_unsettle_session(session_id.clone());
+            }
             SessionSidebarEvent::PersistProjectRequested { project_name } => {
                 gpui.cmd_persist_project(project_name.clone());
             }
@@ -1445,6 +1454,7 @@ impl Render for MainScreen {
 
         let (
             sessions,
+            session_lifecycles,
             current_session_id,
             current_activity_state,
             current_model,
@@ -1458,6 +1468,7 @@ impl Render for MainScreen {
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
             (
                 gpui.get_chat_sessions(),
+                gpui.get_session_lifecycles(),
                 gpui.get_current_session_id(),
                 gpui.current_session_activity_state.lock().unwrap().clone(),
                 gpui.get_current_model(),
@@ -1472,6 +1483,7 @@ impl Render for MainScreen {
         } else {
             (
                 Vec::new(),
+                HashMap::new(),
                 None,
                 None,
                 None,
@@ -1485,19 +1497,28 @@ impl Render for MainScreen {
             )
         };
 
+        // Saving a project changes no session; the sidebar ignores an
+        // unchanged set.
+        let persisted_projects = cx
+            .try_global::<Gpui>()
+            .map(|g| g.persisted_projects.lock().unwrap().clone())
+            .unwrap_or_default();
+        self.project_sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_persisted_projects(persisted_projects, cx);
+        });
+
         // Update project sidebar if needed
-        if self.sessions != sessions || self.current_session_id != current_session_id {
+        if self.sessions != sessions
+            || self.session_lifecycles != session_lifecycles
+            || self.current_session_id != current_session_id
+        {
             let previous_session_id = self.current_session_id.clone();
             self.sessions = sessions.clone();
+            self.session_lifecycles = session_lifecycles.clone();
             self.current_session_id = current_session_id.clone();
 
-            let persisted_projects = cx
-                .try_global::<Gpui>()
-                .map(|g| g.persisted_projects.lock().unwrap().clone())
-                .unwrap_or_default();
             self.project_sidebar.update(cx, |sidebar, cx| {
-                sidebar.set_persisted_projects(persisted_projects);
-                sidebar.update_sessions(sessions.clone(), cx);
+                sidebar.update_sessions(sessions.clone(), session_lifecycles, cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });
 
