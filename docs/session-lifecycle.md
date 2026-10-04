@@ -149,7 +149,9 @@ the list: every row names its project, and the header's "+" opens a
 popover (`sidebar/project_picker.rs`) with a search field and a
 "+ Project" button in its header and the projects below, most recently
 active first, "No project" last. Typing filters, Up/Down and Enter pick,
-Escape closes; the chosen project starts a session. A project
+Escape closes; the chosen project starts a session. The surface opens with
+the same 150ms fade-and-slide gpui-component gives its Select dropdowns;
+that motion is crate-private there, so the picker mirrors it. A project
 scope filter was tried and dropped: a filter that stays on hides exactly
 the cross-project attention the inbox exists for.
 

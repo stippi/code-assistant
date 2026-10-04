@@ -23,7 +23,7 @@ use gpui_kit::{
     Focusable, InteractiveElement, Pixels, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, canvas, div, ease_out_quint, prelude::*, px, rems,
 };
-use project_picker::{ProjectEntry, ProjectPicker, ProjectPickerEvent};
+use project_picker::{ProjectEntry, ProjectPicker, ProjectPickerEvent, animated_surface};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt};
@@ -643,7 +643,8 @@ impl Render for SessionSidebar {
                                     .update(cx, |this, cx| this.set_picker_open(open, window, cx));
                             })
                             .track_focus(&input_focus)
-                            .content(move |_, _, _| picker.clone())
+                            .appearance(false)
+                            .content(move |_, _, cx| animated_surface(picker.clone(), cx))
                     }),
             )
             // Scrollable list

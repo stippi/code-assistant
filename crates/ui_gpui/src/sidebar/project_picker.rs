@@ -6,12 +6,67 @@
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, ThemeStyled};
 use gpui_kit::{
-    Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::*, px,
-    rems,
+    Animation, AnimationExt, AnyElement, App, BoxShadow, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, InteractiveElement, KeyDownEvent, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, hsla, prelude::*, px, rems,
 };
+use std::time::Duration;
+
+/// How long the surface takes to settle, shadcn/ui's `animate-in` figure.
+const ENTER_DURATION: Duration = Duration::from_millis(150);
+/// Where the surface starts, above where it comes to rest.
+const ENTER_OFFSET: f32 = -8.;
+
+/// The picker on a popup surface with gpui-component's dropdown motion: over
+/// 150ms the surface fades in while sliding the last 8px down out of the
+/// trigger. GPUI has no group compositing, so the ring and shadow rise with
+/// the cube of the fade; otherwise they would show through the translucent
+/// panel as a dark slab. gpui-component keeps this motion crate-private
+/// (`popover::dropdown_popup`) for Select, Combobox and DatePicker; its
+/// plain `Popover` has none, so it is mirrored here.
+pub fn animated_surface(picker: Entity<ProjectPicker>, cx: &App) -> AnyElement {
+    // Read out here: the animation runs long after `cx` is gone.
+    let ring = cx.theme().foreground.alpha(0.1);
+    div()
+        .occlude()
+        .popover_style(cx)
+        .child(picker)
+        .with_animation(
+            "project-picker-enter",
+            Animation::new(ENTER_DURATION).with_easing(ease_out_cubic),
+            move |surface, delta| {
+                surface
+                    .top(px(ENTER_OFFSET * (1. - delta)))
+                    .opacity(delta)
+                    .shadow(surface_shadow(ring, delta * delta * delta))
+            },
+        )
+        .into_any_element()
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    1. - (1. - t).powi(3)
+}
+
+/// shadcn/ui's popup shadow — a hairline ring plus `shadow-md` — at `strength`
+/// of its full ink, as gpui-component draws it for its own dropdowns.
+fn surface_shadow(ring: Hsla, strength: f32) -> Vec<BoxShadow> {
+    let strength = strength.clamp(0., 1.);
+    let ink = hsla(0., 0., 0., 0.1 * strength);
+    vec![
+        BoxShadow::new(px(0.), px(0.), ring.alpha(ring.a * strength))
+            .blur_radius(px(0.))
+            .spread_radius(px(1.)),
+        BoxShadow::new(px(0.), px(4.), ink)
+            .blur_radius(px(3.))
+            .spread_radius(px(-1.)),
+        BoxShadow::new(px(0.), px(2.), ink)
+            .blur_radius(px(2.))
+            .spread_radius(px(-2.)),
+    ]
+}
 
 const ROW_HEIGHT: f32 = 28.;
 const LIST_PADDING: f32 = 4.;
