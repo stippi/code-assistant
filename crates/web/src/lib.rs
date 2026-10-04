@@ -12,6 +12,7 @@ mod tests;
 pub use browser::{BrowserLaunchConfig, BrowserProfile, DEFAULT_VIEWPORT, LaunchedBrowser};
 pub use browser_session::{
     BrowserSession, BrowserSessionInfo, BrowserSessionManager, DEFAULT_MAX_SESSIONS, TabInfo,
+    ViewGuard,
 };
 pub use chromiumoxide::layout::Point;
 pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};

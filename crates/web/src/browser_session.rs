@@ -21,6 +21,7 @@ use chromiumoxide::cdp::browser_protocol::target::{
 };
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
@@ -261,6 +262,10 @@ pub struct BrowserSession {
     ephemeral: bool,
     /// Follows the tabs for [`watch_tabs`](Self::watch_tabs) (aborted on drop).
     tracker: JoinHandle<()>,
+    /// The user has taken over; the agent keeps its hands off.
+    user_control: AtomicBool,
+    /// The user had control since the agent last asked.
+    user_interlude: AtomicBool,
 }
 
 impl Drop for BrowserSession {
@@ -299,6 +304,8 @@ impl BrowserSession {
             label: label.into(),
             ephemeral,
             tracker,
+            user_control: AtomicBool::new(false),
+            user_interlude: AtomicBool::new(false),
         };
         session.create_tab(true).await?;
         Ok(session)
@@ -317,6 +324,25 @@ impl BrowserSession {
     /// Whether this is an ephemeral throwaway browser (no persistent profile).
     pub fn is_ephemeral(&self) -> bool {
         self.ephemeral
+    }
+
+    /// Hand the browser to the user (`true`) or back to the agent.
+    pub fn set_user_control(&self, user: bool) {
+        self.user_control.store(user, Ordering::Relaxed);
+        if user {
+            self.user_interlude.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the user is controlling the browser right now.
+    pub fn user_in_control(&self) -> bool {
+        self.user_control.load(Ordering::Relaxed)
+    }
+
+    /// Whether the user had control since the last call: what the agent saw
+    /// before may be stale.
+    pub fn take_user_interlude(&self) -> bool {
+        !self.user_in_control() && self.user_interlude.swap(false, Ordering::Relaxed)
     }
 
     /// The tabs as they change: address, title, loading, which is active.
@@ -433,12 +459,19 @@ struct Entry {
     session: Arc<BrowserSession>,
     label: String,
     last_used: Instant,
+    /// Open [`ViewGuard`]s: a watched browser is not closed at the turn end.
+    viewers: usize,
+    /// A turn ended while it was watched: close it when the last viewer lets
+    /// go, unless the agent uses it again first.
+    close_deferred: bool,
 }
 
 /// Id-keyed registry of live [`BrowserSession`]s, one per agent session.
 pub struct BrowserSessionManager {
     max_sessions: usize,
     entries: Mutex<HashMap<u32, Entry>>,
+    /// Bumped whenever a session is added or removed.
+    changes: watch::Sender<u64>,
 }
 
 impl Default for BrowserSessionManager {
@@ -447,18 +480,74 @@ impl Default for BrowserSessionManager {
     }
 }
 
+/// Someone (a browser panel) is watching a session. Dropping the last guard
+/// closes a throwaway browser whose turn already ended.
+pub struct ViewGuard {
+    manager: std::sync::Weak<BrowserSessionManager>,
+    id: u32,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Drop for ViewGuard {
+    fn drop(&mut self) {
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        let orphaned = {
+            let mut entries = manager.entries.lock().unwrap();
+            let Some(entry) = entries.get_mut(&self.id) else {
+                return;
+            };
+            entry.viewers = entry.viewers.saturating_sub(1);
+            if entry.viewers == 0 && entry.close_deferred {
+                entries.remove(&self.id).map(|entry| entry.session)
+            } else {
+                None
+            }
+        };
+        if let Some(session) = orphaned {
+            manager.changed();
+            self.runtime.spawn(async move { session.close().await });
+        }
+    }
+}
+
 impl BrowserSessionManager {
     pub fn new(max_sessions: usize) -> Self {
         Self {
             max_sessions: max_sessions.max(1),
             entries: Mutex::new(HashMap::new()),
+            changes: watch::channel(0).0,
         }
+    }
+
+    /// Changes whenever a session is added or removed.
+    pub fn watch_changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn changed(&self) {
+        self.changes.send_modify(|generation| *generation += 1);
+    }
+
+    /// Watch the session labelled `label`, keeping it open past the end of
+    /// the turn while the guard lives. Must be called on a tokio runtime.
+    pub fn view(self: &Arc<Self>, label: &str) -> Option<ViewGuard> {
+        let mut entries = self.entries.lock().unwrap();
+        let (id, entry) = entries.iter_mut().find(|(_, entry)| entry.label == label)?;
+        entry.viewers += 1;
+        Some(ViewGuard {
+            manager: Arc::downgrade(self),
+            id: *id,
+            runtime: tokio::runtime::Handle::current(),
+        })
     }
 
     /// Track a session and return its id. Ids are random (not sequential) so an
     /// id from a restored transcript never silently aliases a fresh session.
     /// Evicting a session at the cap drops its `Arc`; if nothing else holds it,
-    /// the browser process is killed via `kill_on_drop`.
+    /// the browser process is killed via `kill_on_drop`. Watched sessions are
+    /// not evicted.
     pub fn register(&self, session: Arc<BrowserSession>, label: impl Into<String>) -> u32 {
         let mut entries = self.entries.lock().unwrap();
 
@@ -482,14 +571,19 @@ impl BrowserSessionManager {
                 session,
                 label,
                 last_used: Instant::now(),
+                viewers: 0,
+                close_deferred: false,
             },
         );
+        drop(entries);
+        self.changed();
         id
     }
 
     fn lru_victim(entries: &HashMap<u32, Entry>) -> Option<u32> {
         entries
             .iter()
+            .filter(|(_, entry)| entry.viewers == 0)
             .min_by_key(|(_, entry)| entry.last_used)
             .map(|(id, _)| *id)
     }
@@ -498,8 +592,7 @@ impl BrowserSessionManager {
     pub fn get(&self, id: u32) -> Option<Arc<BrowserSession>> {
         let mut entries = self.entries.lock().unwrap();
         let entry = entries.get_mut(&id)?;
-        entry.last_used = Instant::now();
-        Some(entry.session.clone())
+        Some(Self::touch(entry))
     }
 
     /// Look up a session by its label, refreshing its LRU timestamp. Tools key
@@ -508,8 +601,15 @@ impl BrowserSessionManager {
     pub fn get_by_label(&self, label: &str) -> Option<Arc<BrowserSession>> {
         let mut entries = self.entries.lock().unwrap();
         let entry = entries.values_mut().find(|entry| entry.label == label)?;
+        Some(Self::touch(entry))
+    }
+
+    /// A use: refresh the LRU timestamp; the session is in use again, so a
+    /// close deferred from an earlier turn is off.
+    fn touch(entry: &mut Entry) -> Arc<BrowserSession> {
         entry.last_used = Instant::now();
-        Some(entry.session.clone())
+        entry.close_deferred = false;
+        entry.session.clone()
     }
 
     /// Stop tracking the session with the given label and return it.
@@ -519,17 +619,25 @@ impl BrowserSessionManager {
             .iter()
             .find(|(_, entry)| entry.label == label)
             .map(|(id, _)| id)?;
-        entries.remove(&id).map(|entry| entry.session)
+        let removed = entries.remove(&id).map(|entry| entry.session);
+        drop(entries);
+        self.changed();
+        removed
     }
 
     /// Stop tracking a session and return it, so the caller can close it
     /// gracefully before dropping.
     pub fn remove(&self, id: u32) -> Option<Arc<BrowserSession>> {
-        self.entries
+        let removed = self
+            .entries
             .lock()
             .unwrap()
             .remove(&id)
-            .map(|entry| entry.session)
+            .map(|entry| entry.session);
+        if removed.is_some() {
+            self.changed();
+        }
+        removed
     }
 
     pub fn list(&self) -> Vec<BrowserSessionInfo> {
@@ -544,12 +652,23 @@ impl BrowserSessionManager {
             .collect()
     }
 
+    /// The tracked sessions with their labels, without counting as a use.
+    pub fn sessions(&self) -> Vec<(String, Arc<BrowserSession>)> {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .map(|entry| (entry.label.clone(), entry.session.clone()))
+            .collect()
+    }
+
     /// Gracefully close and forget every tracked session (flushing profiles).
     pub async fn close_all(&self) {
         let sessions: Vec<Arc<BrowserSession>> = {
             let mut entries = self.entries.lock().unwrap();
             entries.drain().map(|(_, entry)| entry.session).collect()
         };
+        self.changed();
         for session in sessions {
             session.close().await;
         }
@@ -558,19 +677,26 @@ impl BrowserSessionManager {
     /// Gracefully close and forget every *ephemeral* (throwaway) session,
     /// leaving persistent named profiles open. Called at the end of an agent
     /// turn so a forgotten `browser_navigate` on the default profile can't
-    /// leak a Chrome process or spam CDP errors between turns.
+    /// leak a Chrome process or spam CDP errors between turns. A watched
+    /// session closes when its last viewer lets go instead.
     pub async fn close_ephemeral(&self) {
         let sessions: Vec<Arc<BrowserSession>> = {
             let mut entries = self.entries.lock().unwrap();
             let ids: Vec<u32> = entries
-                .iter()
+                .iter_mut()
                 .filter(|(_, entry)| entry.session.is_ephemeral())
-                .map(|(id, _)| *id)
+                .filter_map(|(id, entry)| {
+                    entry.close_deferred = entry.viewers > 0;
+                    (entry.viewers == 0).then_some(*id)
+                })
                 .collect();
             ids.iter()
                 .filter_map(|id| entries.remove(id).map(|entry| entry.session))
                 .collect()
         };
+        if !sessions.is_empty() {
+            self.changed();
+        }
         for session in sessions {
             session.close().await;
         }

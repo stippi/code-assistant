@@ -1462,3 +1462,78 @@ async fn agent_presses_are_announced() {
 
     session.close().await;
 }
+
+/// A throwaway browser someone is watching survives the end of the turn and
+/// closes when the last viewer lets go — unless the agent used it again
+/// meanwhile, in which case the next turn end decides.
+#[tokio::test]
+async fn viewed_throwaway_browsers_outlive_the_turn() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let open = || async {
+        Arc::new(
+            BrowserSession::open(BrowserLaunchConfig::default(), "default")
+                .await
+                .unwrap(),
+        )
+    };
+    let manager = Arc::new(BrowserSessionManager::new(4));
+    let mut changes = manager.watch_changes();
+    manager.register(open().await, "default");
+    assert!(changes.has_changed().unwrap(), "registering is a change");
+    changes.mark_unchanged();
+
+    let viewer = manager.view("default").expect("a tracked browser");
+    let second = manager.view("default").unwrap();
+    manager.close_ephemeral().await;
+    assert_eq!(manager.list().len(), 1, "watched: kept past the turn");
+    drop(viewer);
+    assert_eq!(
+        manager.list().len(),
+        1,
+        "still watched by the second viewer"
+    );
+    drop(second);
+    let closed = async {
+        while !manager.list().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), closed)
+        .await
+        .expect("closed once nobody watches");
+    assert!(changes.has_changed().unwrap(), "closing is a change");
+
+    // Used by the agent again after the turn: releasing the view keeps it.
+    manager.register(open().await, "default");
+    let viewer = manager.view("default").unwrap();
+    manager.close_ephemeral().await;
+    assert!(manager.get_by_label("default").is_some());
+    drop(viewer);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(manager.list().len(), 1, "in use again, not orphaned");
+    manager.close_ephemeral().await;
+    assert!(
+        manager.list().is_empty(),
+        "unwatched: closed at the turn end"
+    );
+}
+
+/// The user can take over a browser; the next look by the agent learns that
+/// the user had it, once.
+#[tokio::test]
+async fn the_user_can_take_control() {
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    assert!(!session.user_in_control());
+    assert!(!session.take_user_interlude());
+    session.set_user_control(true);
+    assert!(session.user_in_control());
+    session.set_user_control(false);
+    assert!(!session.user_in_control());
+    assert!(session.take_user_interlude());
+    assert!(!session.take_user_interlude(), "reported once");
+    session.close().await;
+}
