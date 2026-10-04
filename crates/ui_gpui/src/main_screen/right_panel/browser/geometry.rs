@@ -9,7 +9,6 @@ use web::FrameMetadata;
 
 /// The page point (CSS px) under `at` (view px from the frame's top left),
 /// `None` outside the frame.
-#[allow(dead_code)] // Input forwarding uses it in the next step.
 pub fn to_page(meta: &FrameMetadata, view: (f32, f32), at: (f32, f32)) -> Option<(f64, f64)> {
     let (vw, vh) = (view.0 as f64, view.1 as f64);
     let (x, y) = (at.0 as f64, at.1 as f64);

@@ -5,23 +5,34 @@
 //! [`BrowserView`]: screencast frames, newest first, decoded off the main
 //! thread, plus a short pulse where the agent clicks. It follows the agent's
 //! active tab unless the user picked another one.
+//!
+//! The agent is in control by default. The user can take over: then the
+//! panel forwards mouse, wheel and keyboard ([`input`]) and the toolbar
+//! navigates ([`toolbar`]), while the agent's browser tools refuse to act.
 
 mod geometry;
+mod input;
+mod keys;
+mod toolbar;
 
 use crate::Gpui;
-use code_assistant_core::session::browsers::{BrowserEntry, BrowserKey, BrowserView};
+use code_assistant_core::session::browsers::{BrowserEntry, BrowserKey, BrowserView, ViewInput};
 use code_assistant_core::session::{EventPayload, StreamError};
 use code_assistant_core::ui::UiEvent;
 use futures::FutureExt as _;
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::input::InputState;
 use gpui_kit::{
-    App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ObjectFit,
-    ParentElement, Render, RenderImage, SharedString, StatefulInteractiveElement, Styled,
-    StyledImage, Task, Window, div, img, prelude::*, px,
+    App, Bounds, Context, ElementInputHandler, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, Pixels, Render, RenderImage, Styled,
+    StyledImage, Subscription, Task, Window, div, img, prelude::*, px,
 };
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use web::{FrameMetadata, Point, ScreencastFrame, TabInfo};
+use web::{FrameMetadata, Point, ScreencastFrame};
 
 /// The largest frame the panel asks for: the agent's viewport at 1×, which
 /// a retina panel of up to 640 pt shows sharp.
@@ -51,8 +62,19 @@ pub struct BrowserPanel {
     /// The browser and tab the frames come from.
     watching: Option<(BrowserKey, String)>,
     frame: Option<ShownFrame>,
+    /// Where the frame was drawn last, for mapping the mouse onto the page.
+    frame_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Agent presses (CSS px) and when they happened.
     presses: Vec<(Point, Instant)>,
+    /// Acts on the watched tab while the user has control.
+    input: Option<ViewInput>,
+    /// Mouse buttons the user holds (CDP mask) and keys sent down.
+    held_buttons: i64,
+    keys_down: HashSet<String>,
+    /// Text an input method is composing, not sent yet.
+    marked_text: Option<String>,
+    /// The address field while the user edits it.
+    address: Option<(Entity<InputState>, Subscription)>,
     listing_tasks: Vec<Task<()>>,
     view_task: Option<Task<()>>,
     focus_handle: FocusHandle,
@@ -69,7 +91,13 @@ impl BrowserPanel {
             picked_tab: None,
             watching: None,
             frame: None,
+            frame_bounds: Rc::default(),
             presses: Vec::new(),
+            input: None,
+            held_buttons: 0,
+            keys_down: HashSet::new(),
+            marked_text: None,
+            address: None,
             listing_tasks: Vec::new(),
             view_task: None,
             focus_handle: cx.focus_handle(),
@@ -163,6 +191,11 @@ impl BrowserPanel {
             .or_else(|| self.browsers.first())
     }
 
+    /// Whether the user controls the shown browser.
+    fn user_in_control(&self) -> bool {
+        self.shown_browser().is_some_and(|b| b.user_control)
+    }
+
     /// The tab shown: the picked one while it exists, else the active one.
     fn shown_tab(browser: &BrowserEntry, picked: Option<&str>) -> Option<String> {
         let tabs = &browser.tabs;
@@ -206,13 +239,22 @@ impl BrowserPanel {
 
     /// Show the view's frames and the agent's presses until the view ends.
     async fn pump(
-        mut view: BrowserView,
+        view: BrowserView,
         this: gpui_kit::WeakEntity<Self>,
         cx: &mut gpui_kit::AsyncApp,
     ) {
+        let BrowserView {
+            mut frames,
+            mut presses,
+            input,
+            ..
+        } = view;
+        if this.update(cx, |this, _| this.input = Some(input)).is_err() {
+            return;
+        }
         loop {
             futures::select_biased! {
-                press = view.presses.recv().fuse() => match press {
+                press = presses.recv().fuse() => match press {
                     Ok(at) => {
                         let shown = this.update(cx, |this, cx| {
                             this.presses.push((at, Instant::now()));
@@ -225,7 +267,7 @@ impl BrowserPanel {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
-                frame = view.frames.next().fuse() => {
+                frame = frames.next().fuse() => {
                     let Some(frame) = frame else { return };
                     let decoded = cx.background_spawn(async move { decode(&frame) }).await;
                     let shown = match decoded {
@@ -254,114 +296,13 @@ impl BrowserPanel {
     fn stop_watching(&mut self, cx: &mut Context<Self>) {
         self.view_task = None;
         self.watching = None;
+        self.input = None;
         self.presses.clear();
+        self.held_buttons = 0;
+        self.keys_down.clear();
         if let Some(old) = self.frame.take() {
             cx.drop_image(old.image, None);
         }
-    }
-
-    fn pick_browser(&mut self, key: BrowserKey, cx: &mut Context<Self>) {
-        self.picked_browser = Some(key);
-        self.picked_tab = None;
-        self.sync_view(cx);
-        cx.notify();
-    }
-
-    /// Watch tab `id`; picking the active tab follows the agent again.
-    fn pick_tab(&mut self, id: String, cx: &mut Context<Self>) {
-        let active = self
-            .shown_browser()
-            .and_then(|b| b.tabs.iter().find(|t| t.active))
-            .is_some_and(|t| t.id == id);
-        self.picked_tab = (!active).then_some(id);
-        self.sync_view(cx);
-        cx.notify();
-    }
-
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (muted, border) = (theme.muted_foreground, theme.border);
-        let browser = self.shown_browser();
-        let watched_tab = self.watching.as_ref().map(|(_, tab)| tab.as_str());
-        let tab: Option<&TabInfo> =
-            browser.and_then(|b| b.tabs.iter().find(|t| Some(t.id.as_str()) == watched_tab));
-
-        let browser_chips = (self.browsers.len() > 1).then(|| {
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_1()
-                .children(self.browsers.iter().map(|entry| {
-                    let key = entry.key.clone();
-                    let selected = browser.is_some_and(|b| b.key == key);
-                    chip(
-                        SharedString::from(format!("browser-{}", browser_label(&key))),
-                        browser_label(&key),
-                        selected,
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.pick_browser(key.clone(), cx)))
-                }))
-        });
-        let tab_chips = browser.filter(|b| b.tabs.len() > 1).map(|b| {
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_1()
-                .children(b.tabs.iter().map(|t| {
-                    let id = t.id.clone();
-                    let label = if t.title.is_empty() { &t.url } else { &t.title };
-                    chip(
-                        SharedString::from(format!("tab-{}", t.id)),
-                        truncate(label, 28),
-                        Some(t.id.as_str()) == watched_tab,
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.pick_tab(id.clone(), cx)))
-                }))
-        });
-        let address = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .min_w_0()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .px_2()
-                    .py_0p5()
-                    .rounded(px(4.))
-                    .bg(theme.muted)
-                    .text_xs()
-                    .text_color(theme.foreground)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(tab.map(|t| t.url.clone()).unwrap_or_default()),
-            )
-            .when(tab.is_some_and(|t| t.loading), |el| {
-                el.child(
-                    Icon::default()
-                        .path("icons/arrow_circle.svg")
-                        .with_size(Size::XSmall)
-                        .text_color(muted),
-                )
-            })
-            .when(browser.is_some_and(|b| b.user_control), |el| {
-                el.child(div().text_xs().text_color(muted).child("You have control"))
-            });
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_1p5()
-            .p_2()
-            .border_b_1()
-            .border_color(border)
-            .children(browser_chips)
-            .children(tab_chips)
-            .child(address)
     }
 
     fn render_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -393,50 +334,63 @@ impl BrowserPanel {
         let presses = self.presses.clone();
         let accent = cx.theme().primary;
         let aspect = (meta.device_width / meta.device_height.max(1.0)) as f32;
+        let frame_bounds = self.frame_bounds.clone();
+        // While the user has control, the frame takes text input (an input
+        // method composes into it) for the focused panel.
+        let input_handler = self
+            .user_in_control()
+            .then(|| (self.focus_handle.clone(), cx.entity()));
+
+        let surface = div()
+            .id("browser-frame")
+            .relative()
+            .w_full()
+            .aspect_ratio(aspect)
+            .child(img(image).size_full().object_fit(ObjectFit::Fill))
+            // Records where the frame is drawn, takes text input and paints
+            // a pulse where the agent clicked.
+            .child(
+                gpui_kit::canvas(
+                    move |bounds, _, _| {
+                        frame_bounds.set(Some(bounds));
+                        bounds
+                    },
+                    move |bounds, _, window, cx| {
+                        if let Some((focus, entity)) = input_handler {
+                            window.handle_input(
+                                &focus,
+                                ElementInputHandler::new(bounds, entity),
+                                cx,
+                            );
+                        }
+                        let view = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                        for (at, when) in &presses {
+                            let t = when.elapsed().as_secs_f32() / PULSE.as_secs_f32();
+                            let (x, y) = geometry::to_view(&meta, view, (at.x, at.y));
+                            let size = PULSE_SIZE * (0.4 + 0.6 * t);
+                            let origin = bounds.origin
+                                + gpui_kit::point(px(x - size / 2.), px(y - size / 2.));
+                            window.paint_quad(gpui_kit::quad(
+                                Bounds::new(origin, gpui_kit::size(px(size), px(size))),
+                                px(size / 2.),
+                                accent.opacity(0.35 * (1. - t)),
+                                px(2.),
+                                accent.opacity(1. - t),
+                                Default::default(),
+                            ));
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            );
 
         div()
             .size_full()
             .overflow_hidden()
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .aspect_ratio(aspect)
-                    .child(img(image).size_full().object_fit(ObjectFit::Fill))
-                    // Pulses where the agent clicked, placed once the frame's
-                    // drawn size is known.
-                    .child(
-                        gpui_kit::canvas(
-                            |bounds, _, _| bounds,
-                            move |bounds, _, window, _| {
-                                let view =
-                                    (f32::from(bounds.size.width), f32::from(bounds.size.height));
-                                for (at, when) in &presses {
-                                    let t = when.elapsed().as_secs_f32() / PULSE.as_secs_f32();
-                                    let (x, y) = geometry::to_view(&meta, view, (at.x, at.y));
-                                    let size = PULSE_SIZE * (0.4 + 0.6 * t);
-                                    let origin = bounds.origin
-                                        + gpui_kit::point(px(x - size / 2.), px(y - size / 2.));
-                                    window.paint_quad(gpui_kit::quad(
-                                        gpui_kit::Bounds::new(
-                                            origin,
-                                            gpui_kit::size(px(size), px(size)),
-                                        ),
-                                        px(size / 2.),
-                                        accent.opacity(0.35 * (1. - t)),
-                                        px(2.),
-                                        accent.opacity(1. - t),
-                                        Default::default(),
-                                    ));
-                                }
-                            },
-                        )
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full(),
-                    ),
-            )
+            .child(self.with_mouse_input(surface, cx))
             .into_any_element()
     }
 }
@@ -449,7 +403,7 @@ impl Focusable for BrowserPanel {
 
 impl Render for BrowserPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let panel = div()
             .size_full()
             .flex()
             .flex_col()
@@ -462,49 +416,9 @@ impl Render for BrowserPanel {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_frame(window, cx)),
-            )
+            );
+        self.with_key_input(panel, cx)
     }
-}
-
-/// A small selectable label for the browser and tab strips.
-fn chip(
-    id: SharedString,
-    label: impl Into<SharedString>,
-    selected: bool,
-    cx: &App,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let theme = cx.theme();
-    div()
-        .id(id)
-        .px_2()
-        .py_0p5()
-        .rounded(px(4.))
-        .text_xs()
-        .cursor_pointer()
-        .map(|el| {
-            if selected {
-                el.bg(theme.muted).text_color(theme.foreground)
-            } else {
-                el.text_color(theme.muted_foreground)
-                    .hover(|s| s.bg(theme.muted))
-            }
-        })
-        .child(label.into())
-}
-
-fn browser_label(key: &BrowserKey) -> String {
-    match &key.sub_agent {
-        None => key.profile.clone(),
-        Some(_) => format!("sub-agent · {}", key.profile),
-    }
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let cut: String = text.chars().take(max.saturating_sub(1)).collect();
-    format!("{cut}…")
 }
 
 /// Decode a JPEG frame into GPUI's BGRA image.
