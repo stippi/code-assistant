@@ -7,6 +7,7 @@ pub mod frame_profile;
 pub mod image;
 pub mod plan_banner;
 pub mod review_cache;
+pub mod segmented_switch;
 pub mod settings;
 pub mod theme;
 pub mod ui_state;

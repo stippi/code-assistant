@@ -12,10 +12,10 @@ mod project_order;
 mod project_picker;
 mod projects_view;
 mod session_item;
-mod view_switch;
 
 pub use session_item::{SessionListItem, SessionListItemEvent};
 
+use crate::shared::segmented_switch::segmented_switch;
 use crate::shared::settings::SidebarView;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
@@ -394,7 +394,24 @@ impl SessionSidebar {
             .items_center()
             .justify_between()
             .gap_2()
-            .child(self.render_view_switch(window, cx))
+            .child({
+                let sidebar = cx.entity().downgrade();
+                segmented_switch(
+                    "sidebar-view",
+                    &[
+                        (SidebarView::Inbox, "Active"),
+                        (SidebarView::Projects, "Projects"),
+                    ],
+                    self.view,
+                    move |view, _, cx| {
+                        sidebar
+                            .update(cx, |sidebar, cx| sidebar.set_view(view, cx))
+                            .ok();
+                    },
+                    window,
+                    cx,
+                )
+            })
             .child(
                 div()
                     .flex_none()
