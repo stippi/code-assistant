@@ -633,7 +633,7 @@ impl Render for SessionSidebar {
                                             .path(SharedString::from("icons/plus.svg"))
                                             .with_size(Size::Small),
                                     )
-                                    .ghost()
+                                    .primary()
                                     .xsmall(),
                             )
                             .open(self.picker_open)

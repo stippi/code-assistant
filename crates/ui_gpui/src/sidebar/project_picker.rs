@@ -13,6 +13,9 @@ use gpui_kit::{
     rems,
 };
 
+const ROW_HEIGHT: f32 = 28.;
+const LIST_PADDING: f32 = 4.;
+
 #[derive(Clone, Debug)]
 pub enum ProjectPickerEvent {
     /// Start a session in the project, or without one.
@@ -163,7 +166,7 @@ impl ProjectPicker {
             .id(SharedString::from(format!("project-pick-{index}")))
             .w_full()
             .px_2()
-            .h(px(28.))
+            .h(px(ROW_HEIGHT))
             .flex()
             .items_center()
             .gap_2()
@@ -218,11 +221,15 @@ impl Focusable for ProjectPicker {
 }
 
 impl Render for ProjectPicker {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows(cx);
         if self.highlighted >= rows.len() {
             self.highlighted = rows.len().saturating_sub(1);
         }
+        // The scroll area needs a definite height to scroll at all: the rows
+        // are 28px each, the list caps at half the window.
+        let content_height = rows.len().max(1) as f32 * ROW_HEIGHT + 2. * LIST_PADDING;
+        let list_height = px(content_height.min(f32::from(window.viewport_size().height) * 0.5));
         let row_elements: Vec<_> = rows
             .iter()
             .enumerate()
@@ -297,8 +304,8 @@ impl Render for ProjectPicker {
                 div()
                     .id("project-picker-list")
                     .w_full()
-                    .max_h(px(320.))
-                    .p_1()
+                    .h(list_height)
+                    .p(px(LIST_PADDING))
                     .overflow_y_scrollbar()
                     .flex()
                     .flex_col()
