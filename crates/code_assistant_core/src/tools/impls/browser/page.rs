@@ -546,4 +546,63 @@ mod tests {
         let cut = join_bounded(&lines, 8);
         assert!(cut.starts_with("- a\n…"), "{cut}");
     }
+
+    /// While the user controls the browser the agent's tools refuse to act;
+    /// afterwards the next result says the user had it and where the page is.
+    #[tokio::test]
+    async fn the_agent_keeps_its_hands_off_while_the_user_has_control() -> Result<()> {
+        let mut fixture = ToolTestFixture::new().with_browser_sessions();
+        let mut nav = NavigateInput {
+            url: data_url("<title>Start</title>start"),
+            target: Target::default(),
+        };
+        BrowserNavigateTool
+            .execute(&mut fixture.context(), &mut nav)
+            .await?;
+        let session = fixture
+            .browser_sessions()
+            .unwrap()
+            .get_by_label("default")
+            .unwrap();
+        let mut context = fixture.context();
+
+        session.set_user_control(true);
+        let mut read = GetPageTextInput {
+            max_chars: None,
+            target: Target::default(),
+        };
+        let out = BrowserGetPageTextTool
+            .execute(&mut context, &mut read)
+            .await?;
+        assert!(out.error.is_some());
+        assert!(
+            render(&out).contains("The user is controlling this browser"),
+            "{}",
+            render(&out)
+        );
+
+        // The user navigates, then hands back.
+        session
+            .active_tab()?
+            .navigate(&data_url("<title>Elsewhere</title>elsewhere"))
+            .await?;
+        session.set_user_control(false);
+        let out = render(
+            &BrowserGetPageTextTool
+                .execute(&mut context, &mut read)
+                .await?,
+        );
+        assert!(out.contains("elsewhere"), "{out}");
+        assert!(
+            out.contains("The user had control of the browser") && out.contains("Elsewhere"),
+            "{out}"
+        );
+        let out = render(
+            &BrowserGetPageTextTool
+                .execute(&mut context, &mut read)
+                .await?,
+        );
+        assert!(!out.contains("The user had control"), "said once: {out}");
+        Ok(())
+    }
 }

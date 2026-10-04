@@ -135,6 +135,12 @@ pub struct McpServerToggle {
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
+    /// The session's browsers changed: one opened or closed, a tab
+    /// navigated, finished loading or changed hands. Metadata only; frames go
+    /// through a [`crate::session::browsers::BrowserView`].
+    BrowsersChanged {
+        browsers: Vec<crate::session::browsers::BrowserEntry>,
+    },
     /// Display user input message with optional attachments
     DisplayUserInput {
         content: String,

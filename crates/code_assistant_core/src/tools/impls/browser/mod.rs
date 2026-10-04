@@ -142,6 +142,9 @@ pub(crate) struct Resolved {
     /// Tabs the page opened since the last call.
     adopted: Vec<String>,
     url_before: String,
+    /// Said ahead of the output when the user had the browser since the
+    /// agent last used it.
+    user_interlude: Option<String>,
 }
 
 impl Resolved {
@@ -167,17 +170,33 @@ impl Resolved {
                 )
             })?
         };
+        if session.user_in_control() {
+            return Err(BrowserOutput::failure(
+                &profile,
+                "The user is controlling this browser right now. Wait until they hand it back \
+                 (ask them if you need it sooner) before using browser tools on it.",
+            ));
+        }
+        let user_interlude = session.take_user_interlude();
         let adopted = session.sync_tabs().await.unwrap_or_default();
         let tab = session
             .tab(target.tab_id.as_deref())
             .map_err(|e| BrowserOutput::failure(&profile, e.to_string()))?;
-        let url_before = tab.location().await.0;
+        let (url_before, title) = tab.location().await;
+        let user_interlude = user_interlude.then(|| {
+            format!(
+                "The user had control of the browser since your last browser action; tab {} now \
+                 shows {url_before} — {title}. Read the page again before acting on earlier refs.",
+                tab.id()
+            )
+        });
         Ok(Self {
             profile,
             session,
             tab,
             adopted,
             url_before,
+            user_interlude,
         })
     }
 
@@ -185,6 +204,7 @@ impl Resolved {
     /// behalf, tabs the page opened, and a navigation the action caused.
     pub async fn notes(&mut self) -> Vec<String> {
         let mut notes = Vec::new();
+
         for dialog in self.tab.take_dialogs() {
             let verdict = if dialog.accepted {
                 "accepted"
@@ -222,9 +242,13 @@ impl Resolved {
     }
 
     pub fn output(&self, text: impl Into<String>) -> BrowserOutput {
+        let text = match &self.user_interlude {
+            Some(note) => format!("{note}\n\n{}", text.into()),
+            None => text.into(),
+        };
         BrowserOutput {
             profile: self.profile.clone(),
-            text: text.into(),
+            text,
             ..Default::default()
         }
     }

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use tools_core::permissions::PermissionTier;
 
 // New session management architecture
+pub mod browsers;
 pub mod event_stream;
 pub mod idle_handoff;
 pub mod instance;

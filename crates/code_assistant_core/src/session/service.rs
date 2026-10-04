@@ -2143,6 +2143,7 @@ async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::Own
     drop(permit);
 }
 
+mod browsers;
 mod lifecycle;
 mod new_context;
 

@@ -202,9 +202,10 @@ pub struct SessionInstance {
     pub pty_sessions: Arc<pty_session::PtySessionManager>,
 
     /// Live browser sessions started by this session's agents (`browser_*`
-    /// tools). Survives across agent runs so an authenticated browser can be
-    /// reused; dropping the instance kills any remaining browser processes.
-    pub browser_sessions: Arc<web::BrowserSessionManager>,
+    /// tools), sub-agents' included. Survives across agent runs so an
+    /// authenticated browser can be reused; dropping the instance kills any
+    /// remaining browser processes.
+    pub browsers: Arc<crate::session::browsers::SessionBrowsers>,
 
     /// Cancel flags for in-flight blocking (foreground) `execute_command`
     /// invocations, so the UI's terminal-card stop button can interrupt a
@@ -275,7 +276,7 @@ impl SessionInstance {
             handoff_prepared_for: None,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
-            browser_sessions: Arc::new(web::BrowserSessionManager::default()),
+            browsers: Arc::default(),
             terminal_interrupts: Arc::new(crate::tools::TerminalInterrupts::default()),
             agent_lock: None,
             last_ui_synced_path: initial_path,
