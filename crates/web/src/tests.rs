@@ -1537,3 +1537,129 @@ async fn the_user_can_take_control() {
     assert!(!session.take_user_interlude(), "reported once");
     session.close().await;
 }
+
+/// What a person does in a browser panel reaches the page as is: clicks,
+/// typing (shifted characters and text a key table does not know), editing
+/// commands, the wheel, and the address bar's navigation.
+#[tokio::test]
+async fn a_person_at_the_panel_clicks_types_and_scrolls() {
+    use super::{Button, UserInput};
+    use chromiumoxide::layout::Point;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&input_lab_url()).await.unwrap();
+    let field = Point { x: 150.0, y: 110.0 };
+    for input in [
+        UserInput::MouseMove {
+            at: field,
+            buttons: 0,
+            modifiers: 0,
+        },
+        UserInput::MouseDown {
+            at: field,
+            button: Button::Left,
+            click_count: 1,
+            buttons: 1,
+            modifiers: 0,
+        },
+        UserInput::MouseUp {
+            at: field,
+            button: Button::Left,
+            click_count: 1,
+            buttons: 0,
+            modifiers: 0,
+        },
+        UserInput::KeyDown {
+            key: "a".into(),
+            text: Some("a".into()),
+            modifiers: 0,
+            commands: vec![],
+        },
+        UserInput::KeyUp {
+            key: "a".into(),
+            modifiers: 0,
+        },
+        UserInput::KeyDown {
+            key: "1".into(),
+            text: Some("!".into()),
+            modifiers: 8,
+            commands: vec![],
+        },
+        UserInput::KeyUp {
+            key: "1".into(),
+            modifiers: 8,
+        },
+        UserInput::InsertText("ü".into()),
+    ] {
+        tab.user_input(input).await.unwrap();
+    }
+    assert_eq!(
+        tab.javascript("document.getElementById('f').value")
+            .await
+            .unwrap(),
+        "a!ü"
+    );
+
+    tab.user_input(UserInput::KeyDown {
+        key: "a".into(),
+        text: None,
+        modifiers: 4,
+        commands: vec!["selectAll".into()],
+    })
+    .await
+    .unwrap();
+    tab.user_input(UserInput::KeyDown {
+        key: "Backspace".into(),
+        text: None,
+        modifiers: 0,
+        commands: vec![],
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        tab.javascript("document.getElementById('f').value")
+            .await
+            .unwrap(),
+        ""
+    );
+
+    tab.user_input(UserInput::Wheel {
+        at: Point { x: 700.0, y: 150.0 },
+        dx: 0.0,
+        dy: 120.0,
+        modifiers: 0,
+    })
+    .await
+    .unwrap();
+    let scrolled = async {
+        while tab
+            .javascript("document.getElementById('scroller').scrollTop")
+            .await
+            .unwrap()
+            == "0"
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), scrolled)
+        .await
+        .expect("the wheel scrolls the box under it");
+
+    let other = data_url("<title>Other</title>other");
+    tab.user_input(UserInput::Navigate(other)).await.unwrap();
+    assert_eq!(tab.javascript("document.title").await.unwrap(), "Other");
+    tab.user_input(UserInput::History(-1)).await.unwrap();
+    tab.settle().await;
+    assert!(
+        tab.javascript("!!document.getElementById('f')")
+            .await
+            .unwrap()
+            == "true"
+    );
+    tab.user_input(UserInput::Reload).await.unwrap();
+
+    session.close().await;
+}

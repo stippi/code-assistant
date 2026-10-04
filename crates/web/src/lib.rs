@@ -9,6 +9,7 @@ mod screencast;
 mod tab;
 #[cfg(test)]
 mod tests;
+mod user_input;
 pub use browser::{BrowserLaunchConfig, BrowserProfile, DEFAULT_VIEWPORT, LaunchedBrowser};
 pub use browser_session::{
     BrowserSession, BrowserSessionInfo, BrowserSessionManager, DEFAULT_MAX_SESSIONS, TabInfo,
@@ -22,3 +23,4 @@ pub use screencast::{FrameMetadata, LiveFrames, ScreencastFrame};
 pub use tab::{
     BrowserTimeout, BrowserTimeouts, Button, HandledDialog, MAX_SCREENSHOT_EDGE, Screenshot, Tab,
 };
+pub use user_input::UserInput;

@@ -141,6 +141,15 @@ pub struct Screenshot {
     pub height: u32,
 }
 
+/// What a key event carries beyond its key: the text it types when that is
+/// not what the key table says (a shifted character, another layout), and
+/// editing commands (`selectAll`, `undo`, …) Chrome runs on macOS.
+#[derive(Default)]
+pub(crate) struct KeyExtras {
+    pub typed: Option<String>,
+    pub commands: Vec<String>,
+}
+
 /// A mouse button for [`Tab::click_point`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
@@ -240,7 +249,7 @@ impl Tab {
             .unwrap_or_default()
     }
 
-    fn timeouts(&self) -> BrowserTimeouts {
+    pub(crate) fn timeouts(&self) -> BrowserTimeouts {
         *self.timeouts.lock().unwrap()
     }
 
@@ -250,7 +259,7 @@ impl Tab {
     /// renderer is stuck: a click on a hung page was measured to block for
     /// minutes. Bounding each verb here keeps a busy or broken page from
     /// stalling the agent.
-    async fn bounded<T>(
+    pub(crate) async fn bounded<T>(
         &self,
         what: &'static str,
         limit: Duration,
@@ -875,7 +884,8 @@ impl Tab {
         let chords = parse_keys(keys)?;
         self.bounded("key press", self.timeouts().command, async {
             for ((def, modifiers), name) in chords.iter().zip(keys.split_whitespace()) {
-                self.key_event(def, *modifiers, true).await?;
+                self.key_event(def, *modifiers, true, KeyExtras::default())
+                    .await?;
                 let mut held = self.held_keys.lock().unwrap();
                 if !held.iter().any(|(code, _)| *code == def.code) {
                     held.push((def.code, name.to_string()));
@@ -891,7 +901,8 @@ impl Tab {
         let chords = parse_keys(keys)?;
         self.bounded("key release", self.timeouts().command, async {
             for (def, modifiers) in chords.iter().rev() {
-                self.key_event(def, *modifiers, false).await?;
+                self.key_event(def, *modifiers, false, KeyExtras::default())
+                    .await?;
                 self.held_keys
                     .lock()
                     .unwrap()
@@ -928,11 +939,13 @@ impl Tab {
         let limit = self.timeouts().command + duration;
         self.bounded("holding keys", limit, async {
             for (def, modifiers) in &chords {
-                self.key_event(def, *modifiers, true).await?;
+                self.key_event(def, *modifiers, true, KeyExtras::default())
+                    .await?;
             }
             tokio::time::sleep(duration).await;
             for (def, modifiers) in chords.iter().rev() {
-                self.key_event(def, *modifiers, false).await?;
+                self.key_event(def, *modifiers, false, KeyExtras::default())
+                    .await?;
             }
             Ok(())
         })
@@ -1043,15 +1056,25 @@ impl Tab {
 
     /// Press and release one key with the given modifier bitmask.
     async fn press(&self, def: &KeyDefinition, modifiers: i64) -> Result<()> {
-        self.key_event(def, modifiers, true).await?;
-        self.key_event(def, modifiers, false).await
+        self.key_event(def, modifiers, true, KeyExtras::default())
+            .await?;
+        self.key_event(def, modifiers, false, KeyExtras::default())
+            .await
     }
 
     /// Send one key-down (`down`) or key-up event.
-    async fn key_event(&self, def: &KeyDefinition, modifiers: i64, down: bool) -> Result<()> {
+    pub(crate) async fn key_event(
+        &self,
+        def: &KeyDefinition,
+        modifiers: i64,
+        down: bool,
+        extras: KeyExtras,
+    ) -> Result<()> {
         // Shift makes a letter uppercase in the emitted key/text.
         let shift = modifiers & 8 != 0;
-        let key_str = if def.key.len() == 1 && shift {
+        let key_str = if let Some(typed) = &extras.typed {
+            typed.clone()
+        } else if def.key.len() == 1 && shift {
             def.key.to_uppercase()
         } else {
             def.key.to_string()
@@ -1062,6 +1085,8 @@ impl Tab {
         let command_modifier = modifiers & (1 | 2 | 4) != 0;
         let text: Option<String> = if command_modifier {
             None
+        } else if let Some(typed) = extras.typed {
+            Some(typed)
         } else if let Some(t) = def.text {
             Some(t.to_string())
         } else if key_str.len() == 1 {
@@ -1088,6 +1113,9 @@ impl Tab {
         }
         if down && let Some(t) = text {
             event = event.text(t);
+        }
+        if down && !extras.commands.is_empty() {
+            event = event.commands(extras.commands);
         }
         let event = event
             .build()
@@ -1390,7 +1418,7 @@ fn parse_keys(keys: &str) -> Result<Vec<(&'static KeyDefinition, i64)>> {
 
 /// Look a key up by name, tolerating case and common aliases, since key names
 /// come from a model (`"return"`, `"Esc"`, `"pagedown"`, `"f5"`).
-fn key_definition(name: &str) -> Option<&'static KeyDefinition> {
+pub(crate) fn key_definition(name: &str) -> Option<&'static KeyDefinition> {
     if let Some(def) = get_key_definition(name) {
         return Some(def);
     }
@@ -1434,10 +1462,6 @@ impl Drop for Tab {
     }
 }
 
-/// Answer every JavaScript dialog on `page` as it opens. Chrome stalls the
-/// renderer while a dialog is open, so without this the click that raised it —
-/// and every CDP command after it — hangs until the per-command timeout, often
-/// for minutes. Each answered dialog is appended to `log`.
 /// Keep `loading` in step with the page's main frame, and `title` with the
 /// document once it loaded (Chrome does not report a title set while
 /// loading as a target change). Rings `changed` on every change.
@@ -1476,6 +1500,10 @@ async fn spawn_loading_tracker(
     }))
 }
 
+/// Answer every JavaScript dialog on `page` as it opens. Chrome stalls the
+/// renderer while a dialog is open, so without this the click that raised it —
+/// and every CDP command after it — hangs until the per-command timeout, often
+/// for minutes. Each answered dialog is appended to `log`.
 async fn spawn_dialog_handler(
     page: &Page,
     log: Arc<Mutex<Vec<HandledDialog>>>,
