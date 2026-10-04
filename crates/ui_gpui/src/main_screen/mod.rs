@@ -869,6 +869,9 @@ impl MainScreen {
             SessionSidebarEvent::SessionUnsettleRequested { session_id } => {
                 gpui.cmd_unsettle_session(session_id.clone());
             }
+            SessionSidebarEvent::PersistProjectRequested { project_name } => {
+                gpui.cmd_persist_project(project_name.clone());
+            }
             SessionSidebarEvent::SessionDeleteRequested { .. }
             | SessionSidebarEvent::AddProjectRequested => {
                 // Handled above
@@ -1494,6 +1497,16 @@ impl Render for MainScreen {
             )
         };
 
+        // Saving a project changes no session; the sidebar ignores an
+        // unchanged set.
+        let persisted_projects = cx
+            .try_global::<Gpui>()
+            .map(|g| g.persisted_projects.lock().unwrap().clone())
+            .unwrap_or_default();
+        self.project_sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_persisted_projects(persisted_projects, cx);
+        });
+
         // Update project sidebar if needed
         if self.sessions != sessions
             || self.session_lifecycles != session_lifecycles
@@ -1504,12 +1517,7 @@ impl Render for MainScreen {
             self.session_lifecycles = session_lifecycles.clone();
             self.current_session_id = current_session_id.clone();
 
-            let persisted_projects = cx
-                .try_global::<Gpui>()
-                .map(|g| g.persisted_projects.lock().unwrap().clone())
-                .unwrap_or_default();
             self.project_sidebar.update(cx, |sidebar, cx| {
-                sidebar.set_persisted_projects(persisted_projects, cx);
                 sidebar.update_sessions(sessions.clone(), session_lifecycles, cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });

@@ -1,7 +1,7 @@
 //! One session row in the sidebar.
 //!
-//! Two lines: the title, then the project and, when the session is not
-//! simply ready, what it is doing. Colour is reserved for rows that need the
+//! Two lines: the title, then the project (left out inside a project
+//! folder) and, when the session is not simply ready, what it is doing. Colour is reserved for rows that need the
 //! user now (approval), that broke (failed), or that move (working). A ready
 //! session the user has not looked at since it changed is unread: its title
 //! stands out and a dot marks it. Everything else recedes.
@@ -35,6 +35,15 @@ fn violet() -> Hsla {
     hsla(0.75, 0.55, 0.65, 1.)
 }
 
+/// What a session wants from the user, least urgent first; a collapsed
+/// project folder shows the most urgent of its sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Attention {
+    Unread,
+    Failed,
+    NeedsApproval,
+}
+
 /// Events emitted by individual SessionListItem components
 #[derive(Clone, Debug)]
 pub enum SessionListItemEvent {
@@ -55,6 +64,8 @@ pub struct SessionListItem {
     is_hovered: bool,
     activity_state: SessionActivityState,
     awaiting_permission: bool,
+    /// Whether the subtitle names the project; not inside a project folder.
+    show_project: bool,
     focus_handle: FocusHandle,
 }
 
@@ -72,6 +83,7 @@ impl SessionListItem {
             is_hovered: false,
             activity_state: SessionActivityState::Idle,
             awaiting_permission: false,
+            show_project: true,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -115,8 +127,29 @@ impl SessionListItem {
         }
     }
 
+    pub fn set_show_project(&mut self, show_project: bool, cx: &mut Context<Self>) {
+        if self.show_project != show_project {
+            self.show_project = show_project;
+            cx.notify();
+        }
+    }
+
     pub(super) fn status(&self) -> SessionStatus {
         SessionStatus::resolve(&self.activity_state, self.awaiting_permission)
+    }
+
+    /// A settled session is never unread: the user put it away.
+    fn is_unread(&self) -> bool {
+        !self.lifecycle.is_settled() && self.lifecycle.is_unread(self.metadata.updated_at)
+    }
+
+    pub(super) fn attention(&self) -> Option<Attention> {
+        match self.status() {
+            SessionStatus::NeedsApproval => Some(Attention::NeedsApproval),
+            SessionStatus::Failed => Some(Attention::Failed),
+            SessionStatus::Ready if self.is_unread() => Some(Attention::Unread),
+            _ => None,
+        }
     }
 
     fn git_glyph(&self, cx: &Context<Self>) -> Option<GitGlyph> {
@@ -250,7 +283,7 @@ impl Render for SessionListItem {
         };
         let status = self.status();
         let settled = self.lifecycle.is_settled();
-        let unread = !settled && self.lifecycle.is_unread(self.metadata.updated_at);
+        let unread = self.is_unread();
         let recede = settled || status.should_recede(unread, self.is_selected);
         let date = Self::format_relative_date(match self.lifecycle.settled {
             Some(settlement) => settlement.at,
@@ -276,7 +309,7 @@ impl Render for SessionListItem {
         let mut subtitle_color = cx.theme().muted_foreground.opacity(0.7);
         // What the pull request waits for, kept visible when the rest is cut.
         let mut attention: Option<(&'static str, Hsla)> = None;
-        if !self.metadata.initial_project.is_empty() {
+        if self.show_project && !self.metadata.initial_project.is_empty() {
             parts.push(self.metadata.initial_project.clone());
         }
         if let Some(label) = status_label {
@@ -304,7 +337,7 @@ impl Render for SessionListItem {
         }
         let subtitle = parts.join(" · ");
 
-        // Left column width: aligned with the section headers' icons.
+        // Left column width: room for the status or git glyph.
         let left_col_width = px(24.);
         // Fixed-width right column so actions and the date don't shift the title.
         let date_col_width = px(56.);

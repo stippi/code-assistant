@@ -40,9 +40,9 @@ recede.
 
 ## Settlement
 
-Finished work leaves the inbox by *settling* into a collapsed shelf. Nothing
-is deleted and a settled session comes back on request (hover action
-"Un-settle"). Three routes:
+Finished work leaves the inbox by *settling*. Nothing is deleted: a
+settled session stays in its project's folder and comes back on request
+(hover action "Un-settle"). Three routes:
 
 - **Manual** — the row's hover action "Settle".
 - **Inactivity** — no activity (`updated_at`) for
@@ -71,8 +71,8 @@ one. `SessionService::sweep_lifecycle`, run by
 frontend is open, calls it again and then handles the rest: it refreshes
 pull requests and runs the git merge checks outside the session lock and
 settles those sessions one by one. An inactivity settlement is dated by the
-session's last activity, so the settled shelf reads as "when work ended";
-a merge settles at the time it was noticed. Several processes sweeping at
+session's last activity, so a settled row's date reads as "when work
+ended"; a merge settles at the time it was noticed. Several processes sweeping at
 once is harmless: writes are idempotent and locked.
 
 ## Branch and pull request
@@ -123,8 +123,12 @@ its record. The rules live in `<config_dir>/lifecycle.json`
 
 ## Sidebar layout (GPUI)
 
+The sidebar has two views of the same sessions, switched in its header.
+The **Sessions** view is the inbox; the **Projects** view answers "where
+are my sessions for project X" and is where settled sessions are found.
+
 ```
-Sessions                      [+]   ← header; "+" opens the project picker
+[Sessions│Projects]      [💬+] [📁+]   ← view switch, new session, new project
   ⛉ Title                      2m
     project · Needs approval
   ◌ Title                     14m
@@ -133,29 +137,38 @@ Sessions                      [+]   ← header; "+" opens the project picker
     project · #220 feature/x · approved
   ⌥ Title                        3d    ← branch without a pull request
     project · feature/y
-
-▴ Settled (12)                      ← docked at the bottom
 ```
 
-The inbox order is static: newest first by creation time, re-anchored only
-when a session is un-settled. Activity changes emphasis, not position. The
-settled shelf is docked at the bottom of the sidebar and opens upward with
-a short animation, up to half the window height; beyond that its rows
-scroll, thirty at a time with "Show more". It orders by settlement time.
-T3 keeps its shelf inside the one scrolling list and pushes the header to
-the bottom with a flexible margin, so it only "opens as far as there is
-room" while the list is shorter than the viewport. Projects are not a structure of
-the list: every row names its project, and the header's "+" opens a
-popover (`sidebar/project_picker.rs`) with a search field and a
-"+ Project" button in its header and the projects below, most recently
-active first, "No project" last. Typing filters, Up/Down and Enter pick,
+**Inbox.** Every unsettled session, newest first by creation time,
+re-anchored only when a session is un-settled. Activity changes emphasis,
+not position. When nothing is left, a link leads to the projects view.
+
+**Projects.** A folder per project, holding all its sessions, settled ones
+receding, most recently updated first; five show before "Show more".
+Sessions without a project come last under "No project". Folders keep a
+stable order (`sidebar/project_order.rs`): a project seen for the first
+time goes to the top, the first start orders by activity, and otherwise
+only the user moves a folder, by dragging it onto another. A collapsed
+folder carries a dot for the most urgent thing inside: approval, failure,
+or an unread session. A folder's hover actions start a session in it and,
+for a temporary project, save it to projects.json. Rows leave out the
+project name here.
+
+The view, the collapsed folders and the folder order persist in
+`ui-settings.json` (`sidebar`). The stored order may name projects that
+are gone; they are skipped and keep their place should they return.
+
+**Header buttons.** The speech bubble opens a popover
+(`sidebar/project_picker.rs`) with a search field and the projects in the
+folder order, "No project" last. Typing filters, Up/Down and Enter pick,
 Escape closes; the chosen project starts a session. The surface opens with
 the same 150ms fade-and-slide gpui-component gives its Select dropdowns;
-that motion is crate-private there, so the picker mirrors it. A project
-scope filter was tried and dropped: a filter that stays on hides exactly
+that motion is crate-private there, so the picker mirrors it. The folder
+button adds a project. Both work in either view. A project scope filter
+on the inbox was tried and dropped: a filter that stays on hides exactly
 the cross-project attention the inbox exists for.
 
-The left column shows the status glyph while the agent is busy or blocked
+The left column of a row shows the status glyph while the agent is busy or blocked
 (shield: approval, alert: failed, spinner: working, lock: elsewhere) and
 otherwise the git glyph: pull request open (green), draft (grey), merged
 (violet), closed (red), or a plain branch (violet). Clicking a pull request
@@ -166,9 +179,7 @@ before the date.
 
 ## Deferred
 
-- Snooze, pinning and manual reordering.
-- Saving a temporary project to projects.json has no UI since the project
-  rows left the sidebar; `SessionService::persist_project` remains.
+- Snooze, pinning and manual reordering of sessions.
 - Per-session opt-out from automatic settlement (un-settle covers the
   common case).
 - Only GitHub pull requests; GitLab and others show the branch alone.

@@ -1,7 +1,7 @@
 //! The popover behind the sidebar's "+": where does the new session start?
 //!
-//! A header with a search field and the "+ Project" button, then the
-//! projects most recently active first and "No project" last. Typing
+//! A search field, then the projects in the sidebar's stable order and
+//! "No project" last. Typing
 //! filters, Up/Down move the highlight, Enter picks it, Escape closes.
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -74,10 +74,7 @@ const LIST_PADDING: f32 = 4.;
 #[derive(Clone, Debug)]
 pub enum ProjectPickerEvent {
     /// Start a session in the project, or without one.
-    Picked {
-        project: Option<String>,
-    },
-    AddProjectRequested,
+    Picked { project: Option<String> },
     /// Escape: close without picking.
     Dismissed,
 }
@@ -298,7 +295,7 @@ impl Render for ProjectPicker {
             .w(px(260.))
             .flex()
             .flex_col()
-            // Header: search and the add-project button
+            // Header: search
             .child(
                 div()
                     .flex_none()
@@ -310,7 +307,7 @@ impl Render for ProjectPicker {
                     .items_center()
                     .gap_2()
                     .child(
-                        div().flex_1().min_w_0().child(
+                        div().w_full().child(
                             Input::new(&self.input)
                                 .with_size(Size::Small)
                                 .prefix(
@@ -322,36 +319,6 @@ impl Render for ProjectPicker {
                                 .appearance(false)
                                 .p_0(),
                         ),
-                    )
-                    .child(
-                        div()
-                            .id("project-picker-add")
-                            .flex_none()
-                            .h(px(24.))
-                            .px_2()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(cx.theme().muted))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(ProjectPickerEvent::AddProjectRequested)
-                            }))
-                            .child(
-                                gpui_kit::svg()
-                                    .size(rems(0.7))
-                                    .path("icons/plus.svg")
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().foreground)
-                                    .child("Project"),
-                            ),
                     ),
             )
             // Filtered projects

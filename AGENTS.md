@@ -71,11 +71,12 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 ### Session Lifecycle
 - Visits and settlement per session live in `sessions/lifecycle.json`,
   never in the session file (`code_assistant_core::session::lifecycle`)
-- The GPUI sidebar is an inbox: unsettled sessions across projects, a
-  collapsed Settled shelf, project anchors at the bottom; rows derive a
-  `SessionStatus` from activity state plus open permission requests
+- The GPUI sidebar switches between an inbox (unsettled sessions across
+  projects) and project folders (all sessions, folders in a stable,
+  draggable order); rows derive a `SessionStatus` from activity state plus
+  open permission requests
 - Sessions settle by hand, after N idle days, or when their branch is
-  merged (`SessionService::sweep_settlement`); see `docs/session-lifecycle.md`
+  merged (`SessionService::sweep_lifecycle`); see `docs/session-lifecycle.md`
 
 ## Development Notes
 
