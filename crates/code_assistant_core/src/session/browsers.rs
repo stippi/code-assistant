@@ -13,9 +13,11 @@ use anyhow::{Result, anyhow};
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use std::sync::{Arc, Mutex, Weak};
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, mpsc};
 use tokio::task::JoinHandle;
-use web::{BrowserSession, BrowserSessionManager, LiveFrames, Point, TabInfo, ViewGuard};
+use web::{
+    BrowserSession, BrowserSessionManager, LiveFrames, Point, Tab, TabInfo, UserInput, ViewGuard,
+};
 
 /// Which browser of a session: a profile of the agent's or of a sub-agent's.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -214,7 +216,7 @@ impl SessionBrowsers {
             tab_id: tab.id().to_string(),
             frames: tab.live_frames(max_size),
             presses: tab.watch_agent_presses(),
-            _guard: guard,
+            input: ViewInput::spawn(session, tab, guard),
         })
     }
 }
@@ -279,8 +281,65 @@ pub struct BrowserView {
     pub frames: LiveFrames,
     /// Where the agent presses the mouse, in CSS pixels.
     pub presses: broadcast::Receiver<Point>,
-    _guard: ViewGuard,
+    pub input: ViewInput,
 }
+
+/// Acts on a viewed tab for the user. Clones share one queue, so events
+/// arrive in the order they were sent; input while the agent has control is
+/// dropped. The browser stays open while a clone lives.
+#[derive(Clone)]
+pub struct ViewInput {
+    queue: mpsc::UnboundedSender<UserInput>,
+    tab: Arc<Tab>,
+    runtime: tokio::runtime::Handle,
+    _guard: Arc<ViewGuard>,
+}
+
+impl ViewInput {
+    /// Start forwarding to `tab`. Needs a tokio runtime.
+    fn spawn(session: Arc<BrowserSession>, tab: Arc<Tab>, guard: ViewGuard) -> Self {
+        let (queue, mut events) = mpsc::unbounded_channel();
+        let runtime = tokio::runtime::Handle::current();
+        runtime.spawn({
+            let tab = tab.clone();
+            async move {
+                while let Some(input) = events.recv().await {
+                    if !session.user_in_control() {
+                        continue;
+                    }
+                    if let Err(e) = tab.user_input(input).await {
+                        tracing::debug!("browser panel input failed: {e:#}");
+                    }
+                }
+            }
+        });
+        Self {
+            queue,
+            tab,
+            runtime,
+            _guard: Arc::new(guard),
+        }
+    }
+
+    /// Forward one event (dropped unless the user has control).
+    pub fn send(&self, input: UserInput) {
+        let _ = self.queue.send(input);
+    }
+
+    /// The text selected on the page, in a text field or the document.
+    pub async fn selected_text(&self) -> Result<String> {
+        let tab = self.tab.clone();
+        self.runtime
+            .spawn(async move { tab.javascript(SELECTED_TEXT_JS).await })
+            .await?
+    }
+}
+
+/// The selection inside a focused text field, else the document's.
+const SELECTED_TEXT_JS: &str = "(() => { const el = document.activeElement; \
+    if (el && typeof el.selectionStart === 'number' && el.value !== undefined) \
+      return el.value.slice(el.selectionStart, el.selectionEnd); \
+    return String(getSelection()); })()";
 
 #[cfg(test)]
 mod tests {
@@ -408,5 +467,55 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), closed)
             .await
             .expect("closed once the view is gone");
+    }
+
+    /// Input from the panel reaches the page only while the user has
+    /// control, in order; the selection can be read for copying.
+    #[tokio::test]
+    async fn input_reaches_the_page_while_the_user_has_control() {
+        let browsers = Arc::new(SessionBrowsers::default());
+        let session = open(browsers.agent(), "default").await;
+        let tab = session.active_tab().unwrap();
+        tab.navigate("data:text/html,<input id=f autofocus>")
+            .await
+            .unwrap();
+        let view = browsers
+            .view(&agent_key("default"), None, (640, 400))
+            .unwrap();
+        let typed = || async {
+            tab.javascript("document.getElementById('f').value")
+                .await
+                .unwrap()
+        };
+        tab.javascript("document.getElementById('f').focus(); 0")
+            .await
+            .unwrap();
+
+        view.input
+            .send(web::UserInput::InsertText("agent's".into()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(typed().await, "", "ignored while the agent has control");
+
+        browsers
+            .set_user_control(&agent_key("default"), true)
+            .unwrap();
+        let input = view.input.clone();
+        for text in ["he", "llo"] {
+            input.send(web::UserInput::InsertText(text.into()));
+        }
+        let arrived = async {
+            while typed().await != "hello" {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), arrived)
+            .await
+            .expect("typed in order");
+
+        tab.javascript("document.getElementById('f').select(); 0")
+            .await
+            .unwrap();
+        assert_eq!(view.input.selected_text().await.unwrap(), "hello");
+        browsers.agent().close_all().await;
     }
 }
