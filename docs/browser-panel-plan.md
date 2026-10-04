@@ -21,7 +21,40 @@ Two stages, sharing one UI:
 
 A native web view (WKWebView via `wry`) is not recommended (see below).
 
-## Where we are today
+## Status
+
+Steps 1–4 of the order of work are built, behind the non-default Cargo
+feature `browser-panel` (`cargo run -p code-assistant --features
+browser-panel`). The `web` and core parts are compiled always; without a
+viewer they change nothing (browsers still close at the end of the turn).
+
+Decisions taken while building:
+
+- **Toggle**: a Cargo feature in `ui_gpui`, forwarded by `code_assistant`.
+- **Take-over**: while the user has control, browser tools fail at once with
+  "The user is controlling this browser right now"; the first result after
+  the hand-back starts with a note naming the tab's address.
+- **Sub-agents** keep their own `BrowserSessionManager` and register it with
+  the session's `SessionBrowsers` while they run; the panel lists them as
+  "sub-agent · profile".
+- **Lifetime**: a watched throwaway browser survives the turn end and closes
+  when the last viewer lets go, unless the agent used it again meanwhile.
+- **Input** is forwarded only after "Take control"; the address bar and
+  back/forward/reload work in that mode too.
+- **Auto-switch**: when the agent opens its first browser in a session, an
+  open panel switches to the browser view; a closed panel stays closed.
+
+Where the code lives: `web::screencast` (one pump per tab, live views plus
+recordings), `web::user_input`, `BrowserSession::watch_tabs`, the manager's
+view guards; `code_assistant_core::session::browsers` (listing, events,
+`BrowserView`) and `session/service/browsers.rs`; the GUI in
+`ui_gpui/src/main_screen/right_panel/browser/`.
+
+Open: the `<select>` overlay and file chooser (step 5) wait for the CEF
+decision, since CEF would bring native popups; the latency of the JPEG
+screencast is still to be judged in use.
+
+## Where we are today (before building)
 
 - **Ownership.** `SessionInstance::browser_sessions`
   (`code_assistant_core/src/session/instance.rs`) holds one
