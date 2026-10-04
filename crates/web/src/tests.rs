@@ -1254,3 +1254,96 @@ async fn recording_makes_a_contact_sheet_of_the_motion() {
 
     session.close().await;
 }
+
+/// A live view gets the page as soon as it subscribes — a still page paints
+/// nothing, so the first frame is captured — then every repaint, each frame
+/// within the size the viewer asked for and with the metadata that maps it
+/// back to CSS pixels. The screencast runs only while someone watches.
+#[tokio::test]
+async fn live_frames_follow_the_page_while_watched() {
+    use std::time::Duration;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&data_url(
+        "<html><body style=\"background:#00f\"></body></html>",
+    ))
+    .await
+    .unwrap();
+
+    let mut live = tab.live_frames((640, 400));
+    let first = tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .expect("a still page shows up without a repaint")
+        .expect("frames keep coming while watched");
+    let img = image::load_from_memory(&first.jpeg).unwrap().to_rgba8();
+    assert!(
+        img.width() <= 640 && img.height() <= 400,
+        "{:?}",
+        img.dimensions()
+    );
+    let center = img.get_pixel(img.width() / 2, img.height() / 2);
+    assert!(center[2] > 200 && center[0] < 60, "{center:?}");
+    assert_eq!(first.metadata.device_width.round(), 1280.0);
+    assert_eq!(first.metadata.device_height.round(), 800.0);
+    assert!(tab.is_screencasting());
+
+    // A repaint arrives as a new frame.
+    tab.navigate(&sliding_box_url(300)).await.unwrap();
+    let moving = tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &moving));
+
+    drop(live);
+    let stopped = async {
+        while tab.is_screencasting() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), stopped)
+        .await
+        .expect("the screencast stops when nobody watches");
+
+    session.close().await;
+}
+
+/// A recording and a live view share the tab's one screencast: recording
+/// while the panel watches still collects the motion, and the panel keeps
+/// getting frames afterwards.
+#[tokio::test]
+async fn recording_works_while_a_live_view_watches() {
+    use std::time::Duration;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&sliding_box_url(300)).await.unwrap();
+    let mut live = tab.live_frames((1280, 800));
+    tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let rec = tab.record(Duration::from_secs(1), 4, None).await.unwrap();
+    assert!(rec.received >= 9, "only {} frames", rec.received);
+    assert!(
+        rec.frames[1..].iter().any(|f| !f.repeated),
+        "{:?}",
+        rec.frames
+    );
+
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(5), live.next())
+            .await
+            .expect("the live view keeps getting frames after the recording")
+            .unwrap();
+    }
+    assert!(tab.is_screencasting());
+
+    session.close().await;
+}
