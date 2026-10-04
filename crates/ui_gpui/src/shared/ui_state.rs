@@ -222,6 +222,23 @@ impl UiStateStore {
         self.dirty.insert(session_id.to_owned());
     }
 
+    /// Which view the right panel last showed for a session.
+    #[cfg(feature = "browser-panel")]
+    pub fn get_right_panel_view(&mut self, session_id: &str) -> Option<String> {
+        self.get(session_id).right_panel_view
+    }
+
+    /// Persist which view the right panel shows for a session.
+    #[cfg(feature = "browser-panel")]
+    pub fn set_right_panel_view(&mut self, session_id: &str, view: &str) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.right_panel_view.as_deref() == Some(view) {
+            return;
+        }
+        state.right_panel_view = Some(view.to_owned());
+        self.dirty.insert(session_id.to_owned());
+    }
+
     /// Return the persisted review compare mode for a session.
     pub fn get_review_compare_mode(&mut self, session_id: &str) -> Option<String> {
         self.get(session_id).review_compare_mode

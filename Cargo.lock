@@ -11966,6 +11966,7 @@ dependencies = [
  "tokio",
  "tools_core",
  "tracing",
+ "web",
 ]
 
 [[package]]
