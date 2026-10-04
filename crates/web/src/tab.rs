@@ -27,8 +27,8 @@ use chromiumoxide::cdp::browser_protocol::input::{
 use chromiumoxide::cdp::browser_protocol::network::GetResponseBodyParams;
 use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite, TimeSinceEpoch};
 use chromiumoxide::cdp::browser_protocol::page::{
-    CaptureScreenshotFormat, CaptureScreenshotParams, DialogType, EventJavascriptDialogOpening,
-    HandleJavaScriptDialogParams, Viewport,
+    CaptureScreenshotFormat, CaptureScreenshotParams, DialogType, EventFrameStartedLoading,
+    EventFrameStoppedLoading, EventJavascriptDialogOpening, HandleJavaScriptDialogParams, Viewport,
 };
 use chromiumoxide::cdp::js_protocol::runtime::{
     CallArgument, CallFunctionOnParams, EvaluateParams, RemoteObject,
@@ -40,6 +40,7 @@ use futures::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::{Notify, broadcast};
 use tokio::task::JoinHandle;
 
 /// A JavaScript dialog (`alert` / `confirm` / `prompt` / `beforeunload`) the
@@ -124,6 +125,13 @@ pub struct Tab {
     held_keys: Mutex<Vec<(&'static str, String)>>,
     /// The tab's one screencast, shared by live views and recordings.
     screencast: Screencast,
+    /// Whether the main frame is loading and the title of the document it
+    /// last loaded, kept by `loading_task`.
+    loading: Arc<AtomicBool>,
+    loaded_title: Arc<Mutex<String>>,
+    loading_task: JoinHandle<()>,
+    /// Where the agent pressed a mouse button, for whoever shows the tab.
+    agent_presses: broadcast::Sender<Point>,
 }
 
 /// A captured screenshot and the size of its coordinate frame.
@@ -143,10 +151,12 @@ pub enum Button {
 
 impl Tab {
     /// Take over `page` as the tab `id`, answering its dialogs from now on.
+    /// `changed` rings when the tab starts or stops loading.
     pub(crate) async fn new(
         id: String,
         page: Page,
         timeouts: Arc<Mutex<BrowserTimeouts>>,
+        changed: Arc<Notify>,
     ) -> Result<Self> {
         let dialogs = Arc::new(Mutex::new(Vec::new()));
         let accept_dialogs = Arc::new(AtomicBool::new(false));
@@ -155,6 +165,10 @@ impl Tab {
         let log = Arc::new(PageLog::default());
         let log_tasks = crate::page_log::spawn_listeners(&page, log.clone()).await?;
         let screencast = Screencast::spawn(page.clone()).await?;
+        let loading = Arc::new(AtomicBool::new(false));
+        let loaded_title = Arc::new(Mutex::new(String::new()));
+        let loading_task =
+            spawn_loading_tracker(&page, loading.clone(), loaded_title.clone(), changed).await?;
         Ok(Self {
             id,
             page,
@@ -171,11 +185,32 @@ impl Tab {
             held_buttons: Mutex::new(0),
             held_keys: Mutex::new(Vec::new()),
             screencast,
+            loading,
+            loaded_title,
+            loading_task,
+            agent_presses: broadcast::channel(16).0,
         })
     }
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Points (CSS px) where the agent presses a mouse button from now on;
+    /// a double click is one press.
+    pub fn watch_agent_presses(&self) -> broadcast::Receiver<Point> {
+        self.agent_presses.subscribe()
+    }
+
+    /// Whether the page is still loading.
+    pub fn is_loading(&self) -> bool {
+        self.loading.load(Ordering::Relaxed)
+    }
+
+    /// The title of the document the tab last finished loading, empty while
+    /// it loads.
+    pub(crate) fn loaded_title(&self) -> String {
+        self.loaded_title.lock().unwrap().clone()
     }
 
     /// Dialogs answered since the last call.
@@ -546,6 +581,7 @@ impl Tab {
         click_count: u32,
         modifiers: i64,
     ) -> Result<()> {
+        let press = kind == DispatchMouseEventType::MousePressed && click_count <= 1;
         let mask = |b: Button| match b {
             Button::Left => 1,
             Button::Right => 2,
@@ -584,6 +620,9 @@ impl Tab {
             .await?;
         *self.mouse_at.lock().unwrap() = at;
         *self.held_buttons.lock().unwrap() = buttons;
+        if press {
+            let _ = self.agent_presses.send(at);
+        }
         Ok(())
     }
 
@@ -1388,6 +1427,7 @@ fn stale_ref(r: &str) -> anyhow::Error {
 impl Drop for Tab {
     fn drop(&mut self) {
         self.dialog_task.abort();
+        self.loading_task.abort();
         for task in &self.log_tasks {
             task.abort();
         }
@@ -1398,6 +1438,44 @@ impl Drop for Tab {
 /// renderer while a dialog is open, so without this the click that raised it —
 /// and every CDP command after it — hangs until the per-command timeout, often
 /// for minutes. Each answered dialog is appended to `log`.
+/// Keep `loading` in step with the page's main frame, and `title` with the
+/// document once it loaded (Chrome does not report a title set while
+/// loading as a target change). Rings `changed` on every change.
+async fn spawn_loading_tracker(
+    page: &Page,
+    loading: Arc<AtomicBool>,
+    title: Arc<Mutex<String>>,
+    changed: Arc<Notify>,
+) -> Result<JoinHandle<()>> {
+    let mut started = page.event_listener::<EventFrameStartedLoading>().await?;
+    let mut stopped = page.event_listener::<EventFrameStoppedLoading>().await?;
+    // The main frame has the target's id.
+    let main_frame = page.target_id().inner().clone();
+    let page = page.clone();
+    Ok(tokio::spawn(async move {
+        loop {
+            let now = tokio::select! {
+                Some(event) = started.next() => (*event.frame_id.inner() == main_frame).then_some(true),
+                Some(event) = stopped.next() => (*event.frame_id.inner() == main_frame).then_some(false),
+                else => break,
+            };
+            let Some(now) = now else { continue };
+            loading.store(now, Ordering::Relaxed);
+            let read = if now {
+                String::new()
+            } else {
+                tokio::time::timeout(Duration::from_secs(2), page.get_title())
+                    .await
+                    .ok()
+                    .and_then(|t| t.ok().flatten())
+                    .unwrap_or_default()
+            };
+            *title.lock().unwrap() = read;
+            changed.notify_one();
+        }
+    }))
+}
+
 async fn spawn_dialog_handler(
     page: &Page,
     log: Arc<Mutex<Vec<HandledDialog>>>,

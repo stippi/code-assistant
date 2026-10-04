@@ -15,19 +15,27 @@ use crate::browser::LaunchedBrowser;
 use crate::tab::{BrowserTimeouts, Tab};
 use anyhow::Result;
 use chromiumoxide::cdp::browser_protocol::network::CookieParam;
-use chromiumoxide::cdp::browser_protocol::target::GetTargetsParams;
+use chromiumoxide::cdp::browser_protocol::target::{
+    EventTargetCreated, EventTargetDestroyed, EventTargetInfoChanged, GetTargetsParams, TargetId,
+    TargetInfo,
+};
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
+use tokio::task::JoinHandle;
 
-/// A tab as listed for the model.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A tab as listed for the model and shown in a browser panel.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TabInfo {
     pub id: String,
     pub url: String,
     pub title: String,
     pub active: bool,
+    /// The page is still loading.
+    #[serde(default)]
+    pub loading: bool,
 }
 
 #[derive(Default)]
@@ -49,59 +57,27 @@ impl Tabs {
     }
 }
 
-/// One launched browser and its tabs, driven across many tool calls.
-pub struct BrowserSession {
-    /// Kept alive so the browser process outlives individual tool calls; behind
-    /// an async mutex only because a graceful [`close`](Self::close) needs `&mut`.
+/// What the session and its tab tracker share.
+struct Shared {
+    /// Kept alive so the browser process outlives individual tool calls;
+    /// behind an async mutex only because a graceful close needs `&mut`.
     launched: AsyncMutex<LaunchedBrowser>,
     tabs: Mutex<Tabs>,
-    label: String,
-    /// Whether this is an ephemeral throwaway browser (no persistent profile).
-    /// Ephemeral sessions are dropped at the end of an agent turn (see
-    /// [`BrowserSessionManager::close_ephemeral`]) so a forgotten
-    /// `browser_navigate` on the default profile can't leak a Chrome process;
-    /// persistent named profiles survive across turns on purpose.
-    ephemeral: bool,
     timeouts: Arc<Mutex<BrowserTimeouts>>,
+    /// The tabs as last published by the tracker.
+    state: watch::Sender<Vec<TabInfo>>,
+    /// Rings when the tab list, the active tab or a tab's loading changed.
+    changed: Arc<Notify>,
+    /// Held while adopting, so the tracker and a tool call do not adopt the
+    /// same page twice.
+    adopting: AsyncMutex<()>,
+    /// Tabs adopted but not yet returned by [`BrowserSession::sync_tabs`],
+    /// whoever adopted them.
+    unreported: Mutex<Vec<String>>,
 }
 
-impl BrowserSession {
-    /// Launch a browser for `config` with one blank tab.
-    pub async fn open(
-        config: crate::browser::BrowserLaunchConfig,
-        label: impl Into<String>,
-    ) -> Result<Self> {
-        let ephemeral = matches!(config.profile, crate::browser::BrowserProfile::Ephemeral);
-        let launched = LaunchedBrowser::launch(config).await?;
-        let session = Self {
-            launched: AsyncMutex::new(launched),
-            tabs: Mutex::new(Tabs::default()),
-            label: label.into(),
-            ephemeral,
-            timeouts: Arc::new(Mutex::new(BrowserTimeouts::default())),
-        };
-        session.create_tab(true).await?;
-        Ok(session)
-    }
-
-    /// Use other limits than [`BrowserTimeouts::default`], for every tab.
-    pub fn with_timeouts(self, timeouts: BrowserTimeouts) -> Self {
-        *self.timeouts.lock().unwrap() = timeouts;
-        self
-    }
-
-    pub fn label(&self) -> &str {
-        &self.label
-    }
-
-    /// Whether this is an ephemeral throwaway browser (no persistent profile).
-    pub fn is_ephemeral(&self) -> bool {
-        self.ephemeral
-    }
-
-    /// Open a new blank tab. `foreground` makes it the tab that calls without
-    /// a tab id target.
-    pub async fn create_tab(&self, foreground: bool) -> Result<Arc<Tab>> {
+impl Shared {
+    async fn create_tab(&self, foreground: bool) -> Result<Arc<Tab>> {
         let page = self
             .launched
             .lock()
@@ -110,21 +86,29 @@ impl BrowserSession {
             .new_page("about:blank")
             .await?;
         let id = self.tabs.lock().unwrap().mint_id();
-        let tab = Arc::new(Tab::new(id.clone(), page, self.timeouts.clone()).await?);
+        let tab = Arc::new(
+            Tab::new(
+                id.clone(),
+                page,
+                self.timeouts.clone(),
+                self.changed.clone(),
+            )
+            .await?,
+        );
         let mut tabs = self.tabs.lock().unwrap();
         tabs.list.push(tab.clone());
         if foreground || tabs.active.is_none() {
             tabs.active = Some(id);
         }
+        drop(tabs);
+        self.changed.notify_one();
         Ok(tab)
     }
 
-    /// Adopt tabs the page opened itself (`target=_blank`, `window.open`) and
-    /// forget tabs that were closed. Returns the ids of newly adopted tabs.
-    ///
-    /// Only pages with an opener are adopted: Chrome's own initial blank tab
-    /// has none and stays out of the list.
-    pub async fn sync_tabs(&self) -> Result<Vec<String>> {
+    /// Adopt tabs the page opened and forget closed ones; adopted tabs are
+    /// added to `unreported`.
+    async fn sync_tabs(&self) -> Result<()> {
+        let _adopting = self.adopting.lock().await;
         let (pages, opened) = {
             let launched = self.launched.lock().await;
             let pages = launched.browser.pages().await?;
@@ -154,12 +138,21 @@ impl BrowserSession {
             .filter(|p| !known.contains(p.target_id()) && opened.contains(p.target_id()))
         {
             let id = self.tabs.lock().unwrap().mint_id();
-            let tab = Arc::new(Tab::new(id.clone(), page.clone(), self.timeouts.clone()).await?);
+            let tab = Arc::new(
+                Tab::new(
+                    id.clone(),
+                    page.clone(),
+                    self.timeouts.clone(),
+                    self.changed.clone(),
+                )
+                .await?,
+            );
             self.tabs.lock().unwrap().list.push(tab);
             adopted.push(id);
         }
         let open: Vec<_> = pages.iter().map(|p| p.target_id().clone()).collect();
         let mut tabs = self.tabs.lock().unwrap();
+        let before = tabs.list.len();
         tabs.list.retain(|t| open.contains(t.page().target_id()));
         let active_gone = tabs
             .active
@@ -168,12 +161,191 @@ impl BrowserSession {
         if active_gone {
             tabs.active = tabs.list.last().map(|t| t.id().to_string());
         }
-        Ok(adopted)
+        if !adopted.is_empty() || tabs.list.len() != before {
+            self.changed.notify_one();
+        }
+        self.unreported.lock().unwrap().extend(adopted);
+        Ok(())
+    }
+
+    /// Publish the tabs, with the addresses and titles last reported for
+    /// their targets.
+    fn publish(&self, targets: &HashMap<TargetId, (String, String)>) {
+        let tabs = self.tabs.lock().unwrap();
+        let list: Vec<TabInfo> = tabs
+            .list
+            .iter()
+            .map(|tab| {
+                let (url, mut title) = targets
+                    .get(tab.page().target_id())
+                    .cloned()
+                    .unwrap_or_default();
+                let loaded_title = tab.loaded_title();
+                if !loaded_title.is_empty() {
+                    title = loaded_title;
+                }
+                TabInfo {
+                    id: tab.id().to_string(),
+                    url,
+                    title,
+                    active: tabs.active.as_deref() == Some(tab.id()),
+                    loading: tab.is_loading(),
+                }
+            })
+            .collect();
+        drop(tabs);
+        self.state.send_if_modified(|state| {
+            let changed = *state != list;
+            *state = list;
+            changed
+        });
+    }
+}
+
+/// Keep [`Shared::state`] current: follow the browser's target events
+/// (address, title, tabs the page opened or closed) and the session's own
+/// changes.
+async fn track_tabs(shared: Arc<Shared>) -> Result<()> {
+    let (mut created, mut info_changed, mut destroyed) = {
+        let launched = shared.launched.lock().await;
+        let browser = &launched.browser;
+        (
+            browser.event_listener::<EventTargetCreated>().await?,
+            browser.event_listener::<EventTargetInfoChanged>().await?,
+            browser.event_listener::<EventTargetDestroyed>().await?,
+        )
+    };
+    let mut targets: HashMap<TargetId, (String, String)> = HashMap::new();
+    loop {
+        // A page target the session does not know yet may be a tab the page
+        // opened: try to adopt it.
+        let mut unknown_page = |info: &TargetInfo| {
+            targets.insert(
+                info.target_id.clone(),
+                (info.url.clone(), info.title.clone()),
+            );
+            info.r#type == "page"
+                && info.opener_id.is_some()
+                && !shared
+                    .tabs
+                    .lock()
+                    .unwrap()
+                    .list
+                    .iter()
+                    .any(|t| *t.page().target_id() == info.target_id)
+        };
+        let sync = tokio::select! {
+            Some(event) = created.next() => unknown_page(&event.target_info),
+            Some(event) = info_changed.next() => unknown_page(&event.target_info),
+            Some(event) = destroyed.next() => targets.remove(&event.target_id).is_some(),
+            _ = shared.changed.notified() => false,
+            else => break,
+        };
+        if sync && let Err(e) = shared.sync_tabs().await {
+            tracing::debug!("browser: cannot sync tabs: {e}");
+        }
+        shared.publish(&targets);
+    }
+    Ok(())
+}
+
+/// One launched browser and its tabs, driven across many tool calls.
+pub struct BrowserSession {
+    shared: Arc<Shared>,
+    label: String,
+    /// Whether this is an ephemeral throwaway browser (no persistent profile).
+    /// Ephemeral sessions are dropped at the end of an agent turn (see
+    /// [`BrowserSessionManager::close_ephemeral`]) so a forgotten
+    /// `browser_navigate` on the default profile can't leak a Chrome process;
+    /// persistent named profiles survive across turns on purpose.
+    ephemeral: bool,
+    /// Follows the tabs for [`watch_tabs`](Self::watch_tabs) (aborted on drop).
+    tracker: JoinHandle<()>,
+}
+
+impl Drop for BrowserSession {
+    fn drop(&mut self) {
+        self.tracker.abort();
+    }
+}
+
+impl BrowserSession {
+    /// Launch a browser for `config` with one blank tab.
+    pub async fn open(
+        config: crate::browser::BrowserLaunchConfig,
+        label: impl Into<String>,
+    ) -> Result<Self> {
+        let ephemeral = matches!(config.profile, crate::browser::BrowserProfile::Ephemeral);
+        let launched = LaunchedBrowser::launch(config).await?;
+        let shared = Arc::new(Shared {
+            launched: AsyncMutex::new(launched),
+            tabs: Mutex::new(Tabs::default()),
+            timeouts: Arc::new(Mutex::new(BrowserTimeouts::default())),
+            state: watch::channel(Vec::new()).0,
+            changed: Arc::new(Notify::new()),
+            adopting: AsyncMutex::new(()),
+            unreported: Mutex::default(),
+        });
+        let tracker = tokio::spawn({
+            let shared = shared.clone();
+            async move {
+                if let Err(e) = track_tabs(shared).await {
+                    tracing::warn!("browser: tab tracking stopped: {e}");
+                }
+            }
+        });
+        let session = Self {
+            shared,
+            label: label.into(),
+            ephemeral,
+            tracker,
+        };
+        session.create_tab(true).await?;
+        Ok(session)
+    }
+
+    /// Use other limits than [`BrowserTimeouts::default`], for every tab.
+    pub fn with_timeouts(self, timeouts: BrowserTimeouts) -> Self {
+        *self.shared.timeouts.lock().unwrap() = timeouts;
+        self
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Whether this is an ephemeral throwaway browser (no persistent profile).
+    pub fn is_ephemeral(&self) -> bool {
+        self.ephemeral
+    }
+
+    /// The tabs as they change: address, title, loading, which is active.
+    /// Tabs the page opens join without a tool call.
+    pub fn watch_tabs(&self) -> watch::Receiver<Vec<TabInfo>> {
+        self.shared.state.subscribe()
+    }
+
+    /// Open a new blank tab. `foreground` makes it the tab that calls without
+    /// a tab id target.
+    pub async fn create_tab(&self, foreground: bool) -> Result<Arc<Tab>> {
+        self.shared.create_tab(foreground).await
+    }
+
+    /// Adopt tabs the page opened itself (`target=_blank`, `window.open`) and
+    /// forget tabs that were closed. Returns the ids of newly adopted tabs.
+    ///
+    /// Only pages with an opener are adopted: Chrome's own initial blank tab
+    /// has none and stays out of the list.
+    /// Tabs the session adopted on its own since the last call are
+    /// returned too.
+    pub async fn sync_tabs(&self) -> Result<Vec<String>> {
+        self.shared.sync_tabs().await?;
+        Ok(std::mem::take(&mut *self.shared.unreported.lock().unwrap()))
     }
 
     /// The tab `id`, or the active tab when `id` is `None`.
     pub fn tab(&self, id: Option<&str>) -> Result<Arc<Tab>> {
-        let tabs = self.tabs.lock().unwrap();
+        let tabs = self.shared.tabs.lock().unwrap();
         let id = match id {
             Some(id) => id,
             None => tabs
@@ -193,7 +365,8 @@ impl BrowserSession {
     /// Make tab `id` the one calls without a tab id target.
     pub fn select_tab(&self, id: &str) -> Result<()> {
         let tab = self.tab(Some(id))?;
-        self.tabs.lock().unwrap().active = Some(tab.id().to_string());
+        self.shared.tabs.lock().unwrap().active = Some(tab.id().to_string());
+        self.shared.changed.notify_one();
         Ok(())
     }
 
@@ -201,12 +374,13 @@ impl BrowserSession {
     pub async fn close_tab(&self, id: &str) -> Result<()> {
         let tab = self.tab(Some(id))?;
         {
-            let mut tabs = self.tabs.lock().unwrap();
+            let mut tabs = self.shared.tabs.lock().unwrap();
             tabs.list.retain(|t| t.id() != id);
             if tabs.active.as_deref() == Some(id) {
                 tabs.active = tabs.list.last().map(|t| t.id().to_string());
             }
         }
+        self.shared.changed.notify_one();
         tab.page().clone().close().await?;
         Ok(())
     }
@@ -214,7 +388,7 @@ impl BrowserSession {
     /// The open tabs with their location.
     pub async fn tabs(&self) -> Vec<TabInfo> {
         let (list, active) = {
-            let tabs = self.tabs.lock().unwrap();
+            let tabs = self.shared.tabs.lock().unwrap();
             (tabs.list.clone(), tabs.active.clone())
         };
         let mut out = Vec::new();
@@ -225,6 +399,7 @@ impl BrowserSession {
                 id: tab.id().to_string(),
                 url,
                 title,
+                loading: tab.is_loading(),
             });
         }
         out
@@ -239,7 +414,8 @@ impl BrowserSession {
     /// to disk. After this the session is dead. Dropping without calling this
     /// still kills the process (via `kill_on_drop`) but skips the flush.
     pub async fn close(&self) {
-        self.launched.lock().await.close().await;
+        self.tracker.abort();
+        self.shared.launched.lock().await.close().await;
     }
 }
 

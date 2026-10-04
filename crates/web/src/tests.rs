@@ -1347,3 +1347,118 @@ async fn recording_works_while_a_live_view_watches() {
 
     session.close().await;
 }
+
+/// The session keeps a watchable list of its tabs for a browser panel:
+/// address and title follow navigations, a page shows as loading until it
+/// has, and tabs the page opens or closes come and go without a tool call.
+#[tokio::test]
+async fn tab_state_follows_navigations_and_popups() {
+    use axum::response::Html;
+    use axum::{Router, routing::get};
+    use std::time::Duration;
+
+    async fn slow() -> Html<&'static str> {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        Html("<html><head><title>Slow</title></head><body>done</body></html>")
+    }
+    let app = Router::new().route("/slow", get(slow));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let slow_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let addr = spawn_form_site().await;
+
+    let session = std::sync::Arc::new(
+        BrowserSession::open(BrowserLaunchConfig::default(), "test")
+            .await
+            .unwrap(),
+    );
+    let mut state = session.watch_tabs();
+    type Pred = Box<dyn Fn(&[super::TabInfo]) -> bool + Send + Sync>;
+    let until = |state: &mut tokio::sync::watch::Receiver<Vec<super::TabInfo>>,
+                 what: &'static str,
+                 pred: Pred| {
+        let mut state = state.clone();
+        let last = state.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), state.wait_for(|tabs| pred(tabs)))
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}: {:?}", *last.borrow()))
+                .unwrap()
+                .clone()
+        }
+    };
+
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&format!("http://{addr}/")).await.unwrap();
+    let tabs = until(
+        &mut state,
+        "the title",
+        Box::new(|tabs| tabs.len() == 1 && tabs[0].title == "Login Demo"),
+    )
+    .await;
+    assert_eq!(tabs[0].url, format!("http://{addr}/"));
+    assert!(tabs[0].active);
+
+    // Loading while the server takes its time, done once it answered.
+    let slow_url = format!("http://{slow_addr}/slow");
+    tab.javascript(&format!("location.href = '{slow_url}'; 0"))
+        .await
+        .unwrap();
+    until(&mut state, "loading", Box::new(|tabs| tabs[0].loading)).await;
+    until(
+        &mut state,
+        "the slow page",
+        Box::new(|tabs| !tabs[0].loading && tabs[0].title == "Slow"),
+    )
+    .await;
+
+    // A popup joins the list on its own, behind the active tab.
+    tab.javascript(&format!("window.open('http://{addr}/'); 0"))
+        .await
+        .unwrap();
+    let tabs = until(&mut state, "the popup", Box::new(|tabs| tabs.len() == 2)).await;
+    assert!(tabs[0].active && !tabs[1].active, "{tabs:?}");
+
+    // Closed by the page, it leaves again.
+    let popup = session.tab(Some(&tabs[1].id)).unwrap();
+    popup.javascript("window.close(); 0").await.ok();
+    until(
+        &mut state,
+        "the popup to close",
+        Box::new(|tabs| tabs.len() == 1),
+    )
+    .await;
+
+    // Switching tabs shows in the state too.
+    let second = session.create_tab(false).await.unwrap();
+    session.select_tab(second.id()).unwrap();
+    until(
+        &mut state,
+        "the new active tab",
+        Box::new(|tabs| tabs.len() == 2 && tabs[1].active && !tabs[0].active),
+    )
+    .await;
+
+    session.close().await;
+}
+
+/// Where the agent presses the mouse is announced, so a panel can show it.
+#[tokio::test]
+async fn agent_presses_are_announced() {
+    use super::Button;
+    use chromiumoxide::layout::Point;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    let mut presses = tab.watch_agent_presses();
+    tab.click_point(Point { x: 120.0, y: 80.0 }, Button::Left, 2, 0)
+        .await
+        .unwrap();
+    let at = presses.try_recv().expect("the press was announced");
+    assert_eq!((at.x, at.y), (120.0, 80.0));
+    assert!(presses.try_recv().is_err(), "a double click is one press");
+
+    session.close().await;
+}
