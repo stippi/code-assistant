@@ -124,11 +124,11 @@ its record. The rules live in `<config_dir>/lifecycle.json`
 ## Sidebar layout (GPUI)
 
 The sidebar has two views of the same sessions, switched in its header.
-The **Sessions** view is the inbox; the **Projects** view answers "where
+The **Active** view is the inbox; the **Projects** view answers "where
 are my sessions for project X" and is where settled sessions are found.
 
 ```
-[Sessions│Projects]      [💬+] [📁+]   ← view switch, new session, new project
+[Active│Projects]        [💬+] [📁+]   ← view switch, new session, new project
   ⛉ Title                      2m
     project · Needs approval
   ◌ Title                     14m
@@ -148,13 +148,17 @@ receding, most recently updated first; five show before "Show more".
 Sessions without a project come last under "No project". Folders keep a
 stable order (`sidebar/project_order.rs`): a project seen for the first
 time goes to the top, the first start orders by activity, and otherwise
-only the user moves a folder, by dragging it onto another. A collapsed
+only the user moves a folder, by dragging it onto another; a line above or
+below the target's block shows where it lands. A collapsed
 folder carries a dot for the most urgent thing inside: approval, failure,
 or an unread session. A folder's hover actions start a session in it and,
 for a temporary project, save it to projects.json. Rows leave out the
 project name here.
 
-The view, the collapsed folders and the folder order persist in
+The switch is drawn in `sidebar/view_switch.rs` rather than with
+gpui-component's segmented tab bar, which paints its active segment from
+the global background token and disappears on the header in dark mode; its
+pill slides on the same spring. The view, the collapsed folders and the folder order persist in
 `ui-settings.json` (`sidebar`). The stored order may name projects that
 are gone; they are skipped and keep their place should they return.
 

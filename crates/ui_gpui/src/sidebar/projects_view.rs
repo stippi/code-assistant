@@ -16,11 +16,14 @@ use gpui_kit::{
     AnyElement, AppContext, Context, Entity, Hsla, InteractiveElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px, rems,
 };
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 /// Sessions a folder shows before "Show more".
 const FOLDER_PREVIEW: usize = 5;
+/// Thickness of the line marking where a dragged folder lands.
+const DROP_LINE: gpui_kit::Pixels = px(2.);
 
 pub(super) struct ProjectFolder {
     /// `None` holds the sessions started without a project.
@@ -40,6 +43,9 @@ impl ProjectFolder {
 #[derive(Clone)]
 struct DraggedProject {
     name: SharedString,
+    /// Its place among the displayed folders: whether a drop target lies
+    /// above or below it.
+    index: usize,
 }
 
 /// What follows the pointer while a folder is dragged.
@@ -159,17 +165,29 @@ impl SessionSidebar {
         if self.folders.is_empty() {
             return vec![render_hint("No projects yet", cx).into_any_element()];
         }
-        let mut children = Vec::new();
-        for (index, folder) in self.folders.iter().enumerate() {
-            let key = folder.key();
-            let collapsed = self.collapsed_projects.contains(key);
-            children.push(
-                self.render_folder_header(index, folder, collapsed, cx)
-                    .into_any_element(),
-            );
-            if collapsed {
-                continue;
-            }
+        self.folders
+            .iter()
+            .enumerate()
+            .map(|(index, folder)| self.render_folder(index, folder, cx).into_any_element())
+            .collect()
+    }
+
+    /// A folder's header and sessions. Dragging another folder over it
+    /// draws a line where that folder will land: above when it comes from
+    /// below, below when it comes from above.
+    fn render_folder(
+        &self,
+        index: usize,
+        folder: &ProjectFolder,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let key = folder.key();
+        let collapsed = self.collapsed_projects.contains(key);
+        let mut children = vec![
+            self.render_folder_header(index, folder, collapsed, cx)
+                .into_any_element(),
+        ];
+        if !collapsed {
             let shown = if self.expanded_lists.contains(key) {
                 folder.items.len()
             } else {
@@ -188,7 +206,32 @@ impl SessionSidebar {
                 );
             }
         }
-        children
+
+        div()
+            .id(SharedString::from(format!("project-block-{index}")))
+            .w_full()
+            .flex()
+            .flex_col()
+            // Room for the drop line, kept so it does not shift the list.
+            .border_y(DROP_LINE)
+            .border_color(cx.theme().transparent)
+            .when(index > 0, |el| el.mt(px(2.)))
+            .when_some(folder.project.clone(), |el, name| {
+                el.drag_over::<DraggedProject>(move |style, dragged, _, cx| {
+                    let line = cx.theme().drag_border;
+                    match dragged.index.cmp(&index) {
+                        Ordering::Greater => style.border_color(line).border_b_0().pb(DROP_LINE),
+                        Ordering::Less => style.border_color(line).border_t_0().pt(DROP_LINE),
+                        Ordering::Equal => style,
+                    }
+                })
+                .on_drop(cx.listener(
+                    move |this, dragged: &DraggedProject, _, cx| {
+                        this.move_project(&dragged.name, &name, cx)
+                    },
+                ))
+            })
+            .children(children)
     }
 
     fn render_folder_header(
@@ -227,7 +270,6 @@ impl SessionSidebar {
             .w_full()
             .px_2()
             .h(px(28.))
-            .mt(if index > 0 { px(6.) } else { px(0.) })
             .flex()
             .items_center()
             .gap_1()
@@ -254,21 +296,17 @@ impl SessionSidebar {
             }))
             // Named folders move by drag and drop; "No project" stays last.
             .when_some(folder.project.clone(), |el, name| {
-                let name = SharedString::from(name);
                 el.on_drag(
-                    DraggedProject { name: name.clone() },
+                    DraggedProject {
+                        name: name.into(),
+                        index,
+                    },
                     |dragged, _, _, cx| {
                         cx.new(|_| DraggedProjectView {
                             name: dragged.name.clone(),
                         })
                     },
                 )
-                .drag_over::<DraggedProject>(|style, _, _, cx| style.bg(cx.theme().drop_target))
-                .on_drop(cx.listener(
-                    move |this, dragged: &DraggedProject, _, cx| {
-                        this.move_project(&dragged.name, &name, cx)
-                    },
-                ))
             })
             .child(
                 gpui_kit::svg()

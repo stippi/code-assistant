@@ -5,13 +5,14 @@
 //! session needs from the user shows as emphasis (see [`SessionListItem`]).
 //! The projects view holds every session, settled or not, in its project's
 //! folder; folders keep a stable order the user rearranges by dragging. The
-//! header switches between the two; its buttons start a session (a picker
+//! header switches between the two ("Active" and "Projects"); its buttons start a session (a picker
 //! asks where) and add a project.
 
 mod project_order;
 mod project_picker;
 mod projects_view;
 mod session_item;
+mod view_switch;
 
 pub use session_item::{SessionListItem, SessionListItemEvent};
 
@@ -22,7 +23,6 @@ use code_assistant_core::session::lifecycle::SessionLifecycle;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -378,42 +378,23 @@ impl SessionSidebar {
     // ── rendering helpers ────────────────────────────────────────────────
 
     /// The view switch and the two buttons: new session, new project.
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let picker = self.project_picker.clone();
         let input_focus = picker.read(cx).input_focus_handle(cx);
         let sidebar = cx.entity().downgrade();
-        let switcher = cx.entity().downgrade();
-        let selected = match self.view {
-            SidebarView::Inbox => 0,
-            SidebarView::Projects => 1,
-        };
         div()
             .flex_none()
             .pl(px(12.))
             .pr(px(10.))
-            .py(px(12.))
+            .py(px(8.))
+            .bg(cx.theme().title_bar)
             .border_b_1()
             .border_color(cx.theme().sidebar_border)
             .flex()
             .items_center()
             .justify_between()
             .gap_2()
-            .child(
-                TabBar::new("sidebar-view")
-                    .segmented()
-                    .small()
-                    .selected_index(selected)
-                    .on_click(move |index: &usize, _, cx| {
-                        let view = if *index == 0 {
-                            SidebarView::Inbox
-                        } else {
-                            SidebarView::Projects
-                        };
-                        let _ = switcher.update(cx, |this, cx| this.set_view(view, cx));
-                    })
-                    .child(Tab::new().label("Sessions"))
-                    .child(Tab::new().label("Projects")),
-            )
+            .child(self.render_view_switch(window, cx))
             .child(
                 div()
                     .flex_none()
@@ -521,7 +502,7 @@ impl Focusable for SessionSidebar {
 }
 
 impl Render for SessionSidebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let children = match self.view {
             SidebarView::Inbox => self.render_inbox(cx),
             SidebarView::Projects => self.render_folders(cx),
@@ -538,7 +519,7 @@ impl Render for SessionSidebar {
             .border_color(cx.theme().sidebar_border)
             .flex()
             .flex_col()
-            .child(self.render_header(cx))
+            .child(self.render_header(window, cx))
             .child(
                 div().flex_1().min_h(px(0.)).w_full().child(
                     div()
