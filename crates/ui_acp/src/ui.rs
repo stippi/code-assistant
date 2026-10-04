@@ -941,6 +941,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::StreamingStopped { .. }
             | UiEvent::RefreshChatList
             | UiEvent::UpdateChatList { .. }
+            | UiEvent::UpdateSessionLifecycle { .. }
             | UiEvent::ClearMessages
             | UiEvent::UpdateSessionActivityState { .. }
             | UiEvent::UpdatePendingMessage { .. }
@@ -1626,6 +1627,7 @@ mod tests {
             tokens_limit: None,
             tool_syntax: code_assistant_core::types::ToolSyntax::Native,
             initial_project: String::new(),
+            branch: None,
             plan_collapsed: false,
             is_resumable: false,
         };

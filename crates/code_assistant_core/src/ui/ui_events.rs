@@ -232,6 +232,12 @@ pub enum UiEvent {
     ClearMessages,
     /// Update metadata for a single session without refreshing the entire list
     UpdateSessionMetadata { metadata: ChatMetadata },
+    /// A session's lifecycle record changed (visited, settled, un-settled).
+    /// Relevant for every view's sidebar, not only the session's own.
+    UpdateSessionLifecycle {
+        session_id: String,
+        lifecycle: crate::session::lifecycle::SessionLifecycle,
+    },
     /// Update activity state for a single session
     UpdateSessionActivityState {
         session_id: String,

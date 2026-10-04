@@ -120,6 +120,7 @@ pub(crate) mod test_source {
                         tokens_limit: None,
                         tool_syntax: session.tool_syntax(),
                         initial_project: session.initial_project().to_string(),
+                        branch: session.config.branch.clone(),
                         plan_collapsed: session.plan_collapsed,
                         is_resumable: session.is_resumable(),
                     }

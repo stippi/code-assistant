@@ -1,6 +1,7 @@
 mod binary;
 mod branch;
 mod diff;
+mod merged;
 mod repository;
 mod types;
 mod watch;

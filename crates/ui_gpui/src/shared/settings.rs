@@ -86,6 +86,33 @@ pub struct UiSettings {
     /// to collapsed. Absolute paths, so the state is per project/repo.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_expanded_repos: Vec<PathBuf>,
+
+    /// The session sidebar's view and project folders.
+    #[serde(default)]
+    pub sidebar: SidebarSettings,
+}
+
+/// Which list the session sidebar shows.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarView {
+    /// Unsettled sessions across projects.
+    #[default]
+    Inbox,
+    /// Every session in its project's folder.
+    Projects,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SidebarSettings {
+    #[serde(default)]
+    pub view: SidebarView,
+    /// Project folders the user collapsed; folders default to open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collapsed_projects: Vec<String>,
+    /// The projects' stable order (see `sidebar::project_order`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_order: Vec<String>,
 }
 
 fn default_theme_mode() -> ThemeModeSetting {
@@ -106,6 +133,7 @@ impl Default for UiSettings {
             right_sidebar_width: None,
             review_default_base: None,
             review_expanded_repos: Vec::new(),
+            sidebar: SidebarSettings::default(),
         }
     }
 }
