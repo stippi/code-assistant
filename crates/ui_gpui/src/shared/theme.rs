@@ -17,6 +17,7 @@ pub fn custom_dark_theme() -> gpui_kit::component::theme::ThemeColor {
     // Sidebar
     colors.sidebar = rgb(0x252525).into(); // Sidebar background
     colors.sidebar_border = rgb(0x404040).into(); // Sidebar border
+    colors.tab_bar_segmented = rgb(0x1A1A1A).into(); // Segmented control track
 
     // Text colors
     colors.foreground = rgba(0xFAFAFAFF).into(); // Main text
@@ -56,6 +57,7 @@ pub fn custom_light_theme() -> gpui_kit::component::theme::ThemeColor {
     // Sidebar
     colors.sidebar = rgb(0xEAEAEA).into(); // Light sidebar
     colors.sidebar_border = rgb(0xD0D0D0).into(); // Light border
+    colors.tab_bar_segmented = rgb(0xDCDCDC).into(); // Segmented control track
 
     // Text colors
     colors.foreground = rgb(0x333333).into(); // Dark text for contrast
@@ -116,6 +118,11 @@ fn apply_custom_theme(cx: &mut App) {
         ThemeMode::Dark => custom_dark_theme(),
         ThemeMode::Light => custom_light_theme(),
     };
+    // Some components paint from the resolved tokens, which still hold
+    // gpui-component's stock colors; the segmented tab bar draws its track
+    // and active pill from these two.
+    theme.tokens.background = theme.colors.background.into();
+    theme.tokens.tab_bar_segmented = theme.colors.tab_bar_segmented.into();
     theme.highlight_theme = syntax_theme(theme.mode);
 }
 

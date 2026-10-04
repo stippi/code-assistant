@@ -391,7 +391,7 @@ impl SessionSidebar {
             .flex_none()
             .pl(px(12.))
             .pr(px(10.))
-            .py(px(10.))
+            .py(px(12.))
             .border_b_1()
             .border_color(cx.theme().sidebar_border)
             .flex()
@@ -401,7 +401,7 @@ impl SessionSidebar {
             .child(
                 TabBar::new("sidebar-view")
                     .segmented()
-                    .xsmall()
+                    .small()
                     .selected_index(selected)
                     .on_click(move |index: &usize, _, cx| {
                         let view = if *index == 0 {
@@ -430,10 +430,10 @@ impl SessionSidebar {
                                             .path(SharedString::from(
                                                 "icons/message_circle_plus.svg",
                                             ))
-                                            .with_size(Size::Small),
+                                            .with_size(Size::Medium),
                                     )
                                     .ghost()
-                                    .xsmall()
+                                    .small()
                                     .tooltip("New session"),
                             )
                             .open(self.picker_open)
@@ -451,10 +451,10 @@ impl SessionSidebar {
                             .icon(
                                 Icon::default()
                                     .path(SharedString::from("icons/folder_plus.svg"))
-                                    .with_size(Size::Small),
+                                    .with_size(Size::Medium),
                             )
                             .ghost()
-                            .xsmall()
+                            .small()
                             .tooltip("New project")
                             .on_click(cx.listener(|_, _, _, cx| {
                                 cx.emit(SessionSidebarEvent::AddProjectRequested)
