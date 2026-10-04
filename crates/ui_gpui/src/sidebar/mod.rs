@@ -384,8 +384,8 @@ impl SessionSidebar {
         let sidebar = cx.entity().downgrade();
         div()
             .flex_none()
-            .pl(px(12.))
-            .pr(px(10.))
+            // In line with the rows below: the list's 12px plus a row's 2px.
+            .px(px(14.))
             .py(px(8.))
             .bg(cx.theme().title_bar)
             .border_b_1()

@@ -88,7 +88,7 @@ impl SessionSidebar {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_sm()
+                            .text_size(rems(0.8125))
                             .map(|el| {
                                 if is_selected {
                                     el.text_color(cx.theme().foreground)
