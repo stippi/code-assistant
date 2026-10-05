@@ -1311,6 +1311,28 @@ async fn live_frames_follow_the_page_while_watched() {
     session.close().await;
 }
 
+/// A view opened while the tab navigates still gets the page: a start that
+/// fails because the page's context went away is tried again.
+#[tokio::test]
+async fn live_frames_survive_a_navigation_at_the_start() {
+    use std::time::Duration;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    for i in 0..3 {
+        let mut live = tab.live_frames((640, 400));
+        tab.navigate(&sliding_box_url(100 + i)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), live.next())
+            .await
+            .expect("frames despite the navigation")
+            .unwrap();
+        assert!(tab.is_screencasting());
+    }
+    session.close().await;
+}
+
 /// A recording and a live view share the tab's one screencast: recording
 /// while the panel watches still collects the motion, and the panel keeps
 /// getting frames afterwards.

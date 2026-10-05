@@ -19,7 +19,7 @@ use chromiumoxide::cdp::browser_protocol::page::{
 use chromiumoxide::page::Page;
 use futures::StreamExt;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, mpsc, watch};
@@ -53,6 +53,8 @@ pub struct FrameMetadata {
 
 /// How long one CDP call of the pump may take before it gives up.
 const CALL_LIMIT: Duration = Duration::from_secs(10);
+/// How long the pump waits before trying a failed start again.
+const RETRY_AFTER: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 struct Consumers {
@@ -86,6 +88,8 @@ struct Shared {
     running: Mutex<Option<(u32, u32)>>,
     /// Restart even if the size did not change (the viewport did).
     refit: AtomicBool,
+    /// Frames received, for the debug log.
+    delivered: AtomicUsize,
 }
 
 /// The screencast pump of one tab. Aborted on drop.
@@ -104,6 +108,7 @@ impl Screencast {
             wake: Notify::new(),
             running: Mutex::new(None),
             refit: AtomicBool::new(false),
+            delivered: AtomicUsize::new(0),
         });
         let task = tokio::spawn(pump(page, shared.clone(), events));
         Ok(Self { shared, task })
@@ -231,8 +236,9 @@ async fn pump(
 }
 
 /// Bring the screencast in line with its consumers: start, resize, restart
-/// after a viewport change, or stop.
-async fn reconcile(page: &Page, shared: &Shared) {
+/// after a viewport change, or stop. A start that fails (the page navigated
+/// away under it, say) is tried again shortly.
+async fn reconcile(page: &Page, shared: &Arc<Shared>) {
     let wanted = shared.consumers.lock().unwrap().wanted();
     let running = *shared.running.lock().unwrap();
     let refit = shared.refit.swap(false, Ordering::Relaxed);
@@ -240,11 +246,13 @@ async fn reconcile(page: &Page, shared: &Shared) {
         return;
     }
     let Some((width, height)) = wanted else {
+        tracing::debug!("screencast: stopping");
         let _ =
             tokio::time::timeout(CALL_LIMIT, page.execute(StopScreencastParams::default())).await;
         *shared.running.lock().unwrap() = None;
         return;
     };
+    tracing::debug!("screencast: starting at {width}×{height} (refit: {refit})");
     let started = async {
         let (sx, sy, vw, vh) = scroll_and_viewport(page).await?;
         if let Err(e) = fit_window_to(page, vw, vh).await {
@@ -277,11 +285,19 @@ async fn reconcile(page: &Page, shared: &Shared) {
         }
         anyhow::Ok(())
     };
-    match tokio::time::timeout(CALL_LIMIT, started).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!("screencast: failed to start: {e}"),
-        Err(_) => tracing::warn!("screencast: starting timed out"),
-    }
+    let failure = match tokio::time::timeout(CALL_LIMIT, started).await {
+        Ok(Ok(())) => return,
+        Ok(Err(e)) => e.to_string(),
+        Err(_) => "timed out".to_string(),
+    };
+    tracing::debug!("screencast: failed to start, trying again: {failure}");
+    // Also when only the first picture failed after the screencast started.
+    shared.refit.store(true, Ordering::Relaxed);
+    let shared = shared.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(RETRY_AFTER).await;
+        shared.wake.notify_one();
+    });
 }
 
 fn publish_live(shared: &Shared, jpeg: Vec<u8>, metadata: FrameMetadata) {
@@ -320,6 +336,10 @@ async fn deliver(page: &Page, shared: &Shared, event: &EventScreencastFrame) {
         },
         received: Instant::now(),
     });
+    let delivered = shared.delivered.fetch_add(1, Ordering::Relaxed) + 1;
+    if delivered.is_multiple_of(60) {
+        tracing::debug!("screencast: {delivered} frames delivered");
+    }
     let consumers = shared.consumers.lock().unwrap();
     for (_, tx) in consumers.collectors.values() {
         let _ = tx.send(frame.clone());

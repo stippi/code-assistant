@@ -231,7 +231,11 @@ impl BrowserPanel {
                 .browser_view(session_id, key, Some(tab_id), MAX_FRAME)
                 .await;
             match view {
-                Ok(view) => Self::pump(view, this, cx).await,
+                Ok(view) => {
+                    tracing::debug!("Browser panel: watching {:?} {}", view.key, view.tab_id);
+                    Self::pump(view, this, cx).await;
+                    tracing::debug!("Browser panel: the view ended");
+                }
                 Err(e) => tracing::debug!("Browser panel: cannot watch the tab: {e:#}"),
             }
         }));
@@ -252,6 +256,7 @@ impl BrowserPanel {
         if this.update(cx, |this, _| this.input = Some(input)).is_err() {
             return;
         }
+        let mut shown_count = 0usize;
         loop {
             futures::select_biased! {
                 press = presses.recv().fuse() => match press {
@@ -269,7 +274,16 @@ impl BrowserPanel {
                 },
                 frame = frames.next().fuse() => {
                     let Some(frame) = frame else { return };
+                    shown_count += 1;
+                    let started = Instant::now();
+                    let age = frame.received.elapsed();
                     let decoded = cx.background_spawn(async move { decode(&frame) }).await;
+                    if shown_count % 30 == 1 {
+                        tracing::debug!(
+                            "Browser panel: frame {shown_count}, {age:?} old, decoded in {:?}",
+                            started.elapsed()
+                        );
+                    }
                     let shown = match decoded {
                         Ok(shown) => this.update(cx, |this, cx| this.show_frame(shown, cx)),
                         Err(e) => {
