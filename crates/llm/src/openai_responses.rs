@@ -351,7 +351,7 @@ enum ResponseInputItem {
     },
     FunctionCallOutput {
         call_id: String,
-        output: String,
+        output: FunctionCallOutput,
     },
     Reasoning {
         id: String,
@@ -375,6 +375,34 @@ impl PromptCacheBreakpoint {
         Self {
             mode: "explicit".to_string(),
         }
+    }
+}
+
+/// `output` of a `function_call_output` item: plain text, or a list of
+/// input content when the tool result carries images (screenshots), which a
+/// string cannot hold.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum FunctionCallOutput {
+    Text(String),
+    Content(Vec<ResponseContentItem>),
+}
+
+impl From<&ToolResultContent> for FunctionCallOutput {
+    fn from(content: &ToolResultContent) -> Self {
+        if !content.has_images() {
+            return Self::Text(content.text_content().to_string());
+        }
+        let mut items = vec![ResponseContentItem::input_text(
+            content.text_content().to_string(),
+        )];
+        items.extend(content.images().iter().map(|image| {
+            ResponseContentItem::input_image(format!(
+                "data:{};base64,{}",
+                image.media_type, image.base64_data
+            ))
+        }));
+        Self::Content(items)
     }
 }
 
@@ -1730,7 +1758,7 @@ fn convert_structured_message(
                 pending.flush(result);
                 result.push(ResponseInputItem::FunctionCallOutput {
                     call_id: tool_use_id.clone(),
-                    output: content.text_content().to_string(),
+                    output: content.into(),
                 });
             }
             ContentBlock::RedactedThinking {
@@ -1845,15 +1873,47 @@ mod tests {
         ])];
 
         let converted = client.convert_messages_with_cache(messages, false);
-        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&converted).unwrap(),
+            serde_json::json!([{
+                "type": "function_call_output",
+                "call_id": "test_id",
+                "output": "Tool output",
+            }])
+        );
+    }
 
-        match &converted[0] {
-            ResponseInputItem::FunctionCallOutput { call_id, output } => {
-                assert_eq!(call_id, "test_id");
-                assert_eq!(output, "Tool output");
-            }
-            _ => panic!("Expected FunctionCallOutput"),
-        }
+    #[test]
+    fn test_tool_result_images_travel_in_function_call_output() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_user_content(vec![
+            ContentBlock::new_tool_result_with_images(
+                "call_1",
+                "Screenshot taken",
+                vec![crate::types::ToolResultImage {
+                    media_type: "image/jpeg".to_string(),
+                    base64_data: "QUJD".to_string(),
+                }],
+            ),
+        ])];
+
+        let converted = client.convert_messages_with_cache(messages, false);
+        assert_eq!(
+            serde_json::to_value(&converted).unwrap(),
+            serde_json::json!([{
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [
+                    {"type": "input_text", "text": "Screenshot taken"},
+                    {"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD"},
+                ],
+            }])
+        );
     }
 
     #[test]

@@ -149,13 +149,41 @@ enum WsInputItem {
     },
     FunctionCallOutput {
         call_id: String,
-        output: String,
+        output: FunctionCallOutput,
     },
     Reasoning {
         id: String,
         summary: Vec<serde_json::Value>,
         encrypted_content: String,
     },
+}
+
+/// `output` of a `function_call_output` item: plain text, or a list of
+/// input content when the tool result carries images (screenshots), which a
+/// string cannot hold.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum FunctionCallOutput {
+    Text(String),
+    Content(Vec<WsContentItem>),
+}
+
+impl From<&ToolResultContent> for FunctionCallOutput {
+    fn from(content: &ToolResultContent) -> Self {
+        if !content.has_images() {
+            return Self::Text(content.text_content().to_string());
+        }
+        let mut items = vec![WsContentItem::input_text(
+            content.text_content().to_string(),
+        )];
+        items.extend(content.images().iter().map(|image| {
+            WsContentItem::input_image(format!(
+                "data:{};base64,{}",
+                image.media_type, image.base64_data
+            ))
+        }));
+        Self::Content(items)
+    }
 }
 
 /// Content item within messages.
@@ -1548,12 +1576,14 @@ fn convert_structured_message(
                     pending.push(WsContentItem::input_text(text.clone()), None, items);
                 }
             }
-            ContentBlock::Image { data, .. } => {
+            ContentBlock::Image {
+                media_type, data, ..
+            } => {
                 // `input_image` is user content; assistant images (none of
                 // the Responses providers produce any) are not round-tripped.
                 if !is_assistant {
                     pending.push(
-                        WsContentItem::input_image(format!("data:image/png;base64,{}", data)),
+                        WsContentItem::input_image(format!("data:{media_type};base64,{data}")),
                         None,
                         items,
                     );
@@ -1605,7 +1635,7 @@ fn convert_structured_message(
                 pending.flush(items);
                 items.push(WsInputItem::FunctionCallOutput {
                     call_id: tool_use_id.clone(),
-                    output: content.text_content().to_string(),
+                    output: content.into(),
                 });
             }
         }
@@ -2207,6 +2237,56 @@ mod tests {
         };
         let json = serde_json::to_value(&user).unwrap();
         assert!(json.get("phase").is_none());
+    }
+
+    #[test]
+    fn test_ws_tool_result_images_travel_in_function_call_output() {
+        let blocks = vec![
+            ContentBlock::new_tool_result("call_0", "Clicked"),
+            ContentBlock::new_tool_result_with_images(
+                "call_1",
+                "Screenshot taken",
+                vec![crate::types::ToolResultImage {
+                    media_type: "image/jpeg".to_string(),
+                    base64_data: "QUJD".to_string(),
+                }],
+            ),
+        ];
+        let mut items = Vec::new();
+        convert_structured_message(&MessageRole::User, &blocks, &mut items);
+
+        assert_eq!(
+            serde_json::to_value(&items).unwrap(),
+            serde_json::json!([
+                {"type": "function_call_output", "call_id": "call_0", "output": "Clicked"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "Screenshot taken"},
+                        {"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD"},
+                    ],
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn test_ws_user_image_keeps_its_media_type() {
+        let blocks = vec![ContentBlock::Image {
+            media_type: "image/jpeg".to_string(),
+            data: "QUJD".to_string(),
+            start_time: None,
+            end_time: None,
+        }];
+        let mut items = Vec::new();
+        convert_structured_message(&MessageRole::User, &blocks, &mut items);
+
+        let json = serde_json::to_value(&items).unwrap();
+        assert_eq!(
+            json[0]["content"][0]["image_url"],
+            "data:image/jpeg;base64,QUJD"
+        );
     }
 
     fn ws_items_with_breakpoint(items: &[WsInputItem]) -> Vec<usize> {
