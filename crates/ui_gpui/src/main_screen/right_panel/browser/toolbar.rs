@@ -18,7 +18,7 @@ impl BrowserPanel {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
         let browser = self.shown_browser();
-        let watched_tab = self.watching.as_ref().map(|(_, tab)| tab.as_str());
+        let watched_tab = self.watching.as_ref().map(|(_, _, tab)| tab.as_str());
         let tab = browser.and_then(|b| b.tabs.iter().find(|t| Some(t.id.as_str()) == watched_tab));
         let in_control = self.user_in_control();
 
@@ -192,7 +192,7 @@ impl BrowserPanel {
         let url = self
             .shown_browser()
             .zip(self.watching.as_ref())
-            .and_then(|(b, (_, tab))| b.tabs.iter().find(|t| t.id == *tab))
+            .and_then(|(b, (_, _, tab))| b.tabs.iter().find(|t| t.id == *tab))
             .map(|t| t.url.clone())
             .unwrap_or_default();
         let state = cx.new(|cx| InputState::new(window, cx));

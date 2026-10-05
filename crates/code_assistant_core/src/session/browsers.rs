@@ -32,6 +32,9 @@ pub struct BrowserKey {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowserEntry {
     pub key: BrowserKey,
+    /// Changes when the browser behind the key is closed and another one
+    /// opened (whose tabs then have the same ids again).
+    pub instance: u64,
     pub tabs: Vec<TabInfo>,
     /// The user has taken over; the agent's browser tools refuse to act.
     pub user_control: bool,
@@ -145,6 +148,7 @@ impl SessionBrowsers {
     fn entry(key: BrowserKey, session: &BrowserSession) -> BrowserEntry {
         BrowserEntry {
             key,
+            instance: session.instance(),
             tabs: session.watch_tabs().borrow().clone(),
             user_control: session.user_in_control(),
         }
@@ -516,6 +520,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(view.input.selected_text().await.unwrap(), "hello");
+        browsers.agent().close_all().await;
+    }
+
+    /// A browser closed and opened again under the same profile is another
+    /// instance, so a panel watching the old one notices.
+    #[tokio::test]
+    async fn a_reopened_browser_is_another_instance() {
+        let browsers = Arc::new(SessionBrowsers::default());
+        let listed = async |session: Arc<BrowserSession>| {
+            let mut tabs = session.watch_tabs();
+            tabs.wait_for(|tabs| !tabs.is_empty()).await.unwrap();
+            browsers.listing().remove(0)
+        };
+        let first = listed(open(browsers.agent(), "default").await).await;
+        browsers.agent().close_all().await;
+        let second = listed(open(browsers.agent(), "default").await).await;
+        assert_eq!(first.key, second.key);
+        assert_eq!(first.tabs[0].id, second.tabs[0].id);
+        assert_ne!(first.instance, second.instance);
         browsers.agent().close_all().await;
     }
 }

@@ -59,8 +59,8 @@ pub struct BrowserPanel {
     picked_browser: Option<BrowserKey>,
     /// The tab the user picked; the browser's active tab when unset or gone.
     picked_tab: Option<String>,
-    /// The browser and tab the frames come from.
-    watching: Option<(BrowserKey, String)>,
+    /// The browser (key and instance) and tab the frames come from.
+    watching: Option<(BrowserKey, u64, String)>,
     frame: Option<ShownFrame>,
     /// Where the frame was drawn last, for mapping the mouse onto the page.
     frame_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -210,13 +210,14 @@ impl BrowserPanel {
     fn sync_view(&mut self, cx: &mut Context<Self>) {
         let target = self.shown_browser().and_then(|browser| {
             Self::shown_tab(browser, self.picked_tab.as_deref())
-                .map(|tab| (browser.key.clone(), tab))
+                .map(|tab| (browser.key.clone(), browser.instance, tab))
         });
         if target == self.watching {
             return;
         }
         self.stop_watching(cx);
-        let (Some((key, tab_id)), Some(session_id)) = (target, self.session_id.clone()) else {
+        let (Some((key, instance, tab_id)), Some(session_id)) = (target, self.session_id.clone())
+        else {
             return;
         };
         let Some(service) = cx
@@ -225,7 +226,7 @@ impl BrowserPanel {
         else {
             return;
         };
-        self.watching = Some((key.clone(), tab_id.clone()));
+        self.watching = Some((key.clone(), instance, tab_id.clone()));
         self.view_task = Some(cx.spawn(async move |this, cx| {
             let view = service
                 .browser_view(session_id, key, Some(tab_id), MAX_FRAME)

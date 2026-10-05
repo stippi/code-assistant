@@ -254,6 +254,9 @@ async fn track_tabs(shared: Arc<Shared>) -> Result<()> {
 pub struct BrowserSession {
     shared: Arc<Shared>,
     label: String,
+    /// Unique per launched browser in this process: tells a browser apart
+    /// from one opened later under the same label.
+    instance: u64,
     /// Whether this is an ephemeral throwaway browser (no persistent profile).
     /// Ephemeral sessions are dropped at the end of an agent turn (see
     /// [`BrowserSessionManager::close_ephemeral`]) so a forgotten
@@ -299,9 +302,11 @@ impl BrowserSession {
                 }
             }
         });
+        static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let session = Self {
             shared,
             label: label.into(),
+            instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             ephemeral,
             tracker,
             user_control: AtomicBool::new(false),
@@ -319,6 +324,11 @@ impl BrowserSession {
 
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// Tells this browser apart from another launched under the same label.
+    pub fn instance(&self) -> u64 {
+        self.instance
     }
 
     /// Whether this is an ephemeral throwaway browser (no persistent profile).
