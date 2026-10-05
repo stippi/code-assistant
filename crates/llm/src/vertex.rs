@@ -258,6 +258,16 @@ struct VertexPartialArg {
 struct VertexFunctionResponse {
     name: String,
     response: serde_json::Value,
+    /// Media of a multimodal function response (screenshots), which the JSON
+    /// `response` cannot carry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    parts: Vec<VertexFunctionResponsePart>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VertexFunctionResponsePart {
+    inline_data: VertexInlineData,
 }
 
 /// Rate limit information extracted from response headers
@@ -955,8 +965,17 @@ impl VertexClient {
                                     .unwrap_or(tool_use_id)
                                     .to_string()
                             }),
-                            // Wrap content in a proper JSON object (text only)
                             response: json!({ "result": content.text_content() }),
+                            parts: content
+                                .images()
+                                .iter()
+                                .map(|image| VertexFunctionResponsePart {
+                                    inline_data: VertexInlineData {
+                                        mime_type: image.media_type.clone(),
+                                        data: image.base64_data.clone(),
+                                    },
+                                })
+                                .collect(),
                         }),
                     }),
                     _ => None,
@@ -1814,6 +1833,37 @@ mod tests {
         assert_eq!(
             value["parts"][0]["functionResponse"]["name"],
             "name_session"
+        );
+    }
+
+    #[test]
+    fn tool_result_images_travel_as_function_response_parts() {
+        use std::collections::HashMap;
+
+        let mut tool_names = HashMap::new();
+        tool_names.insert("tool-1-1".to_string(), "browser_computer".to_string());
+        let message = Message::new_user_content(vec![
+            ContentBlock::new_tool_result("tool-1-0", "Clicked"),
+            ContentBlock::new_tool_result_with_images(
+                "tool-1-1",
+                "Screenshot taken",
+                vec![crate::types::ToolResultImage {
+                    media_type: "image/jpeg".to_string(),
+                    base64_data: "QUJD".to_string(),
+                }],
+            ),
+        ]);
+        let converted = VertexClient::convert_message(&message, &tool_names);
+        let value = serde_json::to_value(&converted).unwrap();
+
+        assert!(value["parts"][0]["functionResponse"].get("parts").is_none());
+        assert_eq!(
+            value["parts"][1]["functionResponse"],
+            json!({
+                "name": "browser_computer",
+                "response": {"result": "Screenshot taken"},
+                "parts": [{"inlineData": {"mimeType": "image/jpeg", "data": "QUJD"}}],
+            })
         );
     }
 
