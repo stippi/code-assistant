@@ -1284,7 +1284,12 @@ impl SessionManager {
                 Some(Arc::new(self.persistence.clone())),
                 self.hooks_factory.clone(),
             )
-            .with_parent_cancellation(cancellation.clone()),
+            .with_parent_cancellation(cancellation.clone())
+            .with_session_browsers(
+                self.active_sessions
+                    .get(session_id)
+                    .map(|instance| instance.browsers.clone()),
+            ),
         );
 
         let components = AgentComponents {
@@ -1310,7 +1315,7 @@ impl SessionManager {
             browser_sessions: self
                 .active_sessions
                 .get(session_id)
-                .map(|instance| instance.browser_sessions.clone()),
+                .map(|instance| instance.browsers.agent().clone()),
             terminal_interrupts: self
                 .active_sessions
                 .get(session_id)

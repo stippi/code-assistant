@@ -1254,3 +1254,434 @@ async fn recording_makes_a_contact_sheet_of_the_motion() {
 
     session.close().await;
 }
+
+/// A live view gets the page as soon as it subscribes — a still page paints
+/// nothing, so the first frame is captured — then every repaint, each frame
+/// within the size the viewer asked for and with the metadata that maps it
+/// back to CSS pixels. The screencast runs only while someone watches.
+#[tokio::test]
+async fn live_frames_follow_the_page_while_watched() {
+    use std::time::Duration;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&data_url(
+        "<html><body style=\"background:#00f\"></body></html>",
+    ))
+    .await
+    .unwrap();
+
+    let mut live = tab.live_frames((640, 400));
+    let first = tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .expect("a still page shows up without a repaint")
+        .expect("frames keep coming while watched");
+    let img = image::load_from_memory(&first.jpeg).unwrap().to_rgba8();
+    assert!(
+        img.width() <= 640 && img.height() <= 400,
+        "{:?}",
+        img.dimensions()
+    );
+    let center = img.get_pixel(img.width() / 2, img.height() / 2);
+    assert!(center[2] > 200 && center[0] < 60, "{center:?}");
+    assert_eq!(first.metadata.device_width.round(), 1280.0);
+    assert_eq!(first.metadata.device_height.round(), 800.0);
+    assert!(tab.is_screencasting());
+
+    // A repaint arrives as a new frame.
+    tab.navigate(&sliding_box_url(300)).await.unwrap();
+    let moving = tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &moving));
+
+    drop(live);
+    let stopped = async {
+        while tab.is_screencasting() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), stopped)
+        .await
+        .expect("the screencast stops when nobody watches");
+
+    session.close().await;
+}
+
+/// A view opened while the tab navigates still gets the page: a start that
+/// fails because the page's context went away is tried again.
+#[tokio::test]
+async fn live_frames_survive_a_navigation_at_the_start() {
+    use std::time::Duration;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    for i in 0..3 {
+        let mut live = tab.live_frames((640, 400));
+        tab.navigate(&sliding_box_url(100 + i)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), live.next())
+            .await
+            .expect("frames despite the navigation")
+            .unwrap();
+        assert!(tab.is_screencasting());
+    }
+    session.close().await;
+}
+
+/// A recording and a live view share the tab's one screencast: recording
+/// while the panel watches still collects the motion, and the panel keeps
+/// getting frames afterwards.
+#[tokio::test]
+async fn recording_works_while_a_live_view_watches() {
+    use std::time::Duration;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&sliding_box_url(300)).await.unwrap();
+    let mut live = tab.live_frames((1280, 800));
+    tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let rec = tab.record(Duration::from_secs(1), 4, None).await.unwrap();
+    assert!(rec.received >= 9, "only {} frames", rec.received);
+    assert!(
+        rec.frames[1..].iter().any(|f| !f.repeated),
+        "{:?}",
+        rec.frames
+    );
+
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(5), live.next())
+            .await
+            .expect("the live view keeps getting frames after the recording")
+            .unwrap();
+    }
+    assert!(tab.is_screencasting());
+
+    session.close().await;
+}
+
+/// The session keeps a watchable list of its tabs for a browser panel:
+/// address and title follow navigations, a page shows as loading until it
+/// has, and tabs the page opens or closes come and go without a tool call.
+#[tokio::test]
+async fn tab_state_follows_navigations_and_popups() {
+    use axum::response::Html;
+    use axum::{Router, routing::get};
+    use std::time::Duration;
+
+    async fn slow() -> Html<&'static str> {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        Html("<html><head><title>Slow</title></head><body>done</body></html>")
+    }
+    let app = Router::new().route("/slow", get(slow));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let slow_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let addr = spawn_form_site().await;
+
+    let session = std::sync::Arc::new(
+        BrowserSession::open(BrowserLaunchConfig::default(), "test")
+            .await
+            .unwrap(),
+    );
+    let mut state = session.watch_tabs();
+    type Pred = Box<dyn Fn(&[super::TabInfo]) -> bool + Send + Sync>;
+    let until = |state: &mut tokio::sync::watch::Receiver<Vec<super::TabInfo>>,
+                 what: &'static str,
+                 pred: Pred| {
+        let mut state = state.clone();
+        let last = state.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), state.wait_for(|tabs| pred(tabs)))
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}: {:?}", *last.borrow()))
+                .unwrap()
+                .clone()
+        }
+    };
+
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&format!("http://{addr}/")).await.unwrap();
+    let tabs = until(
+        &mut state,
+        "the title",
+        Box::new(|tabs| tabs.len() == 1 && tabs[0].title == "Login Demo"),
+    )
+    .await;
+    assert_eq!(tabs[0].url, format!("http://{addr}/"));
+    assert!(tabs[0].active);
+
+    // Loading while the server takes its time, done once it answered.
+    let slow_url = format!("http://{slow_addr}/slow");
+    tab.javascript(&format!("location.href = '{slow_url}'; 0"))
+        .await
+        .unwrap();
+    until(&mut state, "loading", Box::new(|tabs| tabs[0].loading)).await;
+    until(
+        &mut state,
+        "the slow page",
+        Box::new(|tabs| !tabs[0].loading && tabs[0].title == "Slow"),
+    )
+    .await;
+
+    // A popup joins the list on its own, behind the active tab.
+    tab.javascript(&format!("window.open('http://{addr}/'); 0"))
+        .await
+        .unwrap();
+    let tabs = until(&mut state, "the popup", Box::new(|tabs| tabs.len() == 2)).await;
+    assert!(tabs[0].active && !tabs[1].active, "{tabs:?}");
+
+    // Closed by the page, it leaves again.
+    let popup = session.tab(Some(&tabs[1].id)).unwrap();
+    popup.javascript("window.close(); 0").await.ok();
+    until(
+        &mut state,
+        "the popup to close",
+        Box::new(|tabs| tabs.len() == 1),
+    )
+    .await;
+
+    // Switching tabs shows in the state too.
+    let second = session.create_tab(false).await.unwrap();
+    session.select_tab(second.id()).unwrap();
+    until(
+        &mut state,
+        "the new active tab",
+        Box::new(|tabs| tabs.len() == 2 && tabs[1].active && !tabs[0].active),
+    )
+    .await;
+
+    session.close().await;
+}
+
+/// Where the agent presses the mouse is announced, so a panel can show it.
+#[tokio::test]
+async fn agent_presses_are_announced() {
+    use super::Button;
+    use chromiumoxide::layout::Point;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    let mut presses = tab.watch_agent_presses();
+    tab.click_point(Point { x: 120.0, y: 80.0 }, Button::Left, 2, 0)
+        .await
+        .unwrap();
+    let at = presses.try_recv().expect("the press was announced");
+    assert_eq!((at.x, at.y), (120.0, 80.0));
+    assert!(presses.try_recv().is_err(), "a double click is one press");
+
+    session.close().await;
+}
+
+/// A throwaway browser someone is watching survives the end of the turn and
+/// closes when the last viewer lets go — unless the agent used it again
+/// meanwhile, in which case the next turn end decides.
+#[tokio::test]
+async fn viewed_throwaway_browsers_outlive_the_turn() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let open = || async {
+        Arc::new(
+            BrowserSession::open(BrowserLaunchConfig::default(), "default")
+                .await
+                .unwrap(),
+        )
+    };
+    let manager = Arc::new(BrowserSessionManager::new(4));
+    let mut changes = manager.watch_changes();
+    manager.register(open().await, "default");
+    assert!(changes.has_changed().unwrap(), "registering is a change");
+    changes.mark_unchanged();
+
+    let viewer = manager.view("default").expect("a tracked browser");
+    let second = manager.view("default").unwrap();
+    manager.close_ephemeral().await;
+    assert_eq!(manager.list().len(), 1, "watched: kept past the turn");
+    drop(viewer);
+    assert_eq!(
+        manager.list().len(),
+        1,
+        "still watched by the second viewer"
+    );
+    drop(second);
+    let closed = async {
+        while !manager.list().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), closed)
+        .await
+        .expect("closed once nobody watches");
+    assert!(changes.has_changed().unwrap(), "closing is a change");
+
+    // Used by the agent again after the turn: releasing the view keeps it.
+    manager.register(open().await, "default");
+    let viewer = manager.view("default").unwrap();
+    manager.close_ephemeral().await;
+    assert!(manager.get_by_label("default").is_some());
+    drop(viewer);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(manager.list().len(), 1, "in use again, not orphaned");
+    manager.close_ephemeral().await;
+    assert!(
+        manager.list().is_empty(),
+        "unwatched: closed at the turn end"
+    );
+}
+
+/// The user can take over a browser; the next look by the agent learns that
+/// the user had it, once.
+#[tokio::test]
+async fn the_user_can_take_control() {
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    assert!(!session.user_in_control());
+    assert!(!session.take_user_interlude());
+    session.set_user_control(true);
+    assert!(session.user_in_control());
+    session.set_user_control(false);
+    assert!(!session.user_in_control());
+    assert!(session.take_user_interlude());
+    assert!(!session.take_user_interlude(), "reported once");
+    session.close().await;
+}
+
+/// What a person does in a browser panel reaches the page as is: clicks,
+/// typing (shifted characters and text a key table does not know), editing
+/// commands, the wheel, and the address bar's navigation.
+#[tokio::test]
+async fn a_person_at_the_panel_clicks_types_and_scrolls() {
+    use super::{Button, UserInput};
+    use chromiumoxide::layout::Point;
+
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "test")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    tab.navigate(&input_lab_url()).await.unwrap();
+    let field = Point { x: 150.0, y: 110.0 };
+    for input in [
+        UserInput::MouseMove {
+            at: field,
+            buttons: 0,
+            modifiers: 0,
+        },
+        UserInput::MouseDown {
+            at: field,
+            button: Button::Left,
+            click_count: 1,
+            buttons: 1,
+            modifiers: 0,
+        },
+        UserInput::MouseUp {
+            at: field,
+            button: Button::Left,
+            click_count: 1,
+            buttons: 0,
+            modifiers: 0,
+        },
+        UserInput::KeyDown {
+            key: "a".into(),
+            text: Some("a".into()),
+            modifiers: 0,
+            commands: vec![],
+        },
+        UserInput::KeyUp {
+            key: "a".into(),
+            modifiers: 0,
+        },
+        UserInput::KeyDown {
+            key: "1".into(),
+            text: Some("!".into()),
+            modifiers: 8,
+            commands: vec![],
+        },
+        UserInput::KeyUp {
+            key: "1".into(),
+            modifiers: 8,
+        },
+        UserInput::InsertText("ü".into()),
+    ] {
+        tab.user_input(input).await.unwrap();
+    }
+    assert_eq!(
+        tab.javascript("document.getElementById('f').value")
+            .await
+            .unwrap(),
+        "a!ü"
+    );
+
+    tab.user_input(UserInput::KeyDown {
+        key: "a".into(),
+        text: None,
+        modifiers: 4,
+        commands: vec!["selectAll".into()],
+    })
+    .await
+    .unwrap();
+    tab.user_input(UserInput::KeyDown {
+        key: "Backspace".into(),
+        text: None,
+        modifiers: 0,
+        commands: vec![],
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        tab.javascript("document.getElementById('f').value")
+            .await
+            .unwrap(),
+        ""
+    );
+
+    tab.user_input(UserInput::Wheel {
+        at: Point { x: 700.0, y: 150.0 },
+        dx: 0.0,
+        dy: 120.0,
+        modifiers: 0,
+    })
+    .await
+    .unwrap();
+    let scrolled = async {
+        while tab
+            .javascript("document.getElementById('scroller').scrollTop")
+            .await
+            .unwrap()
+            == "0"
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), scrolled)
+        .await
+        .expect("the wheel scrolls the box under it");
+
+    let other = data_url("<title>Other</title>other");
+    tab.user_input(UserInput::Navigate(other)).await.unwrap();
+    assert_eq!(tab.javascript("document.title").await.unwrap(), "Other");
+    tab.user_input(UserInput::History(-1)).await.unwrap();
+    tab.settle().await;
+    assert!(
+        tab.javascript("!!document.getElementById('f')")
+            .await
+            .unwrap()
+            == "true"
+    );
+    tab.user_input(UserInput::Reload).await.unwrap();
+
+    session.close().await;
+}

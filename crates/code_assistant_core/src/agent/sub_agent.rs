@@ -203,6 +203,9 @@ pub struct DefaultSubAgentRunner {
     llm_client_factory: Option<crate::session::service::LlmClientFactory>,
     project_manager_factory: crate::session::service::ProjectManagerFactory,
     parent_cancellation: tools_core::RunCancellation,
+    /// Where a sub-agent's browsers are listed while it runs, so the
+    /// session's browser panel can show them.
+    session_browsers: Option<Arc<crate::session::browsers::SessionBrowsers>>,
 }
 
 impl DefaultSubAgentRunner {
@@ -235,6 +238,7 @@ impl DefaultSubAgentRunner {
             llm_client_factory: None,
             project_manager_factory: Arc::new(|| Box::new(DefaultProjectManager::new())),
             parent_cancellation: tools_core::RunCancellation::default(),
+            session_browsers: None,
         }
     }
 
@@ -259,6 +263,14 @@ impl DefaultSubAgentRunner {
         self
     }
 
+    pub fn with_session_browsers(
+        mut self,
+        browsers: Option<Arc<crate::session::browsers::SessionBrowsers>>,
+    ) -> Self {
+        self.session_browsers = browsers;
+        self
+    }
+
     fn build_sub_agent_ui(
         &self,
         parent_ui: Arc<dyn UserInterface>,
@@ -278,6 +290,7 @@ impl DefaultSubAgentRunner {
         parent_tool_id: &str,
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
+        browser_sessions: Arc<web::BrowserSessionManager>,
     ) -> Result<Agent> {
         // Create a fresh LLM provider (avoid requiring Clone).
         let llm_provider = match &self.llm_client_factory {
@@ -326,10 +339,11 @@ impl DefaultSubAgentRunner {
             // Sub-agents run to completion inside the parent's turn; a
             // wakeup for "their" session would wake the parent instead.
             wakeups: None,
-            // Sub-agents get their own registry: dropping it when the
-            // sub-agent finishes terminates any PTY sessions it left behind.
+            // Sub-agents get their own registries: dropping them when the
+            // sub-agent finishes terminates any PTY sessions and browsers it
+            // left behind.
             pty_sessions: Some(Arc::new(pty_session::PtySessionManager::default())),
-            browser_sessions: Some(Arc::new(web::BrowserSessionManager::default())),
+            browser_sessions: Some(browser_sessions),
             terminal_interrupts: Some(Arc::new(crate::tools::TerminalInterrupts::default())),
             // Read-only session archive access, so the introspection tools
             // work in sub-agents (parent shares its store).

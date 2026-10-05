@@ -23,12 +23,20 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             cancellation.clone(),
         );
 
+        // The sub-agent's own browsers, listed with the session's while it
+        // runs.
+        let browsers = Arc::new(web::BrowserSessionManager::default());
+        let _listed = self
+            .session_browsers
+            .as_ref()
+            .map(|session| session.register_sub_agent(parent_tool_id, browsers.clone()));
+
         let work = async {
             cancellation.check()?;
             let mut agent = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
-                agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone()) => agent?,
+                agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone(), browsers.clone()) => agent?,
             };
             agent.set_cancellation(cancellation.clone());
             let scope = match mode {

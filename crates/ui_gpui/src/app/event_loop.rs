@@ -826,6 +826,8 @@ impl Gpui {
                 *self.current_mcp_servers.lock().unwrap() = servers;
                 cx.refresh();
             }
+            // The browser panel subscribes to these itself.
+            UiEvent::BrowsersChanged { .. } => {}
             // State tracked by the event bridge; the main screen renders the
             // prompt and the sidebar flags the asking session.
             UiEvent::RequestToolPermission { .. }

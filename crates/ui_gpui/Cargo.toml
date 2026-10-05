@@ -3,6 +3,10 @@ name = "ui_gpui"
 version = "0.2.17"
 edition = "2024"
 
+[features]
+# The agent's browser live in the right panel (docs/browser-panel-plan.md).
+browser-panel = ["dep:web"]
+
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
 agent_core = { path = "../agent_core" }
@@ -13,6 +17,7 @@ sandbox = { path = "../sandbox" }
 terminal = { path = "../terminal" }
 terminal_view = { path = "../terminal_view" }
 tools_core = { path = "../tools_core" }
+web = { path = "../web", optional = true }
 
 # GPUI related. gpui-kit pins the matching gpui-pre snapshot and enables the
 # platform backends (font-kit, x11, wayland) itself. `profiler` is what

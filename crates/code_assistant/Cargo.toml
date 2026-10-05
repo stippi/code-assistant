@@ -18,6 +18,7 @@ osx_minimum_system_version = "10.15"
 default = [
     "acp-frontend",
     "gpui-frontend",
+    "browser-panel",
     "mcp-server",
     "terminal-frontend",
     "document-conversion",
@@ -27,6 +28,8 @@ document-conversion = ["code_assistant_core/document-conversion"]
 # build (--no-default-features) skips gpui and ratatui entirely.
 acp-frontend = ["dep:ui_acp"]
 gpui-frontend = ["dep:ui_gpui"]
+# The agent's browser live in the GPUI right panel.
+browser-panel = ["gpui-frontend", "ui_gpui/browser-panel"]
 mcp-server = ["dep:mcp_server"]
 terminal-frontend = ["dep:ui_terminal"]
 
