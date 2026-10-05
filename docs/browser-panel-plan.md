@@ -23,14 +23,15 @@ A native web view (WKWebView via `wry`) is not recommended (see below).
 
 ## Status
 
-Steps 1–4 of the order of work are built, behind the non-default Cargo
-feature `browser-panel` (`cargo run -p code-assistant --features
-browser-panel`). The `web` and core parts are compiled always; without a
-viewer they change nothing (browsers still close at the end of the turn).
+Steps 1–4 of the order of work are built. The GPUI part sits behind the
+Cargo feature `browser-panel`, which is on by default. The `web` and core
+parts are compiled always; without a viewer they change nothing (browsers
+still close at the end of the turn).
 
 Decisions taken while building:
 
-- **Toggle**: a Cargo feature in `ui_gpui`, forwarded by `code_assistant`.
+- **Toggle**: a Cargo feature in `ui_gpui`, forwarded by `code_assistant`,
+  default since it proved itself in use.
 - **Take-over**: while the user has control, browser tools fail at once with
   "The user is controlling this browser right now"; the first result after
   the hand-back starts with a note naming the tab's address.
@@ -50,9 +51,16 @@ view guards; `code_assistant_core::session::browsers` (listing, events,
 `BrowserView`) and `session/service/browsers.rs`; the GUI in
 `ui_gpui/src/main_screen/right_panel/browser/`.
 
+- **GPUI outside tokio**: `main` is not `#[tokio::main]`. GPUI's event loop
+  inside `block_on` never renewed tokio's cooperation budget, and tokio
+  channels awaited on the main thread (the panel's frames) stalled after
+  about 128 operations.
+
+In a release build a frame decodes in about 4 ms and the panel keeps up
+with the screencast's 60 frames per second.
+
 Open: the `<select>` overlay and file chooser (step 5) wait for the CEF
-decision, since CEF would bring native popups; the latency of the JPEG
-screencast is still to be judged in use.
+decision, since CEF would bring native popups.
 
 ## Where we are today (before building)
 

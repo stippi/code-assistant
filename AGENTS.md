@@ -89,6 +89,10 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - GPUI frontend based on gpui-kit (gpui via `gpui_kit::*`, gpui-component via `gpui_kit::component`) with custom components
 - GPUI API reference (contexts, entities, tasks, elements, actions, events):
   `docs/gpui-reference.md`
+- The right panel shows the agent's browser live (CDP screencast, feature
+  `browser-panel`, default): `docs/browser-panel-plan.md`. GPUI must not run
+  inside a tokio `block_on` (tokio's cooperation budget would never renew on
+  the main thread), so `main` is not `#[tokio::main]`
 - Frame profiling of the GPUI frontend (opt-in via
   `CODE_ASSISTANT_FRAME_PROFILE`, sweep runner and `sample` analysis in
   `scripts/frame-profile/`): `docs/frame-profiling.md`
