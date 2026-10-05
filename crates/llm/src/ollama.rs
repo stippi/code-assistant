@@ -188,12 +188,19 @@ impl OllamaClient {
                         current_images.clear();
                     }
 
-                    // ToolResult as separate "tool" message (text only)
+                    // ToolResult as separate "tool" message; images (screenshots)
+                    // ride along like on a user message
                     messages.push(OllamaMessage {
                         role: "tool".to_string(),
                         content: content.text_content().to_string(),
                         thinking: "".to_string(),
-                        images: None,
+                        images: content.has_images().then(|| {
+                            content
+                                .images()
+                                .iter()
+                                .map(|image| image.base64_data.clone())
+                                .collect()
+                        }),
                         tool_calls: None,
                     });
                 }
@@ -528,5 +535,39 @@ impl LLMProvider for OllamaClient {
         }
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_result_images_travel_on_the_tool_message() {
+        let messages = OllamaClient::convert_user_message(&[
+            ContentBlock::new_tool_result("call_0", "Clicked"),
+            ContentBlock::new_tool_result_with_images(
+                "call_1",
+                "Screenshot taken",
+                vec![crate::types::ToolResultImage {
+                    media_type: "image/png".to_string(),
+                    base64_data: "QUJD".to_string(),
+                }],
+            ),
+        ]);
+
+        assert_eq!(
+            serde_json::to_value(&messages).unwrap(),
+            serde_json::json!([
+                {"role": "tool", "content": "Clicked", "thinking": "", "tool_calls": null},
+                {
+                    "role": "tool",
+                    "content": "Screenshot taken",
+                    "thinking": "",
+                    "images": ["QUJD"],
+                    "tool_calls": null,
+                },
+            ])
+        );
     }
 }

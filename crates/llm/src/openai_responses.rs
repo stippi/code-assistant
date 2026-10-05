@@ -310,6 +310,22 @@ impl ModelCapabilities {
     }
 }
 
+/// Render a tool definition as a Responses API function tool.
+///
+/// Without an explicit `strict`, the Responses API normalizes the schema into
+/// strict mode, which makes every property required: the model then fills
+/// optional parameters with placeholders (`""`, `0`, `[0, 0]`) that the tools
+/// cannot tell from real values. Opting out lets it omit them.
+pub(crate) fn function_tool(tool: ToolDefinition) -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+        "strict": false,
+    })
+}
+
 /// Place an explicit cache breakpoint on the last breakpoint-eligible content
 /// block within `items[..end]`.
 ///
@@ -351,7 +367,7 @@ enum ResponseInputItem {
     },
     FunctionCallOutput {
         call_id: String,
-        output: String,
+        output: FunctionCallOutput,
     },
     Reasoning {
         id: String,
@@ -375,6 +391,34 @@ impl PromptCacheBreakpoint {
         Self {
             mode: "explicit".to_string(),
         }
+    }
+}
+
+/// `output` of a `function_call_output` item: plain text, or a list of
+/// input content when the tool result carries images (screenshots), which a
+/// string cannot hold.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum FunctionCallOutput {
+    Text(String),
+    Content(Vec<ResponseContentItem>),
+}
+
+impl From<&ToolResultContent> for FunctionCallOutput {
+    fn from(content: &ToolResultContent) -> Self {
+        if !content.has_images() {
+            return Self::Text(content.text_content().to_string());
+        }
+        let mut items = vec![ResponseContentItem::input_text(
+            content.text_content().to_string(),
+        )];
+        items.extend(content.images().iter().map(|image| {
+            ResponseContentItem::input_image(format!(
+                "data:{};base64,{}",
+                image.media_type, image.base64_data
+            ))
+        }));
+        Self::Content(items)
     }
 }
 
@@ -1539,19 +1583,9 @@ impl LLMProvider for OpenAIResponsesClient {
             );
         }
 
-        let tools = request.tools.map(|tools| {
-            tools
-                .into_iter()
-                .map(|tool| {
-                    serde_json::json!({
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters
-                    })
-                })
-                .collect()
-        });
+        let tools = request
+            .tools
+            .map(|tools| tools.into_iter().map(function_tool).collect());
 
         // Configure for stateless mode with encrypted reasoning
         let store = false;
@@ -1730,7 +1764,7 @@ fn convert_structured_message(
                 pending.flush(result);
                 result.push(ResponseInputItem::FunctionCallOutput {
                     call_id: tool_use_id.clone(),
-                    output: content.text_content().to_string(),
+                    output: content.into(),
                 });
             }
             ContentBlock::RedactedThinking {
@@ -1845,15 +1879,72 @@ mod tests {
         ])];
 
         let converted = client.convert_messages_with_cache(messages, false);
-        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&converted).unwrap(),
+            serde_json::json!([{
+                "type": "function_call_output",
+                "call_id": "test_id",
+                "output": "Tool output",
+            }])
+        );
+    }
 
-        match &converted[0] {
-            ResponseInputItem::FunctionCallOutput { call_id, output } => {
-                assert_eq!(call_id, "test_id");
-                assert_eq!(output, "Tool output");
-            }
-            _ => panic!("Expected FunctionCallOutput"),
-        }
+    #[test]
+    fn test_function_tools_opt_out_of_strict_mode() {
+        let tool = function_tool(ToolDefinition {
+            name: "click".to_string(),
+            description: "Click".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"ref": {"type": "string"}},
+            }),
+        });
+        assert_eq!(
+            tool,
+            serde_json::json!({
+                "type": "function",
+                "name": "click",
+                "description": "Click",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"ref": {"type": "string"}},
+                },
+                "strict": false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_tool_result_images_travel_in_function_call_output() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message::new_user_content(vec![
+            ContentBlock::new_tool_result_with_images(
+                "call_1",
+                "Screenshot taken",
+                vec![crate::types::ToolResultImage {
+                    media_type: "image/jpeg".to_string(),
+                    base64_data: "QUJD".to_string(),
+                }],
+            ),
+        ])];
+
+        let converted = client.convert_messages_with_cache(messages, false);
+        assert_eq!(
+            serde_json::to_value(&converted).unwrap(),
+            serde_json::json!([{
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [
+                    {"type": "input_text", "text": "Screenshot taken"},
+                    {"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD"},
+                ],
+            }])
+        );
     }
 
     #[test]

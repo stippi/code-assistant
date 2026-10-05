@@ -8,9 +8,15 @@
 //! schema and wraps such scalars in a one-element array, so the common mistake
 //! parses on the first try.
 //!
-//! The coercion is deliberately conservative: it only ever *adds* an array
-//! wrapper around a value the schema says should be an array, and it never
-//! discards or reinterprets data. Because [`crate::dyn_tool::DynTool::invoke`]
+//! Models also fill optional parameters with empty placeholders (`""`, `[]`,
+//! `null`) instead of omitting them — a tab id `""` then fails as an unknown
+//! tab, a coordinate `[]` as a malformed one. Such values are dropped from
+//! properties the schema does not list as `required`, so the tool sees the
+//! parameter as absent.
+//!
+//! Beyond that the coercion is deliberately conservative: it only ever *adds*
+//! an array wrapper around a value the schema says should be an array, and it
+//! never reinterprets data. Because [`crate::dyn_tool::DynTool::invoke`]
 //! re-serializes the parsed input back into `params`, a coerced value also
 //! becomes the canonical form recorded in the conversation history.
 
@@ -52,14 +58,32 @@ pub fn coerce_to_schema(value: &mut Value, schema: &Value) {
                 schema.get("properties").and_then(Value::as_object),
                 value.as_object_mut(),
             ) {
+                let required = schema.get("required").and_then(Value::as_array);
+                let is_required = |key: &str| required.is_some_and(|r| r.iter().any(|k| k == key));
                 for (key, prop_schema) in props {
-                    if let Some(field) = map.get_mut(key) {
+                    if !is_required(key) && map.get(key).is_some_and(is_empty_placeholder) {
+                        map.remove(key);
+                    } else if let Some(field) = map.get_mut(key) {
                         coerce_to_schema(field, prop_schema);
                     }
                 }
             }
         }
         _ => {}
+    }
+}
+
+/// Values a model emits for an optional parameter it means to leave out:
+/// some providers (strict function calling) force every property to be
+/// present, and models fill the unused ones with `""`, `[]` or `null`.
+/// Numbers, booleans and objects are left alone, since `0`, `false` and `{}`
+/// are as likely to be meant.
+fn is_empty_placeholder(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        _ => false,
     }
 }
 
@@ -201,7 +225,8 @@ mod tests {
     fn does_not_wrap_null() {
         let schema = json!({
             "type": "object",
-            "properties": {"paths": {"type": "array", "items": {"type": "string"}}}
+            "properties": {"paths": {"type": "array", "items": {"type": "string"}}},
+            "required": ["paths"]
         });
         let out = coerced(json!({"paths": null}), &schema);
         assert_eq!(out, json!({"paths": null}));
@@ -287,6 +312,79 @@ mod tests {
         });
         let out = coerced(json!({"value": "x"}), &schema);
         assert_eq!(out, json!({"value": "x"}));
+    }
+
+    #[test]
+    fn drops_empty_placeholders_in_optional_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "tab_id": {"type": "string"},
+                "coordinate": {"type": "array", "items": {"type": "integer"}},
+                "ref": {"type": "string"},
+            },
+            "required": ["action"]
+        });
+        let out = coerced(
+            json!({"action": "left_click", "tab_id": "", "coordinate": [], "ref": null}),
+            &schema,
+        );
+        assert_eq!(out, json!({"action": "left_click"}));
+    }
+
+    #[test]
+    fn keeps_empty_values_in_required_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["old_text", "new_text"]
+        });
+        let out = coerced(json!({"old_text": "x", "new_text": ""}), &schema);
+        assert_eq!(out, json!({"old_text": "x", "new_text": ""}));
+    }
+
+    #[test]
+    fn keeps_meaningful_falsy_values_in_optional_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "duration": {"type": "number"},
+                "shift": {"type": "boolean"},
+                "options": {"type": "object"},
+            }
+        });
+        let value = json!({"duration": 0, "shift": false, "options": {}});
+        assert_eq!(coerced(value.clone(), &schema), value);
+    }
+
+    #[test]
+    fn drops_empty_placeholders_in_nested_objects() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "tab_id": {"type": "string"},
+                        },
+                        "required": ["name"]
+                    }
+                }
+            },
+            "required": ["actions"]
+        });
+        let out = coerced(
+            json!({"actions": [{"name": "screenshot", "tab_id": ""}]}),
+            &schema,
+        );
+        assert_eq!(out, json!({"actions": [{"name": "screenshot"}]}));
     }
 
     #[test]
