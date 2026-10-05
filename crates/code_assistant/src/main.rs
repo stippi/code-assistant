@@ -16,8 +16,18 @@ use crate::cli::{Args, Mode};
 use crate::logging::setup_logging;
 use anyhow::Result;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Runs `future` to completion on a fresh multi-threaded tokio runtime.
+fn block_on<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    tokio::runtime::Runtime::new()?.block_on(future)
+}
+
+// Not `#[tokio::main]`: the GPUI frontend must not run inside `block_on`.
+// tokio grants each poll of the `block_on` future a cooperation budget and
+// renews it only when the poll returns; GPUI's event loop never returns, so
+// once the main thread had used up the budget, every tokio channel awaited
+// there (a browser view's frames, say) stayed pending forever. The other
+// modes run on a runtime of their own.
+fn main() -> Result<()> {
     let args = Args::parse();
 
     // Apply config-dir override before anything loads config files
@@ -39,25 +49,19 @@ async fn main() -> Result<()> {
     match args.mode {
         Some(Mode::CodexLogin) => {
             setup_logging(1, true);
-            return codex_commands::run_codex_login().await;
+            block_on(codex_commands::run_codex_login())
         }
-        Some(Mode::CodexLogout) => {
-            return codex_commands::run_codex_logout();
-        }
-        Some(Mode::CodexStatus) => {
-            return codex_commands::run_codex_status();
-        }
+        Some(Mode::CodexLogout) => codex_commands::run_codex_logout(),
+        Some(Mode::CodexStatus) => codex_commands::run_codex_status(),
         Some(Mode::McpLogin { server }) => {
             setup_logging(1, true);
-            return mcp_commands::run_mcp_login(&server).await;
+            block_on(mcp_commands::run_mcp_login(&server))
         }
-        Some(Mode::McpLogout { server }) => {
-            return mcp_commands::run_mcp_logout(&server);
-        }
+        Some(Mode::McpLogout { server }) => mcp_commands::run_mcp_logout(&server),
         Some(Mode::Server { verbose }) => {
             #[cfg(feature = "mcp-server")]
             {
-                app::server::run(verbose).await
+                block_on(app::server::run(verbose))
             }
             #[cfg(not(feature = "mcp-server"))]
             {
@@ -99,7 +103,7 @@ async fn main() -> Result<()> {
                     sandbox_policy: sandbox_mode.to_policy(sandbox_network),
                 };
 
-                app::acp::run(verbose, config).await
+                block_on(app::acp::run(verbose, config))
             }
             #[cfg(not(feature = "acp-frontend"))]
             {
@@ -176,7 +180,7 @@ async fn main() -> Result<()> {
             } else {
                 #[cfg(feature = "terminal-frontend")]
                 {
-                    app::terminal::run(config).await
+                    block_on(app::terminal::run(config))
                 }
                 #[cfg(not(feature = "terminal-frontend"))]
                 {
