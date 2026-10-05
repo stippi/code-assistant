@@ -66,7 +66,9 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 
 // Re-export types shared with the HTTP provider
-use crate::openai_responses::{PromptCacheBreakpoint, Verbosity, model_supports_explicit_cache};
+use crate::openai_responses::{
+    PromptCacheBreakpoint, Verbosity, function_tool, model_supports_explicit_cache,
+};
 
 // ============================================================================
 // Request / Response types (WebSocket-specific envelope)
@@ -973,19 +975,9 @@ impl OpenAIResponsesWsClient {
             None
         };
 
-        let tools = request.tools.map(|tools| {
-            tools
-                .into_iter()
-                .map(|tool| {
-                    serde_json::json!({
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    })
-                })
-                .collect()
-        });
+        let tools = request
+            .tools
+            .map(|tools| tools.into_iter().map(function_tool).collect());
 
         let reasoning = if capabilities.supports_reasoning {
             Some(ReasoningConfig {

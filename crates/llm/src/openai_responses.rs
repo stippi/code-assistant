@@ -310,6 +310,22 @@ impl ModelCapabilities {
     }
 }
 
+/// Render a tool definition as a Responses API function tool.
+///
+/// Without an explicit `strict`, the Responses API normalizes the schema into
+/// strict mode, which makes every property required: the model then fills
+/// optional parameters with placeholders (`""`, `0`, `[0, 0]`) that the tools
+/// cannot tell from real values. Opting out lets it omit them.
+pub(crate) fn function_tool(tool: ToolDefinition) -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+        "strict": false,
+    })
+}
+
 /// Place an explicit cache breakpoint on the last breakpoint-eligible content
 /// block within `items[..end]`.
 ///
@@ -1567,19 +1583,9 @@ impl LLMProvider for OpenAIResponsesClient {
             );
         }
 
-        let tools = request.tools.map(|tools| {
-            tools
-                .into_iter()
-                .map(|tool| {
-                    serde_json::json!({
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters
-                    })
-                })
-                .collect()
-        });
+        let tools = request
+            .tools
+            .map(|tools| tools.into_iter().map(function_tool).collect());
 
         // Configure for stateless mode with encrypted reasoning
         let store = false;
@@ -1880,6 +1886,31 @@ mod tests {
                 "call_id": "test_id",
                 "output": "Tool output",
             }])
+        );
+    }
+
+    #[test]
+    fn test_function_tools_opt_out_of_strict_mode() {
+        let tool = function_tool(ToolDefinition {
+            name: "click".to_string(),
+            description: "Click".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"ref": {"type": "string"}},
+            }),
+        });
+        assert_eq!(
+            tool,
+            serde_json::json!({
+                "type": "function",
+                "name": "click",
+                "description": "Click",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"ref": {"type": "string"}},
+                },
+                "strict": false,
+            })
         );
     }
 
