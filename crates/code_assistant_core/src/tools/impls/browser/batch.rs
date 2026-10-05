@@ -126,27 +126,68 @@ fn step_label(step: &BatchStep) -> String {
     }
 }
 
+/// Parse a step's input the way a direct call of `tool` would: coerced
+/// against that tool's schema first, so empty placeholders and lone scalars
+/// behave the same inside a batch.
+fn parse_step<T: Tool>(step: &BatchStep, tool: T) -> Result<T::Input>
+where
+    T::Input: DeserializeOwned,
+{
+    let mut input = step.input.clone();
+    tools_core::coerce::coerce_to_schema(&mut input, &tool.spec().parameters_schema);
+    serde_json::from_value(input)
+        .map_err(|e| anyhow::anyhow!("invalid input for {}: {e}", step.name))
+}
+
 async fn run_step(manager: &BrowserSessionManager, step: &BatchStep) -> Result<BrowserOutput> {
-    fn parse<T: DeserializeOwned>(step: &BatchStep) -> Result<T> {
-        serde_json::from_value(step.input.clone())
-            .map_err(|e| anyhow::anyhow!("invalid input for {}: {e}", step.name))
-    }
     let name = step.name.trim_start_matches("browser_");
     Ok(match name {
-        "navigate" => page::navigate(manager, &parse(step)?).await,
-        "read_page" => page::read_page(manager, &parse(step)?).await,
-        "find" => page::find(manager, &parse(step)?).await,
-        "get_page_text" => page::get_page_text(manager, &parse(step)?).await,
-        "form_input" => page::form_input(manager, &parse(step)?).await,
-        "javascript" => page::javascript(manager, &parse(step)?).await,
-        "computer" => computer::computer(manager, &parse(step)?).await,
-        "read_console_messages" => devtools::read_console(manager, &parse(step)?).await,
-        "read_network_requests" => devtools::read_network(manager, &parse(step)?).await,
-        "resize_window" => tabs::resize_window(manager, &parse(step)?).await,
-        "tabs_context" => tabs::tabs_context(manager, &parse(step)?).await,
-        "tabs_create" => tabs::tabs_create(manager, &parse(step)?).await,
-        "tabs_select" => tabs::tabs_select(manager, &parse(step)?).await,
-        "tabs_close" => tabs::tabs_close(manager, &parse(step)?).await,
+        "navigate" => page::navigate(manager, &parse_step(step, page::BrowserNavigateTool)?).await,
+        "read_page" => {
+            page::read_page(manager, &parse_step(step, page::BrowserReadPageTool)?).await
+        }
+        "find" => page::find(manager, &parse_step(step, page::BrowserFindTool)?).await,
+        "get_page_text" => {
+            page::get_page_text(manager, &parse_step(step, page::BrowserGetPageTextTool)?).await
+        }
+        "form_input" => {
+            page::form_input(manager, &parse_step(step, page::BrowserFormInputTool)?).await
+        }
+        "javascript" => {
+            page::javascript(manager, &parse_step(step, page::BrowserJavascriptTool)?).await
+        }
+        "computer" => {
+            computer::computer(manager, &parse_step(step, computer::BrowserComputerTool)?).await
+        }
+        "read_console_messages" => {
+            devtools::read_console(
+                manager,
+                &parse_step(step, devtools::BrowserReadConsoleTool)?,
+            )
+            .await
+        }
+        "read_network_requests" => {
+            devtools::read_network(
+                manager,
+                &parse_step(step, devtools::BrowserReadNetworkTool)?,
+            )
+            .await
+        }
+        "resize_window" => {
+            tabs::resize_window(manager, &parse_step(step, tabs::BrowserResizeWindowTool)?).await
+        }
+        "tabs_context" => {
+            tabs::tabs_context(manager, &parse_step(step, tabs::BrowserTabsContextTool)?).await
+        }
+        "tabs_create" => {
+            tabs::tabs_create(manager, &parse_step(step, tabs::BrowserTabsCreateTool)?).await
+        }
+        "tabs_select" => {
+            tabs::tabs_select(manager, &parse_step(step, tabs::BrowserTabsSelectTool)?).await
+        }
+        "tabs_close" => {
+            tabs::tabs_close(manager, &parse_step(step, tabs::BrowserTabsCloseTool)?).await
+        }
         other => anyhow::bail!("browser_{other} cannot run in a batch"),
     })
 }
@@ -163,6 +204,21 @@ mod tests {
             name: name.into(),
             input,
         }
+    }
+
+    #[test]
+    fn a_step_drops_empty_placeholders_like_a_direct_call() -> Result<()> {
+        let input = parse_step(
+            &step(
+                "browser_computer",
+                json!({"action": "left_click", "ref": "ref_7", "coordinate": [], "tab_id": ""}),
+            ),
+            computer::BrowserComputerTool,
+        )?;
+        assert_eq!(input.r#ref.as_deref(), Some("ref_7"));
+        assert!(input.coordinate.is_none());
+        assert!(input.target.tab_id.is_none());
+        Ok(())
     }
 
     #[tokio::test]
