@@ -967,8 +967,20 @@ impl MainScreen {
         cx: &mut Context<Self>,
     ) {
         self.input_area.update(cx, |input_area, cx| {
-            input_area.set_content_for_edit(content, attachments, branch_parent_id, window, cx);
+            input_area.set_content_for_edit(
+                content.clone(),
+                attachments.clone(),
+                branch_parent_id,
+                window,
+                cx,
+            );
         });
+        // `set_content_for_edit` emits no change event, so the draft (with
+        // its edit anchor) is saved here; otherwise switching sessions would
+        // drop the edit until the user types.
+        if let Some(session_id) = self.current_session_id.clone() {
+            self.save_draft_for_session(&session_id, &content, &attachments, branch_parent_id, cx);
+        }
         cx.notify();
     }
 
@@ -1123,8 +1135,11 @@ impl MainScreen {
             return;
         }
         self.input_area.update(cx, |input_area, cx| {
-            input_area.set_content(text, Vec::new(), window, cx);
+            input_area.set_content(text.clone(), Vec::new(), window, cx);
         });
+        // `set_content` emits no change event, so the draft is saved here;
+        // otherwise switching sessions would lose the offer.
+        self.save_draft_for_session(&session_id, &text, &[], None, cx);
     }
 
     /// A small button of the prompts above the input area; the emphasized

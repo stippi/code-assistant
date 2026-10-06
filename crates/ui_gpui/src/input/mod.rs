@@ -213,9 +213,8 @@ impl InputArea {
     /// Set content for editing a message (creates a branch).
     ///
     /// `branch_parent_id` doubles as the edit-mode flag: `Some(_)` shows the
-    /// editing banner, `None` clears edit mode. It is set *before* the text so
-    /// that the `Change` event emitted by `set_content` saves the draft with
-    /// the correct edit anchor.
+    /// editing banner, `None` clears edit mode. Like `set_content`, this emits
+    /// no change event: callers that need the draft saved save it themselves.
     pub fn set_content_for_edit(
         &mut self,
         text: String,
