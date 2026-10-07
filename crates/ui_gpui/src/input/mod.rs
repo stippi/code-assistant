@@ -239,6 +239,13 @@ impl InputArea {
         self.branch_parent_id = None;
     }
 
+    /// Put the keyboard focus into the text field.
+    #[cfg(test)]
+    pub(crate) fn focus_text(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.text_input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
     /// Check if we're currently in edit mode (editing an existing message)
     pub fn is_editing(&self) -> bool {
         self.branch_parent_id.is_some()
@@ -328,7 +335,7 @@ impl InputArea {
 
     /// Get current content (text and attachments)
     #[allow(dead_code)]
-    pub fn get_content(&self, cx: &Context<Self>) -> (String, Vec<DraftAttachment>) {
+    pub fn get_content(&self, cx: &gpui_kit::App) -> (String, Vec<DraftAttachment>) {
         let text = self.text_input.read(cx).value().to_string();
         (text, self.attachments.clone())
     }

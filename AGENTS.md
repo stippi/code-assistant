@@ -84,6 +84,10 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Unit tests distributed across modules; integration tests in `crates/code_assistant/src/tests/`
 - Mock implementations in `code_assistant_core` behind the `test-utils` feature
 - Use `tools::test_registry()` (exported under `test-utils`) for deterministic tool tests
+- GPUI frontend: `Gpui::new` takes injected `Stores` (drafts, UI state); tests
+  use `ui_gpui::test_support` — `MockStores` (in-memory, can fail on demand) and
+  `MainScreenTest`, which drives the main screen through the same event paths
+  as the app (`receive` for core events, `push` for command results)
 
 ### UI Development
 - GPUI frontend based on gpui-kit (gpui via `gpui_kit::*`, gpui-component via `gpui_kit::component`) with custom components

@@ -45,7 +45,7 @@ impl Gpui {
 
     /// Apply one stream event: decide whether it concerns this view, then
     /// feed it into the internal UI event queue.
-    async fn handle_stream_event(&self, event: SessionEvent) {
+    pub(crate) async fn handle_stream_event(&self, event: SessionEvent) {
         let current = self.get_current_session_id();
         let is_current_session = event.session_id == current;
 
@@ -432,22 +432,6 @@ mod tests {
             pending_permission_requests,
             pending_new_context_target: None,
         }
-    }
-
-    /// The bridge runs on GPUI's executor, outside any tokio runtime.
-    #[test]
-    fn a_handoff_prepared_in_the_background_becomes_its_draft() {
-        let gpui = viewing("a");
-
-        futures::executor::block_on(gpui.handle_stream_event(ui_event(
-            "b",
-            UiEvent::HandoffPrepared {
-                prompt: "Next step".into(),
-            },
-        )));
-
-        let draft = gpui.load_draft_for_session("b").expect("a draft");
-        assert_eq!(draft.message, "/new Next step");
     }
 
     #[test]

@@ -659,9 +659,30 @@ impl Gpui {
         *self.event_task.lock().unwrap() = Some(task);
     }
 
+    /// Create the message list and the session sidebar, registered with this
+    /// instance so the event loop updates them.
+    fn new_session_views(
+        &self,
+        window: &mut gpui_kit::Window,
+        cx: &mut App,
+    ) -> (Entity<MessagesView>, Entity<sidebar::SessionSidebar>) {
+        let messages_view = cx.new(|cx| {
+            MessagesView::new(
+                self.message_queue.clone(),
+                self.current_session_activity_state.clone(),
+                cx,
+            )
+        });
+        *self.messages_view.lock().unwrap() = Some(messages_view.clone());
+
+        let project_sidebar = cx.new(|cx| sidebar::SessionSidebar::new(window, cx));
+        *self.project_sidebar.lock().unwrap() = Some(project_sidebar.clone());
+
+        (messages_view, project_sidebar)
+    }
+
     // Run the application
     pub fn run_app(&self) {
-        let message_queue = self.message_queue.clone();
         let gpui_clone = self.clone();
 
         // Initialize app with assets
@@ -765,13 +786,8 @@ impl Gpui {
                         ..Default::default()
                     },
                     |window, cx| {
-                        // Create MessagesView
-                        let activity_state = gpui_clone.current_session_activity_state.clone();
-                        let messages_view = cx
-                            .new(|cx| MessagesView::new(message_queue.clone(), activity_state, cx));
-
-                        // Store MessagesView reference in Gpui
-                        *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
+                        let (messages_view, project_sidebar) =
+                            gpui_clone.new_session_views(window, cx);
                         if let sweep @ (shared::frame_profile::Mode::Scroll
                         | shared::frame_profile::Mode::Wheel) = frame_profile_mode
                         {
@@ -780,10 +796,6 @@ impl Gpui {
                                 view.start_profile_scroll_sweep(wheel, window, cx)
                             });
                         }
-
-                        // Create SessionSidebar and store it in Gpui
-                        let project_sidebar = cx.new(|cx| sidebar::SessionSidebar::new(window, cx));
-                        *gpui_clone.project_sidebar.lock().unwrap() = Some(project_sidebar.clone());
 
                         // Create RootView
                         let root_view = cx.new(|cx| {

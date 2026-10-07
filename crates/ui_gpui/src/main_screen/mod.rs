@@ -1108,6 +1108,11 @@ impl MainScreen {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn input_area(&self) -> &Entity<InputArea> {
+        &self.input_area
+    }
+
     /// Put a handoff prepared while the session was idle into the composer,
     /// unless the user has started writing something else.
     fn offer_prepared_handoff(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
@@ -2139,6 +2144,9 @@ impl Render for MainScreen {
             })
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod goal_command_tests {
