@@ -170,6 +170,25 @@ impl MessageContainer {
     }
 
     /// Check if this is a user message
+    /// `"<role>: <text>"` with the text of its text blocks, for assertions.
+    #[cfg(test)]
+    pub(crate) fn transcript_line(&self, cx: &gpui_kit::App) -> String {
+        let role = match self.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::System => "system",
+        };
+        let text: Vec<String> = self
+            .elements()
+            .iter()
+            .filter_map(|block| match block.read(cx).block.as_ref() {
+                BlockData::TextBlock(text) => Some(text.content.trim().to_string()),
+                _ => None,
+            })
+            .collect();
+        format!("{role}: {}", text.join(" "))
+    }
+
     pub fn is_user_message(&self) -> bool {
         self.role == MessageRole::User
     }
