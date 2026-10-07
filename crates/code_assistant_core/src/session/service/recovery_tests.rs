@@ -127,7 +127,10 @@ async fn a_run_refused_by_an_external_lock_does_not_append_a_message() {
     let tmp = tempfile::tempdir().unwrap();
     let (service, _) = test_service_with_manager(tmp.path());
     let id = service.create_session(None, None).await.unwrap();
-    let lock = crate::utils::file_utils::try_acquire_agent_lock(&tmp.path().join("sessions"), &id)
+    let lock_path = crate::persistence::SessionLayout::new(tmp.path().join("sessions"))
+        .agent_lock(&id)
+        .unwrap();
+    let lock = crate::utils::file_utils::try_acquire_agent_lock(&lock_path)
         .unwrap()
         .unwrap();
     let sent = service

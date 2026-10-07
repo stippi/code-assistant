@@ -7,9 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
-use crate::persistence::{
-    ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig, generate_session_id,
-};
+use crate::persistence::{ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig};
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionCheckpoint, SessionConfig};
@@ -374,7 +372,7 @@ impl SessionManager {
             "Session is already running"
         );
         let lock =
-            file_utils::try_acquire_agent_lock(&self.persistence.sessions_dir()?, session_id)?
+            file_utils::try_acquire_agent_lock(&self.persistence.layout().agent_lock(session_id)?)?
                 .ok_or_else(|| anyhow::anyhow!("Session is running in another instance"))?;
         instance.begin_agent_run();
         instance.cancellation = cancellation;
@@ -561,8 +559,19 @@ impl SessionManager {
         session_config_override: Option<SessionConfig>,
         model_config: Option<SessionModelConfig>,
     ) -> Result<String> {
-        let session_id = generate_session_id();
+        let project_root = session_config_override
+            .as_ref()
+            .unwrap_or(&self.session_config_template)
+            .init_path
+            .clone();
+        let session_id = self.allocate_session_id(project_root.as_deref())?;
         self.create_session_with_id(session_id, name, session_config_override, model_config)
+    }
+
+    /// Reserve the ID of a new session of a project, for frontends that hand
+    /// out the ID before the session is created (ACP's deferred creation).
+    pub fn allocate_session_id(&self, project_root: Option<&std::path::Path>) -> Result<String> {
+        self.persistence.allocate_session_id(project_root)
     }
 
     /// Create a new session with a specific ID (used for deferred session creation in ACP)
@@ -2126,10 +2135,10 @@ impl SessionManager {
             return false; // Our own agent holds the lock
         }
 
-        let Ok(sessions_dir) = self.persistence.sessions_dir() else {
+        let Ok(lock_path) = self.persistence.layout().agent_lock(session_id) else {
             return false;
         };
-        file_utils::is_agent_locked(&sessions_dir, session_id)
+        file_utils::is_agent_locked(&lock_path)
     }
 
     /// Get the latest session ID for auto-resuming
@@ -2602,18 +2611,10 @@ mod tests {
         use std::time::Duration;
         let (mut manager, _dir) = build_manager(false);
         let id = manager.create_session(None).unwrap();
-        let lock_path = manager
-            .persistence
-            .sessions_dir()
-            .unwrap()
-            .join(format!("{id}.entry.lock"));
+        let lock_path = manager.persistence.layout().entry_lock(&id).unwrap();
         let lock = file_utils::lock_exclusive(&lock_path).unwrap();
         let mut latest = manager.persistence.load_chat_session(&id).unwrap().unwrap();
-        let path = manager
-            .persistence
-            .sessions_dir()
-            .unwrap()
-            .join(format!("{id}.json"));
+        let path = manager.persistence.layout().session_file(&id).unwrap();
         let (started_tx, started_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let worker_id = id.clone();

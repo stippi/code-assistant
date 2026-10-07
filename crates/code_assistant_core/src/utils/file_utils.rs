@@ -139,15 +139,13 @@ impl Drop for AgentLockGuard {
 /// Try to acquire the agent lock for a session.
 ///
 /// Returns `Ok(Some(guard))` if the lock was acquired, `Ok(None)` if another
-/// process already holds it.  The lock file is located at
-/// `<sessions_dir>/<session_id>.agent.lock`.
-pub fn try_acquire_agent_lock(
-    sessions_dir: &Path,
-    session_id: &str,
-) -> Result<Option<AgentLockGuard>> {
-    let lock_path = sessions_dir.join(format!("{session_id}.agent.lock"));
-
-    fs::create_dir_all(sessions_dir)?;
+/// process already holds it.  The lock file lives in the session's folder
+/// (`SessionLayout::agent_lock`).
+pub fn try_acquire_agent_lock(lock_path: &Path) -> Result<Option<AgentLockGuard>> {
+    let lock_path = lock_path.to_path_buf();
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
     let file = OpenOptions::new()
         .create(true)
@@ -163,17 +161,14 @@ pub fn try_acquire_agent_lock(
             let mut f = &file;
             let _ = f.write_all(format!("{}", std::process::id()).as_bytes());
             let _ = f.flush();
-            debug!(
-                "Acquired agent lock for session {session_id}: {}",
-                lock_path.display()
-            );
+            debug!("Acquired agent lock: {}", lock_path.display());
             Ok(Some(AgentLockGuard {
                 _file: file,
                 path: lock_path,
             }))
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            debug!("Agent lock already held for session {session_id}");
+            debug!("Agent lock already held: {}", lock_path.display());
             Ok(None)
         }
 
@@ -200,7 +195,10 @@ pub fn try_acquire_agent_lock(
                 };
 
                 if is_lock_busy {
-                    debug!("Agent lock already held for session {session_id} (raw os error {raw})");
+                    debug!(
+                        "Agent lock already held: {} (raw os error {raw})",
+                        lock_path.display()
+                    );
                     return Ok(None);
                 }
             }
@@ -213,7 +211,7 @@ pub fn try_acquire_agent_lock(
     }
 }
 
-/// Check whether the agent lock for `session_id` is held by *this* process.
+/// Check whether the agent lock at `lock_path` is held by *this* process.
 ///
 /// The lock file contains the PID of the process that acquired the lock (see
 /// [`try_acquire_agent_lock`]).  This function reads that PID and compares it
@@ -223,9 +221,8 @@ pub fn try_acquire_agent_lock(
 ///
 /// Returns `false` if the file does not exist, cannot be read, or contains a
 /// PID that differs from the current process.
-pub fn agent_lock_belongs_to_current_process(sessions_dir: &Path, session_id: &str) -> bool {
-    let lock_path = sessions_dir.join(format!("{session_id}.agent.lock"));
-    let Ok(content) = fs::read_to_string(&lock_path) else {
+pub fn agent_lock_belongs_to_current_process(lock_path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(lock_path) else {
         return false;
     };
     let Ok(pid) = content.trim().parse::<u32>() else {
@@ -238,14 +235,8 @@ pub fn agent_lock_belongs_to_current_process(sessions_dir: &Path, session_id: &s
 ///
 /// Returns `true` if the lock is held (i.e. we cannot acquire it),
 /// `false` if it is free.
-pub fn is_agent_locked(sessions_dir: &Path, session_id: &str) -> bool {
-    let lock_path = sessions_dir.join(format!("{session_id}.agent.lock"));
-
-    let Ok(file) = OpenOptions::new()
-        .create(false)
-        .write(true)
-        .open(&lock_path)
-    else {
+pub fn is_agent_locked(lock_path: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().create(false).write(true).open(lock_path) else {
         return false; // File doesn't exist → not locked
     };
 
@@ -313,35 +304,31 @@ mod tests {
     #[test]
     fn agent_lock_acquire_and_release() {
         let dir = tempdir().unwrap();
-        let sessions_dir = dir.path().join("sessions");
+        let lock = dir.path().join("sessions/sess1/agent.lock");
 
-        // First acquire should succeed
-        let guard = try_acquire_agent_lock(&sessions_dir, "sess1").unwrap();
+        // First acquire should succeed, creating the session folder
+        let guard = try_acquire_agent_lock(&lock).unwrap();
         assert!(guard.is_some());
 
         // Second acquire from same process should fail (already locked)
-        let guard2 = try_acquire_agent_lock(&sessions_dir, "sess1").unwrap();
+        let guard2 = try_acquire_agent_lock(&lock).unwrap();
         assert!(guard2.is_none());
 
-        // Check is_agent_locked
-        assert!(is_agent_locked(&sessions_dir, "sess1"));
+        assert!(is_agent_locked(&lock));
+        assert!(agent_lock_belongs_to_current_process(&lock));
 
-        // Release
         drop(guard);
-
-        // Now should be free
-        assert!(!is_agent_locked(&sessions_dir, "sess1"));
+        assert!(!is_agent_locked(&lock));
     }
 
     #[test]
     fn agent_lock_different_sessions_independent() {
         let dir = tempdir().unwrap();
-        let sessions_dir = dir.path().join("sessions");
 
-        let guard1 = try_acquire_agent_lock(&sessions_dir, "sess1").unwrap();
+        let guard1 = try_acquire_agent_lock(&dir.path().join("sess1/agent.lock")).unwrap();
         assert!(guard1.is_some());
 
-        let guard2 = try_acquire_agent_lock(&sessions_dir, "sess2").unwrap();
+        let guard2 = try_acquire_agent_lock(&dir.path().join("sess2/agent.lock")).unwrap();
         assert!(guard2.is_some());
 
         drop(guard1);
@@ -351,6 +338,6 @@ mod tests {
     #[test]
     fn is_agent_locked_returns_false_when_no_file() {
         let dir = tempdir().unwrap();
-        assert!(!is_agent_locked(dir.path(), "nonexistent"));
+        assert!(!is_agent_locked(&dir.path().join("nonexistent/agent.lock")));
     }
 }

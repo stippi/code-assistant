@@ -3,13 +3,16 @@ use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
 use crate::session::SessionConfig;
 use crate::session::lifecycle::SessionLifecycle;
 use crate::types::{PlanState, ToolSyntax};
 use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
+
+pub mod layout;
+pub use layout::{SessionLayout, SessionPath};
 
 // ============================================================================
 // Session Branching Types
@@ -735,7 +738,7 @@ pub struct ChatMetadata {
 
 #[derive(Clone)]
 pub struct FileSessionPersistence {
-    root_dir: PathBuf,
+    layout: SessionLayout,
 }
 
 impl FileSessionPersistence {
@@ -743,7 +746,7 @@ impl FileSessionPersistence {
     pub fn new() -> Self {
         let root_dir = crate::config_dir::data_dir();
         info!("Storing sessions in: {:?}", root_dir.to_path_buf());
-        Self { root_dir }
+        Self::new_with_root_dir(root_dir)
     }
 
     /// Construct a persistence instance rooted at a custom directory;
@@ -751,20 +754,22 @@ impl FileSessionPersistence {
     /// isolate state and by embedders (e.g. pal) that keep their session
     /// store outside the code-assistant data directory.
     pub fn new_with_root_dir(root_dir: PathBuf) -> Self {
-        Self { root_dir }
+        Self {
+            layout: SessionLayout::new(root_dir.join("sessions")),
+        }
+    }
+
+    /// Where the files of each session live.
+    pub fn layout(&self) -> &SessionLayout {
+        &self.layout
     }
 
     fn ensure_chats_dir(&self) -> Result<PathBuf> {
-        let chats_dir = self.root_dir.join("sessions");
+        let chats_dir = self.layout.sessions_dir().to_path_buf();
         if !chats_dir.exists() {
             std::fs::create_dir_all(&chats_dir)?;
         }
         Ok(chats_dir)
-    }
-
-    fn chat_file_path(&self, session_id: &str) -> Result<PathBuf> {
-        let chats_dir = self.ensure_chats_dir()?;
-        Ok(chats_dir.join(format!("{session_id}.json")))
     }
 
     fn metadata_file_path(&self) -> Result<PathBuf> {
@@ -785,17 +790,11 @@ impl FileSessionPersistence {
         Ok(self.ensure_chats_dir()?.join("lifecycle.lock"))
     }
 
-    /// Returns the sessions directory path.
-    ///
-    /// Used by callers that need to interact with per-session lock files.
-    pub fn sessions_dir(&self) -> Result<PathBuf> {
-        self.ensure_chats_dir()
-    }
-
-    fn entry_lock_path(&self, session_id: &str) -> Result<PathBuf> {
-        Ok(self
-            .ensure_chats_dir()?
-            .join(format!("{session_id}.entry.lock")))
+    /// Reserve the ID of a new session of a project (see
+    /// [`SessionLayout::allocate_session_id`]).
+    pub fn allocate_session_id(&self, project_root: Option<&std::path::Path>) -> Result<String> {
+        self.layout
+            .allocate_session_id(project_root, chrono::Local::now().date_naive())
     }
 
     /// Update an existing session under a cross-process, per-entry lock.
@@ -808,7 +807,12 @@ impl FileSessionPersistence {
         session_id: &str,
         update: impl FnOnce(&mut ChatSession) -> Result<()>,
     ) -> Result<ChatSession> {
-        let _lock = lock_exclusive(&self.entry_lock_path(session_id)?)?;
+        // Locking would create the folder of a missing session.
+        anyhow::ensure!(
+            self.layout.session_dir(session_id)?.is_dir(),
+            "Session not found: {session_id}"
+        );
+        let _lock = lock_exclusive(&self.layout.entry_lock(session_id)?)?;
         let mut session = self
             .load_chat_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
@@ -819,12 +823,14 @@ impl FileSessionPersistence {
         Ok(session)
     }
 
-    /// Store a new session. An existing entry is never replaced: a supplied
-    /// snapshot may be stale, so changes go through `update_entry`.
+    /// Store a new session, in the folder reserved by
+    /// [`Self::allocate_session_id`] or a new one. An existing entry is never
+    /// replaced: a supplied snapshot may be stale, so changes go through
+    /// `update_entry`.
     pub fn create_chat_session(&mut self, session: &ChatSession) -> Result<()> {
-        let _lock = lock_exclusive(&self.entry_lock_path(&session.id)?)?;
+        let _lock = lock_exclusive(&self.layout.entry_lock(&session.id)?)?;
         anyhow::ensure!(
-            !self.chat_file_path(&session.id)?.exists(),
+            !self.layout.session_file(&session.id)?.exists(),
             "Session already exists: {}",
             session.id
         );
@@ -835,7 +841,7 @@ impl FileSessionPersistence {
         let mut session = session.clone();
         session.ensure_config()?;
 
-        let session_path = self.chat_file_path(&session.id)?;
+        let session_path = self.layout.session_file(&session.id)?;
         debug!("Saving chat session to {}", session_path.display());
         atomic_write_json(&session_path, &session)?;
 
@@ -867,7 +873,7 @@ impl FileSessionPersistence {
     }
 
     pub fn load_chat_session(&self, session_id: &str) -> Result<Option<ChatSession>> {
-        let session_path = self.chat_file_path(session_id)?;
+        let session_path = self.layout.session_file(session_id)?;
         if !session_path.exists() {
             return Ok(None);
         }
@@ -933,12 +939,14 @@ impl FileSessionPersistence {
     }
 
     pub fn delete_chat_session(&mut self, session_id: &str) -> Result<()> {
-        let _entry_lock = lock_exclusive(&self.entry_lock_path(session_id)?)?;
-        // Remove the session file
-        let session_path = self.chat_file_path(session_id)?;
-        if session_path.exists() {
-            debug!("Deleting chat session file {}", session_path.display());
-            std::fs::remove_file(session_path)?;
+        let session_dir = self.layout.session_dir(session_id)?;
+        if session_dir.is_dir() {
+            // The folder goes with everything in it, the held entry lock
+            // included: a process still waiting on that lock finds no
+            // session afterwards, and `update_entry` refuses to recreate it.
+            let _entry_lock = lock_exclusive(&self.layout.entry_lock(session_id)?)?;
+            debug!("Deleting session folder {}", session_dir.display());
+            std::fs::remove_dir_all(&session_dir)?;
         }
 
         // Update metadata under lock
@@ -1049,25 +1057,8 @@ impl FileSessionPersistence {
     fn rebuild_metadata_from_sessions(&self) -> Result<Vec<ChatMetadata>> {
         let mut metadata_list = Vec::new();
 
-        // Get all session files
-        let sessions_dir = self.root_dir.join("sessions");
-        if !sessions_dir.exists() {
-            return Ok(metadata_list);
-        }
-
-        for entry in std::fs::read_dir(sessions_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            // Only process .json files
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-
-            // Extract session ID from filename
-            if let Some(filename) = path.file_stem().and_then(|s| s.to_str())
-                && let Ok(Some(session)) = self.load_chat_session(filename)
-            {
+        for session_id in self.layout.session_ids()? {
+            if let Ok(Some(session)) = self.load_chat_session(&session_id) {
                 // Calculate usage information
                 let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
 
@@ -1129,23 +1120,6 @@ impl FileSessionPersistence {
         let sessions = self.list_chat_sessions()?;
         Ok(sessions.first().map(|s| s.id.clone()))
     }
-}
-
-/// Generate a unique session ID
-pub fn generate_session_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    // Process-local counter so IDs generated within the same second (the
-    // timestamp's resolution) stay unique.
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let pid_part = std::process::id() as u64 % 1000;
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    format!("chat_{timestamp:x}_{pid_part:x}_{counter:x}")
 }
 
 /// Calculate usage information from session messages.
@@ -1249,28 +1223,21 @@ pub trait DraftStore: Send + Sync {
     fn delete(&self, session_id: &str) -> Result<()>;
 }
 
-/// Drafts as one JSON file per session in a directory.
+/// Drafts as `draft.json` files in the session folders.
 #[derive(Debug, Clone)]
 pub struct FileDraftStore {
-    drafts_dir: PathBuf,
+    layout: SessionLayout,
 }
 
 impl FileDraftStore {
-    /// Drafts live in `base_dir/drafts`, created on the first save.
-    pub fn new(base_dir: PathBuf) -> Self {
-        Self {
-            drafts_dir: base_dir.join("drafts"),
-        }
-    }
-
-    fn draft_file_path(&self, session_id: &str) -> PathBuf {
-        self.drafts_dir.join(format!("{session_id}.json"))
+    pub fn new(layout: SessionLayout) -> Self {
+        Self { layout }
     }
 }
 
 impl DraftStore for FileDraftStore {
     fn load(&self, session_id: &str) -> Result<Option<SessionDraft>> {
-        let file_path = self.draft_file_path(session_id);
+        let file_path = self.layout.draft(session_id)?;
         let json_content = match std::fs::read_to_string(&file_path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1280,14 +1247,17 @@ impl DraftStore for FileDraftStore {
     }
 
     fn save(&self, draft: &SessionDraft) -> Result<()> {
-        std::fs::create_dir_all(&self.drafts_dir)?;
+        // A deleted session keeps no draft; writing would recreate its folder.
+        if !self.layout.session_dir(&draft.session_id)?.is_dir() {
+            return Ok(());
+        }
         // Written atomically, so concurrent saves of one session never leave
         // a torn file behind.
-        atomic_write_json(&self.draft_file_path(&draft.session_id), draft)
+        atomic_write_json(&self.layout.draft(&draft.session_id)?, draft)
     }
 
     fn delete(&self, session_id: &str) -> Result<()> {
-        match std::fs::remove_file(self.draft_file_path(session_id)) {
+        match std::fs::remove_file(self.layout.draft(session_id)?) {
             Ok(()) => {
                 debug!("Cleared draft for session: {}", session_id);
                 Ok(())
@@ -1368,7 +1338,7 @@ mod tests {
                 None,
             ))
             .unwrap();
-        let before = std::fs::read(persistence.chat_file_path("existing").unwrap()).unwrap();
+        let before = std::fs::read(persistence.layout().session_file("existing").unwrap()).unwrap();
         assert!(
             persistence
                 .update_entry("existing", |session| {
@@ -1379,7 +1349,7 @@ mod tests {
         );
         assert_eq!(
             before,
-            std::fs::read(persistence.chat_file_path("existing").unwrap()).unwrap()
+            std::fs::read(persistence.layout().session_file("existing").unwrap()).unwrap()
         );
         // The failed transaction also released its lock.
         persistence
@@ -1889,32 +1859,42 @@ mod tests {
     #[test]
     fn file_draft_store_round_trips_and_deletes() {
         let dir = tempdir().unwrap();
-        let store = FileDraftStore::new(dir.path().to_path_buf());
-        assert_eq!(store.load("s").unwrap(), None);
+        std::fs::create_dir_all(dir.path().join("p/s")).unwrap();
+        let store = FileDraftStore::new(SessionLayout::new(dir.path().to_path_buf()));
+        assert_eq!(store.load("p/s").unwrap(), None);
 
-        store.save(&draft("s", "first")).unwrap();
-        store.save(&draft("s", "second")).unwrap();
-        assert_eq!(store.load("s").unwrap(), Some(draft("s", "second")));
+        store.save(&draft("p/s", "first")).unwrap();
+        store.save(&draft("p/s", "second")).unwrap();
+        assert_eq!(store.load("p/s").unwrap(), Some(draft("p/s", "second")));
+        assert!(dir.path().join("p/s/draft.json").exists());
 
-        store.delete("s").unwrap();
-        assert_eq!(store.load("s").unwrap(), None);
+        store.delete("p/s").unwrap();
+        assert_eq!(store.load("p/s").unwrap(), None);
         // Deleting a missing draft is fine.
-        store.delete("s").unwrap();
+        store.delete("p/s").unwrap();
+    }
+
+    #[test]
+    fn file_draft_store_does_not_recreate_a_deleted_session() {
+        let dir = tempdir().unwrap();
+        let store = FileDraftStore::new(SessionLayout::new(dir.path().to_path_buf()));
+        store.save(&draft("gone", "text")).unwrap();
+        assert!(!dir.path().join("gone").exists());
     }
 
     #[test]
     fn file_draft_store_reads_drafts_with_timestamps() {
         // Drafts written before the timestamps were dropped still load.
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("drafts")).unwrap();
+        std::fs::create_dir_all(dir.path().join("s")).unwrap();
         std::fs::write(
-            dir.path().join("drafts/s.json"),
+            dir.path().join("s/draft.json"),
             r#"{"session_id":"s","created_at":{"secs_since_epoch":1,"nanos_since_epoch":0},
                 "updated_at":{"secs_since_epoch":2,"nanos_since_epoch":0},
                 "message":"hello","attachments":[]}"#,
         )
         .unwrap();
-        let store = FileDraftStore::new(dir.path().to_path_buf());
+        let store = FileDraftStore::new(SessionLayout::new(dir.path().to_path_buf()));
         assert_eq!(store.load("s").unwrap(), Some(draft("s", "hello")));
     }
 }

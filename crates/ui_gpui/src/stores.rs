@@ -4,7 +4,7 @@
 //! so tests can inject in-memory stores (and simulate their failures).
 
 use crate::shared::ui_state::{FileUiStatePersistence, UiStatePersistence};
-use code_assistant_core::persistence::{DraftStore, FileDraftStore};
+use code_assistant_core::persistence::{DraftStore, FileDraftStore, FileSessionPersistence};
 use std::sync::Arc;
 
 /// The stores [`Gpui`](crate::Gpui) persists through.
@@ -17,16 +17,13 @@ pub struct Stores {
 }
 
 impl Stores {
-    /// The stores of the installed app: drafts in the user's config
-    /// directory, UI states next to the session files.
+    /// The stores of the installed app: drafts and UI states in the
+    /// session folders.
     pub fn on_disk() -> Self {
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| std::env::current_dir().unwrap())
-            .join("code-assistant");
-        let sessions_dir = code_assistant_core::config_dir::data_dir().join("sessions");
+        let layout = FileSessionPersistence::new().layout().clone();
         Self {
-            drafts: Arc::new(FileDraftStore::new(config_dir)),
-            ui_state: Arc::new(FileUiStatePersistence::new(sessions_dir)),
+            drafts: Arc::new(FileDraftStore::new(layout.clone())),
+            ui_state: Arc::new(FileUiStatePersistence::new(layout)),
         }
     }
 }

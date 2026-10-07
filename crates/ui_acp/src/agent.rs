@@ -411,7 +411,14 @@ impl AgentState {
     ) -> Result<acp::NewSessionResponse, acp::Error> {
         tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
 
-        let session_id = code_assistant_core::persistence::generate_session_id();
+        // The ID is handed out now but the session is only created on the
+        // first prompt; allocating reserves its folder in the meantime.
+        let session_id = self
+            .session_manager
+            .lock()
+            .await
+            .allocate_session_id(Some(&arguments.cwd))
+            .map_err(|e| to_acp_error(&e))?;
 
         let mut session_config = self.session_config_template.clone();
         session_config.init_path = Some(arguments.cwd.clone());
