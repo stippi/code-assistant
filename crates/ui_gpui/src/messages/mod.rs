@@ -257,7 +257,7 @@ impl MessagesView {
                 self.saved_scroll
                     .get(id)
                     .copied()
-                    .or_else(|| self.load_persisted_scroll(id))
+                    .or_else(|| Self::load_persisted_scroll(id, cx))
             });
 
             self.displayed_session_id = session_id;
@@ -326,16 +326,10 @@ impl MessagesView {
                     follow_tail: self.follow_tail,
                 },
             );
-            // Mark the on-disk state dirty and schedule the debounced flush so
+            // Mark the stored state dirty and schedule the debounced flush so
             // the position survives a restart even if the user never wheel-
             // scrolled (e.g. only dragged the scrollbar) before switching.
-            if self.write_persisted_scroll(&id, anchor, self.follow_tail)
-                && let Some(sender) = cx.try_global::<crate::UiEventSender>()
-            {
-                let _ = sender
-                    .0
-                    .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
-            }
+            Self::write_persisted_scroll(&id, anchor, self.follow_tail, cx);
         }
     }
 
@@ -348,41 +342,29 @@ impl MessagesView {
             return;
         };
         let anchor = self.list_state.logical_scroll_top();
-        if self.write_persisted_scroll(&id, anchor, self.follow_tail)
-            && let Some(sender) = cx.try_global::<crate::UiEventSender>()
-        {
-            let _ = sender
-                .0
-                .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
-        }
+        Self::write_persisted_scroll(&id, anchor, self.follow_tail, cx);
     }
 
-    /// Write a scroll position into the global UI-state store. Returns `true`
-    /// if the value changed (and the session was therefore marked dirty).
+    /// Write a scroll position into the UI-state store; a changed value
+    /// schedules the debounced flush.
     fn write_persisted_scroll(
-        &self,
         session_id: &str,
         anchor: gpui_kit::ListOffset,
         follow_tail: bool,
-    ) -> bool {
+        cx: &App,
+    ) {
         let pos = crate::shared::ui_state::ScrollPosition {
             item_ix: anchor.item_ix,
             offset_in_item: anchor.offset_in_item.into(),
             follow_tail,
         };
-        if let Some(store) = crate::shared::ui_state::UiStateStore::try_global()
-            && let Ok(mut store) = store.lock()
-        {
-            return store.set_scroll(session_id, pos);
-        }
-        false
+        crate::shared::ui_state::update(cx, |store| store.set_scroll(session_id, pos));
     }
 
     /// Load a previously persisted scroll position for a session from the
-    /// global UI-state store (from a prior app run).
-    fn load_persisted_scroll(&self, session_id: &str) -> Option<SavedScroll> {
-        let store = crate::shared::ui_state::UiStateStore::try_global()?;
-        let pos = store.lock().ok()?.get_scroll(session_id)?;
+    /// UI-state store (from a prior app run).
+    fn load_persisted_scroll(session_id: &str, cx: &App) -> Option<SavedScroll> {
+        let pos = crate::shared::ui_state::read(cx, |store| store.get_scroll(session_id))??;
         Some(SavedScroll {
             anchor: gpui_kit::ListOffset {
                 item_ix: pos.item_ix,

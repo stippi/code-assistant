@@ -88,14 +88,9 @@ impl RightPanel {
         self.active_view = view;
         #[cfg(feature = "browser-panel")]
         if let Some(session_id) = &self.session_id {
-            if let Ok(mut store) = crate::shared::ui_state::UiStateStore::global().lock() {
-                store.set_right_panel_view(session_id, view.as_str());
-            }
-            if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                let _ = sender
-                    .0
-                    .try_send(code_assistant_core::ui::ui_events::UiEvent::PersistUiState);
-            }
+            crate::shared::ui_state::update(cx, |store| {
+                store.set_right_panel_view(session_id, view.as_str())
+            });
         }
         cx.notify();
     }
@@ -107,9 +102,8 @@ impl RightPanel {
             self.active_view = session_id
                 .as_deref()
                 .and_then(|id| {
-                    crate::shared::ui_state::UiStateStore::try_global()
-                        .and_then(|store| store.lock().ok())
-                        .and_then(|mut store| store.get_right_panel_view(id))
+                    crate::shared::ui_state::read(cx, |store| store.get_right_panel_view(id))
+                        .flatten()
                 })
                 .map_or(RightPanelView::Review, |view| {
                     RightPanelView::from_str(&view)

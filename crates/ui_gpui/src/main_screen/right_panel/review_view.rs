@@ -308,10 +308,9 @@ impl ReviewView {
         // Restore the persisted compare mode for this session. The selector
         // resyncs from the echoed listing on the next render.
         if let Some(id) = &self.session_id {
-            if let Some(store) = crate::shared::ui_state::UiStateStore::try_global()
-                && let Ok(mut store) = store.lock()
+            if let Some(mode) =
+                crate::shared::ui_state::read(cx, |store| store.get_review_compare_mode(id))
             {
-                let mode = store.get_review_compare_mode(id);
                 self.mode = match mode.as_deref() {
                     Some("branch_vs_base") => ReviewMode::BranchVsBase,
                     _ => ReviewMode::WorkingTree,
@@ -333,14 +332,9 @@ impl ReviewView {
             ReviewMode::WorkingTree => "working_tree",
             ReviewMode::BranchVsBase => "branch_vs_base",
         };
-        if let Ok(mut store) = crate::shared::ui_state::UiStateStore::global().lock() {
-            store.set_review_compare_mode(session_id, mode.to_string());
-        }
-        if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-            let _ = sender
-                .0
-                .try_send(code_assistant_core::ui::ui_events::UiEvent::PersistUiState);
-        }
+        crate::shared::ui_state::update(cx, |store| {
+            store.set_review_compare_mode(session_id, mode.to_string())
+        });
     }
 
     /// Re-request the changed-files listing for the current mode.

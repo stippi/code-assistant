@@ -314,7 +314,8 @@ pub struct Gpui {
     // Pending message edit state (for branching)
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
 
-    // Debounce task for persisting per-session UI state files
+    // Per-session view state, and the debounce task persisting it
+    ui_state: Arc<Mutex<shared::ui_state::UiStateStore>>,
     ui_state_save_task: Arc<Mutex<Option<gpui_kit::Task<()>>>>,
 
     /// Project names that exist in projects.json (i.e. first-class projects).
@@ -560,13 +561,6 @@ impl Gpui {
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 
-        // Initialize the per-session UI state store (same directory as session files)
-        {
-            let sessions_dir = code_assistant_core::config_dir::data_dir().join("sessions");
-
-            shared::ui_state::UiStateStore::init_global(sessions_dir);
-        }
-
         // Create a channel to send and receive UiEvents
         let (tx, rx) = async_channel::unbounded::<UiEvent>();
         let event_sender = Arc::new(Mutex::new(tx));
@@ -591,6 +585,9 @@ impl Gpui {
             project_sidebar: Arc::new(Mutex::new(None)),
             messages_view: Arc::new(Mutex::new(None)),
 
+            ui_state: Arc::new(Mutex::new(shared::ui_state::UiStateStore::new(
+                stores.ui_state.clone(),
+            ))),
             stores,
             session_drafts: Arc::new(Mutex::new(HashMap::new())),
 
@@ -626,7 +623,6 @@ impl Gpui {
             // Current session total usage
             current_session_total_usage: Arc::new(Mutex::new(None)),
 
-            // Debounce task for UI state persistence
             ui_state_save_task: Arc::new(Mutex::new(None)),
 
             // Load the set of persisted project names from projects.json
@@ -720,15 +716,12 @@ impl Gpui {
                 let settings = cx
                     .try_global::<UiSettingsGlobal>()
                     .map(|global| global.0.clone());
-                let files = shared::ui_state::UiStateStore::try_global()
-                    .and_then(|store| store.lock().ok())
-                    .map(|mut store| store.take_dirty())
-                    .unwrap_or_default();
+                let ui_state_writes = cx.global::<Gpui>().ui_state.lock().unwrap().take_dirty();
                 async move {
                     if let Some(settings) = settings {
                         settings.save();
                     }
-                    shared::ui_state::write_ui_state_files(files);
+                    ui_state_writes.write();
                 }
             })
             .detach();

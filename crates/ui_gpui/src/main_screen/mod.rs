@@ -3,7 +3,7 @@ pub mod project_dialog;
 pub mod right_panel;
 mod status_popover;
 
-use crate::shared::frame_profile;
+use crate::shared::{frame_profile, ui_state};
 use crate::sidebar::{SessionSidebar, SessionSidebarEvent};
 
 use crate::input::{InputArea, InputAreaEvent};
@@ -14,9 +14,7 @@ use code_assistant_core::session::lifecycle::SessionLifecycle;
 use crate::shared::plan_banner;
 use crate::shared::settings;
 use crate::shared::theme;
-use crate::{CloseWindow, Gpui, UiEventSender, UiSettingsGlobal, WorktreeData};
-
-use code_assistant_core::ui::ui_events::UiEvent;
+use crate::{CloseWindow, Gpui, UiSettingsGlobal, WorktreeData};
 
 use about_dialog::{AboutDialog, AboutDialogEvent};
 use project_dialog::{NewProjectDialog, NewProjectDialogEvent};
@@ -366,12 +364,8 @@ impl MainScreen {
 
         // Persist the open/closed state for the active session.
         if let Some(session_id) = &self.current_session_id {
-            if let Ok(mut store) = crate::shared::ui_state::UiStateStore::global().lock() {
-                store.set_right_panel_open(session_id, !self.right_sidebar_collapsed);
-            }
-            if let Some(sender) = cx.try_global::<UiEventSender>() {
-                let _ = sender.0.try_send(UiEvent::PersistUiState);
-            }
+            let open = !self.right_sidebar_collapsed;
+            ui_state::update(cx, |store| store.set_right_panel_open(session_id, open));
         }
 
         cx.notify();
@@ -482,14 +476,9 @@ impl MainScreen {
                     self.plan_collapsed_sessions
                         .insert(session_id.clone(), self.plan_collapsed);
 
-                    // Persist via the UI state store (debounced write to disk)
-
-                    if let Ok(mut store) = crate::shared::ui_state::UiStateStore::global().lock() {
-                        store.set_plan_collapsed(session_id, self.plan_collapsed);
-                    }
-                    if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        let _ = sender.0.try_send(UiEvent::PersistUiState);
-                    }
+                    // Persist via the UI state store (debounced write)
+                    let collapsed = self.plan_collapsed;
+                    ui_state::update(cx, |store| store.set_plan_collapsed(session_id, collapsed));
                 }
                 cx.notify();
             }
@@ -1337,10 +1326,7 @@ impl MainScreen {
                 .get(session_id)
                 .copied()
                 .unwrap_or_else(|| {
-                    crate::shared::ui_state::UiStateStore::global()
-                        .lock()
-                        .ok()
-                        .map(|mut store| store.get_plan_collapsed(session_id))
+                    ui_state::read(cx, |store| store.get_plan_collapsed(session_id))
                         .unwrap_or(false)
                 });
         } else {
@@ -1430,11 +1416,7 @@ impl MainScreen {
         // Restore the right (review) sidebar's open state for the new session.
         let restored_open = new_session_id
             .as_ref()
-            .and_then(|id| {
-                crate::shared::ui_state::UiStateStore::try_global()
-                    .and_then(|store| store.lock().ok())
-                    .map(|mut store| store.get_right_panel_open(id))
-            })
+            .and_then(|id| ui_state::read(cx, |store| store.get_right_panel_open(id)))
             .unwrap_or(false);
 
         // Animate to the restored state if it differs from the current one.
