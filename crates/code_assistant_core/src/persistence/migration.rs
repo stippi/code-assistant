@@ -15,7 +15,8 @@
 //! 3. Write the new sessions (in parallel; most of the time is spent
 //!    waiting for the disk) and move their UI state, draft and log along.
 //! 4. Rewrite the IDs in the index, the lifecycles and the goal stores.
-//! 5. Move the old session files away.
+//! 5. Move the old session files away, and with them the leftovers of
+//!    sessions deleted long ago (locks, UI states, drafts).
 //!
 //! A rerun takes the recorded mapping, skips sessions that already have a
 //! journal, and repeats the idempotent rest.
@@ -154,6 +155,7 @@ impl FileSessionPersistence {
         for legacy in retire_list {
             retire(&sessions_dir, legacy)?;
         }
+        sweep_orphans(&sessions_dir, legacy_drafts_dir)?;
         info!(
             "Migrated {} sessions, skipped {}",
             report.migrated.len(),
@@ -333,6 +335,54 @@ fn retire(sessions_dir: &Path, legacy: &Legacy) -> Result<()> {
     for lock in ["entry.lock", "agent.lock"] {
         let _ = std::fs::remove_file(sessions_dir.join(format!("{}.{lock}", legacy.old_id)));
     }
+    Ok(())
+}
+
+/// Remove what is left of sessions that have no file any more: stale locks
+/// go, UI states, logs and drafts move to `legacy/`. Files of sessions that
+/// were skipped (their session file is still there) stay.
+fn sweep_orphans(sessions_dir: &Path, legacy_drafts_dir: &Path) -> Result<()> {
+    let legacy_dir = sessions_dir.join(LEGACY_DIR);
+    let orphaned = |old_id: &str| !sessions_dir.join(format!("{old_id}.json")).exists();
+
+    for entry in std::fs::read_dir(sessions_dir)?.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if let Some(old_id) = name
+            .strip_suffix(".entry.lock")
+            .or_else(|| name.strip_suffix(".agent.lock"))
+        {
+            if orphaned(old_id) && !file_utils::is_agent_locked(&path) {
+                std::fs::remove_file(&path)?;
+            }
+        } else if let Some(old_id) = name
+            .strip_suffix(".ui_state.json")
+            .or_else(|| name.strip_suffix(".diag.log"))
+            && orphaned(old_id)
+        {
+            std::fs::create_dir_all(&legacy_dir)?;
+            std::fs::rename(&path, legacy_dir.join(name))?;
+        }
+    }
+
+    let Ok(drafts) = std::fs::read_dir(legacy_drafts_dir) else {
+        return Ok(());
+    };
+    for entry in drafts.flatten() {
+        let path = entry.path();
+        let Some(old_id) = path.file_stem().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if orphaned(old_id) {
+            let target = legacy_dir.join("drafts");
+            std::fs::create_dir_all(&target)?;
+            std::fs::rename(&path, target.join(entry.file_name()))?;
+        }
+    }
+    // Only succeeds once the directory is empty.
+    let _ = std::fs::remove_dir(legacy_drafts_dir);
     Ok(())
 }
 
@@ -612,6 +662,31 @@ mod tests {
                 .is_some()
         );
         assert!(!legacy.sessions().join("-w-proj/2026-10-07-002").exists());
+    }
+
+    #[test]
+    fn leftovers_of_long_deleted_sessions_are_cleared() {
+        let legacy = Legacy::new();
+        legacy.add_session("chat_a", OCT_7);
+        legacy.write("sessions/chat_gone.entry.lock", "");
+        legacy.write("sessions/chat_gone.ui_state.json", "{}");
+        legacy.write("drafts/chat_gone.json", "{}");
+        legacy.write("sessions/chat_broken.json", "{ not json");
+        legacy.write("sessions/chat_broken.entry.lock", "");
+        legacy.write("sessions/chat_broken.ui_state.json", "{}");
+        legacy.write("drafts/chat_broken.json", "{}");
+
+        legacy.migrate();
+
+        let sessions = legacy.sessions();
+        assert!(!sessions.join("chat_gone.entry.lock").exists());
+        assert!(sessions.join("legacy/chat_gone.ui_state.json").exists());
+        assert!(sessions.join("legacy/drafts/chat_gone.json").exists());
+        // The skipped session keeps everything.
+        for kept in ["chat_broken.entry.lock", "chat_broken.ui_state.json"] {
+            assert!(sessions.join(kept).exists(), "{kept}");
+        }
+        assert!(legacy.drafts().join("chat_broken.json").exists());
     }
 
     #[test]
