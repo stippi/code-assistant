@@ -611,9 +611,9 @@ impl Gpui {
 
                 // If this is the current session, update the current project for parameter filtering
 
-                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref()
-                    && *current_session_id == metadata.id
-                {
+                // Checked up front: the lock must not be held while views
+                // update (and, in tests, render synchronously).
+                if self.is_current_session(&metadata.id) {
                     // Store last_usage for the current session in a stable location
                     // (not in chat_sessions, which can be overwritten by stale disk data)
                     *self.current_session_last_usage.lock().unwrap() =
@@ -685,9 +685,7 @@ impl Gpui {
                 }
 
                 // Update current session activity state for messages view
-                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref()
-                    && current_session_id == &session_id
-                {
+                if self.is_current_session(&session_id) {
                     *self.current_session_activity_state.lock().unwrap() =
                         Some(activity_state.clone());
 
