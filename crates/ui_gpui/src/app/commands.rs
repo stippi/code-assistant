@@ -51,7 +51,7 @@ impl Gpui {
         });
     }
 
-    fn is_current_session(&self, session_id: &str) -> bool {
+    pub(crate) fn is_current_session(&self, session_id: &str) -> bool {
         self.current_session_id.lock().unwrap().as_deref() == Some(session_id)
     }
 

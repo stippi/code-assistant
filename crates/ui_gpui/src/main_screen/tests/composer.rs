@@ -1,4 +1,5 @@
-//! Behaviour of the main screen, driven through [`MainScreenTest`].
+//! The composer: drafts, prepared handoffs and message edits, with the core
+//! played by the test.
 
 use crate::test_support::MainScreenTest;
 use code_assistant_core::ui::UiEvent;
