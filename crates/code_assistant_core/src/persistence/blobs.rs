@@ -15,8 +15,11 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::path::PathBuf;
+
+use super::SerializedToolExecution;
 
 use crate::utils::file_utils::atomic_write;
 
@@ -69,6 +72,29 @@ impl BlobStore {
         let bytes =
             std::fs::read(&path).with_context(|| format!("missing blob {}", path.display()))?;
         Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Delete the blobs none of `executions` refers to (left behind by a
+    /// replaced execution or a crash between blob and record).
+    pub fn retain_referenced(&self, executions: &[SerializedToolExecution]) -> Result<()> {
+        let referenced: HashSet<&str> = executions
+            .iter()
+            .filter_map(|exec| blob_reference(&exec.result_json))
+            .collect();
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let hash = path.file_stem().and_then(|stem| stem.to_str());
+            let is_blob = path.extension().is_some_and(|ext| ext == "json");
+            if is_blob && hash.is_some_and(|hash| !referenced.contains(hash)) {
+                std::fs::remove_file(&path)?;
+            }
+        }
+        Ok(())
     }
 
     fn path(&self, hash: &str) -> PathBuf {

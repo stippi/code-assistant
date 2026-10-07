@@ -9,9 +9,10 @@ use tracing::{debug, info, warn};
 use crate::session::SessionConfig;
 use crate::session::lifecycle::SessionLifecycle;
 use crate::types::{PlanState, ToolSyntax};
-use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
+use crate::utils::file_utils::{FileLockGuard, atomic_write_json, lock_exclusive};
 
 mod blobs;
+mod journal;
 pub mod layout;
 pub use layout::{SessionLayout, SessionPath};
 
@@ -173,7 +174,7 @@ pub struct ChatSession {
     // ========================================================================
     /// All message nodes in the session (tree structure)
     /// Key: NodeId, Value: MessageNode
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_nodes: BTreeMap<NodeId, MessageNode>,
 
     /// The currently active path through the tree
@@ -193,6 +194,7 @@ pub struct ChatSession {
     pub messages: Vec<Message>,
 
     /// Serialized tool execution results
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_executions: Vec<SerializedToolExecution>,
     /// Current session plan (for the active path)
     #[serde(default)]
@@ -607,6 +609,33 @@ impl ChatSession {
         }
     }
 
+    /// A copy of the session without its conversation: no nodes, no tool
+    /// executions, no legacy linear messages.
+    fn without_conversation(&self) -> ChatSession {
+        ChatSession {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            message_nodes: BTreeMap::new(),
+            active_path: self.active_path.clone(),
+            next_node_id: self.next_node_id,
+            messages: Vec::new(),
+            tool_executions: Vec::new(),
+            plan: self.plan.clone(),
+            active_skills: self.active_skills.clone(),
+            plan_collapsed: self.plan_collapsed,
+            config: self.config.clone(),
+            next_request_id: self.next_request_id,
+            model_config: self.model_config.clone(),
+            legacy_init_path: self.legacy_init_path.clone(),
+            legacy_initial_project: self.legacy_initial_project.clone(),
+            legacy_tool_syntax: self.legacy_tool_syntax,
+            legacy_use_diff_blocks: self.legacy_use_diff_blocks,
+            _legacy_working_memory: serde_json::Value::Null,
+        }
+    }
+
     /// Merge a running agent's checkpoint. Nodes and journal entries are
     /// replaced by id, so branches and records the run never touched
     /// survive; counters only ever grow.
@@ -800,28 +829,69 @@ impl FileSessionPersistence {
 
     /// Update an existing session under a cross-process, per-entry lock.
     /// The closure sees the latest on-disk entry; an error leaves it unchanged.
-    /// Lock order is entry -> metadata. This is separate from the long-lived
-    /// agent lock so settings can still change during a run. Do not re-enter
+    /// Only what the closure changed is appended to the journal. Lock order
+    /// is entry -> metadata. This is separate from the long-lived agent lock
+    /// so settings can still change during a run. Do not re-enter
     /// persistence from the closure. Lock files must never be unlinked.
     pub fn update_entry(
         &mut self,
         session_id: &str,
         update: impl FnOnce(&mut ChatSession) -> Result<()>,
     ) -> Result<ChatSession> {
-        // Locking would create the folder of a missing session.
-        anyhow::ensure!(
-            self.layout.session_dir(session_id)?.is_dir(),
-            "Session not found: {session_id}"
+        let _lock = self.lock_existing_entry(session_id)?;
+        let folded = self.read_journal(session_id)?;
+        let mut before = folded.session;
+        self.resolve_blobs(&mut before)?;
+        before.ensure_config()?;
+        let mut after = before.clone();
+        update(&mut after)?;
+        anyhow::ensure!(after.id == session_id, "Cannot change session identity");
+        after.ensure_config()?;
+        let records = journal::diff(&before, &after)?;
+        self.append(session_id, records, folded.records, &after)?;
+        self.store_metadata(after.metadata())?;
+        Ok(after)
+    }
+
+    /// Merge a running agent's checkpoint (see
+    /// [`ChatSession::apply_checkpoint`]) and return the session's new
+    /// metadata. Appends the changed nodes and executions and, when needed, a
+    /// new header; tool results already stored are neither read nor written.
+    pub fn commit_checkpoint(
+        &mut self,
+        checkpoint: &crate::session::SessionCheckpoint<'_>,
+    ) -> Result<ChatMetadata> {
+        let session_id = checkpoint.session_id;
+        let _lock = self.lock_existing_entry(session_id)?;
+        let folded = self.read_journal(session_id)?;
+        let mut session = folded.session;
+        let header_before = serde_json::to_vec(&journal::header(&session))?;
+        session.apply_checkpoint(checkpoint);
+
+        let mut records = Vec::new();
+        let header = journal::header(&session);
+        if serde_json::to_vec(&header)? != header_before {
+            records.push(header);
+        }
+        records.extend(
+            checkpoint
+                .changed_nodes
+                .iter()
+                .map(|node| journal::Record::Node {
+                    node: (*node).clone(),
+                }),
         );
-        let _lock = lock_exclusive(&self.layout.entry_lock(session_id)?)?;
-        let mut session = self
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-        update(&mut session)?;
-        anyhow::ensure!(session.id == session_id, "Cannot change session identity");
-        session.ensure_config()?;
-        self.save_chat_session_unlocked(&session)?;
-        Ok(session)
+        records.extend(
+            checkpoint
+                .changed_executions
+                .iter()
+                .map(|exec| journal::Record::Exec { exec: exec.clone() }),
+        );
+        self.append(session_id, records, folded.records, &session)?;
+
+        let metadata = session.metadata();
+        self.store_metadata(metadata.clone())?;
+        Ok(metadata)
     }
 
     /// Store a new session, in the folder reserved by
@@ -830,68 +900,24 @@ impl FileSessionPersistence {
     /// `update_entry`.
     pub fn create_chat_session(&mut self, session: &ChatSession) -> Result<()> {
         let _lock = lock_exclusive(&self.layout.entry_lock(&session.id)?)?;
-        anyhow::ensure!(
-            !self.layout.session_file(&session.id)?.exists(),
-            "Session already exists: {}",
-            session.id
-        );
-        self.save_chat_session_unlocked(session)
-    }
+        let path = self.layout.journal(&session.id)?;
+        anyhow::ensure!(!path.exists(), "Session already exists: {}", session.id);
 
-    fn save_chat_session_unlocked(&mut self, session: &ChatSession) -> Result<()> {
         let mut session = session.clone();
         session.ensure_config()?;
-
-        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(&session.id)?);
-        for execution in &mut session.tool_executions {
-            execution.result_json =
-                blobs.externalize(std::mem::take(&mut execution.result_json))?;
-        }
-
-        let session_path = self.layout.session_file(&session.id)?;
-        debug!("Saving chat session to {}", session_path.display());
-        atomic_write_json(&session_path, &session)?;
-
-        // Update metadata under an advisory lock so concurrent processes
-        // don't lose each other's changes.
-        let metadata_lock_path = self.metadata_lock_path()?;
-        let _lock = lock_exclusive(&metadata_lock_path)?;
-
-        let metadata_path = self.metadata_file_path()?;
-        let mut metadata_list: Vec<ChatMetadata> = if metadata_path.exists() {
-            let content = std::fs::read_to_string(&metadata_path)?;
-            serde_json::from_str(&content).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        // Update or add metadata for this session
-        let new_metadata = session.metadata();
-
-        if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
-            *existing = new_metadata;
-        } else {
-            metadata_list.push(new_metadata);
-        }
-
-        atomic_write_json(&metadata_path, &metadata_list)?;
-
-        Ok(())
+        self.externalize_blobs(&session.id, &mut session.tool_executions)?;
+        journal::write(&path, &journal::snapshot(&session))?;
+        self.store_metadata(session.metadata())
     }
 
     pub fn load_chat_session(&self, session_id: &str) -> Result<Option<ChatSession>> {
-        let session_path = self.layout.session_file(session_id)?;
-        if !session_path.exists() {
+        let path = self.layout.journal(session_id)?;
+        debug!("Loading chat session from {}", path.display());
+        let Some(folded) = journal::read(&path)? else {
             return Ok(None);
-        }
-
-        debug!("Loading chat session from {}", session_path.display());
-        let json = std::fs::read_to_string(session_path)?;
-        let mut session: ChatSession = serde_json::from_str(&json)?;
-        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(session_id)?);
-        for execution in &mut session.tool_executions {
-            execution.result_json = blobs.resolve(std::mem::take(&mut execution.result_json))?;
-        }
+        };
+        let mut session = folded.session;
+        self.resolve_blobs(&mut session)?;
         session.ensure_config()?;
         // Re-check image dimensions on load: sessions persisted before image
         // capping (or by an older version) may carry oversized images that a
@@ -901,6 +927,107 @@ impl FileSessionPersistence {
         // (see `DynTool::deserialize_output`).
         cap_session_image_dimensions(&mut session, tools_core::MAX_IMAGE_EDGE);
         Ok(Some(session))
+    }
+
+    /// Replace a session's journal with a snapshot, ignoring the entry lock:
+    /// lets a test play the process that holds it.
+    #[cfg(test)]
+    pub(crate) fn overwrite_journal_unlocked(&self, session: &ChatSession) -> Result<()> {
+        journal::write(
+            &self.layout.journal(&session.id)?,
+            &journal::snapshot(session),
+        )
+    }
+
+    /// Lock the entry of a session that must exist. Locking alone would
+    /// create the folder of a missing session.
+    fn lock_existing_entry(&self, session_id: &str) -> Result<FileLockGuard> {
+        anyhow::ensure!(
+            self.layout.journal(session_id)?.exists(),
+            "Session not found: {session_id}"
+        );
+        lock_exclusive(&self.layout.entry_lock(session_id)?)
+    }
+
+    /// The folded journal of an existing session, tool results unresolved.
+    fn read_journal(&self, session_id: &str) -> Result<journal::Folded> {
+        journal::read(&self.layout.journal(session_id)?)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))
+    }
+
+    fn resolve_blobs(&self, session: &mut ChatSession) -> Result<()> {
+        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(&session.id)?);
+        for execution in &mut session.tool_executions {
+            execution.result_json = blobs.resolve(std::mem::take(&mut execution.result_json))?;
+        }
+        Ok(())
+    }
+
+    fn externalize_blobs(
+        &self,
+        session_id: &str,
+        executions: &mut [SerializedToolExecution],
+    ) -> Result<()> {
+        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(session_id)?);
+        for execution in executions {
+            execution.result_json =
+                blobs.externalize(std::mem::take(&mut execution.result_json))?;
+        }
+        Ok(())
+    }
+
+    /// Append records to a session's journal of `records_before` lines,
+    /// moving large tool results to blobs first, and compact the journal once
+    /// it has grown too long for the resulting session. The caller holds the
+    /// entry lock.
+    fn append(
+        &self,
+        session_id: &str,
+        mut records: Vec<journal::Record>,
+        records_before: usize,
+        session: &ChatSession,
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(session_id)?);
+        for record in &mut records {
+            if let journal::Record::Exec { exec } = record {
+                exec.result_json = blobs.externalize(std::mem::take(&mut exec.result_json))?;
+            }
+        }
+        let path = self.layout.journal(session_id)?;
+        journal::append(&path, &records)?;
+
+        if journal::needs_compaction(records_before + records.len(), session) {
+            debug!("Compacting {}", path.display());
+            // Read back with tool results unresolved: the snapshot keeps
+            // their blob references.
+            let folded = self.read_journal(session_id)?;
+            journal::write(&path, &journal::snapshot(&folded.session))?;
+            blobs.retain_referenced(&folded.session.tool_executions)?;
+        }
+        Ok(())
+    }
+
+    /// Put a session's metadata into the index, under the metadata lock so
+    /// concurrent processes don't lose each other's changes. Nothing is
+    /// written when the entry is unchanged.
+    fn store_metadata(&self, metadata: ChatMetadata) -> Result<()> {
+        let _lock = lock_exclusive(&self.metadata_lock_path()?)?;
+        let metadata_path = self.metadata_file_path()?;
+        let mut metadata_list: Vec<ChatMetadata> = if metadata_path.exists() {
+            let content = std::fs::read_to_string(&metadata_path)?;
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        match metadata_list.iter_mut().find(|m| m.id == metadata.id) {
+            Some(existing) if *existing == metadata => return Ok(()),
+            Some(existing) => *existing = metadata,
+            None => metadata_list.push(metadata),
+        }
+        atomic_write_json(&metadata_path, &metadata_list)
     }
 
     pub fn list_chat_sessions(&self) -> Result<Vec<ChatMetadata>> {
@@ -1313,8 +1440,7 @@ mod tests {
             vec![execution("a", large.clone()), execution("b", small.clone())];
         persistence.create_chat_session(&session).unwrap();
 
-        let record =
-            std::fs::read_to_string(persistence.layout().session_file("p/s").unwrap()).unwrap();
+        let record = std::fs::read_to_string(persistence.layout().journal("p/s").unwrap()).unwrap();
         assert!(record.len() < 10_000, "record is {} bytes", record.len());
         assert!(record.contains("short"));
         let blobs = std::fs::read_dir(persistence.layout().blobs_dir("p/s").unwrap()).unwrap();
@@ -1333,6 +1459,126 @@ mod tests {
             .unwrap();
         let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
         assert_eq!(loaded.tool_executions[0].result_json, large);
+    }
+
+    fn journal_lines(persistence: &FileSessionPersistence, id: &str) -> usize {
+        std::fs::read_to_string(persistence.layout().journal(id).unwrap())
+            .unwrap()
+            .lines()
+            .count()
+    }
+
+    fn blob_count(persistence: &FileSessionPersistence, id: &str) -> usize {
+        std::fs::read_dir(persistence.layout().blobs_dir(id).unwrap())
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn updates_append_only_what_changed() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let mut session =
+            ChatSession::new_empty("p/s".into(), "s".into(), SessionConfig::default(), None);
+        session.add_message(Message::new_user("hello"));
+        session.tool_executions = vec![execution(
+            "a",
+            serde_json::json!({ "c": "x".repeat(10_000) }),
+        )];
+        persistence.create_chat_session(&session).unwrap();
+        assert_eq!(journal_lines(&persistence, "p/s"), 3);
+
+        persistence
+            .update_entry("p/s", |session| {
+                session.plan_collapsed = true;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(journal_lines(&persistence, "p/s"), 4);
+
+        // Nothing changed, nothing written.
+        persistence.update_entry("p/s", |_| Ok(())).unwrap();
+        assert_eq!(journal_lines(&persistence, "p/s"), 4);
+
+        let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
+        assert!(loaded.plan_collapsed);
+        assert_eq!(loaded.message_count(), 1);
+    }
+
+    #[test]
+    fn checkpoints_neither_read_nor_write_stored_tool_results() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let mut session =
+            ChatSession::new_empty("p/s".into(), "s".into(), SessionConfig::default(), None);
+        session.tool_executions = vec![execution(
+            "a",
+            serde_json::json!({ "c": "x".repeat(10_000) }),
+        )];
+        persistence.create_chat_session(&session).unwrap();
+        // Without the blob, any attempt to read the stored result would fail.
+        std::fs::remove_dir_all(persistence.layout().blobs_dir("p/s").unwrap()).unwrap();
+
+        let node = MessageNode {
+            id: 1,
+            message: Message::new_user("next"),
+            parent_id: None,
+            created_at: SystemTime::now(),
+            extension: None,
+        };
+        let large = serde_json::json!({ "c": "y".repeat(10_000) });
+        let metadata = persistence
+            .commit_checkpoint(&crate::session::SessionCheckpoint {
+                session_id: "p/s",
+                name: "named by the run",
+                changed_nodes: &[&node],
+                active_path: &[1],
+                next_node_id: 2,
+                changed_executions: vec![execution("b", large)],
+                plan: &PlanState::default(),
+                active_skills: &[],
+                next_request_id: 1,
+            })
+            .unwrap();
+
+        assert_eq!(metadata.name, "named by the run");
+        assert_eq!(metadata.message_count, 1);
+        assert_eq!(blob_count(&persistence, "p/s"), 1);
+        // header + node + exec appended to header + exec
+        assert_eq!(journal_lines(&persistence, "p/s"), 5);
+    }
+
+    #[test]
+    fn a_long_journal_is_compacted_and_drops_unreferenced_blobs() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let mut session =
+            ChatSession::new_empty("p/s".into(), "s".into(), SessionConfig::default(), None);
+        session.tool_executions = vec![execution(
+            "a",
+            serde_json::json!({ "c": "0".repeat(10_000) }),
+        )];
+        persistence.create_chat_session(&session).unwrap();
+
+        // Re-recording the execution replaces its result; old blobs pile up
+        // until compaction removes them.
+        for round in 1..40 {
+            persistence
+                .update_entry("p/s", |session| {
+                    session.tool_executions[0].result_json =
+                        serde_json::json!({ "c": round.to_string().repeat(10_000) });
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        assert!(journal_lines(&persistence, "p/s") <= 2 * 2 + 16 + 1);
+        assert!(blob_count(&persistence, "p/s") < 20);
+        let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
+        assert_eq!(
+            loaded.tool_executions[0].result_json,
+            serde_json::json!({ "c": "39".repeat(10_000) })
+        );
     }
 
     #[test]
@@ -1397,7 +1643,7 @@ mod tests {
                 None,
             ))
             .unwrap();
-        let before = std::fs::read(persistence.layout().session_file("existing").unwrap()).unwrap();
+        let before = std::fs::read(persistence.layout().journal("existing").unwrap()).unwrap();
         assert!(
             persistence
                 .update_entry("existing", |session| {
@@ -1408,7 +1654,7 @@ mod tests {
         );
         assert_eq!(
             before,
-            std::fs::read(persistence.layout().session_file("existing").unwrap()).unwrap()
+            std::fs::read(persistence.layout().journal("existing").unwrap()).unwrap()
         );
         // The failed transaction also released its lock.
         persistence

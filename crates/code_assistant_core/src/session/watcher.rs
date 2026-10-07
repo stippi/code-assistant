@@ -8,7 +8,7 @@
 //! | File pattern | Trigger | UI effect |
 //! |---|---|---|
 //! | `metadata.json`, `lifecycle.json` | Create / Modify / Remove | Refresh sidebar session list |
-//! | `<session_id>/session.json` | Modify | Reload session if currently viewed |
+//! | `<session_id>/journal.jsonl` | Modify | Reload session if currently viewed |
 //! | `<session_id>/agent.lock` | Create / Remove | Update activity state (agent running elsewhere) |
 //!
 //! Paths are mapped back to sessions by [`SessionLayout::classify`].

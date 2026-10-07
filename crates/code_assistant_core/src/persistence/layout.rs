@@ -8,7 +8,7 @@
 //!   metadata.json, lifecycle.json
 //!   -Users-me-workspace-code-assistant/
 //!     2026-10-07-001/          ← id "-Users-me-workspace-code-assistant/2026-10-07-001"
-//!       session.json
+//!       journal.jsonl          the session record
 //!       blobs/<sha256>.json     large tool results
 //!       entry.lock, agent.lock
 //!       ui_state.json, draft.json
@@ -26,8 +26,8 @@ use std::path::{Component, Path, PathBuf};
 /// The slug grouping the sessions of projects that have none.
 pub const NO_PROJECT_SLUG: &str = "_no-project";
 
-/// The session record inside a session folder.
-const SESSION_FILE: &str = "session.json";
+/// The session record inside a session folder (see `persistence::journal`).
+const JOURNAL_FILE: &str = "journal.jsonl";
 const ENTRY_LOCK_FILE: &str = "entry.lock";
 const AGENT_LOCK_FILE: &str = "agent.lock";
 const UI_STATE_FILE: &str = "ui_state.json";
@@ -67,8 +67,8 @@ impl SessionLayout {
         Ok(self.sessions_dir.join(session_id))
     }
 
-    pub fn session_file(&self, session_id: &str) -> Result<PathBuf> {
-        Ok(self.session_dir(session_id)?.join(SESSION_FILE))
+    pub fn journal(&self, session_id: &str) -> Result<PathBuf> {
+        Ok(self.session_dir(session_id)?.join(JOURNAL_FILE))
     }
 
     pub fn entry_lock(&self, session_id: &str) -> Result<PathBuf> {
@@ -133,11 +133,11 @@ impl SessionLayout {
         let mut ids = Vec::new();
         for top in read_dirs(&self.sessions_dir)? {
             let top_name = file_name(&top);
-            if top.join(SESSION_FILE).exists() {
+            if top.join(JOURNAL_FILE).exists() {
                 ids.push(top_name.clone());
             }
             for nested in read_dirs(&top)? {
-                if nested.join(SESSION_FILE).exists() {
+                if nested.join(JOURNAL_FILE).exists() {
                     ids.push(format!("{top_name}/{}", file_name(&nested)));
                 }
             }
@@ -160,7 +160,7 @@ impl SessionLayout {
         let session_id = parent.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
         validate_session_id(&session_id).ok()?;
         match file {
-            SESSION_FILE => Some(SessionPath::Record(session_id)),
+            JOURNAL_FILE => Some(SessionPath::Record(session_id)),
             AGENT_LOCK_FILE => Some(SessionPath::AgentLock(session_id)),
             _ => None,
         }
@@ -324,7 +324,7 @@ mod tests {
         let layout = SessionLayout::new(dir.path().to_path_buf());
         for id in ["flat", "p/2026-10-07-001", "p/2026-10-07-002"] {
             std::fs::create_dir_all(layout.session_dir(id).unwrap()).unwrap();
-            std::fs::write(layout.session_file(id).unwrap(), "{}").unwrap();
+            std::fs::write(layout.journal(id).unwrap(), "{}").unwrap();
         }
         // A reserved folder without a record is not a session.
         std::fs::create_dir_all(layout.session_dir("p/2026-10-07-003").unwrap()).unwrap();
@@ -349,7 +349,7 @@ mod tests {
             Some(SessionPath::Index)
         );
         assert_eq!(
-            classify("/data/sessions/p/2026-10-07-001/session.json"),
+            classify("/data/sessions/p/2026-10-07-001/journal.jsonl"),
             Some(SessionPath::Record("p/2026-10-07-001".into()))
         );
         assert_eq!(
@@ -357,7 +357,7 @@ mod tests {
             Some(SessionPath::AgentLock("p/2026-10-07-001".into()))
         );
         assert_eq!(
-            classify("/data/sessions/flat/session.json"),
+            classify("/data/sessions/flat/journal.jsonl"),
             Some(SessionPath::Record("flat".into()))
         );
         assert_eq!(

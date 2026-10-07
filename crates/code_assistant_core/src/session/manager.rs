@@ -2189,20 +2189,13 @@ impl SessionManager {
     /// conversation delta and run-owned fields are written; settings changed
     /// meanwhile, by this or another process, stay untouched.
     pub fn commit_checkpoint(&mut self, checkpoint: SessionCheckpoint<'_>) -> Result<()> {
-        let session = self
-            .persistence
-            .update_entry(checkpoint.session_id, |session| {
-                session.apply_checkpoint(&checkpoint);
-                Ok(())
-            })?;
+        let metadata = self.persistence.commit_checkpoint(&checkpoint)?;
 
         // A run commits through a manager of its own that holds no active
         // instance, so the notification must not depend on one.
         self.events.publish_ui(
             checkpoint.session_id,
-            UiEvent::UpdateSessionMetadata {
-                metadata: session.metadata(),
-            },
+            UiEvent::UpdateSessionMetadata { metadata },
         );
         Ok(())
     }
@@ -2614,7 +2607,7 @@ mod tests {
         let lock_path = manager.persistence.layout().entry_lock(&id).unwrap();
         let lock = file_utils::lock_exclusive(&lock_path).unwrap();
         let mut latest = manager.persistence.load_chat_session(&id).unwrap().unwrap();
-        let path = manager.persistence.layout().session_file(&id).unwrap();
+        let persistence = manager.persistence.clone();
         let (started_tx, started_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let worker_id = id.clone();
@@ -2629,14 +2622,14 @@ mod tests {
         let blocked = done_rx.recv_timeout(Duration::from_millis(200)).is_err();
         // The holder of the entry lock writes a newer conversation before releasing it.
         latest.add_message(Message::new_user("arrived during settings update"));
-        file_utils::atomic_write_json(&path, &latest).unwrap();
+        persistence.overwrite_journal_unlocked(&latest).unwrap();
         drop(lock);
         worker.join().unwrap();
         assert!(
             blocked,
             "settings must hold the entry lock across load and save"
         );
-        let saved: ChatSession = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let saved = persistence.load_chat_session(&id).unwrap().unwrap();
         assert_eq!(saved.get_active_messages().len(), 1);
         assert_eq!(
             saved.config.permission_tier,
