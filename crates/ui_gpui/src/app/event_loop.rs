@@ -13,6 +13,54 @@ use tracing::{debug, trace, warn};
 use super::super::*;
 
 impl Gpui {
+    /// Apply queued [`UiEvent`]s on the foreground thread until the queue
+    /// closes.
+    pub(crate) fn spawn_event_loop(&self, cx: &mut gpui_kit::App) -> gpui_kit::Task<()> {
+        let rx = self.event_receiver.lock().unwrap().clone();
+        let gpui = self.clone();
+        debug!("Starting UI event processing task");
+        cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+            // Process bursts of events in small batches, then cooperatively
+            // yield back to the GPUI executor so paint/layout work is not
+            // starved by a long stream of tiny updates.
+            const UI_EVENT_BATCH_SIZE: usize = 32;
+
+            loop {
+                trace!("Waiting for UI event...");
+                match rx.recv().await {
+                    Ok(received_event) => {
+                        trace!("UI event processing: Received event: {:?}", received_event);
+                        gpui.process_ui_event_async(received_event, cx);
+
+                        let mut processed_in_batch = 1;
+                        while processed_in_batch < UI_EVENT_BATCH_SIZE {
+                            match rx.try_recv() {
+                                Ok(received_event) => {
+                                    trace!(
+                                        "UI event processing: Received batched event: {:?}",
+                                        received_event
+                                    );
+                                    gpui.process_ui_event_async(received_event, cx);
+                                    processed_in_batch += 1;
+                                }
+                                Err(async_channel::TryRecvError::Empty) => break,
+                                Err(async_channel::TryRecvError::Closed) => return,
+                            }
+                        }
+
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(1))
+                            .await;
+                    }
+                    Err(err) => {
+                        warn!("Receive error: {}", err);
+                        break;
+                    }
+                }
+            }
+        })
+    }
+
     pub(crate) fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui_kit::AsyncApp) {
         match event {
             UiEvent::DisplayUserInput {
@@ -1102,23 +1150,15 @@ impl Gpui {
             UiEvent::PersistUiState => {
                 // Cancel any pending save task and start a new one with a debounce
                 // delay.  When the timer fires, dirty entries are taken from the
-                // store and written to disk on a background thread.
-
+                // store and written on a background thread.
+                let ui_state = self.ui_state.clone();
                 let task = cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
                     cx.background_executor()
                         .timer(shared::ui_state::debounce_duration())
                         .await;
-                    let files =
-                        if let Ok(mut store) = shared::ui_state::UiStateStore::global().lock() {
-                            store.take_dirty()
-                        } else {
-                            Vec::new()
-                        };
-                    if !files.is_empty() {
-                        cx.background_spawn(async move {
-                            shared::ui_state::write_ui_state_files(files);
-                        })
-                        .await;
+                    let writes = ui_state.lock().unwrap().take_dirty();
+                    if !writes.is_empty() {
+                        cx.background_spawn(async move { writes.write() }).await;
                     }
                 });
                 *self.ui_state_save_task.lock().unwrap() = Some(task);

@@ -332,7 +332,7 @@ impl MessageContainer {
         // Otherwise fall back to the renderer default (Card → Expanded, Inline → Collapsed).
         let initial_state = if let Some(override_state) = session_id
             .as_deref()
-            .and_then(|sid| ToolCollapseState::get(sid, &id))
+            .and_then(|sid| ToolCollapseState::get(sid, &id, cx))
         {
             override_state
         } else {
@@ -666,7 +666,7 @@ impl MessageContainer {
             // Check the global collapse registry for a user override
             let initial_state = session_id
                 .as_deref()
-                .and_then(|sid| ToolCollapseState::get(sid, &tool_id))
+                .and_then(|sid| ToolCollapseState::get(sid, &tool_id, cx))
                 .unwrap_or(ToolBlockState::Collapsed);
 
             let mut tool = ToolUseBlock {

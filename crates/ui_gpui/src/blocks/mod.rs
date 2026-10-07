@@ -8,7 +8,7 @@ pub use data::*;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::text::{SelectionFormat, TextView, TextViewState};
 use gpui_kit::prelude::*;
-use gpui_kit::{ClipboardItem, Context, Entity, FocusHandle, Pixels, SharedString, Task, px};
+use gpui_kit::{App, ClipboardItem, Context, Entity, FocusHandle, Pixels, SharedString, Task, px};
 
 use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
 use crate::tool_cards::diff_syntax::language_for_path;
@@ -33,54 +33,34 @@ pub enum ToolBlockState {
 // Tool-block collapse state helpers
 // ---------------------------------------------------------------------------
 
-use crate::shared::ui_state::UiStateStore;
+use crate::shared::ui_state;
 
 /// Convenience helpers for tool-block collapse state.
 ///
-/// These delegate to the global [`UiStateStore`], which keeps an in-memory
-/// cache per session and debounces writes to the per-session UI state file.
+/// These delegate to the app's [`UiStateStore`](ui_state::UiStateStore), which
+/// keeps an in-memory cache per session and debounces writes.
 pub struct ToolCollapseState;
 
 impl ToolCollapseState {
     /// Look up a previously stored collapse override for a tool in a session.
-    pub fn get(session_id: &str, tool_id: &str) -> Option<ToolBlockState> {
-        UiStateStore::try_global()?
-            .lock()
-            .ok()
-            .and_then(|mut store| {
-                store
-                    .get_tool_collapsed(session_id, tool_id)
-                    .map(|collapsed| {
-                        if collapsed {
-                            ToolBlockState::Collapsed
-                        } else {
-                            ToolBlockState::Expanded
-                        }
-                    })
+    pub fn get(session_id: &str, tool_id: &str, cx: &App) -> Option<ToolBlockState> {
+        ui_state::read(cx, |store| store.get_tool_collapsed(session_id, tool_id))
+            .flatten()
+            .map(|collapsed| {
+                if collapsed {
+                    ToolBlockState::Collapsed
+                } else {
+                    ToolBlockState::Expanded
+                }
             })
     }
 
     /// Record a collapse state override for a tool in a session.
-    /// Returns `true` if the store was marked dirty (i.e. a save should be
-    /// scheduled).
-    pub fn set(session_id: &str, tool_id: &str, state: ToolBlockState) -> bool {
+    pub fn set(session_id: &str, tool_id: &str, state: ToolBlockState, cx: &App) {
         let collapsed = matches!(state, ToolBlockState::Collapsed);
-        if let Some(store) = UiStateStore::try_global()
-            && let Ok(mut store) = store.lock()
-        {
-            store.set_tool_collapsed(session_id, tool_id, collapsed);
-            return true;
-        }
-        false
-    }
-
-    /// Remove all overrides for a session (e.g. when it is deleted).
-    pub fn remove_session(session_id: &str) {
-        if let Some(store) = UiStateStore::try_global()
-            && let Ok(mut store) = store.lock()
-        {
-            store.remove_session(session_id);
-        }
+        ui_state::update(cx, |store| {
+            store.set_tool_collapsed(session_id, tool_id, collapsed)
+        });
     }
 }
 
@@ -94,24 +74,15 @@ pub struct ToolDiffModeState;
 impl ToolDiffModeState {
     /// Look up a previously stored diff mode override for a tool in a session.
     /// Returns `None` if no override exists (default = diff mode on).
-    pub fn get(session_id: &str, tool_id: &str) -> Option<bool> {
-        UiStateStore::try_global()?
-            .lock()
-            .ok()
-            .and_then(|mut store| store.get_tool_diff_mode(session_id, tool_id))
+    pub fn get(session_id: &str, tool_id: &str, cx: &App) -> Option<bool> {
+        ui_state::read(cx, |store| store.get_tool_diff_mode(session_id, tool_id)).flatten()
     }
 
     /// Record a diff mode override for a tool in a session.
-    /// Returns `true` if the store was marked dirty (i.e. a save should be
-    /// scheduled).
-    pub fn set(session_id: &str, tool_id: &str, diff_mode: bool) -> bool {
-        if let Some(store) = UiStateStore::try_global()
-            && let Ok(mut store) = store.lock()
-        {
-            store.set_tool_diff_mode(session_id, tool_id, diff_mode);
-            return true;
-        }
-        false
+    pub fn set(session_id: &str, tool_id: &str, diff_mode: bool, cx: &App) {
+        ui_state::update(cx, |store| {
+            store.set_tool_diff_mode(session_id, tool_id, diff_mode)
+        });
     }
 }
 
@@ -265,14 +236,14 @@ impl BlockView {
         request_id: u64,
         current_project: Arc<Mutex<String>>,
         session_id: Option<String>,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
         // Load persisted diff mode preference for write_file tool blocks.
         let write_file_diff_mode = if let Some(tool) = block.as_tool() {
             if tool.name == "write_file" {
                 session_id
                     .as_deref()
-                    .and_then(|sid| ToolDiffModeState::get(sid, &tool.id))
+                    .and_then(|sid| ToolDiffModeState::get(sid, &tool.id, cx))
                     .unwrap_or(true) // default: show diff
             } else {
                 true
@@ -289,7 +260,7 @@ impl BlockView {
         };
         let markdown_sync = MarkdownSync::new(initial_markdown.as_deref().unwrap_or(""));
         let markdown_state =
-            initial_markdown.map(|text| _cx.new(|cx| TextViewState::markdown(&text, cx)));
+            initial_markdown.map(|text| cx.new(|cx| TextViewState::markdown(&text, cx)));
 
         Self {
             block: Rc::new(block),
@@ -308,7 +279,7 @@ impl BlockView {
             copied_feedback_task: None,
             diff_selection: None,
             diff_dragging: false,
-            focus_handle: _cx.focus_handle(),
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -596,18 +567,10 @@ impl BlockView {
             return;
         };
 
-        // Persist the new state in the global UI state store (in-memory +
-        // debounced write to disk) so it survives session reconnects and app
-        // restarts.
-        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool())
-            && ToolCollapseState::set(session_id, &tool.id, tool.state.clone())
-        {
-            // Schedule a debounced save
-            if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                let _ = sender
-                    .0
-                    .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
-            }
+        // Persist the new state in the UI state store (in-memory + debounced
+        // write) so it survives session reconnects and app restarts.
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool()) {
+            ToolCollapseState::set(session_id, &tool.id, tool.state.clone(), cx);
         }
 
         self.start_expand_collapse_animation(should_expand, cx);
@@ -622,15 +585,8 @@ impl BlockView {
         self.diff_dragging = false;
 
         // Persist the new state
-        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool())
-            && ToolDiffModeState::set(session_id, &tool.id, self.write_file_diff_mode)
-        {
-            // Schedule a debounced save
-            if let Some(sender) = cx.try_global::<crate::UiEventSender>() {
-                let _ = sender
-                    .0
-                    .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
-            }
+        if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool()) {
+            ToolDiffModeState::set(session_id, &tool.id, self.write_file_diff_mode, cx);
         }
 
         cx.notify();

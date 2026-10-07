@@ -1,10 +1,11 @@
 //! Draft message persistence.
 //!
 //! Manages per-session draft text and attachments, using an in-memory cache
-//! backed by on-disk storage for persistence across restarts.
+//! backed by the injected [`DraftStore`](code_assistant_core::persistence::DraftStore)
+//! for persistence across restarts.
 
 use super::super::Gpui;
-use code_assistant_core::persistence::NodeId;
+use code_assistant_core::persistence::{DraftAttachment, NodeId, SessionDraft};
 use tracing::warn;
 
 impl Gpui {
@@ -15,18 +16,21 @@ impl Gpui {
     /// will be created). Persisting it lets the editing banner and truncated
     /// transcript be restored when the session is reconnected.
     ///
-    /// Updates the in-memory cache immediately and schedules an async disk write.
+    /// Updates the in-memory cache immediately and schedules an async store write.
     pub fn save_draft_for_session(
         &self,
         session_id: &str,
         content: &str,
-        attachments: &[code_assistant_core::persistence::DraftAttachment],
+        attachments: &[DraftAttachment],
         editing_branch_parent_id: Option<NodeId>,
     ) {
-        // A draft is only "empty" (and therefore removable) when it has no
-        // text, no attachments AND no edit state.
-        let is_empty =
-            content.is_empty() && attachments.is_empty() && editing_branch_parent_id.is_none();
+        let draft = SessionDraft {
+            session_id: session_id.to_string(),
+            message: content.to_string(),
+            attachments: attachments.to_vec(),
+            editing_branch_parent_id,
+        };
+        let is_empty = draft.is_empty();
 
         // Update in-memory cache (text only)
         {
@@ -38,11 +42,7 @@ impl Gpui {
             }
         }
 
-        // Save to disk (non-blocking) with full draft structure
-        let draft_storage = self.draft_storage.clone();
-        let session_id_owned = session_id.to_string();
-        let content_owned = content.to_string();
-        let attachments_owned = attachments.to_vec();
+        let draft_store = self.stores.drafts.clone();
         let session_drafts = self.session_drafts.clone();
 
         // On GPUI's executor: callers include the event bridge, which runs
@@ -50,43 +50,29 @@ impl Gpui {
         self.dispatch(async move {
             // For empty drafts, always try to delete (idempotent)
             if is_empty {
-                if let Err(e) = draft_storage.save_draft(
-                    &session_id_owned,
-                    &content_owned,
-                    &attachments_owned,
-                    editing_branch_parent_id,
-                ) {
+                if let Err(e) = draft_store.delete(&draft.session_id) {
                     warn!(
                         "Failed to delete draft for session {}: {}",
-                        session_id_owned, e
+                        draft.session_id, e
                     );
                 }
                 return;
             }
 
-            // For non-empty content, check cache right before disk write to
+            // For non-empty content, check cache right before the write to
             // avoid races with newer edits. Always save when there is an edit
             // state or attachments, even if the text was cleared.
-            let should_save = {
-                let drafts = session_drafts.lock().unwrap();
-                let exists_in_cache = drafts.contains_key(&session_id_owned);
-                let current_content = drafts.get(&session_id_owned);
+            let still_current =
+                session_drafts.lock().unwrap().get(&draft.session_id) == Some(&draft.message);
 
-                // Only save if draft still exists in cache AND content matches exactly
-                exists_in_cache && current_content == Some(&content_owned)
-            };
-
-            if (should_save || !attachments_owned.is_empty() || editing_branch_parent_id.is_some())
-                && let Err(e) = draft_storage.save_draft(
-                    &session_id_owned,
-                    &content_owned,
-                    &attachments_owned,
-                    editing_branch_parent_id,
-                )
+            if (still_current
+                || !draft.attachments.is_empty()
+                || draft.editing_branch_parent_id.is_some())
+                && let Err(e) = draft_store.save(&draft)
             {
                 warn!(
                     "Failed to save draft for session {}: {}",
-                    session_id_owned, e
+                    draft.session_id, e
                 );
             }
         });
@@ -94,59 +80,42 @@ impl Gpui {
 
     /// Load draft text, attachments and edit state for a session.
     ///
-    /// Checks the in-memory cache for text first, then loads the full draft
-    /// structure (including the edit anchor) from disk.
-    pub fn load_draft_for_session(
-        &self,
-        session_id: &str,
-    ) -> Option<(
-        String,
-        Vec<code_assistant_core::persistence::DraftAttachment>,
-        Option<NodeId>,
-    )> {
-        // First check in-memory cache for text
-        let cached_text = {
-            let drafts = self.session_drafts.lock().unwrap();
-            drafts.get(session_id).cloned()
+    /// Loads the full draft from the store; when that has none (or fails),
+    /// falls back to text that was cached but not yet written.
+    pub fn load_draft_for_session(&self, session_id: &str) -> Option<SessionDraft> {
+        let cached_text = self.session_drafts.lock().unwrap().get(session_id).cloned();
+        let cached_draft = || {
+            cached_text.map(|message| SessionDraft {
+                session_id: session_id.to_string(),
+                message,
+                attachments: Vec::new(),
+                editing_branch_parent_id: None,
+            })
         };
 
-        // Load the full draft structure from disk (text + attachments + edit anchor)
-        match self.draft_storage.load_draft_struct(session_id) {
+        match self.stores.drafts.load(session_id) {
             Ok(Some(draft)) => {
-                let draft_text = draft.get_message();
-                // Cache the loaded draft text
-                {
-                    let mut drafts = self.session_drafts.lock().unwrap();
-                    drafts.insert(session_id.to_string(), draft_text.clone());
-                }
-                Some((
-                    draft_text,
-                    draft.attachments,
-                    draft.editing_branch_parent_id,
-                ))
+                self.session_drafts
+                    .lock()
+                    .unwrap()
+                    .insert(session_id.to_string(), draft.message.clone());
+                Some(draft)
             }
-            Ok(None) => {
-                // Check if we have cached text without attachments/edit state
-                cached_text.map(|text| (text, Vec::new(), None))
-            }
+            Ok(None) => cached_draft(),
             Err(e) => {
                 warn!("Failed to load draft for session {}: {}", session_id, e);
-                // Fallback to cached text if available
-                cached_text.map(|text| (text, Vec::new(), None))
+                cached_draft()
             }
         }
     }
 
-    /// Clear draft for a session from both cache and disk.
+    /// Clear draft for a session from both cache and store.
     pub fn clear_draft_for_session(&self, session_id: &str) {
         // Remove from in-memory cache FIRST
-        {
-            let mut drafts = self.session_drafts.lock().unwrap();
-            drafts.remove(session_id);
-        }
+        self.session_drafts.lock().unwrap().remove(session_id);
 
-        // Clear from disk synchronously to ensure it happens before any racing save operations
-        if let Err(e) = self.draft_storage.clear_draft(session_id) {
+        // Cleared synchronously so it happens before any racing save operations
+        if let Err(e) = self.stores.drafts.delete(session_id) {
             warn!("Failed to clear draft for session {}: {}", session_id, e);
         }
     }

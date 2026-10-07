@@ -8,11 +8,14 @@ pub mod messages;
 mod root;
 pub mod settings_screen;
 pub mod sidebar;
+pub mod stores;
 pub mod terminal;
+#[cfg(test)]
+mod test_support;
 pub mod tool_cards;
 
 use blocks::MessageContainer;
-use code_assistant_core::persistence::{ChatMetadata, DraftStorage};
+use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::service::{SessionService, SkillCatalogEntry};
 use code_assistant_core::types::PlanState;
 use code_assistant_core::ui::UiEvent;
@@ -27,7 +30,7 @@ use sandbox::SandboxPolicy;
 use shared::assets::Assets;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, trace, warn};
+use tracing::warn;
 
 actions!(
     code_assistant,
@@ -234,8 +237,8 @@ pub struct Gpui {
     project_sidebar: Arc<Mutex<Option<Entity<sidebar::SessionSidebar>>>>,
     messages_view: Arc<Mutex<Option<Entity<MessagesView>>>>,
 
-    // Draft storage system
-    draft_storage: Arc<DraftStorage>,
+    // Injected persistence, and the draft text cache in front of it
+    stores: stores::Stores,
     session_drafts: Arc<Mutex<HashMap<String, String>>>,
 
     // Error state management
@@ -311,7 +314,8 @@ pub struct Gpui {
     // Pending message edit state (for branching)
     pending_edit: Arc<Mutex<Option<PendingEdit>>>,
 
-    // Debounce task for persisting per-session UI state files
+    // Per-session view state, and the debounce task persisting it
+    ui_state: Arc<Mutex<shared::ui_state::UiStateStore>>,
     ui_state_save_task: Arc<Mutex<Option<gpui_kit::Task<()>>>>,
 
     /// Project names that exist in projects.json (i.e. first-class projects).
@@ -534,8 +538,7 @@ impl Gpui {
         *self.current_session_total_usage.lock().unwrap() = None;
     }
 
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub fn new(stores: stores::Stores) -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None::<gpui_kit::Task<()>>));
@@ -558,31 +561,10 @@ impl Gpui {
             ToolBlockRendererRegistry::set_global(Arc::new(tbr_registry));
         }
 
-        // Initialize the per-session UI state store (same directory as session files)
-        {
-            let sessions_dir = code_assistant_core::config_dir::data_dir().join("sessions");
-
-            shared::ui_state::UiStateStore::init_global(sessions_dir);
-        }
-
         // Create a channel to send and receive UiEvents
         let (tx, rx) = async_channel::unbounded::<UiEvent>();
         let event_sender = Arc::new(Mutex::new(tx));
         let event_receiver = Arc::new(Mutex::new(rx));
-
-        // Initialize draft storage (using default config directory)
-        let draft_storage = Arc::new(
-            DraftStorage::new(
-                dirs::config_dir()
-                    .unwrap_or_else(|| std::env::current_dir().unwrap())
-                    .join("code-assistant"),
-            )
-            .unwrap_or_else(|e| {
-                warn!("Failed to initialize draft storage: {}, using fallback", e);
-                DraftStorage::new(std::env::temp_dir().join("code-assistant-drafts"))
-                    .expect("Failed to create fallback draft storage")
-            }),
-        );
 
         Self {
             message_queue,
@@ -603,8 +585,10 @@ impl Gpui {
             project_sidebar: Arc::new(Mutex::new(None)),
             messages_view: Arc::new(Mutex::new(None)),
 
-            // Draft storage system
-            draft_storage,
+            ui_state: Arc::new(Mutex::new(shared::ui_state::UiStateStore::new(
+                stores.ui_state.clone(),
+            ))),
+            stores,
             session_drafts: Arc::new(Mutex::new(HashMap::new())),
 
             // Error state management
@@ -639,7 +623,6 @@ impl Gpui {
             // Current session total usage
             current_session_total_usage: Arc::new(Mutex::new(None)),
 
-            // Debounce task for UI state persistence
             ui_state_save_task: Arc::new(Mutex::new(None)),
 
             // Load the set of persisted project names from projects.json
@@ -657,36 +640,62 @@ impl Gpui {
         }
     }
 
+    /// Connect this instance to the app: the executor commands run on, the
+    /// globals the views read, the core's event stream, and the loop applying
+    /// [`UiEvent`]s. `run_app` does this at startup, tests on their own app.
+    fn install(&self, cx: &mut App) {
+        // Capture the background executor so session commands can be
+        // dispatched from any thread (see app/commands.rs).
+        *self.background_executor.lock().unwrap() = Some(cx.background_executor().clone());
+
+        // Subscribe to the core→UI broadcast stream (see app/event_bridge.rs)
+        self.spawn_event_bridge();
+
+        cx.set_global(self.clone());
+        // Register UI event sender as global for chat components
+        cx.set_global(UiEventSender(self.event_sender.lock().unwrap().clone()));
+
+        let task = self.spawn_event_loop(cx);
+        *self.event_task.lock().unwrap() = Some(task);
+    }
+
+    /// Create the message list and the session sidebar, registered with this
+    /// instance so the event loop updates them.
+    fn new_session_views(
+        &self,
+        window: &mut gpui_kit::Window,
+        cx: &mut App,
+    ) -> (Entity<MessagesView>, Entity<sidebar::SessionSidebar>) {
+        let messages_view = cx.new(|cx| {
+            MessagesView::new(
+                self.message_queue.clone(),
+                self.current_session_activity_state.clone(),
+                cx,
+            )
+        });
+        *self.messages_view.lock().unwrap() = Some(messages_view.clone());
+
+        let project_sidebar = cx.new(|cx| sidebar::SessionSidebar::new(window, cx));
+        *self.project_sidebar.lock().unwrap() = Some(project_sidebar.clone());
+
+        (messages_view, project_sidebar)
+    }
+
     // Run the application
     pub fn run_app(&self) {
-        let message_queue = self.message_queue.clone();
         let gpui_clone = self.clone();
 
         // Initialize app with assets
         let app = gpui_kit::application().with_assets(Assets {});
 
         app.run(move |cx| {
-            // Capture the background executor so session commands can be
-            // dispatched from any thread (see app/commands.rs).
-            *gpui_clone.background_executor.lock().unwrap() =
-                Some(cx.background_executor().clone());
-
-            // Subscribe to the core→UI broadcast stream (see app/event_bridge.rs)
-            gpui_clone.spawn_event_bridge();
-
-            // Register our Gpui instance as a global
-            cx.set_global(gpui_clone.clone());
+            gpui_clone.install(cx);
 
             // Opt-in frame profiling (see shared::frame_profile).
             let frame_profile_mode = shared::frame_profile::init_from_env();
             if frame_profile_mode != shared::frame_profile::Mode::Off {
                 shared::frame_profile::spawn_reporter(cx);
             }
-
-            // Register UI event sender as global for chat components
-            cx.set_global(UiEventSender(
-                gpui_clone.event_sender.lock().unwrap().clone(),
-            ));
 
             // Setup window close listener
             cx.bind_keys([gpui_kit::KeyBinding::new("cmd-w", CloseWindow, None)]);
@@ -733,74 +742,17 @@ impl Gpui {
                 let settings = cx
                     .try_global::<UiSettingsGlobal>()
                     .map(|global| global.0.clone());
-                let files = shared::ui_state::UiStateStore::try_global()
-                    .and_then(|store| store.lock().ok())
-                    .map(|mut store| store.take_dirty())
-                    .unwrap_or_default();
+                let ui_state_writes = cx.global::<Gpui>().ui_state.lock().unwrap().take_dirty();
                 async move {
                     if let Some(settings) = settings {
                         settings.save();
                     }
-                    shared::ui_state::write_ui_state_files(files);
+                    ui_state_writes.write();
                 }
             })
             .detach();
 
             init(cx);
-
-            // Spawn task to receive UiEvents
-            let rx = gpui_clone.event_receiver.lock().unwrap().clone();
-            let async_gpui_clone = gpui_clone.clone();
-            debug!("Starting UI event processing task");
-            let task = cx.spawn(async move |cx: &mut AsyncApp| {
-                debug!("UI event processing task is running");
-
-                // Process bursts of events in small batches, then cooperatively
-                // yield back to the GPUI executor so paint/layout work is not
-                // starved by a long stream of tiny updates.
-                const UI_EVENT_BATCH_SIZE: usize = 32;
-
-                loop {
-                    trace!("Waiting for UI event...");
-                    let result = rx.recv().await;
-                    match result {
-                        Ok(received_event) => {
-                            trace!("UI event processing: Received event: {:?}", received_event);
-                            async_gpui_clone.process_ui_event_async(received_event, cx);
-
-                            let mut processed_in_batch = 1;
-                            while processed_in_batch < UI_EVENT_BATCH_SIZE {
-                                match rx.try_recv() {
-                                    Ok(received_event) => {
-                                        trace!(
-                                            "UI event processing: Received batched event: {:?}",
-                                            received_event
-                                        );
-                                        async_gpui_clone.process_ui_event_async(received_event, cx);
-                                        processed_in_batch += 1;
-                                    }
-                                    Err(async_channel::TryRecvError::Empty) => break,
-                                    Err(async_channel::TryRecvError::Closed) => return,
-                                }
-                            }
-
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(1))
-                                .await;
-                        }
-                        Err(err) => {
-                            warn!("Receive error: {}", err);
-                            break;
-                        }
-                    }
-                }
-            });
-
-            // Store the task in our Gpui instance
-            {
-                let mut task_guard = gpui_clone.event_task.lock().unwrap();
-                *task_guard = Some(task);
-            }
 
             // Create window – restore saved bounds or fall back to centered default.
             let bounds = ui_settings
@@ -834,13 +786,8 @@ impl Gpui {
                         ..Default::default()
                     },
                     |window, cx| {
-                        // Create MessagesView
-                        let activity_state = gpui_clone.current_session_activity_state.clone();
-                        let messages_view = cx
-                            .new(|cx| MessagesView::new(message_queue.clone(), activity_state, cx));
-
-                        // Store MessagesView reference in Gpui
-                        *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
+                        let (messages_view, project_sidebar) =
+                            gpui_clone.new_session_views(window, cx);
                         if let sweep @ (shared::frame_profile::Mode::Scroll
                         | shared::frame_profile::Mode::Wheel) = frame_profile_mode
                         {
@@ -849,10 +796,6 @@ impl Gpui {
                                 view.start_profile_scroll_sweep(wheel, window, cx)
                             });
                         }
-
-                        // Create SessionSidebar and store it in Gpui
-                        let project_sidebar = cx.new(|cx| sidebar::SessionSidebar::new(window, cx));
-                        *gpui_clone.project_sidebar.lock().unwrap() = Some(project_sidebar.clone());
 
                         // Create RootView
                         let root_view = cx.new(|cx| {

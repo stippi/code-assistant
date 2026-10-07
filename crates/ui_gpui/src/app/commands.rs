@@ -203,8 +203,8 @@ impl Gpui {
         self.dispatch(async move {
             match service.delete_session(session_id.clone()).await {
                 Ok(()) => {
-                    // Clean up collapse-state overrides for the deleted session
-                    blocks::ToolCollapseState::remove_session(&session_id);
+                    // Drop the deleted session's view state
+                    gpui.ui_state.lock().unwrap().remove_session(&session_id);
                     if gpui.is_current_session(&session_id) {
                         gpui.clear_current_session_state();
                     }

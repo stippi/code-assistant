@@ -1319,3 +1319,59 @@ impl ToolTestFixture {
         self.ui.as_deref()
     }
 }
+
+/// In-memory [`DraftStore`](crate::persistence::DraftStore) that can be told
+/// to fail, e.g. with `ErrorKind::StorageFull` for a full disk.
+#[derive(Default, Clone)]
+pub struct MockDraftStore {
+    drafts: Arc<Mutex<HashMap<String, crate::persistence::SessionDraft>>>,
+    read_error: Arc<Mutex<Option<std::io::ErrorKind>>>,
+    write_error: Arc<Mutex<Option<std::io::ErrorKind>>>,
+}
+
+impl MockDraftStore {
+    /// Make every following `load` fail with `kind`, or succeed again (`None`).
+    pub fn fail_reads(&self, kind: Option<std::io::ErrorKind>) {
+        *self.read_error.lock().unwrap() = kind;
+    }
+
+    /// Make every following `save` and `delete` fail with `kind`, or succeed
+    /// again (`None`).
+    pub fn fail_writes(&self, kind: Option<std::io::ErrorKind>) {
+        *self.write_error.lock().unwrap() = kind;
+    }
+
+    /// The stored draft of a session, bypassing any injected failure.
+    pub fn stored(&self, session_id: &str) -> Option<crate::persistence::SessionDraft> {
+        self.drafts.lock().unwrap().get(session_id).cloned()
+    }
+
+    fn check(error: &Mutex<Option<std::io::ErrorKind>>) -> Result<()> {
+        match *error.lock().unwrap() {
+            Some(kind) => Err(std::io::Error::from(kind).into()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl crate::persistence::DraftStore for MockDraftStore {
+    fn load(&self, session_id: &str) -> Result<Option<crate::persistence::SessionDraft>> {
+        Self::check(&self.read_error)?;
+        Ok(self.stored(session_id))
+    }
+
+    fn save(&self, draft: &crate::persistence::SessionDraft) -> Result<()> {
+        Self::check(&self.write_error)?;
+        self.drafts
+            .lock()
+            .unwrap()
+            .insert(draft.session_id.clone(), draft.clone());
+        Ok(())
+    }
+
+    fn delete(&self, session_id: &str) -> Result<()> {
+        Self::check(&self.write_error)?;
+        self.drafts.lock().unwrap().remove(session_id);
+        Ok(())
+    }
+}

@@ -3,7 +3,6 @@ use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
@@ -1186,7 +1185,7 @@ fn calculate_session_usage(session: &ChatSession) -> (llm::Usage, llm::Usage, Op
 }
 
 /// Draft attachment types for extensibility
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DraftAttachment {
     #[serde(rename = "text")]
@@ -1209,12 +1208,10 @@ pub enum DraftAttachment {
     },
 }
 
-/// Complete draft structure for a session
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// What the composer of a session holds while the user has not sent it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionDraft {
     pub session_id: String,
-    pub created_at: SystemTime,
-    pub updated_at: SystemTime,
     /// The main message text that the user types
     pub message: String,
     /// Additional attachments (images, files, etc.)
@@ -1229,183 +1226,75 @@ pub struct SessionDraft {
 }
 
 impl SessionDraft {
-    pub fn new(session_id: String) -> Self {
-        let now = SystemTime::now();
-        Self {
-            session_id,
-            created_at: now,
-            updated_at: now,
-            message: String::new(),
-            attachments: Vec::new(),
-            editing_branch_parent_id: None,
-        }
-    }
-
-    pub fn set_message(&mut self, message: String) {
-        self.updated_at = SystemTime::now();
-        self.message = message;
-    }
-
-    pub fn get_message(&self) -> String {
-        self.message.clone()
+    /// A draft is empty only when it carries no text, no attachments AND no
+    /// edit state: an in-progress edit (even with empty text) must persist so
+    /// the editing banner can be restored when reconnecting to the session.
+    pub fn is_empty(&self) -> bool {
+        self.message.is_empty()
+            && self.attachments.is_empty()
+            && self.editing_branch_parent_id.is_none()
     }
 }
 
-/// Storage for draft messages per session
+/// Where the drafts of all sessions are kept.
+pub trait DraftStore: Send + Sync {
+    /// The stored draft of a session, if there is one.
+    fn load(&self, session_id: &str) -> Result<Option<SessionDraft>>;
+
+    /// Store a draft, replacing the session's previous one.
+    fn save(&self, draft: &SessionDraft) -> Result<()>;
+
+    /// Remove the stored draft of a session. Removing a missing draft is not
+    /// an error.
+    fn delete(&self, session_id: &str) -> Result<()>;
+}
+
+/// Drafts as one JSON file per session in a directory.
 #[derive(Debug, Clone)]
-pub struct DraftStorage {
+pub struct FileDraftStore {
     drafts_dir: PathBuf,
-    /// Per-session mutexes to prevent concurrent writes to the same draft file
-    session_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
-impl DraftStorage {
-    /// Create a new DraftStorage instance
-    pub fn new(base_dir: PathBuf) -> Result<Self> {
-        let drafts_dir = base_dir.join("drafts");
-
-        // Create drafts directory if it doesn't exist
-        if !drafts_dir.exists() {
-            std::fs::create_dir_all(&drafts_dir)?;
-            debug!("Created drafts directory: {}", drafts_dir.display());
+impl FileDraftStore {
+    /// Drafts live in `base_dir/drafts`, created on the first save.
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self {
+            drafts_dir: base_dir.join("drafts"),
         }
-
-        Ok(Self {
-            drafts_dir,
-            session_locks: Arc::new(Mutex::new(HashMap::new())),
-        })
     }
 
-    /// Get the path for a draft file for a given session
     fn draft_file_path(&self, session_id: &str) -> PathBuf {
         self.drafts_dir.join(format!("{session_id}.json"))
     }
+}
 
-    /// Get or create a mutex for the given session to prevent concurrent writes
-    fn get_session_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.session_locks.lock().unwrap();
-        locks
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+impl DraftStore for FileDraftStore {
+    fn load(&self, session_id: &str) -> Result<Option<SessionDraft>> {
+        let file_path = self.draft_file_path(session_id);
+        let json_content = match std::fs::read_to_string(&file_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some(serde_json::from_str(&json_content)?))
     }
 
-    /// Save a draft with attachments for a session
-    pub fn save_draft(
-        &self,
-        session_id: &str,
-        text_content: &str,
-        attachments: &[DraftAttachment],
-        editing_branch_parent_id: Option<NodeId>,
-    ) -> Result<()> {
-        // Acquire session-specific lock to prevent concurrent writes
-        let session_lock = self.get_session_lock(session_id);
-        let _guard = session_lock.lock().unwrap();
+    fn save(&self, draft: &SessionDraft) -> Result<()> {
+        std::fs::create_dir_all(&self.drafts_dir)?;
+        // Written atomically, so concurrent saves of one session never leave
+        // a torn file behind.
+        atomic_write_json(&self.draft_file_path(&draft.session_id), draft)
+    }
 
-        let file_path = self.draft_file_path(session_id);
-
-        // A draft is considered empty only when it carries no text, no
-        // attachments AND no edit state. An in-progress edit (even with empty
-        // text) must persist so the editing banner/truncated view can be
-        // restored when reconnecting to the session.
-        if text_content.is_empty() && attachments.is_empty() && editing_branch_parent_id.is_none() {
-            // Remove the draft file if it exists
-            if file_path.exists() {
-                std::fs::remove_file(&file_path)?;
-                debug!("Cleared empty draft for session: {}", session_id);
+    fn delete(&self, session_id: &str) -> Result<()> {
+        match std::fs::remove_file(self.draft_file_path(session_id)) {
+            Ok(()) => {
+                debug!("Cleared draft for session: {}", session_id);
+                Ok(())
             }
-            return Ok(());
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
         }
-
-        // Load existing draft or create new one
-        let mut draft = self
-            .load_draft_struct_unlocked(session_id)?
-            .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
-
-        // Update message content and attachments
-        draft.set_message(text_content.to_string());
-        draft.attachments = attachments.to_vec();
-        draft.editing_branch_parent_id = editing_branch_parent_id;
-
-        // Serialize and save atomically
-        atomic_write_json(&file_path, &draft)?;
-
-        Ok(())
-    }
-
-    /// Load a draft with attachments for a session
-    pub fn load_draft(&self, session_id: &str) -> Result<Option<(String, Vec<DraftAttachment>)>> {
-        let draft = self.load_draft_struct(session_id)?;
-        Ok(draft.map(|d| (d.get_message(), d.attachments)))
-    }
-
-    /// Load the complete draft structure for a session
-    pub fn load_draft_struct(&self, session_id: &str) -> Result<Option<SessionDraft>> {
-        // Acquire session-specific lock to prevent reading during writes
-        let session_lock = self.get_session_lock(session_id);
-        let _guard = session_lock.lock().unwrap();
-
-        self.load_draft_struct_unlocked(session_id)
-    }
-
-    /// Load the complete draft structure for a session without acquiring lock
-    /// (for internal use when lock is already held)
-    fn load_draft_struct_unlocked(&self, session_id: &str) -> Result<Option<SessionDraft>> {
-        let file_path = self.draft_file_path(session_id);
-
-        if !file_path.exists() {
-            return Ok(None);
-        }
-
-        let json_content = std::fs::read_to_string(&file_path)?;
-        let draft: SessionDraft = serde_json::from_str(&json_content)?;
-
-        Ok(Some(draft))
-    }
-
-    /// Clear a draft for a session (used when message is sent)
-    pub fn clear_draft(&self, session_id: &str) -> Result<()> {
-        // Acquire session-specific lock to prevent concurrent operations
-        let session_lock = self.get_session_lock(session_id);
-        let _guard = session_lock.lock().unwrap();
-
-        let file_path = self.draft_file_path(session_id);
-
-        if file_path.exists() {
-            std::fs::remove_file(&file_path)?;
-            debug!("Cleared draft for session: {}", session_id);
-        }
-
-        Ok(())
-    }
-
-    /// Clean up old drafts for sessions that no longer exist
-    #[allow(dead_code)]
-    pub fn cleanup_orphaned_drafts(&self, existing_session_ids: &[String]) -> Result<()> {
-        if !self.drafts_dir.exists() {
-            return Ok(());
-        }
-
-        let mut cleaned_count = 0;
-        for entry in std::fs::read_dir(&self.drafts_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-                && let Some(session_id) = file_name.strip_suffix(".json")
-                && !existing_session_ids.contains(&session_id.to_string())
-            {
-                std::fs::remove_file(&path)?;
-                cleaned_count += 1;
-                debug!("Cleaned up orphaned draft: {}", session_id);
-            }
-        }
-
-        if cleaned_count > 0 {
-            info!("Cleaned up {} orphaned draft files", cleaned_count);
-        }
-
-        Ok(())
     }
 }
 
@@ -1429,7 +1318,7 @@ mod tests {
                 None,
             ))
             .unwrap();
-        let start = Arc::new(std::sync::Barrier::new(4));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(4));
         std::thread::scope(|scope| {
             for _ in 0..4 {
                 let root = dir.path().to_path_buf();
@@ -1986,5 +1875,46 @@ mod tests {
             .unwrap();
         let listed = persistence.list_chat_sessions().unwrap();
         assert_eq!(listed[0].branch.as_deref(), Some("feature/x"));
+    }
+
+    fn draft(session_id: &str, message: &str) -> SessionDraft {
+        SessionDraft {
+            session_id: session_id.into(),
+            message: message.into(),
+            attachments: Vec::new(),
+            editing_branch_parent_id: None,
+        }
+    }
+
+    #[test]
+    fn file_draft_store_round_trips_and_deletes() {
+        let dir = tempdir().unwrap();
+        let store = FileDraftStore::new(dir.path().to_path_buf());
+        assert_eq!(store.load("s").unwrap(), None);
+
+        store.save(&draft("s", "first")).unwrap();
+        store.save(&draft("s", "second")).unwrap();
+        assert_eq!(store.load("s").unwrap(), Some(draft("s", "second")));
+
+        store.delete("s").unwrap();
+        assert_eq!(store.load("s").unwrap(), None);
+        // Deleting a missing draft is fine.
+        store.delete("s").unwrap();
+    }
+
+    #[test]
+    fn file_draft_store_reads_drafts_with_timestamps() {
+        // Drafts written before the timestamps were dropped still load.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("drafts")).unwrap();
+        std::fs::write(
+            dir.path().join("drafts/s.json"),
+            r#"{"session_id":"s","created_at":{"secs_since_epoch":1,"nanos_since_epoch":0},
+                "updated_at":{"secs_since_epoch":2,"nanos_since_epoch":0},
+                "message":"hello","attachments":[]}"#,
+        )
+        .unwrap();
+        let store = FileDraftStore::new(dir.path().to_path_buf());
+        assert_eq!(store.load("s").unwrap(), Some(draft("s", "hello")));
     }
 }

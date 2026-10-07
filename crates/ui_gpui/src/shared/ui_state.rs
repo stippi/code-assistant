@@ -5,15 +5,17 @@
 //! directory.  This avoids re-serialising the (potentially large) full session
 //! just because the user toggled a plan banner or collapsed a tool block.
 //!
-//! The [`UiStateStore`] is a global singleton that keeps an in-memory cache of
-//! all loaded states and a dirty set.  Mutations are cheap (HashMap write) and
-//! persistence is debounced — a single write is scheduled after the last
-//! mutation within a configurable window.
+//! The [`UiStateStore`] keeps an in-memory cache of all loaded states and a
+//! dirty set, in front of an injected [`UiStatePersistence`].  Mutations are
+//! cheap (HashMap write) and persistence is debounced — a single write is
+//! scheduled after the last mutation within a configurable window.
 
+use anyhow::Result;
+use gpui_kit::App;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 /// Duration to wait after the last mutation before flushing to disk.
@@ -87,69 +89,133 @@ pub struct UiSessionState {
 }
 
 // ---------------------------------------------------------------------------
-// UiStateStore — global singleton
+// Persistence
 // ---------------------------------------------------------------------------
 
-static STORE: OnceLock<Mutex<UiStateStore>> = OnceLock::new();
+/// Where per-session UI states are kept across restarts.
+pub trait UiStatePersistence: Send + Sync {
+    /// The stored state of a session, if there is one.
+    fn load(&self, session_id: &str) -> Result<Option<UiSessionState>>;
 
-pub struct UiStateStore {
-    /// Root directory for session files (e.g. `~/.local/share/code-assistant/sessions`).
+    /// Store the state of a session, replacing the previous one.
+    fn save(&self, session_id: &str, state: &UiSessionState) -> Result<()>;
+
+    /// Remove the stored state of a session. Removing a missing state is not
+    /// an error.
+    fn delete(&self, session_id: &str) -> Result<()>;
+}
+
+/// UI states as `<session_id>.ui_state.json` files next to the session files.
+pub struct FileUiStatePersistence {
     sessions_dir: PathBuf,
+}
+
+impl FileUiStatePersistence {
+    pub fn new(sessions_dir: PathBuf) -> Self {
+        Self { sessions_dir }
+    }
+
+    fn file_path(&self, session_id: &str) -> PathBuf {
+        self.sessions_dir
+            .join(format!("{session_id}.ui_state.json"))
+    }
+}
+
+impl UiStatePersistence for FileUiStatePersistence {
+    fn load(&self, session_id: &str) -> Result<Option<UiSessionState>> {
+        let json = match std::fs::read_to_string(self.file_path(session_id)) {
+            Ok(json) => json,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some(serde_json::from_str(&json)?))
+    }
+
+    fn save(&self, session_id: &str, state: &UiSessionState) -> Result<()> {
+        let json = serde_json::to_string_pretty(state)?;
+        code_assistant_core::utils::file_utils::atomic_write(
+            &self.file_path(session_id),
+            json.as_bytes(),
+        )
+    }
+
+    fn delete(&self, session_id: &str) -> Result<()> {
+        match std::fs::remove_file(self.file_path(session_id)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UiStateStore — in-memory cache in front of the persistence
+// ---------------------------------------------------------------------------
+
+/// The app's per-session UI states: a cache of the loaded ones and the set of
+/// changed ones not yet written. Owned by [`Gpui`](crate::Gpui); views reach
+/// it through [`read`] and [`update`].
+pub struct UiStateStore {
+    persistence: Arc<dyn UiStatePersistence>,
     /// In-memory cache of loaded session UI states.
     states: HashMap<String, UiSessionState>,
     /// Session IDs with unsaved changes.
     dirty: HashSet<String>,
 }
 
-impl UiStateStore {
-    // -- Global singleton access --
+/// Read from the app's UI state store. `None` when there is none (a test
+/// without a [`Gpui`](crate::Gpui) global).
+pub fn read<R>(cx: &App, f: impl FnOnce(&mut UiStateStore) -> R) -> Option<R> {
+    let store = cx.try_global::<crate::Gpui>()?.ui_state.clone();
+    let mut store = store.lock().unwrap();
+    Some(f(&mut store))
+}
 
-    /// Initialise the global store.  Must be called once at startup (e.g. in
-    /// `Gpui::new`) before any other access.
-    pub fn init_global(sessions_dir: PathBuf) {
-        let store = Self {
-            sessions_dir,
+/// Change the app's UI state and, if that changed anything, schedule the
+/// debounced write.
+pub fn update(cx: &App, f: impl FnOnce(&mut UiStateStore)) {
+    let changed = read(cx, |store| {
+        f(store);
+        store.has_dirty()
+    });
+    if changed == Some(true)
+        && let Some(sender) = cx.try_global::<crate::UiEventSender>()
+    {
+        let _ = sender
+            .0
+            .try_send(code_assistant_core::ui::UiEvent::PersistUiState);
+    }
+}
+
+impl UiStateStore {
+    pub fn new(persistence: Arc<dyn UiStatePersistence>) -> Self {
+        Self {
+            persistence,
             states: HashMap::new(),
             dirty: HashSet::new(),
-        };
-        let _ = STORE.set(Mutex::new(store));
-    }
-
-    /// Access the global store.  Returns `None` if [`init_global`] was not
-    /// called (e.g. in tests or non-GPUI mode).
-    pub fn global() -> &'static Mutex<UiStateStore> {
-        STORE
-            .get()
-            .expect("UiStateStore not initialised — call UiStateStore::init_global first")
-    }
-
-    /// Try to access the global store, returning `None` if it hasn't been
-    /// initialised yet.
-    pub fn try_global() -> Option<&'static Mutex<UiStateStore>> {
-        STORE.get()
+        }
     }
 
     // -- Query / Mutate --
 
-    /// Return a clone of the state for `session_id`, loading from disk if
-    /// necessary.
+    /// Return a clone of the state for `session_id`, loading it if necessary.
     pub fn get(&mut self, session_id: &str) -> UiSessionState {
         if !self.states.contains_key(session_id) {
-            let state = self.load_from_disk(session_id);
+            let state = self.load(session_id);
             self.states.insert(session_id.to_owned(), state);
         }
         self.states.get(session_id).cloned().unwrap_or_default()
     }
 
-    /// Return a clone of a specific tool's collapse override, loading from disk
-    /// if the session hasn't been loaded yet.
+    /// Return a clone of a specific tool's collapse override, loading the
+    /// session's state if necessary.
     pub fn get_tool_collapsed(&mut self, session_id: &str, tool_id: &str) -> Option<bool> {
         let state = self.get(session_id);
         state.tool_collapse_overrides.get(tool_id).copied()
     }
 
-    /// Return the `plan_collapsed` flag for a session, loading from disk if
-    /// necessary.
+    /// Return the `plan_collapsed` flag for a session, loading the session's
+    /// state if necessary.
     pub fn get_plan_collapsed(&mut self, session_id: &str) -> bool {
         self.get(session_id).plan_collapsed
     }
@@ -170,8 +236,8 @@ impl UiStateStore {
         self.dirty.insert(session_id.to_owned());
     }
 
-    /// Return the diff mode override for a write_file tool block, loading from
-    /// disk if the session hasn't been loaded yet.
+    /// Return the diff mode override for a write_file tool block, loading the
+    /// session's state if necessary.
     pub fn get_tool_diff_mode(&mut self, session_id: &str, tool_id: &str) -> Option<bool> {
         let state = self.get(session_id);
         state.tool_diff_mode_overrides.get(tool_id).copied()
@@ -186,28 +252,25 @@ impl UiStateStore {
         self.dirty.insert(session_id.to_owned());
     }
 
-    /// Return the persisted scroll position for a session, loading from disk if
-    /// the session hasn't been loaded yet.
+    /// Return the persisted scroll position for a session, loading the
+    /// session's state if necessary.
     pub fn get_scroll(&mut self, session_id: &str) -> Option<ScrollPosition> {
         self.get(session_id).scroll
     }
 
-    /// Set the persisted scroll position for a session. Marks the session dirty
-    /// so the next debounced flush writes it to disk. Returns `true` if the
-    /// value actually changed (a no-op update from a settling scroll animation
-    /// neither dirties the session nor returns `true`).
-    pub fn set_scroll(&mut self, session_id: &str, scroll: ScrollPosition) -> bool {
+    /// Set the persisted scroll position for a session. A no-op update from a
+    /// settling scroll animation does not dirty the session.
+    pub fn set_scroll(&mut self, session_id: &str, scroll: ScrollPosition) {
         let state = self.states.entry(session_id.to_owned()).or_default();
         if state.scroll == Some(scroll) {
-            return false;
+            return;
         }
         state.scroll = Some(scroll);
         self.dirty.insert(session_id.to_owned());
-        true
     }
 
-    /// Return whether the right (review) sidebar is open for a session.
-    /// Loads from disk if the session hasn't been loaded yet.
+    /// Return whether the right (review) sidebar is open for a session,
+    /// loading the session's state if necessary.
     pub fn get_right_panel_open(&mut self, session_id: &str) -> bool {
         self.get(session_id).right_panel_open
     }
@@ -254,90 +317,68 @@ impl UiStateStore {
         self.dirty.insert(session_id.to_owned());
     }
 
-    /// Remove the in-memory state and on-disk file for a deleted session.
+    /// Remove the cached and the stored state of a deleted session.
     pub fn remove_session(&mut self, session_id: &str) {
         self.states.remove(session_id);
         self.dirty.remove(session_id);
-        let path = self.file_path(session_id);
-        if path.exists()
-            && let Err(e) = std::fs::remove_file(&path)
-        {
-            warn!("Failed to remove UI state file {}: {}", path.display(), e);
+        if let Err(e) = self.persistence.delete(session_id) {
+            warn!("Failed to remove UI state of session {}: {}", session_id, e);
         }
     }
 
     // -- Persistence --
 
-    /// Take the set of dirty session IDs and return their serialised states so
-    /// that the caller can write them on a background thread.
-    ///
-    /// After calling this the dirty set is empty.
-    pub fn take_dirty(&mut self) -> Vec<(PathBuf, String)> {
-        let ids: Vec<String> = self.dirty.drain().collect();
-        let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(state) = self.states.get(&id) {
-                let path = self.file_path(&id);
-                match serde_json::to_string_pretty(state) {
-                    Ok(json) => out.push((path, json)),
-                    Err(e) => warn!("Failed to serialise UI state for session {}: {}", id, e),
-                }
-            }
+    /// Take the changed states, to be written off the main thread with
+    /// [`PendingWrites::write`]. Afterwards nothing is dirty.
+    pub fn take_dirty(&mut self) -> PendingWrites {
+        let states = self
+            .dirty
+            .drain()
+            .filter_map(|id| {
+                let state = self.states.get(&id)?.clone();
+                Some((id, state))
+            })
+            .collect();
+        PendingWrites {
+            persistence: self.persistence.clone(),
+            states,
         }
-        out
     }
 
     /// Check whether any sessions have unsaved changes.
-    #[allow(dead_code)]
     pub fn has_dirty(&self) -> bool {
         !self.dirty.is_empty()
     }
 
-    // -- Internal --
-
-    fn file_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir
-            .join(format!("{session_id}.ui_state.json"))
-    }
-
-    fn load_from_disk(&self, session_id: &str) -> UiSessionState {
-        let path = self.file_path(session_id);
-        if !path.exists() {
-            return UiSessionState::default();
-        }
-        match std::fs::read_to_string(&path) {
-            Ok(json) => match serde_json::from_str(&json) {
-                Ok(state) => {
-                    debug!(
-                        "Loaded UI state for session {} from {}",
-                        session_id,
-                        path.display()
-                    );
-                    state
-                }
-                Err(e) => {
-                    warn!("Failed to parse UI state file {}: {}", path.display(), e);
-                    UiSessionState::default()
-                }
-            },
+    fn load(&self, session_id: &str) -> UiSessionState {
+        match self.persistence.load(session_id) {
+            Ok(state) => state.unwrap_or_default(),
             Err(e) => {
-                warn!("Failed to read UI state file {}: {}", path.display(), e);
+                warn!("Failed to load UI state of session {}: {}", session_id, e);
                 UiSessionState::default()
             }
         }
     }
 }
 
-/// Write a list of `(path, json_content)` pairs to disk.
-///
-/// Designed to be called from a background thread via `cx.background_spawn`.
-pub fn write_ui_state_files(files: Vec<(PathBuf, String)>) {
-    for (path, json) in files {
-        if let Err(e) = code_assistant_core::utils::file_utils::atomic_write(&path, json.as_bytes())
-        {
-            warn!("Failed to write UI state file {}: {}", path.display(), e);
-        } else {
-            debug!("Saved UI state to {}", path.display());
+/// Changed UI states taken from the store, not yet written.
+pub struct PendingWrites {
+    persistence: Arc<dyn UiStatePersistence>,
+    states: Vec<(String, UiSessionState)>,
+}
+
+impl PendingWrites {
+    pub fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+
+    /// Write the states; meant for a background thread.
+    pub fn write(self) {
+        for (session_id, state) in self.states {
+            match self.persistence.save(&session_id, &state) {
+                Ok(()) => debug!("Saved UI state of session {}", session_id),
+                Err(e) => warn!("Failed to save UI state of session {}: {}", session_id, e),
+            }
         }
     }
 }
@@ -345,23 +386,20 @@ pub fn write_ui_state_files(files: Vec<(PathBuf, String)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::test_support::MockUiStatePersistence;
     use tempfile::TempDir;
 
-    /// Helper to create a store backed by a temporary directory.
-    fn test_store() -> (UiStateStore, TempDir) {
-        let dir = TempDir::new().unwrap();
-        let store = UiStateStore {
-            sessions_dir: dir.path().to_owned(),
-            states: HashMap::new(),
-            dirty: HashSet::new(),
-        };
-        (store, dir)
+    fn test_store() -> (UiStateStore, MockUiStatePersistence) {
+        let persistence = MockUiStatePersistence::default();
+        (
+            UiStateStore::new(Arc::new(persistence.clone())),
+            persistence,
+        )
     }
 
     #[test]
     fn test_get_returns_default_for_unknown_session() {
-        let (mut store, _dir) = test_store();
+        let (mut store, _) = test_store();
         let state = store.get("nonexistent");
         assert!(!state.plan_collapsed);
         assert!(state.tool_collapse_overrides.is_empty());
@@ -370,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_set_plan_collapsed_marks_dirty() {
-        let (mut store, _dir) = test_store();
+        let (mut store, _) = test_store();
         store.set_plan_collapsed("session-1", true);
         assert!(store.dirty.contains("session-1"));
         assert!(store.get("session-1").plan_collapsed);
@@ -378,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_set_tool_collapsed_roundtrip() {
-        let (mut store, _dir) = test_store();
+        let (mut store, _) = test_store();
         store.set_tool_collapsed("s1", "tool-abc", true);
         assert_eq!(store.get_tool_collapsed("s1", "tool-abc"), Some(true));
         assert_eq!(store.get_tool_collapsed("s1", "tool-other"), None);
@@ -386,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_set_tool_diff_mode_roundtrip() {
-        let (mut store, _dir) = test_store();
+        let (mut store, _) = test_store();
         store.set_tool_diff_mode("s1", "tool-xyz", false);
         assert_eq!(store.get_tool_diff_mode("s1", "tool-xyz"), Some(false));
         assert_eq!(store.get_tool_diff_mode("s1", "tool-other"), None);
@@ -394,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_set_scroll_roundtrip_and_dirty() {
-        let (mut store, _dir) = test_store();
+        let (mut store, _) = test_store();
         assert_eq!(store.get_scroll("s1"), None);
 
         let pos = ScrollPosition {
@@ -409,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_set_scroll_no_op_when_unchanged() {
-        let (mut store, _dir) = test_store();
+        let (mut store, _) = test_store();
         let pos = ScrollPosition {
             item_ix: 3,
             offset_in_item: 0.0,
@@ -418,8 +456,7 @@ mod tests {
         store.set_scroll("s1", pos);
         // Clear dirty (simulate a flush), then set the identical value again.
         store.dirty.clear();
-        let changed = store.set_scroll("s1", pos);
-        assert!(!changed, "identical scroll must report no change");
+        store.set_scroll("s1", pos);
         assert!(
             !store.dirty.contains("s1"),
             "identical scroll must not re-dirty the session"
@@ -427,58 +464,25 @@ mod tests {
     }
 
     #[test]
-    fn test_scroll_survives_serialization() {
-        let (mut store, _dir) = test_store();
-        store.set_scroll(
-            "s1",
-            ScrollPosition {
-                item_ix: 42,
-                offset_in_item: 3.25,
-                follow_tail: false,
-            },
-        );
-        let files = store.take_dirty();
-        assert_eq!(files.len(), 1);
-        let (_path, json) = &files[0];
-        let parsed: UiSessionState = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            parsed.scroll,
-            Some(ScrollPosition {
-                item_ix: 42,
-                offset_in_item: 3.25,
-                follow_tail: false,
-            })
-        );
-    }
-
-    #[test]
-    fn test_take_dirty_clears_dirty_set() {
-        let (mut store, _dir) = test_store();
-        store.set_plan_collapsed("s1", true);
-        store.set_plan_collapsed("s2", false);
-
-        let files = store.take_dirty();
-        assert_eq!(files.len(), 2);
-        assert!(store.dirty.is_empty());
-    }
-
-    #[test]
-    fn test_take_dirty_produces_valid_json() {
-        let (mut store, _dir) = test_store();
+    fn test_pending_writes_store_the_dirty_states() {
+        let (mut store, persistence) = test_store();
         store.set_plan_collapsed("s1", true);
         store.set_tool_collapsed("s1", "t1", true);
+        store.set_plan_collapsed("s2", false);
 
-        let files = store.take_dirty();
-        assert_eq!(files.len(), 1);
-        let (_path, json) = &files[0];
-        let parsed: UiSessionState = serde_json::from_str(json).unwrap();
-        assert!(parsed.plan_collapsed);
-        assert_eq!(parsed.tool_collapse_overrides.get("t1"), Some(&true));
+        let writes = store.take_dirty();
+        assert!(store.dirty.is_empty());
+        writes.write();
+
+        let s1 = persistence.stored("s1").expect("s1 written");
+        assert!(s1.plan_collapsed);
+        assert_eq!(s1.tool_collapse_overrides.get("t1"), Some(&true));
+        assert!(persistence.stored("s2").is_some());
     }
 
     #[test]
     fn test_set_review_compare_mode_roundtrip_and_dirty() {
-        let (mut store, _dir) = test_store();
+        let (mut store, _) = test_store();
         assert_eq!(store.get_review_compare_mode("s1"), None);
 
         store.set_review_compare_mode("s1", "branch_vs_base".to_owned());
@@ -495,57 +499,91 @@ mod tests {
     }
 
     #[test]
-    fn test_load_from_disk() {
-        let (mut store, dir) = test_store();
-        // Write a state file manually
+    fn test_get_loads_the_stored_state() {
+        let (mut store, persistence) = test_store();
         let state = UiSessionState {
             plan_collapsed: true,
             tool_collapse_overrides: HashMap::from([("t1".to_owned(), false)]),
-            tool_diff_mode_overrides: HashMap::new(),
-            scroll: None,
             ..Default::default()
         };
-        let path = dir.path().join("s1.ui_state.json");
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(serde_json::to_string(&state).unwrap().as_bytes())
-            .unwrap();
+        persistence.save("s1", &state).unwrap();
 
-        // Load it via get
         let loaded = store.get("s1");
         assert!(loaded.plan_collapsed);
         assert_eq!(loaded.tool_collapse_overrides.get("t1"), Some(&false));
     }
 
     #[test]
-    fn test_load_from_disk_handles_missing_file() {
-        let (mut store, _dir) = test_store();
-        let state = store.get("no-such-session");
-        assert!(!state.plan_collapsed);
+    fn test_get_falls_back_to_default_when_loading_fails() {
+        let (mut store, persistence) = test_store();
+        persistence
+            .save(
+                "s1",
+                &UiSessionState {
+                    plan_collapsed: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        persistence.fail_reads(Some(std::io::ErrorKind::PermissionDenied));
+
+        assert!(!store.get("s1").plan_collapsed);
     }
 
     #[test]
-    fn test_load_from_disk_handles_corrupt_file() {
-        let (mut store, dir) = test_store();
-        let path = dir.path().join("bad.ui_state.json");
-        std::fs::write(&path, "not valid json!!!").unwrap();
+    fn test_failed_writes_leave_the_store_usable() {
+        let (mut store, persistence) = test_store();
+        persistence.fail_writes(Some(std::io::ErrorKind::StorageFull));
+        store.set_plan_collapsed("s1", true);
+        store.take_dirty().write();
 
-        let state = store.get("bad");
-        assert!(!state.plan_collapsed); // falls back to default
+        assert!(persistence.stored("s1").is_none());
+        assert!(store.get("s1").plan_collapsed, "the cache keeps the change");
     }
 
     #[test]
     fn test_remove_session() {
-        let (mut store, dir) = test_store();
+        let (mut store, persistence) = test_store();
+        persistence.save("s1", &UiSessionState::default()).unwrap();
         store.set_plan_collapsed("s1", true);
-
-        // Simulate a file on disk
-        let path = dir.path().join("s1.ui_state.json");
-        std::fs::write(&path, "{}").unwrap();
-        assert!(path.exists());
 
         store.remove_session("s1");
         assert!(!store.states.contains_key("s1"));
         assert!(!store.dirty.contains("s1"));
-        assert!(!path.exists());
+        assert!(persistence.stored("s1").is_none());
+    }
+
+    #[test]
+    fn test_file_persistence_round_trips_and_deletes() {
+        let dir = TempDir::new().unwrap();
+        let persistence = FileUiStatePersistence::new(dir.path().to_owned());
+        assert!(persistence.load("s1").unwrap().is_none());
+
+        let state = UiSessionState {
+            scroll: Some(ScrollPosition {
+                item_ix: 42,
+                offset_in_item: 3.25,
+                follow_tail: false,
+            }),
+            ..Default::default()
+        };
+        persistence.save("s1", &state).unwrap();
+        assert_eq!(
+            persistence.load("s1").unwrap().and_then(|s| s.scroll),
+            state.scroll
+        );
+        assert!(dir.path().join("s1.ui_state.json").exists());
+
+        persistence.delete("s1").unwrap();
+        assert!(persistence.load("s1").unwrap().is_none());
+        persistence.delete("s1").unwrap();
+    }
+
+    #[test]
+    fn test_file_persistence_reports_a_corrupt_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("bad.ui_state.json"), "not valid json!!!").unwrap();
+        let persistence = FileUiStatePersistence::new(dir.path().to_owned());
+        assert!(persistence.load("bad").is_err());
     }
 }
