@@ -805,6 +805,12 @@ impl MessagesView {
     }
 
     /// Update the pending message for the current session
+    /// The message waiting for the running agent, as shown.
+    #[cfg(test)]
+    pub(crate) fn pending_message(&self) -> Option<String> {
+        self.current_pending_message.lock().unwrap().clone()
+    }
+
     pub fn update_pending_message(&self, message: Option<String>) {
         *self.current_pending_message.lock().unwrap() = message;
     }

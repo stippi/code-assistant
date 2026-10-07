@@ -87,7 +87,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - GPUI frontend: `Gpui::new` takes injected `Stores` (drafts, UI state); tests
   use `ui_gpui::test_support` — `MockStores` (in-memory, can fail on demand) and
   `MainScreenTest`, which drives the main screen through the same event paths
-  as the app (`receive` for core events, `push` for command results)
+  as the app (`receive` for core events, `push` for command results);
+  `MainScreenTest::with_core(TestCore::new(llm))` puts it in front of a real
+  `SessionService` (scripted `MockLLMProvider`), awaited with `wait_until`
 
 ### UI Development
 - GPUI frontend based on gpui-kit (gpui via `gpui_kit::*`, gpui-component via `gpui_kit::component`) with custom components

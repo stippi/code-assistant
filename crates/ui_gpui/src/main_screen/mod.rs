@@ -1304,6 +1304,7 @@ impl MainScreen {
                                 i == 0,
                                 cx,
                             )
+                            .debug_selector(move || format!("permission-option-{i}"))
                             .on_click(respond(
                                 &session_id,
                                 &rid,

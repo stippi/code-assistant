@@ -136,6 +136,28 @@ impl MainScreenTest {
         })
     }
 
+    /// The message shown as waiting for the running agent.
+    pub fn pending_message(&mut self) -> Option<String> {
+        let view = self.gpui.messages_view.lock().unwrap().clone()?;
+        view.read_with(&self.cx, |view, _| view.pending_message())
+    }
+
+    /// Click the element rendered with `debug_selector(selector)`.
+    pub fn click(&mut self, selector: &'static str) {
+        let bounds = self
+            .cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("nothing rendered as {selector}"));
+        self.cx
+            .simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+        self.settle();
+    }
+
+    /// Whether an element rendered with `debug_selector(selector)` is shown.
+    pub fn shows(&mut self, selector: &'static str) -> bool {
+        self.cx.debug_bounds(selector).is_some()
+    }
+
     /// Whether the viewed session's agent is working.
     pub fn agent_is_running(&mut self) -> bool {
         self.gpui
