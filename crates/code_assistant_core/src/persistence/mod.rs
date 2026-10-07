@@ -14,7 +14,9 @@ use crate::utils::file_utils::{FileLockGuard, atomic_write_json, lock_exclusive}
 mod blobs;
 mod journal;
 pub mod layout;
+mod migration;
 pub use layout::{SessionLayout, SessionPath};
+pub use migration::MigrationReport;
 
 // ============================================================================
 // Session Branching Types
@@ -899,15 +901,22 @@ impl FileSessionPersistence {
     /// replaced: a supplied snapshot may be stale, so changes go through
     /// `update_entry`.
     pub fn create_chat_session(&mut self, session: &ChatSession) -> Result<()> {
+        let metadata = self.write_new_session(session.clone())?;
+        self.store_metadata(metadata)
+    }
+
+    /// Write the journal and blobs of a session that has none yet, and
+    /// return its metadata for the index.
+    fn write_new_session(&self, mut session: ChatSession) -> Result<ChatMetadata> {
         let _lock = lock_exclusive(&self.layout.entry_lock(&session.id)?)?;
         let path = self.layout.journal(&session.id)?;
         anyhow::ensure!(!path.exists(), "Session already exists: {}", session.id);
 
-        let mut session = session.clone();
         session.ensure_config()?;
+        let metadata = session.metadata();
         self.externalize_blobs(&session.id, &mut session.tool_executions)?;
         journal::write(&path, &journal::snapshot(&session))?;
-        self.store_metadata(session.metadata())
+        Ok(metadata)
     }
 
     pub fn load_chat_session(&self, session_id: &str) -> Result<Option<ChatSession>> {

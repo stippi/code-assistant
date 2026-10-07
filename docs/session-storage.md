@@ -1,15 +1,17 @@
 # Session storage: folders, blobs and an append-only journal
 
-Status: design, not implemented.
+Sessions used to be one JSON file each (`sessions/chat_<id>.json`), and every
+agent checkpoint rewrote that file completely. With browser screenshots and
+large tool outputs this got expensive fast. This document describes the
+storage that replaced it, where writes are proportional to what changed.
 
-Every session is one JSON file today (`sessions/chat_<id>.json`), and every
-agent checkpoint rewrites it completely. With browser screenshots and large
-tool outputs this gets expensive fast. This document describes a storage
-layout that keeps checkpoints proportional to what changed.
+Code: `crates/code_assistant_core/src/persistence/` — `layout.rs` (paths and
+IDs), `blobs.rs`, `journal.rs`, `migration.rs`, and `FileSessionPersistence`
+in `mod.rs`.
 
-## The problem
+## Why
 
-### Where the bytes are
+### Where the bytes were
 
 Measured on `chat_6a677747_17a_0.json` (238 MB):
 
@@ -27,61 +29,52 @@ and outputs that keep file contents for the UI, for example
 `DeleteFilesOutput::deleted_contents`, which holds every deleted file for the
 diff view and is never shown to the LLM.
 
-The sessions directory holds 1148 session files, 2.3 GB in total; five of
-them are between 150 and 400 MB.
+The sessions directory held 1148 session files, 2.3 GB in total; five of
+them between 150 and 400 MB.
 
-### What a checkpoint costs
+### What a checkpoint cost
 
-`AgentRuntime::checkpoint` already produces a delta: `SessionCheckpoint`
+`AgentRuntime::checkpoint` already produced a delta: `SessionCheckpoint`
 carries only `changed_nodes` and `changed_executions` plus the small
 always-current fields (`active_path`, `plan`, counters). The persistence
-layer turns it back into a full rewrite. `FileSessionPersistence::update_entry`
+layer turned it back into a full rewrite: read and parse the whole file,
+merge, clone, write it completely (pretty-printed, temp file + rename), then
+read and rewrite `metadata.json`.
 
-1. reads and parses the whole session file,
-2. merges the delta (`ChatSession::apply_checkpoint`),
-3. clones the session and writes it completely with
-   `atomic_write_json` (pretty-printed, temp file + rename),
-4. reads and rewrites `metadata.json`.
-
-The agent loop checkpoints several times per step (`append_message_with_node_id`
-alone triggers one), so a step writes the session two or three times. The
-total cost grows quadratically with session length. One GPUI run of about an
-hour with a browser session that grew to 18 MB made macOS file a
-disk-writes diagnostic report: 8.6 GB written, mostly from
-`SessionManager::commit_checkpoint`. All of this happens while the global
-`SessionManager` mutex is held.
+The agent loop checkpoints several times per step, so the total cost grew
+quadratically with session length. One GPUI run of about an hour with a
+browser session that grew to 18 MB made macOS file a disk-writes diagnostic
+report: 8.6 GB written, mostly from `SessionManager::commit_checkpoint`, all
+while the global `SessionManager` mutex was held.
 
 ## Layout
 
-One folder per session, named after the session ID (see below):
+One folder per session, named after the session ID:
 
 ```
 sessions/
-  metadata.json                      global index, as today
-  lifecycle.json                     visits and settlement, as today
+  metadata.json                      global index
+  lifecycle.json                     visits and settlement
+  legacy-ids.json                    old → new IDs, from the migration
+  legacy/                            the old session files
   -Users-me-workspace-code-assistant/
     2026-10-07-001/
-      journal.jsonl                  append-only session records
-      blobs/<sha256>.json            externalized tool results, immutable
-      ui_state.json
-      draft.json                     moves here from <base>/drafts/
-      diag.log
-      agent.lock
-      entry.lock
+      journal.jsonl                  the session record
+      blobs/<sha256>.json            large tool results, immutable
+      ui_state.json                  GPUI view state
+      draft.json                     unsent composer content
+      agent.lock                     held while an agent runs
+      entry.lock                     serializes record updates
     2026-10-07-002/
       ...
 ```
 
-Consequences:
-
-- `delete_chat_session` becomes `remove_dir_all` plus the index and
-  lifecycle entries.
-- `SessionWatcher` currently watches `sessions/` non-recursively and derives
-  the session from the file name. It has to watch recursively and react to
-  `journal.jsonl` and `agent.lock` only, mapping the path back to the ID
-  (`<project>/<date>-<n>`).
-- `FileDraftStore` and the `ui_state` store resolve their paths through the
-  session folder instead of a flat directory.
+`SessionLayout` owns every path. The watcher watches `sessions/`
+recursively and maps changed paths back to sessions with
+`SessionLayout::classify`; only `journal.jsonl`, `agent.lock`,
+`metadata.json` and `lifecycle.json` matter to it. Deleting a session removes
+its folder. Drafts and UI state are not written for a session whose folder
+is gone, so a late debounced save doesn't bring a deleted session back.
 
 ## Session IDs
 
@@ -94,154 +87,126 @@ IDs are readable and say where a session lives, without reading
 ```
 
 - **Project slug**: the session's project root (`SessionConfig::init_path`)
-  with path separators replaced by `-`, the scheme Claude Code uses for
-  `~/.claude/projects/`. It is the project root, not the worktree path, so a
-  session started in a worktree sits next to the other sessions of its
-  project, matching the sidebar's project folders. Sessions without a project
-  use `_no-project`. The slug is lossy (`a-b/c` and `a/b-c` collide); that is
-  fine because the folder only groups sessions and the full path stays in the
-  session record.
+  with every character other than ASCII letters, digits, `_` and `-`
+  replaced by `-`, the scheme Claude Code uses for `~/.claude/projects/`. It
+  is the project root, not the worktree path, so a session started in a
+  worktree sits next to the other sessions of its project. Sessions without
+  a project use `_no-project`. The slug is lossy (`a-b/c` and `a/b-c`
+  collide); the folder only groups sessions, the full path stays in the
+  record.
 - **Date**: local date of creation.
-- **Counter**: per project and day, zero-padded to three digits, wider when
-  needed. Allocation is `create_dir` on the next candidate; if the folder
-  already exists (another process got there first), take the next number.
-  `create_dir` is atomic, so no lock is needed across processes.
-- The ID is the folder path relative to `sessions/`. A session keeps its ID
-  for life, even if its project is later moved or renamed on disk.
+- **Counter**: per project and day, after the highest existing number,
+  zero-padded to three digits. Allocation is `create_dir`: if the folder
+  already exists (another process got there first), the next number is
+  taken, so no lock is needed across processes. ACP hands out the ID in
+  `session/new` but creates the session on the first prompt; allocating
+  reserves the folder in between.
+- A session keeps its ID for life, even if its project is later moved.
 
-The ID is used as a path, so it has to be validated where it enters from
-outside (ACP `session/load`, CLI arguments): only the two components, no
-`..`, no absolute paths. Today `chat_file_path` joins the ID unchecked.
-
-Open point: the `/` in the ID. ACP session IDs, lifecycle keys and GPUI
-element IDs are plain strings and accept it. If some place turns out to need
-a single path component (a file name, a URL segment), use the folder path
-there and keep `/` in the ID.
+IDs become paths, so `validate_session_id` rejects anything but one or two
+plain `/`-separated components (no `.`, `..`, absolute paths or
+backslashes). IDs supplied from elsewhere (tests, embedders, ACP) may be any
+such path.
 
 ## Externalized tool results
 
-At the persistence boundary, a `SerializedToolExecution` whose `result_json`
-serializes to more than a threshold (proposed: 4 KB) is written to
-`blobs/<sha256>.json`, and `result_json` in the record is replaced by a
-reference:
+A `SerializedToolExecution` whose `result_json` serializes to more than 4 KB
+is written to `blobs/<sha256>.json`, and the record keeps a reference:
 
 ```json
 {"$blob": "9f86d081…", "size": 18392011}
 ```
 
-On load the reference is resolved before the execution is deserialized.
+Loading resolves the references before the executions are deserialized;
 `agent_core` and the tools don't see any of this.
 
-- **Content-addressed**: a blob is written once and never changed. An
-  execution recorded twice (started, then completed) or two identical
-  screenshots share one file. The blob is written (and fsynced) before the
-  record that refers to it.
+- **Content-addressed**: a blob is written once and never changed, so saving
+  doesn't rewrite stored results, and identical results (the same
+  screenshot, a re-recorded execution) share a file.
 - **Threshold**: 4 KB moves 10 of 61 executions in the measured session out
-  and with them 99.98 % of the bytes. Small results stay inline, so the
-  journal remains readable.
-- **Eager loading stays for now.** `render_tool_results_in_messages` and
+  and with them 99.98 % of the bytes. Small results stay inline.
+- **Durability**: a blob is handed to the drive with a plain `fsync`, without
+  the drive-cache flush (`F_FULLFSYNC`) that takes milliseconds per call on
+  macOS. The journal record referring to it is written afterwards with the
+  full flush, which makes both durable in order.
+- **Eager loading**: `render_tool_results_in_messages` and
   `convert_tool_executions_to_ui_data` walk all executions, and the
-  `ResourcesTracker` deduplicates file contents across them, so the runtime
-  needs every output. Lazy loading is a separate, later step.
-- **Format**: blobs hold the `result_json` value as JSON, base64 images
-  included, so deserialization doesn't change. Storing images as real image
-  files would need changes to the output types and is out of scope.
-- Unreferenced blobs (from a crash between blob and record) are removed by
-  compaction.
+  `ResourcesTracker` deduplicates file contents across them, so opening a
+  session still loads every result.
+- Blobs nothing refers to any more are deleted during compaction.
 
 ## Append-only journal
 
-`journal.jsonl` holds one record per line. Loading folds the records in
-order; for keyed records the last one wins.
+`journal.jsonl` holds one record per line. Loading folds them in order; the
+last `header` wins, `node` and `exec` records replace earlier ones with the
+same id:
 
 ```
-{"t":"meta",  "id":…, "created_at":…, "config":{…}, "model_config":{…}, "plan_collapsed":false, …}
-{"t":"node",  "node":{…MessageNode}}                         upsert by node id
-{"t":"exec",  "exec":{…SerializedToolExecution}}             upsert by tool_request.id
-{"t":"head",  "name":…, "active_path":[…], "plan":{…}, "active_skills":[…],
-              "next_node_id":…, "next_request_id":…, "updated_at":…}
+{"t":"header", "session":{…the session without nodes and executions…}}
+{"t":"node",   "node":{…MessageNode…}}
+{"t":"exec",   "exec":{…SerializedToolExecution, large result as $blob…}}
 ```
-
-Keeping nodes and executions apart is not a problem for this: both are keyed,
-and upsert-by-ID is what `apply_checkpoint` does today.
 
 ### Writing
 
-- **Agent checkpoint**: one `node` record per changed node, one `exec`
-  record per changed execution, one `head` record, written as a single
-  `write` under `entry.lock`. `flock` keeps GPUI and ACP processes apart as
-  it does now.
-- **Other updates**: `update_entry` takes a closure over the whole
-  `ChatSession` and has 17 callers in `session/manager.rs` and
-  `session/service/lifecycle.rs` (rename, config changes, branch switch,
-  lifecycle, …). These mostly touch header fields. They keep their closure,
-  run it on the folded state, and the persistence layer compares `meta` and
-  `head` before and after and appends whichever changed. These callers don't
-  change nodes or executions; a debug assertion checks that, so the 17
-  callers don't need typed records.
-- `metadata.json` is updated only when the metadata actually changed, not on
-  every checkpoint.
+- **Agent checkpoint** (`FileSessionPersistence::commit_checkpoint`): folds
+  the journal without resolving blobs, applies the checkpoint, and appends
+  the changed nodes and executions plus a header if the header changed — one
+  synced write under `entry.lock`. Stored tool results are neither read nor
+  written. The run gets the new metadata back for its notification.
+- **Other updates** (`update_entry`): the closure still sees the whole
+  session, resolved. Afterwards `journal::diff` compares before and after and
+  appends only what differs.
+- `metadata.json` is written only when the session's entry changed.
 
 ### Reading and recovery
 
-- A truncated last line (crash mid-write) is dropped on load.
-- A record of unknown type is an error, not something to skip: it means a
-  newer version wrote the file.
+Every append ends with a newline. A file that doesn't end in one was cut off
+mid-write, and its partial last line is dropped. Any other line that doesn't
+parse, including a record of unknown type, is an error: a newer version may
+have written it.
 
 ### Compaction
 
-When the journal is clearly larger than the folded state (say twice), it is
-rewritten as one `meta`, one `head`, and one record per live node and
-execution, into a temp file that replaces the journal by rename. Natural
-moments: loading a session, settling it. Compaction also deletes blobs no
-record refers to.
+When the journal holds more than twice the records a snapshot would (plus a
+small allowance), it is rewritten as a snapshot (temp file + rename) and
+unreferenced blobs are deleted. The check runs after each append, from the
+record counts both write paths already have.
 
 ## Migration
 
-Old sessions get new IDs, so migration is a one-time, eager step rather than
-lazy on open; otherwise every place that stores an ID would have to handle
-both schemes for an unbounded time.
+`migrate_legacy_sessions` runs at startup (`app::migrate_session_store`,
+before the GPUI, terminal and ACP frontends start). It is cheap when there
+are no flat session files, and holds `sessions/migration.lock` otherwise so a
+second process waits.
 
-Per session, restartable:
+Old sessions get new IDs, so everything that stores IDs is rewritten:
+`metadata.json`, `lifecycle.json`, and the `session:<id>` owner keys in
+`goals.json` and `waits.json`. UI state, drafts (from the old drafts
+directory, with their `session_id` rewritten) and `diag.log` move into the
+session folder. The phases make the run restartable at any point:
 
-1. Read `chat_<id>.json`, derive the new ID from `config.init_path` and
-   `created_at`, allocate the folder under a temporary name.
-2. Write the blobs and a compacted journal, move `ui_state`, draft and
-   `diag.log` along, rename the folder to its final name.
-3. Rewrite the ID in `metadata.json` and `lifecycle.json`, and add
-   `old → new` to `sessions/legacy-ids.json`.
-4. Move the old file to `sessions/legacy/` instead of deleting it.
+1. Read each old session's project and creation date (a partial parse).
+2. Allocate the new IDs in creation order (by the timestamp encoded in the
+   old ID) and write `legacy-ids.json`.
+3. Write the new sessions, four at a time, and move their side files.
+4. Rewrite the IDs in the index, the lifecycles and the goal stores.
+5. Move the old session files to `sessions/legacy/`.
 
-`legacy-ids.json` exists for references held outside: ACP clients that
-remember session IDs, `--continue <id>`. Lookups by ID consult it when the ID
-doesn't resolve to a folder.
+A rerun takes the recorded IDs, skips sessions that already have a journal,
+and repeats the idempotent rest. Sessions that fail to parse or have an agent
+of an older version running stay in place and are reported.
 
-Parsing 2.3 GB once takes a while. The migration runs at startup with a log
-line per session, holding a lock so a second process waits instead of
-migrating in parallel.
+On the 1148 sessions above the migration took 16 s, every session loaded
+afterwards, and loading all of them took 13 s.
 
-## Order of work
+`legacy-ids.json` is a record for looking up old IDs, not an alias table:
+ACP clients see the new IDs through `session/list`, and a client that sends
+an old ID to `session/load` can't be redirected, because it would keep using
+that ID for every later request.
 
-1. Folder layout, new session IDs, migration, externalized tool results,
-   still writing a full snapshot per checkpoint. The session record drops
-   from many MB to a few hundred KB, which takes away most of the cost.
-2. Append-only journal with compaction. Removes read-parse-clone-write from
-   checkpoints and with it most of the time the `SessionManager` mutex is
-   held during a run.
-3. Optional: lazy blob loading; UI-only data such as `deleted_contents` kept
-   as a blob reference so opening a session doesn't load it.
+## Possible next steps
 
-## Where the pieces live today
-
-- `ChatSession`, `FileSessionPersistence`, `update_entry`,
-  `generate_session_id`: `crates/code_assistant_core/src/persistence.rs`
-- `atomic_write_json`, `lock_exclusive`:
-  `crates/code_assistant_core/src/utils/file_utils.rs`
-- Checkpoint deltas: `crates/agent_core/src/persistence.rs`,
-  `ToolJournal` in `crates/agent_core/src/execution.rs`,
-  `SessionManager::commit_checkpoint` in
-  `crates/code_assistant_core/src/session/manager.rs`
-- `SerializedToolExecution`: `crates/agent_core/src/types.rs`
-- `SessionWatcher`: `crates/code_assistant_core/src/session/watcher.rs`
-- Session ID generation is called from `SessionManager` and
-  `crates/ui_acp/src/agent.rs`
+- Lazy blob loading, and UI-only data such as `deleted_contents` kept out of
+  the result the runtime loads.
+- Images stored as image files instead of base64 inside JSON blobs.

@@ -68,6 +68,14 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Gate lives in the agent loop (`tools_core::ToolPermissions`); prompts go
   through the `PermissionMediator` seam; see `docs/permission-tiers.md`
 
+### Session Storage
+- One folder per session below `sessions/`, the ID is its path:
+  `<project-slug>/<YYYY-MM-DD>-<NNN>` (`persistence::layout`)
+- The record is an append-only `journal.jsonl`; tool results over 4 KB live
+  in content-addressed `blobs/`; checkpoints append deltas only
+- Flat legacy session files are migrated at startup; see
+  `docs/session-storage.md`
+
 ### Session Lifecycle
 - Visits and settlement per session live in `sessions/lifecycle.json`,
   never in the session file (`code_assistant_core::session::lifecycle`)
