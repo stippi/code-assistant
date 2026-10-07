@@ -30,7 +30,7 @@ use sandbox::SandboxPolicy;
 use shared::assets::Assets;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, trace, warn};
+use tracing::warn;
 
 actions!(
     code_assistant,
@@ -640,6 +640,25 @@ impl Gpui {
         }
     }
 
+    /// Connect this instance to the app: the executor commands run on, the
+    /// globals the views read, the core's event stream, and the loop applying
+    /// [`UiEvent`]s. `run_app` does this at startup, tests on their own app.
+    fn install(&self, cx: &mut App) {
+        // Capture the background executor so session commands can be
+        // dispatched from any thread (see app/commands.rs).
+        *self.background_executor.lock().unwrap() = Some(cx.background_executor().clone());
+
+        // Subscribe to the core→UI broadcast stream (see app/event_bridge.rs)
+        self.spawn_event_bridge();
+
+        cx.set_global(self.clone());
+        // Register UI event sender as global for chat components
+        cx.set_global(UiEventSender(self.event_sender.lock().unwrap().clone()));
+
+        let task = self.spawn_event_loop(cx);
+        *self.event_task.lock().unwrap() = Some(task);
+    }
+
     // Run the application
     pub fn run_app(&self) {
         let message_queue = self.message_queue.clone();
@@ -649,27 +668,13 @@ impl Gpui {
         let app = gpui_kit::application().with_assets(Assets {});
 
         app.run(move |cx| {
-            // Capture the background executor so session commands can be
-            // dispatched from any thread (see app/commands.rs).
-            *gpui_clone.background_executor.lock().unwrap() =
-                Some(cx.background_executor().clone());
-
-            // Subscribe to the core→UI broadcast stream (see app/event_bridge.rs)
-            gpui_clone.spawn_event_bridge();
-
-            // Register our Gpui instance as a global
-            cx.set_global(gpui_clone.clone());
+            gpui_clone.install(cx);
 
             // Opt-in frame profiling (see shared::frame_profile).
             let frame_profile_mode = shared::frame_profile::init_from_env();
             if frame_profile_mode != shared::frame_profile::Mode::Off {
                 shared::frame_profile::spawn_reporter(cx);
             }
-
-            // Register UI event sender as global for chat components
-            cx.set_global(UiEventSender(
-                gpui_clone.event_sender.lock().unwrap().clone(),
-            ));
 
             // Setup window close listener
             cx.bind_keys([gpui_kit::KeyBinding::new("cmd-w", CloseWindow, None)]);
@@ -727,60 +732,6 @@ impl Gpui {
             .detach();
 
             init(cx);
-
-            // Spawn task to receive UiEvents
-            let rx = gpui_clone.event_receiver.lock().unwrap().clone();
-            let async_gpui_clone = gpui_clone.clone();
-            debug!("Starting UI event processing task");
-            let task = cx.spawn(async move |cx: &mut AsyncApp| {
-                debug!("UI event processing task is running");
-
-                // Process bursts of events in small batches, then cooperatively
-                // yield back to the GPUI executor so paint/layout work is not
-                // starved by a long stream of tiny updates.
-                const UI_EVENT_BATCH_SIZE: usize = 32;
-
-                loop {
-                    trace!("Waiting for UI event...");
-                    let result = rx.recv().await;
-                    match result {
-                        Ok(received_event) => {
-                            trace!("UI event processing: Received event: {:?}", received_event);
-                            async_gpui_clone.process_ui_event_async(received_event, cx);
-
-                            let mut processed_in_batch = 1;
-                            while processed_in_batch < UI_EVENT_BATCH_SIZE {
-                                match rx.try_recv() {
-                                    Ok(received_event) => {
-                                        trace!(
-                                            "UI event processing: Received batched event: {:?}",
-                                            received_event
-                                        );
-                                        async_gpui_clone.process_ui_event_async(received_event, cx);
-                                        processed_in_batch += 1;
-                                    }
-                                    Err(async_channel::TryRecvError::Empty) => break,
-                                    Err(async_channel::TryRecvError::Closed) => return,
-                                }
-                            }
-
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(1))
-                                .await;
-                        }
-                        Err(err) => {
-                            warn!("Receive error: {}", err);
-                            break;
-                        }
-                    }
-                }
-            });
-
-            // Store the task in our Gpui instance
-            {
-                let mut task_guard = gpui_clone.event_task.lock().unwrap();
-                *task_guard = Some(task);
-            }
 
             // Create window – restore saved bounds or fall back to centered default.
             let bounds = ui_settings
