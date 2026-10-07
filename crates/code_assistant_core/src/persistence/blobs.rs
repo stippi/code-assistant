@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use super::SerializedToolExecution;
 
-use crate::utils::file_utils::atomic_write;
+use crate::utils::file_utils::atomic_write_unflushed;
 
 /// Results larger than this move out of the session record. Small results
 /// stay inline so the record remains readable.
@@ -57,7 +57,9 @@ impl BlobStore {
                 });
         let path = self.path(&hash);
         if !path.exists() {
-            atomic_write(&path, &bytes)?;
+            // The journal record referring to the blob is written after it,
+            // fully synced, which makes the blob durable too.
+            atomic_write_unflushed(&path, &bytes)?;
         }
         Ok(serde_json::json!({ BLOB_KEY: hash, SIZE_KEY: bytes.len() }))
     }

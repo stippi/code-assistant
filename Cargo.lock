@@ -1706,6 +1706,7 @@ dependencies = [
  "ignore",
  "image",
  "keepawake",
+ "libc",
  "llm",
  "mcp_client",
  "md5",

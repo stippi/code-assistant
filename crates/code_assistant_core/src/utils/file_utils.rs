@@ -28,6 +28,38 @@ use tracing::debug;
 /// If the process crashes between creating the temp file and renaming, a stale
 /// `.tmp*` file is left behind but `path` is never corrupted.
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    write_via_temp_file(path, data, |file| file.sync_all())
+}
+
+/// Like [`atomic_write`], but the data is only handed to the drive, not
+/// flushed from its cache (`F_FULLFSYNC` on macOS, which takes milliseconds
+/// per call). For files that a later [`atomic_write`] or synced append
+/// refers to: that flush makes both durable, in order.
+pub fn atomic_write_unflushed(path: &Path, data: &[u8]) -> Result<()> {
+    write_via_temp_file(path, data, hand_to_drive)
+}
+
+#[cfg(target_vendor = "apple")]
+fn hand_to_drive(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: the descriptor belongs to `file`, which outlives the call.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn hand_to_drive(file: &File) -> std::io::Result<()> {
+    file.sync_data()
+}
+
+fn write_via_temp_file(
+    path: &Path,
+    data: &[u8],
+    sync: impl FnOnce(&File) -> std::io::Result<()>,
+) -> Result<()> {
     let dir = path
         .parent()
         .context("atomic_write: path has no parent directory")?;
@@ -46,9 +78,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         .context("atomic_write: failed to write data to temp file")?;
 
     // Flush to OS before rename so the data is on disk.
-    tmp.as_file()
-        .sync_all()
-        .context("atomic_write: failed to sync temp file")?;
+    sync(tmp.as_file()).context("atomic_write: failed to sync temp file")?;
 
     tmp.persist(path).with_context(|| {
         format!(

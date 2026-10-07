@@ -82,6 +82,10 @@ transmutation = { version = "0.3", features = ["office"], optional = true }
 # Prevent system sleep while agents are running
 keepawake = "0.6"
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Plain fsync for blobs, without the drive cache flush of F_FULLFSYNC
+libc = "0.2"
+
 [build-dependencies]
 # Format the build timestamp as RFC3339 UTC in build.rs.
 chrono = "0.4"
