@@ -957,6 +957,9 @@ impl UserInterface for ACPUserUI {
             | UiEvent::ToolPermissionRequestResolved { .. }
             | UiEvent::RequestNewContextTarget { .. }
             | UiEvent::NewContextTargetResolved { .. }
+            // ACP has no question RPC; `ask_question` fails with an error.
+            | UiEvent::RequestUserQuestions { .. }
+            | UiEvent::UserQuestionsResolved { .. }
             | UiEvent::SessionHandedOff { .. }
             | UiEvent::HandoffPrepared { .. }
             | UiEvent::HiddenToolCompleted

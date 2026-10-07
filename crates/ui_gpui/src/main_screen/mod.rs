@@ -1,5 +1,6 @@
 mod about_dialog;
 pub mod project_dialog;
+mod question_prompt;
 pub mod right_panel;
 mod status_popover;
 
@@ -204,6 +205,9 @@ pub struct MainScreen {
     /// Session id last pushed into the right panel (change detection).
     right_panel_session_id: Option<String>,
 
+    /// Form for the viewed session's oldest open `ask_question` request.
+    question_prompt: Option<Entity<question_prompt::QuestionPrompt>>,
+
     // Sidebar animation
     left_animator: SidebarAnimator,
     right_animator: SidebarAnimator,
@@ -301,6 +305,7 @@ impl MainScreen {
             right_sidebar_collapsed: true, // Review sidebar hidden by default
             right_panel,
             right_panel_session_id: None,
+            question_prompt: None,
 
             left_animator: SidebarAnimator::new(),
             right_animator: SidebarAnimator::new(),
@@ -1228,6 +1233,31 @@ impl MainScreen {
         )
     }
 
+    /// Keep the question form in step with the viewed session's oldest open
+    /// `ask_question` request: create it (needs `window` for the comment
+    /// inputs) when a new request shows up, drop it once settled.
+    fn sync_question_prompt(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        let pending = self.current_session_id.clone().and_then(|session_id| {
+            cx.try_global::<Gpui>()
+                .and_then(|gpui| gpui.get_pending_user_question(&session_id))
+                .map(|request| (session_id, request))
+        });
+        let Some((session_id, request)) = pending else {
+            self.question_prompt = None;
+            return;
+        };
+        let current = self
+            .question_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.read(cx).request_id() == request.request_id);
+        if !current {
+            self.question_prompt =
+                Some(cx.new(|cx| {
+                    question_prompt::QuestionPrompt::new(session_id, request, window, cx)
+                }));
+        }
+    }
+
     /// Banner above the input area listing tool permission requests waiting
     /// for a decision, each with allow-once / always / deny buttons.
     fn render_permission_prompts(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
@@ -1739,6 +1769,8 @@ impl Render for MainScreen {
         let sidebar_scale = self.sidebar_animation_scale();
         let right_sidebar_scale = self.right_sidebar_animation_scale();
         let permission_prompts = self.render_permission_prompts(cx);
+        self.sync_question_prompt(window, cx);
+        let question_prompt = self.question_prompt.clone();
         let new_context_prompt = self.render_new_context_target_prompt(cx);
 
         // Main container with titlebar and content
@@ -2026,6 +2058,7 @@ impl Render for MainScreen {
                             .when(plan_visible, |s| s.child(self.plan_banner.clone()))
                             // Pending tool permission prompts (if any)
                             .children(permission_prompts)
+                            .children(question_prompt)
                             .children(new_context_prompt)
                             // Input area sits at the bottom
                             .child(

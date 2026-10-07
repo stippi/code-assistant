@@ -877,7 +877,9 @@ impl Gpui {
             // State tracked by the event bridge; the main screen renders the
             // prompt and the sidebar flags the asking session.
             UiEvent::RequestToolPermission { .. }
-            | UiEvent::ToolPermissionRequestResolved { .. } => {
+            | UiEvent::ToolPermissionRequestResolved { .. }
+            | UiEvent::RequestUserQuestions { .. }
+            | UiEvent::UserQuestionsResolved { .. } => {
                 let awaiting = self.sessions_awaiting_permission();
                 self.update_project_sidebar(cx, |sidebar, cx| {
                     sidebar.set_awaiting_permission(awaiting, cx);

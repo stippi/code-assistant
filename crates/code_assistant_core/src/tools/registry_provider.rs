@@ -54,13 +54,28 @@ pub struct ConfigToolRegistry {
     /// Live MCP connections keyed by [`connection_key`], reused across
     /// builds so servers shared between registries are not relaunched.
     connections: Mutex<HashMap<String, Weak<McpServerConnection>>>,
+    /// Whether built registries include the
+    /// [interactive tools](crate::tools::register_interactive_tools).
+    interactive: bool,
 }
 
 impl ConfigToolRegistry {
     pub fn new() -> Arc<Self> {
+        Self::build(false)
+    }
+
+    /// Like [`new`](Self::new), but the registries also offer the
+    /// [interactive tools](crate::tools::register_interactive_tools) — for
+    /// frontends that render them (GPUI).
+    pub fn new_interactive() -> Arc<Self> {
+        Self::build(true)
+    }
+
+    fn build(interactive: bool) -> Arc<Self> {
         Arc::new(Self {
             cached: Mutex::new(HashMap::new()),
             connections: Mutex::new(HashMap::new()),
+            interactive,
         })
     }
 
@@ -101,8 +116,12 @@ impl ConfigToolRegistry {
                 .map(|dir| dir.display().to_string())
                 .unwrap_or_else(|| "the global configuration".to_string())
         );
-        let registry =
-            crate::tools::default_registry_with_mcp(local_mcp_dir.as_deref(), self).await;
+        let registry = crate::tools::default_registry_with_mcp(
+            local_mcp_dir.as_deref(),
+            self,
+            self.interactive,
+        )
+        .await;
         cached.insert(
             local_mcp_dir,
             Cached {
