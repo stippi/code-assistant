@@ -9,6 +9,7 @@
 //!   -Users-me-workspace-code-assistant/
 //!     2026-10-07-001/          ← id "-Users-me-workspace-code-assistant/2026-10-07-001"
 //!       session.json
+//!       blobs/<sha256>.json     large tool results
 //!       entry.lock, agent.lock
 //!       ui_state.json, draft.json
 //! ```
@@ -31,6 +32,7 @@ const ENTRY_LOCK_FILE: &str = "entry.lock";
 const AGENT_LOCK_FILE: &str = "agent.lock";
 const UI_STATE_FILE: &str = "ui_state.json";
 const DRAFT_FILE: &str = "draft.json";
+const BLOBS_DIR: &str = "blobs";
 
 /// What a changed path below the sessions directory means.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +85,11 @@ impl SessionLayout {
 
     pub fn draft(&self, session_id: &str) -> Result<PathBuf> {
         Ok(self.session_dir(session_id)?.join(DRAFT_FILE))
+    }
+
+    /// Externalized tool results (see `persistence::blobs`).
+    pub fn blobs_dir(&self, session_id: &str) -> Result<PathBuf> {
+        Ok(self.session_dir(session_id)?.join(BLOBS_DIR))
     }
 
     /// Reserve a new session ID for a project and create its folder.

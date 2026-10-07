@@ -11,6 +11,7 @@ use crate::session::lifecycle::SessionLifecycle;
 use crate::types::{PlanState, ToolSyntax};
 use crate::utils::file_utils::{atomic_write_json, lock_exclusive};
 
+mod blobs;
 pub mod layout;
 pub use layout::{SessionLayout, SessionPath};
 
@@ -841,6 +842,12 @@ impl FileSessionPersistence {
         let mut session = session.clone();
         session.ensure_config()?;
 
+        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(&session.id)?);
+        for execution in &mut session.tool_executions {
+            execution.result_json =
+                blobs.externalize(std::mem::take(&mut execution.result_json))?;
+        }
+
         let session_path = self.layout.session_file(&session.id)?;
         debug!("Saving chat session to {}", session_path.display());
         atomic_write_json(&session_path, &session)?;
@@ -881,6 +888,10 @@ impl FileSessionPersistence {
         debug!("Loading chat session from {}", session_path.display());
         let json = std::fs::read_to_string(session_path)?;
         let mut session: ChatSession = serde_json::from_str(&json)?;
+        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(session_id)?);
+        for execution in &mut session.tool_executions {
+            execution.result_json = blobs.resolve(std::mem::take(&mut execution.result_json))?;
+        }
         session.ensure_config()?;
         // Re-check image dimensions on load: sessions persisted before image
         // capping (or by an older version) may carry oversized images that a
@@ -1275,6 +1286,54 @@ mod tests {
     use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus};
     use base64::Engine as _;
     use tempfile::tempdir;
+
+    fn execution(id: &str, result_json: serde_json::Value) -> SerializedToolExecution {
+        SerializedToolExecution {
+            tool_request: agent_core::ToolRequest {
+                id: id.into(),
+                name: "read_files".into(),
+                input: serde_json::json!({}),
+                start_offset: None,
+                end_offset: None,
+            },
+            result_json,
+            tool_name: "read_files".into(),
+        }
+    }
+
+    #[test]
+    fn large_tool_results_live_in_blobs_outside_the_record() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let mut session =
+            ChatSession::new_empty("p/s".into(), "s".into(), SessionConfig::default(), None);
+        let large = serde_json::json!({ "content": "x".repeat(100_000) });
+        let small = serde_json::json!({ "content": "short" });
+        session.tool_executions =
+            vec![execution("a", large.clone()), execution("b", small.clone())];
+        persistence.create_chat_session(&session).unwrap();
+
+        let record =
+            std::fs::read_to_string(persistence.layout().session_file("p/s").unwrap()).unwrap();
+        assert!(record.len() < 10_000, "record is {} bytes", record.len());
+        assert!(record.contains("short"));
+        let blobs = std::fs::read_dir(persistence.layout().blobs_dir("p/s").unwrap()).unwrap();
+        assert_eq!(blobs.count(), 1);
+
+        let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
+        assert_eq!(loaded.tool_executions[0].result_json, large);
+        assert_eq!(loaded.tool_executions[1].result_json, small);
+
+        // Updating resolves and stores again without losing the result.
+        persistence
+            .update_entry("p/s", |session| {
+                session.name = "renamed".into();
+                Ok(())
+            })
+            .unwrap();
+        let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
+        assert_eq!(loaded.tool_executions[0].result_json, large);
+    }
 
     #[test]
     fn checkpoint_update_entry_serializes_independent_persistence_instances() {

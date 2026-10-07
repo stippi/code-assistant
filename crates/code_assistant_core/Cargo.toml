@@ -59,6 +59,8 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 md5 = "0.7.0"
+# Content addresses of externalized tool results
+sha2 = "0.11.0"
 async-channel = "2.5.0"
 
 # MCP OAuth interactive login: open the browser + decode the loopback redirect
