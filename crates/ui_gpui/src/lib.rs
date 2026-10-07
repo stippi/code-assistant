@@ -8,11 +8,14 @@ pub mod messages;
 mod root;
 pub mod settings_screen;
 pub mod sidebar;
+pub mod stores;
 pub mod terminal;
+#[cfg(test)]
+mod test_support;
 pub mod tool_cards;
 
 use blocks::MessageContainer;
-use code_assistant_core::persistence::{ChatMetadata, DraftStorage};
+use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::service::{SessionService, SkillCatalogEntry};
 use code_assistant_core::types::PlanState;
 use code_assistant_core::ui::UiEvent;
@@ -234,8 +237,8 @@ pub struct Gpui {
     project_sidebar: Arc<Mutex<Option<Entity<sidebar::SessionSidebar>>>>,
     messages_view: Arc<Mutex<Option<Entity<MessagesView>>>>,
 
-    // Draft storage system
-    draft_storage: Arc<DraftStorage>,
+    // Injected persistence, and the draft text cache in front of it
+    stores: stores::Stores,
     session_drafts: Arc<Mutex<HashMap<String, String>>>,
 
     // Error state management
@@ -534,8 +537,7 @@ impl Gpui {
         *self.current_session_total_usage.lock().unwrap() = None;
     }
 
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub fn new(stores: stores::Stores) -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let plan_state = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None::<gpui_kit::Task<()>>));
@@ -570,20 +572,6 @@ impl Gpui {
         let event_sender = Arc::new(Mutex::new(tx));
         let event_receiver = Arc::new(Mutex::new(rx));
 
-        // Initialize draft storage (using default config directory)
-        let draft_storage = Arc::new(
-            DraftStorage::new(
-                dirs::config_dir()
-                    .unwrap_or_else(|| std::env::current_dir().unwrap())
-                    .join("code-assistant"),
-            )
-            .unwrap_or_else(|e| {
-                warn!("Failed to initialize draft storage: {}, using fallback", e);
-                DraftStorage::new(std::env::temp_dir().join("code-assistant-drafts"))
-                    .expect("Failed to create fallback draft storage")
-            }),
-        );
-
         Self {
             message_queue,
             plan_state,
@@ -603,8 +591,7 @@ impl Gpui {
             project_sidebar: Arc::new(Mutex::new(None)),
             messages_view: Arc::new(Mutex::new(None)),
 
-            // Draft storage system
-            draft_storage,
+            stores,
             session_drafts: Arc::new(Mutex::new(HashMap::new())),
 
             // Error state management

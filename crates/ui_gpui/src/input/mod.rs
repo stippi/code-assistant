@@ -1143,7 +1143,7 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             crate::shared::file_icons::init(cx);
-            let gpui = crate::Gpui::new();
+            let gpui = crate::Gpui::new(crate::test_support::MockStores::default().stores());
             gpui.set_skills(vec![skill("pdf-extraction"), skill("review")]);
             cx.set_global(gpui);
         });

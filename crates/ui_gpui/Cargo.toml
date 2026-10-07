@@ -46,5 +46,6 @@ image = "0.25"
 base64 = "0.22"
 
 [dev-dependencies]
+code_assistant_core = { path = "../code_assistant_core", default-features = false, features = ["test-utils"] }
 gpui-kit = { version = "0.6.6", features = ["test-support"] }
 tempfile = "3.23"

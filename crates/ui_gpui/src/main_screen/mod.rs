@@ -853,7 +853,7 @@ impl MainScreen {
                 // restored in a single event (no full-then-truncate flash).
                 let edit_until_node_id = gpui
                     .load_draft_for_session(session_id)
-                    .and_then(|(_, _, anchor)| anchor);
+                    .and_then(|draft| draft.editing_branch_parent_id);
                 gpui.cmd_load_session(session_id.clone(), edit_until_node_id);
             }
             SessionSidebarEvent::NewSessionRequested {
@@ -1357,17 +1357,19 @@ impl MainScreen {
             ) =
                 (new_session_id.as_ref(), &gpui)
             {
-                if let Some((draft_text, draft_attachments, anchor)) =
-                    gpui.load_draft_for_session(new_id)
-                {
+                if let Some(draft) = gpui.load_draft_for_session(new_id) {
                     debug!(
                         "Loading draft for new session {}: {} characters, {} attachments, editing: {:?}",
                         new_id,
-                        draft_text.len(),
-                        draft_attachments.len(),
-                        anchor
+                        draft.message.len(),
+                        draft.attachments.len(),
+                        draft.editing_branch_parent_id
                     );
-                    (draft_text, draft_attachments, anchor)
+                    (
+                        draft.message,
+                        draft.attachments,
+                        draft.editing_branch_parent_id,
+                    )
                 } else {
                     debug!("No draft found for new session: {}", new_id);
                     ("".to_string(), Vec::new(), None)

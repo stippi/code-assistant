@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 
 pub fn run(config: AgentRunConfig) -> Result<()> {
     // Create shared state between GUI and backend
-    let gui = ui_gpui::Gpui::new();
+    let gui = ui_gpui::Gpui::new(ui_gpui::stores::Stores::on_disk());
 
     // Setup dynamic types for MultiSessionManager
     let persistence = crate::persistence::FileSessionPersistence::new();
@@ -216,7 +216,7 @@ async fn startup(service: &SessionService, gui: &ui_gpui::Gpui, task: Option<Str
                 // edit view is restored directly on startup.
                 let edit_until_node_id = gui
                     .load_draft_for_session(&session_id)
-                    .and_then(|(_, _, anchor)| anchor);
+                    .and_then(|draft| draft.editing_branch_parent_id);
                 match service
                     .load_session(session_id.clone(), edit_until_node_id)
                     .await

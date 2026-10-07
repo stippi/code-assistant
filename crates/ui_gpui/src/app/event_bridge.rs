@@ -360,7 +360,7 @@ mod tests {
     use code_assistant_core::session::permissions::ToolPermissionRequestData;
 
     fn viewing(session_id: &str) -> Gpui {
-        let gpui = Gpui::new();
+        let gpui = Gpui::new(crate::test_support::MockStores::default().stores());
         *gpui.current_session_id.lock().unwrap() = Some(session_id.to_string());
         gpui
     }
@@ -446,8 +446,8 @@ mod tests {
             },
         )));
 
-        let (draft, _, _) = gpui.load_draft_for_session("b").expect("a draft");
-        assert_eq!(draft, "/new Next step");
+        let draft = gpui.load_draft_for_session("b").expect("a draft");
+        assert_eq!(draft.message, "/new Next step");
     }
 
     #[test]
