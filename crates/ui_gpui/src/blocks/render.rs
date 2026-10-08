@@ -432,6 +432,9 @@ impl BlockView {
         let block = Rc::clone(&self.block);
         match &*block {
             BlockData::TextBlock(block) => {
+                if let Some(comments) = code_assistant_core::line_comments::parse(&block.content) {
+                    return self.render_line_comments(&comments, cx);
+                }
                 let group_name = SharedString::from(format!("text-block-{}", cx.entity_id()));
                 let body = div()
                     .text_color(cx.theme().foreground)
@@ -846,5 +849,97 @@ impl BlockView {
                 }
             }
         }
+    }
+}
+
+impl BlockView {
+    /// A user message's line comments: one line saying how many, which
+    /// expands to each comment with its file, lines, code and text.
+    fn render_line_comments(
+        &mut self,
+        comments: &[code_assistant_core::line_comments::ParsedComment],
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let theme = cx.theme();
+        let expanded = self.comments_expanded;
+        let label = match comments {
+            [c] => format!("1 comment on {}:{}", c.path, c.lines),
+            _ => format!("{} line comments", comments.len()),
+        };
+        let header = div()
+            .id(SharedString::from(format!(
+                "line-comments-{}",
+                cx.entity_id()
+            )))
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .cursor_pointer()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .hover(|s| s.text_color(theme.foreground))
+            .child(
+                gpui_kit::svg()
+                    .size(px(14.))
+                    .path("icons/message_bubbles.svg")
+                    .text_color(theme.muted_foreground),
+            )
+            .child(label)
+            .child(
+                gpui_kit::svg()
+                    .size(px(10.))
+                    .path(if expanded {
+                        "icons/chevron_down.svg"
+                    } else {
+                        "icons/chevron_right.svg"
+                    })
+                    .text_color(theme.muted_foreground),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.comments_expanded = !this.comments_expanded;
+                cx.notify();
+            }));
+        let items = expanded.then(|| {
+            comments.iter().map(|c| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .pl_2()
+                    .border_l_2()
+                    .border_color(theme.warning.opacity(0.6))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("{}:{}", c.path, c.lines)),
+                    )
+                    .child(
+                        div()
+                            .p_1p5()
+                            .rounded_md()
+                            .bg(theme.muted)
+                            .font_family("Menlo")
+                            .text_xs()
+                            .text_color(theme.foreground)
+                            .whitespace_normal()
+                            .children(c.code.lines().map(|l| div().child(l.to_owned()))),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.foreground)
+                            .child(c.text.clone()),
+                    )
+            })
+        });
+        div()
+            .mt_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(header)
+            .children(items.into_iter().flatten())
+            .into_any_element()
     }
 }

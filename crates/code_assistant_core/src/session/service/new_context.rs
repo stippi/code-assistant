@@ -158,7 +158,7 @@ impl SessionService {
         let from = from.to_string();
         self.call_session(to.clone(), move |ctx| async move {
             if !prompt.trim().is_empty() {
-                let blocks = content_blocks_from(&prompt, &[]);
+                let blocks = content_blocks_from(&prompt, &[], None);
                 append_and_run(&ctx, &to, &prompt, blocks, &[], None, RunOptions::default())
                     .await?;
             }
@@ -194,7 +194,7 @@ async fn start_new_context_impl(
         // message, so the generation request is the history as it is. An
         // edited message branches off like any other.
         NewContextCommand::Handoff { .. } => {
-            let mut blocks = content_blocks_from(message, &[]);
+            let mut blocks = content_blocks_from(message, &[], None);
             blocks.push(llm::ContentBlock::new_text(
                 crate::session::new_context::handoff_request(),
             ));

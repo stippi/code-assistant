@@ -229,6 +229,8 @@ pub struct BlockView {
     focus_handle: FocusHandle,
     /// Whether [`Self::load_deferred_output`] asked for the tool's output.
     deferred_output_requested: bool,
+    /// A text block of line comments shows them listed instead of folded.
+    comments_expanded: bool,
 }
 
 impl BlockView {
@@ -283,6 +285,7 @@ impl BlockView {
             diff_dragging: false,
             focus_handle: cx.focus_handle(),
             deferred_output_requested: false,
+            comments_expanded: false,
         }
     }
 

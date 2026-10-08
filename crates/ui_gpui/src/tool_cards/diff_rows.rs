@@ -64,6 +64,9 @@ pub(crate) struct RowSelection {
     pub highlight: Range<usize>,
     /// Highlight color (usually the theme's selection background).
     pub color: Hsla,
+    /// Local rows carrying a comment, marked by a bar at the left edge.
+    pub marked: Vec<Range<usize>>,
+    pub mark_color: Hsla,
     /// Pointer pressed on a row: `base_line + row`.
     pub on_start: LineCallback,
     /// Pointer dragged over a row while the button is held.
@@ -260,7 +263,7 @@ fn paint_rows(
     layout: &RowsLayout,
     geometry: RowGeometry,
     bounds: Bounds<Pixels>,
-    selection: Option<(&Range<usize>, Hsla)>,
+    selection: Option<&RowSelection>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -278,15 +281,23 @@ fn paint_rows(
         }
         // Selection sits above the add/delete tint but below the glyphs, so
         // the selected text stays readable.
-        if let Some((range, color)) = selection
-            && range.contains(&ix)
+        if let Some(sel) = selection
+            && sel.highlight.contains(&ix)
         {
             window.paint_quad(fill(
                 Bounds::new(
                     point(bounds.origin.x, y),
                     size(bounds.size.width, row_layout.height),
                 ),
-                color,
+                sel.color,
+            ));
+        }
+        if let Some(sel) = selection
+            && sel.marked.iter().any(|range| range.contains(&ix))
+        {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x, y), size(px(3.), row_layout.height)),
+                sel.mark_color,
             ));
         }
         if let Some(gutter) = &row_layout.gutter {
@@ -394,16 +405,12 @@ impl Element for DiffRows {
             return;
         };
 
-        let selection = self
-            .selection
-            .as_ref()
-            .map(|s| (s.highlight.clone(), s.color));
         paint_rows(
             &self.rows,
             layout,
             self.geometry,
             bounds,
-            selection.as_ref().map(|(range, color)| (range, *color)),
+            self.selection.as_ref(),
             window,
             cx,
         );

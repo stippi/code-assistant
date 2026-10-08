@@ -20,6 +20,7 @@ serde = { version = "1.0.215", features = ["derive"] }
 tracing = "0.1.40"
 path-clean = "1.0.1"
 walkdir = "2.5"
+notify = { version = "7", features = ["macos_fsevent"] }
 transmutation = { version = "0.3", features = ["office"], optional = true }
 
 [dev-dependencies]

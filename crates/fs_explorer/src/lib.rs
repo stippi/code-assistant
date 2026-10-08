@@ -1,9 +1,11 @@
+pub mod browse;
 #[cfg(feature = "document-conversion")]
 pub mod document_search;
 pub mod encoding;
 mod explorer;
 pub mod file_updater;
 pub mod types;
+pub mod watch;
 
 pub use explorer::{Explorer, is_path_gitignored};
 pub use file_updater::*;

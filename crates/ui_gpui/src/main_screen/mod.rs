@@ -228,6 +228,7 @@ pub struct MainScreen {
     context_limit_cache: Option<(String, u32)>,
     // Subscription to input area events
     _input_area_subscription: Subscription,
+    _right_panel_subscription: Subscription,
     _plan_banner_subscription: Subscription,
     _project_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
@@ -281,6 +282,18 @@ impl MainScreen {
 
         // Create the right (review) sidebar panel.
         let right_panel = cx.new(|cx| right_panel::RightPanel::new(window, cx));
+        // Comment edits in the panel change the composer's draft.
+        let right_panel_subscription = cx.subscribe(
+            &right_panel,
+            |this: &mut Self, _, change: &right_panel::CommentChange, cx| {
+                this.input_area.update(cx, |input, cx| match change {
+                    right_panel::CommentChange::Upsert(comment) => {
+                        input.upsert_comment(comment.clone(), cx)
+                    }
+                    right_panel::CommentChange::Remove(id) => input.remove_comment(*id, cx),
+                });
+            },
+        );
 
         let mut root_view = Self {
             input_area,
@@ -319,6 +332,7 @@ impl MainScreen {
             resize_start_width: 0.0,
             context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
+            _right_panel_subscription: right_panel_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _project_sidebar_subscription: project_sidebar_subscription,
             _new_project_dialog_subscription: None,
@@ -352,6 +366,10 @@ impl MainScreen {
         _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
+        self.toggle_right_sidebar(cx);
+    }
+
+    fn toggle_right_sidebar(&mut self, cx: &mut Context<Self>) {
         let should_expand = self.right_sidebar_collapsed;
         self.right_sidebar_collapsed = !self.right_sidebar_collapsed;
         self.right_animator.start(should_expand);
@@ -669,6 +687,19 @@ impl MainScreen {
                     );
                     self.report_user_activity(session_id, cx);
                 }
+            }
+            InputAreaEvent::CommentsChanged { comments } => {
+                let comments = comments.clone();
+                self.right_panel
+                    .update(cx, |panel, cx| panel.set_comments(comments, cx));
+            }
+            InputAreaEvent::RevealComment { comment } => {
+                if self.right_sidebar_collapsed {
+                    self.toggle_right_sidebar(cx);
+                }
+                let comment = comment.clone();
+                self.right_panel
+                    .update(cx, |panel, cx| panel.reveal_comment(comment, cx));
             }
             InputAreaEvent::FocusRequested => {
                 // Handle focus request if needed

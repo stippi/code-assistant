@@ -109,6 +109,8 @@ impl AttachmentView {
                         .child(filename.clone()),
                 )
                 .into_any_element(),
+            // Shown as the input's comments chip, never as a tile.
+            DraftAttachment::LineComments { .. } => div().into_any_element(),
         }
     }
 }
