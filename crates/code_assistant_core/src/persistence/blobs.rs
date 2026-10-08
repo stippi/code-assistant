@@ -104,6 +104,12 @@ impl BlobStore {
     }
 }
 
+/// Whether a stored tool result is a reference to a blob rather than the
+/// result itself.
+pub fn is_blob_reference(value: &Value) -> bool {
+    blob_reference(value).is_some()
+}
+
 /// The hash of a blob reference: an object of exactly `$blob` (a hex hash)
 /// and `size`.
 fn blob_reference(value: &Value) -> Option<&str> {

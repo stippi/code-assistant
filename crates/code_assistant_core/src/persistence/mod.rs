@@ -15,6 +15,7 @@ mod blobs;
 mod journal;
 pub mod layout;
 mod migration;
+pub use blobs::is_blob_reference;
 pub use layout::{SessionLayout, SessionPath};
 pub use migration::{MigrationPhase, MigrationProgress, MigrationReport};
 
@@ -768,6 +769,15 @@ pub struct ChatMetadata {
     pub is_resumable: bool,
 }
 
+/// See [`FileSessionPersistence::journal_version`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalVersion {
+    /// The inode, which a rewrite (temp file + rename) replaces.
+    file: u64,
+    len: u64,
+    modified: SystemTime,
+}
+
 #[derive(Clone)]
 pub struct FileSessionPersistence {
     layout: SessionLayout,
@@ -830,11 +840,13 @@ impl FileSessionPersistence {
     }
 
     /// Update an existing session under a cross-process, per-entry lock.
-    /// The closure sees the latest on-disk entry; an error leaves it unchanged.
-    /// Only what the closure changed is appended to the journal. Lock order
-    /// is entry -> metadata. This is separate from the long-lived agent lock
-    /// so settings can still change during a run. Do not re-enter
-    /// persistence from the closure. Lock files must never be unlinked.
+    /// The closure sees the latest on-disk entry, with its tool results
+    /// unresolved (see [`Self::load_chat_session_unresolved`]), and so does
+    /// the returned session; an error leaves the entry unchanged. Only what
+    /// the closure changed is appended to the journal. Lock order is entry ->
+    /// metadata. This is separate from the long-lived agent lock so settings
+    /// can still change during a run. Do not re-enter persistence from the
+    /// closure. Lock files must never be unlinked.
     pub fn update_entry(
         &mut self,
         session_id: &str,
@@ -843,7 +855,6 @@ impl FileSessionPersistence {
         let _lock = self.lock_existing_entry(session_id)?;
         let folded = self.read_journal(session_id)?;
         let mut before = folded.session;
-        self.resolve_blobs(&mut before)?;
         before.ensure_config()?;
         let mut after = before.clone();
         update(&mut after)?;
@@ -919,14 +930,26 @@ impl FileSessionPersistence {
         Ok(metadata)
     }
 
+    /// Load a session with every tool result, as an agent needs it.
     pub fn load_chat_session(&self, session_id: &str) -> Result<Option<ChatSession>> {
+        let Some(mut session) = self.load_chat_session_unresolved(session_id)? else {
+            return Ok(None);
+        };
+        self.resolve_tool_results(session_id, &mut session.tool_executions)?;
+        Ok(Some(session))
+    }
+
+    /// Load a session without reading its stored tool results: results
+    /// larger than [`blobs::BLOB_THRESHOLD`] stay references to their blobs
+    /// (see [`is_blob_reference`]), to be resolved with
+    /// [`Self::resolve_tool_results`] when they are needed.
+    pub fn load_chat_session_unresolved(&self, session_id: &str) -> Result<Option<ChatSession>> {
         let path = self.layout.journal(session_id)?;
         debug!("Loading chat session from {}", path.display());
         let Some(folded) = journal::read(&path)? else {
             return Ok(None);
         };
         let mut session = folded.session;
-        self.resolve_blobs(&mut session)?;
         session.ensure_config()?;
         // Re-check image dimensions on load: sessions persisted before image
         // capping (or by an older version) may carry oversized images that a
@@ -964,12 +987,39 @@ impl FileSessionPersistence {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))
     }
 
-    fn resolve_blobs(&self, session: &mut ChatSession) -> Result<()> {
-        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(&session.id)?);
-        for execution in &mut session.tool_executions {
+    /// Replace the blob references among the results of a session's tool
+    /// executions by the results they stand for.
+    pub fn resolve_tool_results(
+        &self,
+        session_id: &str,
+        executions: &mut [SerializedToolExecution],
+    ) -> Result<()> {
+        let blobs = blobs::BlobStore::new(self.layout.blobs_dir(session_id)?);
+        for execution in executions {
             execution.result_json = blobs.resolve(std::mem::take(&mut execution.result_json))?;
         }
         Ok(())
+    }
+
+    /// Identifies the current content of a session's journal: it changes
+    /// with every append and every rewrite. `None` when the session has no
+    /// journal.
+    pub fn journal_version(&self, session_id: &str) -> Result<Option<JournalVersion>> {
+        match std::fs::metadata(self.layout.journal(session_id)?) {
+            Ok(metadata) => {
+                #[cfg(unix)]
+                let file = std::os::unix::fs::MetadataExt::ino(&metadata);
+                #[cfg(not(unix))]
+                let file = 0;
+                Ok(Some(JournalVersion {
+                    file,
+                    len: metadata.len(),
+                    modified: metadata.modified()?,
+                }))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn externalize_blobs(
@@ -1459,7 +1509,7 @@ mod tests {
         assert_eq!(loaded.tool_executions[0].result_json, large);
         assert_eq!(loaded.tool_executions[1].result_json, small);
 
-        // Updating resolves and stores again without losing the result.
+        // Updating stores again without losing the result.
         persistence
             .update_entry("p/s", |session| {
                 session.name = "renamed".into();
@@ -1468,6 +1518,82 @@ mod tests {
             .unwrap();
         let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
         assert_eq!(loaded.tool_executions[0].result_json, large);
+    }
+
+    #[test]
+    fn unresolved_loads_and_updates_leave_stored_tool_results_unread() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let mut session =
+            ChatSession::new_empty("p/s".into(), "s".into(), SessionConfig::default(), None);
+        let large = serde_json::json!({ "content": "x".repeat(100_000) });
+        let small = serde_json::json!({ "content": "short" });
+        session.tool_executions =
+            vec![execution("a", large.clone()), execution("b", small.clone())];
+        persistence.create_chat_session(&session).unwrap();
+        // Without the blobs, any attempt to read a stored result would fail.
+        let blobs = persistence.layout().blobs_dir("p/s").unwrap();
+        let moved = dir.path().join("moved-blobs");
+        std::fs::rename(&blobs, &moved).unwrap();
+
+        let loaded = persistence
+            .load_chat_session_unresolved("p/s")
+            .unwrap()
+            .unwrap();
+        assert!(is_blob_reference(&loaded.tool_executions[0].result_json));
+        assert_eq!(loaded.tool_executions[1].result_json, small);
+        let updated = persistence
+            .update_entry("p/s", |session| {
+                session.name = "renamed".into();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(updated.name, "renamed");
+        assert!(is_blob_reference(&updated.tool_executions[0].result_json));
+
+        std::fs::rename(&moved, &blobs).unwrap();
+        let mut executions = updated.tool_executions;
+        persistence
+            .resolve_tool_results("p/s", &mut executions)
+            .unwrap();
+        assert_eq!(executions[0].result_json, large);
+        assert_eq!(executions[1].result_json, small);
+        let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
+        assert_eq!(loaded.name, "renamed");
+        assert_eq!(loaded.tool_executions[0].result_json, large);
+    }
+
+    #[test]
+    fn the_journal_version_changes_with_every_write() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        assert_eq!(persistence.journal_version("p/s").unwrap(), None);
+        let session =
+            ChatSession::new_empty("p/s".into(), "s".into(), SessionConfig::default(), None);
+        persistence.create_chat_session(&session).unwrap();
+        let created = persistence.journal_version("p/s").unwrap();
+        assert!(created.is_some());
+
+        persistence.update_entry("p/s", |_| Ok(())).unwrap();
+        assert_eq!(persistence.journal_version("p/s").unwrap(), created);
+
+        persistence
+            .update_entry("p/s", |session| {
+                session.plan_collapsed = true;
+                Ok(())
+            })
+            .unwrap();
+        let updated = persistence.journal_version("p/s").unwrap();
+        assert_ne!(updated, created);
+
+        // A compacted journal is a new file.
+        let folded = persistence.read_journal("p/s").unwrap();
+        journal::write(
+            &persistence.layout().journal("p/s").unwrap(),
+            &journal::snapshot(&folded.session),
+        )
+        .unwrap();
+        assert_ne!(persistence.journal_version("p/s").unwrap(), updated);
     }
 
     fn journal_lines(persistence: &FileSessionPersistence, id: &str) -> usize {

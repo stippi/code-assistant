@@ -545,6 +545,27 @@ impl SessionService {
         .await
     }
 
+    /// The complete UI data of a tool result of a loaded session, including
+    /// an output its snapshot deferred
+    /// ([`crate::ui::ui_events::ToolResultData::output_deferred`]). Runs
+    /// apart from the session's commands; the result is read without holding
+    /// up other sessions.
+    pub async fn load_tool_output(
+        &self,
+        session_id: String,
+        tool_id: String,
+    ) -> Result<crate::ui::ui_events::ToolResultData> {
+        self.call_io(move |ctx| async move {
+            let loader = ctx
+                .manager
+                .lock()
+                .await
+                .tool_output_loader(&session_id, &tool_id)?;
+            tokio::task::spawn_blocking(move || loader.load()).await?
+        })
+        .await
+    }
+
     pub async fn delete_session(&self, session_id: String) -> Result<()> {
         self.call_session(session_id.clone(), move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
@@ -1072,8 +1093,8 @@ impl SessionService {
                     branch_parent_id,
                 )
                 .unwrap_or_default();
-            let tool_results = session_instance
-                .convert_tool_executions_to_ui_data()
+            let tool_results = manager
+                .tool_results_ui_data(&session_id)
                 .unwrap_or_default();
 
             Ok(MessageEditContext {
@@ -1105,7 +1126,7 @@ impl SessionService {
             let session_instance = manager
                 .get_session(&session_id)
                 .ok_or_else(|| anyhow!("Session {session_id} not found after save"))?;
-            let transcript = transcript_data(session_instance)?;
+            let transcript = transcript_data(&manager, session_instance)?;
             Ok(BranchSwitchData {
                 transcript,
                 plan: session_instance.session.plan.clone(),
@@ -1122,7 +1143,7 @@ impl SessionService {
             let session_instance = manager
                 .get_session(&session_id)
                 .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
-            transcript_data(session_instance)
+            transcript_data(&manager, session_instance)
         })
         .await
     }
@@ -1425,13 +1446,14 @@ impl SessionService {
 }
 
 fn transcript_data(
+    manager: &SessionManager,
     session_instance: &crate::session::instance::SessionInstance,
 ) -> Result<TranscriptData> {
     let messages = session_instance
         .convert_messages_to_ui_data(session_instance.session.config.tool_syntax)
         .context("Failed to convert messages")?;
-    let tool_results = session_instance
-        .convert_tool_executions_to_ui_data()
+    let tool_results = manager
+        .tool_results_ui_data(&session_instance.session.id)
         .context("Failed to convert tool results")?;
     Ok(TranscriptData {
         messages,
@@ -2149,6 +2171,8 @@ mod new_context;
 
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(test)]
+mod stored_output_tests;
 
 #[cfg(test)]
 mod tests {

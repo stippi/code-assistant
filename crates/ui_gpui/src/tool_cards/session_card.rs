@@ -399,6 +399,7 @@ mod tests {
             status: ToolStatus::Success,
             status_message: None,
             output: None,
+            output_deferred: false,
             styled_output: None,
             state: crate::blocks::ToolBlockState::Collapsed,
             duration_seconds: None,

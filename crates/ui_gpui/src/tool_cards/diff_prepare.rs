@@ -197,6 +197,7 @@ pub(crate) mod tests {
             status: ToolStatus::Success,
             status_message: None,
             output: output.map(String::from),
+            output_deferred: false,
             styled_output: None,
             state: ToolBlockState::Expanded,
             duration_seconds: None,

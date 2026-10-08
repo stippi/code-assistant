@@ -160,6 +160,29 @@ impl Gpui {
         });
     }
 
+    /// Load the output a restored tool result left out
+    /// (`ToolResultData::output_deferred`) and apply it like a status update.
+    pub(crate) fn cmd_load_tool_output(&self, session_id: String, tool_id: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            match service.load_tool_output(session_id, tool_id.clone()).await {
+                Ok(result) => gpui.push_event(UiEvent::UpdateToolStatus {
+                    tool_id: result.tool_id,
+                    status: result.status,
+                    message: result.message,
+                    output: result.output,
+                    styled_output: result.styled_output,
+                    duration_seconds: result.duration_seconds,
+                    images: result.images,
+                }),
+                Err(e) => warn!("Failed to load the output of tool {tool_id}: {e:#}"),
+            }
+        });
+    }
+
     /// Ask the running agent of a session to stop. The local stop-request
     /// set drives the cancel button state; the actual stop happens core-side
     /// at the agent's next streaming checkpoint.

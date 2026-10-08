@@ -57,6 +57,10 @@ pub struct ToolUseBlock {
     pub status: ToolStatus,
     pub status_message: Option<String>,
     pub output: Option<String>,
+    /// The result is restored without its output, `styled_output` and
+    /// `images`: they are stored apart and loaded when the block shows them
+    /// (see `BlockView::load_deferred_output`).
+    pub output_deferred: bool,
     /// Styled terminal output with ANSI color information preserved.
     /// Used by terminal card renderer for colored static output.
     pub styled_output: Option<Vec<terminal::StyledLine>>,

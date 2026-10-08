@@ -4,7 +4,9 @@
 //! that translates `UiEvent`s into mutations on the message queue, sidebar,
 //! and other UI state — and `process_fragments_for_container`.
 
+use code_assistant_core::ui::ui_events::ToolResultData;
 use code_assistant_core::ui::{DisplayFragment, UiEvent};
+use std::collections::HashMap;
 
 use super::super::blocks::{MessageContainer, MessageRole};
 use gpui_kit::Entity;
@@ -59,6 +61,20 @@ impl Gpui {
                 }
             }
         })
+    }
+
+    /// Apply tool results to the tool blocks of all messages, in one pass.
+    fn apply_tool_results(&self, tool_results: &[ToolResultData], cx: &mut gpui_kit::AsyncApp) {
+        if tool_results.is_empty() {
+            return;
+        }
+        let by_id: HashMap<&str, &ToolResultData> = tool_results
+            .iter()
+            .map(|result| (result.tool_id.as_str(), result))
+            .collect();
+        self.update_all_messages(cx, |message_container, cx| {
+            message_container.apply_tool_results(|tool_id| by_id.get(tool_id).copied(), cx);
+        });
     }
 
     pub(crate) fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui_kit::AsyncApp) {
@@ -198,22 +214,18 @@ impl Gpui {
                 // (populated when a display-only terminal is evicted).
                 let styled_output =
                     styled_output.or_else(|| terminal::pool::take_cached_styled_output(&tool_id));
-                // Convert ImageData to (media_type, base64_data) tuples for the UI
-                let ui_images: Vec<(String, String)> = images
-                    .iter()
-                    .map(|img| (img.media_type.clone(), img.base64_data.clone()))
-                    .collect();
+                let result = ToolResultData {
+                    tool_id,
+                    status,
+                    message,
+                    output,
+                    styled_output,
+                    duration_seconds,
+                    images,
+                    output_deferred: false,
+                };
                 self.update_all_messages(cx, |message_container, cx| {
-                    message_container.update_tool_status(
-                        &tool_id,
-                        status,
-                        message.clone(),
-                        output.clone(),
-                        styled_output.clone(),
-                        duration_seconds,
-                        ui_images.clone(),
-                        cx,
-                    );
+                    message_container.update_tool_status(&result, cx);
                 });
                 self.auto_scroll_if_following(cx);
             }
@@ -330,26 +342,7 @@ impl Gpui {
                 }
 
                 // Apply tool results to update tool blocks with their execution results
-                for tool_result in tool_results {
-                    let ui_images: Vec<(String, String)> = tool_result
-                        .images
-                        .iter()
-                        .map(|img| (img.media_type.clone(), img.base64_data.clone()))
-                        .collect();
-
-                    self.update_all_messages(cx, |message_container, cx| {
-                        message_container.update_tool_status(
-                            &tool_result.tool_id,
-                            tool_result.status,
-                            tool_result.message.clone(),
-                            tool_result.output.clone(),
-                            tool_result.styled_output.clone(),
-                            tool_result.duration_seconds,
-                            ui_images.clone(),
-                            cx,
-                        );
-                    });
-                }
+                self.apply_tool_results(&tool_results, cx);
 
                 // Ensure we always end with an Assistant container
                 // This is crucial for sessions that are waiting for responses or actively running agents
@@ -457,26 +450,7 @@ impl Gpui {
                 }
 
                 // Apply tool results
-                for tool_result in tool_results {
-                    let ui_images: Vec<(String, String)> = tool_result
-                        .images
-                        .iter()
-                        .map(|img| (img.media_type.clone(), img.base64_data.clone()))
-                        .collect();
-
-                    self.update_all_messages(cx, |message_container, cx| {
-                        message_container.update_tool_status(
-                            &tool_result.tool_id,
-                            tool_result.status,
-                            tool_result.message.clone(),
-                            tool_result.output.clone(),
-                            tool_result.styled_output.clone(),
-                            tool_result.duration_seconds,
-                            ui_images.clone(),
-                            cx,
-                        );
-                    });
-                }
+                self.apply_tool_results(&tool_results, cx);
 
                 self.notify_messages_appended(old_len, cx);
             }
@@ -1033,26 +1007,7 @@ impl Gpui {
                 }
 
                 // Apply tool results
-                for tool_result in tool_results {
-                    let ui_images: Vec<(String, String)> = tool_result
-                        .images
-                        .iter()
-                        .map(|img| (img.media_type.clone(), img.base64_data.clone()))
-                        .collect();
-
-                    self.update_all_messages(cx, |message_container, cx| {
-                        message_container.update_tool_status(
-                            &tool_result.tool_id,
-                            tool_result.status,
-                            tool_result.message.clone(),
-                            tool_result.output.clone(),
-                            tool_result.styled_output.clone(),
-                            tool_result.duration_seconds,
-                            ui_images.clone(),
-                            cx,
-                        );
-                    });
-                }
+                self.apply_tool_results(&tool_results, cx);
 
                 // Ensure we end with an Assistant container for the edit response
                 {

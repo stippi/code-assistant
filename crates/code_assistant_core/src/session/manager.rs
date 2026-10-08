@@ -624,16 +624,10 @@ impl SessionManager {
 
     /// Load a session from persistence and make it active
     pub fn load_session(&mut self, session_id: &str) -> Result<Vec<Message>> {
-        // Load from persistence
-        let session = self
-            .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        let messages = session.messages.clone();
-
-        // Create session instance
-        let instance = SessionInstance::new(session, self.tool_registry.clone());
+        let instance =
+            SessionInstance::load(&self.persistence, session_id, self.tool_registry.clone())?
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        let messages = instance.session.messages.clone();
 
         // Add to active sessions
         self.active_sessions
@@ -699,7 +693,8 @@ impl SessionManager {
         // Build the owned snapshot for the frontend
         let mut snapshot = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            let snapshot = session_instance.build_snapshot(edit_until_node_id)?;
+            let snapshot =
+                session_instance.build_snapshot(&self.persistence, edit_until_node_id)?;
             // Mark what the UI now knows about (baseline for future incremental diffs)
             session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
             session_instance.last_ui_synced_tool_count =
@@ -796,11 +791,8 @@ impl SessionManager {
 
         // Case 1b: Paths identical but new tool results appeared
         if new_path == *synced_path {
-            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
-            let new_tool_results: Vec<_> = all_tool_results
-                .into_iter()
-                .skip(synced_tool_count)
-                .collect();
+            let new_tool_results = session_instance
+                .convert_tool_executions_since_to_ui_data(&self.persistence, synced_tool_count)?;
             if new_tool_results.is_empty() {
                 return Ok(Vec::new());
             }
@@ -824,11 +816,8 @@ impl SessionManager {
             let messages_data =
                 session_instance.convert_messages_from_nodes(new_node_ids, tool_syntax)?;
 
-            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
-            let new_tool_results: Vec<_> = all_tool_results
-                .into_iter()
-                .skip(synced_tool_count)
-                .collect();
+            let new_tool_results = session_instance
+                .convert_tool_executions_since_to_ui_data(&self.persistence, synced_tool_count)?;
 
             let mut events = Vec::new();
 
@@ -851,7 +840,7 @@ impl SessionManager {
 
         // Case 3: Paths diverged → full reload of the transcript
         debug!("Incremental refresh for {session_id}: paths diverged, full reload");
-        let snapshot = session_instance.build_snapshot(None)?;
+        let snapshot = session_instance.build_snapshot(&self.persistence, None)?;
         session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
         session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
         Ok(vec![
@@ -1148,6 +1137,37 @@ impl SessionManager {
             let pending_message_ref = session_instance.pending_message.clone();
             let pending_target = session_instance.pending_new_context_target.clone();
 
+            let mut tool_executions: Vec<_> = session_instance
+                .session
+                .tool_executions
+                .iter()
+                // A tool that has since disappeared (e.g. a reconfigured MCP
+                // server) must not brick the session: skip its records, the
+                // conversation itself lives in the messages.
+                .filter(|se| {
+                    let available =
+                        crate::tools::mcp::execution_renderable(se, self.tool_registry.as_ref());
+                    if !available {
+                        warn!(
+                            "Skipping recorded execution of unavailable tool '{}'",
+                            se.tool_name
+                        );
+                    }
+                    available
+                })
+                .cloned()
+                .collect();
+            // The instance leaves results stored outside the session record
+            // unread; a run needs all of them.
+            self.persistence
+                .resolve_tool_results(session_id, &mut tool_executions)?;
+            let tool_executions = tool_executions
+                .iter()
+                .map(|se| {
+                    crate::tools::mcp::deserialize_tool_execution(se, self.tool_registry.as_ref())
+                })
+                .collect::<Result<Vec<_>>>()?;
+
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
                 name,
@@ -1155,33 +1175,7 @@ impl SessionManager {
                 active_path: session_instance.session.active_path.clone(),
                 next_node_id: session_instance.session.next_node_id,
                 messages: session_instance.session.get_active_messages_cloned(),
-                tool_executions: session_instance
-                    .session
-                    .tool_executions
-                    .iter()
-                    // A tool that has since disappeared (e.g. a reconfigured
-                    // MCP server) must not brick the session: skip its
-                    // records, the conversation itself lives in the messages.
-                    .filter(|se| {
-                        let available = crate::tools::mcp::execution_renderable(
-                            se,
-                            self.tool_registry.as_ref(),
-                        );
-                        if !available {
-                            warn!(
-                                "Skipping recorded execution of unavailable tool '{}'",
-                                se.tool_name
-                            );
-                        }
-                        available
-                    })
-                    .map(|se| {
-                        crate::tools::mcp::deserialize_tool_execution(
-                            se,
-                            self.tool_registry.as_ref(),
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?,
+                tool_executions,
 
                 plan: session_instance.session.plan.clone(),
                 active_skills: session_instance.session.active_skills.clone(),
@@ -1583,6 +1577,33 @@ impl SessionManager {
         self.active_sessions.get(session_id)
     }
 
+    /// The UI data of a resident session's tool results, deferring outputs
+    /// stored outside the session record (see
+    /// [`SessionInstance::convert_tool_executions_to_ui_data`]).
+    pub fn tool_results_ui_data(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::ui::ui_events::ToolResultData>> {
+        self.active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?
+            .convert_tool_executions_to_ui_data(&self.persistence)
+    }
+
+    /// Prepare reading the complete UI data of a tool result of a resident
+    /// session, to be done without the manager.
+    pub fn tool_output_loader(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+    ) -> Result<crate::session::instance::ToolOutputLoader> {
+        self.active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?
+            .tool_output_loader(&self.persistence, tool_id)
+            .ok_or_else(|| anyhow::anyhow!("No tool execution {tool_id} in {session_id}"))
+    }
+
     /// Get a mutable session instance by ID
     pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut SessionInstance> {
         self.active_sessions.get_mut(session_id)
@@ -1619,7 +1640,7 @@ impl SessionManager {
             Ok(instance.session.model_config.clone())
         } else {
             // Load from persistence
-            match self.persistence.load_chat_session(session_id)? {
+            match self.persistence.load_chat_session_unresolved(session_id)? {
                 Some(mut session) => {
                     if let Some(config) = session.model_config.take() {
                         Ok(Some(config))
@@ -1648,7 +1669,7 @@ impl SessionManager {
             instance.session.clone()
         } else {
             self.persistence
-                .load_chat_session(session_id)?
+                .load_chat_session_unresolved(session_id)?
                 .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?
         };
 
@@ -2111,7 +2132,8 @@ impl SessionManager {
         if let Ok(metadata_list) = self.persistence.list_chat_sessions() {
             for meta in &metadata_list {
                 if meta.initial_project == project_name
-                    && let Ok(Some(session)) = self.persistence.load_chat_session(&meta.id)
+                    && let Ok(Some(session)) =
+                        self.persistence.load_chat_session_unresolved(&meta.id)
                     && let Some(path) = session.config.effective_project_path()
                 {
                     return Some(path.clone());

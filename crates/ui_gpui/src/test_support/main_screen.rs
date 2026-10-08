@@ -136,6 +136,30 @@ impl MainScreenTest {
         })
     }
 
+    /// The shown tool block `tool_id`.
+    pub fn tool_block(&mut self, tool_id: &str) -> Option<crate::blocks::ToolUseBlock> {
+        let messages = self.gpui.message_queue.lock().unwrap().clone();
+        self.cx.update(|_, cx| {
+            messages
+                .iter()
+                .find_map(|message| message.read(cx).tool_block(tool_id, cx))
+        })
+    }
+
+    /// Expand or collapse the tool block `tool_id`, as clicking its header does.
+    pub fn toggle_tool_block(&mut self, tool_id: &str) {
+        let messages = self.gpui.message_queue.lock().unwrap().clone();
+        self.cx.update(|_, cx| {
+            let view = messages
+                .iter()
+                .flat_map(|message| message.read(cx).elements())
+                .find(|view| view.read(cx).tool_block(tool_id).is_some())
+                .expect("the tool block is shown");
+            view.update(cx, |view, cx| view.toggle_tool_collapsed(cx));
+        });
+        self.settle();
+    }
+
     /// The message shown as waiting for the running agent.
     pub fn pending_message(&mut self) -> Option<String> {
         let view = self.gpui.messages_view.lock().unwrap().clone()?;

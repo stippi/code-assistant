@@ -39,6 +39,11 @@ pub struct ToolResultData {
     pub duration_seconds: Option<f64>,
     /// Image data from tools that produce visual output (e.g. view_images).
     pub images: Vec<ImageData>,
+    /// The result is complete except for `output`, `styled_output` and
+    /// `images`, which are left out because reading it is expensive (it is
+    /// stored outside the session record). `SessionService::load_tool_output`
+    /// returns it complete.
+    pub output_deferred: bool,
 }
 
 impl UiEvent {

@@ -10,6 +10,7 @@ use code_assistant_core::persistence::{BranchInfo, NodeId};
 use crate::shared::image;
 use agent_core::ui::ContextBoundary;
 use code_assistant_core::ui::ToolStatus;
+use code_assistant_core::ui::ui_events::ToolResultData;
 use gpui_kit::{Context, Entity, prelude::*};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
@@ -187,6 +188,14 @@ impl MessageContainer {
             })
             .collect();
         format!("{role}: {}", text.join(" "))
+    }
+
+    /// The tool block `tool_id`, if this container has it, for assertions.
+    #[cfg(test)]
+    pub(crate) fn tool_block(&self, tool_id: &str, cx: &gpui_kit::App) -> Option<ToolUseBlock> {
+        self.elements()
+            .iter()
+            .find_map(|block| block.read(cx).tool_block(tool_id).cloned())
     }
 
     pub fn is_user_message(&self) -> bool {
@@ -375,6 +384,7 @@ impl MessageContainer {
             status: ToolStatus::Pending,
             status_message: None,
             output: None,
+            output_deferred: false,
             styled_output: None,
             state: initial_state,
             duration_seconds,
@@ -395,18 +405,16 @@ impl MessageContainer {
         cx.notify();
     }
 
-    // Update the status of a tool block
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_tool_status(
-        &self,
-        tool_id: &str,
+    /// Apply a tool result to its tool block, if this container has it.
+    pub fn update_tool_status(&self, result: &ToolResultData, cx: &mut Context<Self>) -> bool {
+        self.apply_tool_results(|tool_id| (tool_id == result.tool_id).then_some(result), cx)
+    }
 
-        status: ToolStatus,
-        message: Option<String>,
-        output: Option<String>,
-        styled_output: Option<Vec<terminal::StyledLine>>,
-        duration_seconds: Option<f64>,
-        images: Vec<(String, String)>,
+    /// Apply tool results to this container's tool blocks in one pass:
+    /// `result_for` returns the result for a tool ID, if there is one.
+    pub fn apply_tool_results<'a>(
+        &self,
+        result_for: impl Fn(&str) -> Option<&'a ToolResultData>,
         cx: &mut Context<Self>,
     ) -> bool {
         let elements = self.elements.lock().unwrap();
@@ -414,47 +422,55 @@ impl MessageContainer {
 
         for element in elements.iter() {
             element.update(cx, |view, cx| {
-                if let Some(tool) = view.block_mut().as_tool_mut()
-                    && tool.id == tool_id
-                {
-                    tool.status = status;
-                    tool.status_message = message.clone();
+                // Look before taking the block mutably: that counts as a change.
+                let Some(result) = view.block.as_tool().and_then(|tool| result_for(&tool.id))
+                else {
+                    return;
+                };
+                let tool = view.block_mut().as_tool_mut().expect("a tool block");
+                tool.status = result.status;
+                tool.status_message = result.message.clone();
 
-                    // Update output if provided
-                    // Note: UpdateToolStatus always replaces output (used by spawn_agent for JSON updates)
-                    // AppendToolOutput is used for streaming append behavior
-                    if let Some(ref new_output) = output {
-                        tool.output = Some(new_output.clone());
-                    }
-
-                    // Update styled output if provided (terminal color data)
-                    if styled_output.is_some() {
-                        tool.styled_output = styled_output.clone();
-                    }
-
-                    // Store duration from ContentBlock timestamps (stable across restores)
-                    if duration_seconds.is_some() {
-                        tool.duration_seconds = duration_seconds;
-                    }
-
-                    // Store image data from tools that produce visual output
-                    if !images.is_empty() {
-                        tool.images = images.clone();
-                    }
-
-                    // Update generating flag on completion — no automatic state changes.
-                    // The tool's collapse/expand state stays exactly as it was set at
-                    // creation time (Card=Expanded, Inline=Collapsed) or as toggled
-                    // by the user. The user is always in control.
-                    if status == ToolStatus::Success || status == ToolStatus::Error {
-                        view.set_generating(false);
-                    } else if !view.is_generating {
-                        view.set_generating(true);
-                    }
-
-                    updated = true;
-                    cx.notify();
+                // Update output if provided
+                // Note: UpdateToolStatus always replaces output (used by spawn_agent for JSON updates)
+                // AppendToolOutput is used for streaming append behavior
+                if let Some(output) = &result.output {
+                    tool.output = Some(output.clone());
                 }
+                tool.output_deferred = result.output_deferred;
+
+                // Update styled output if provided (terminal color data)
+                if result.styled_output.is_some() {
+                    tool.styled_output = result.styled_output.clone();
+                }
+
+                // Store duration from ContentBlock timestamps (stable across restores)
+                if result.duration_seconds.is_some() {
+                    tool.duration_seconds = result.duration_seconds;
+                }
+
+                // Store image data from tools that produce visual output
+                if !result.images.is_empty() {
+                    tool.images = result
+                        .images
+                        .iter()
+                        .map(|image| (image.media_type.clone(), image.base64_data.clone()))
+                        .collect();
+                }
+
+                // Update generating flag on completion — no automatic state changes.
+                // The tool's collapse/expand state stays exactly as it was set at
+                // creation time (Card=Expanded, Inline=Collapsed) or as toggled
+                // by the user. The user is always in control.
+                if result.status == ToolStatus::Success || result.status == ToolStatus::Error {
+                    view.set_generating(false);
+                } else if !view.is_generating {
+                    view.set_generating(true);
+                }
+                view.load_deferred_output(cx);
+
+                updated = true;
+                cx.notify();
             });
         }
 
@@ -695,6 +711,7 @@ impl MessageContainer {
                 status: ToolStatus::Pending,
                 status_message: None,
                 output: None,
+                output_deferred: false,
                 styled_output: None,
                 state: initial_state,
                 duration_seconds: None,
