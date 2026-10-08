@@ -127,17 +127,22 @@ impl SessionLayout {
         }
     }
 
-    /// The IDs of all sessions that have a record, found by walking the
-    /// folders (IDs are at most two components deep).
+    /// The IDs of all sessions that have a record.
     pub fn session_ids(&self) -> Result<Vec<String>> {
+        self.ids_of_folders_with(JOURNAL_FILE)
+    }
+
+    /// The IDs of all session folders holding a file of this name, found by
+    /// walking the folders (IDs are at most two components deep).
+    pub fn ids_of_folders_with(&self, file_name_in_folder: &str) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         for top in read_dirs(&self.sessions_dir)? {
             let top_name = file_name(&top);
-            if top.join(JOURNAL_FILE).exists() {
+            if top.join(file_name_in_folder).exists() {
                 ids.push(top_name.clone());
             }
             for nested in read_dirs(&top)? {
-                if nested.join(JOURNAL_FILE).exists() {
+                if nested.join(file_name_in_folder).exists() {
                     ids.push(format!("{top_name}/{}", file_name(&nested)));
                 }
             }

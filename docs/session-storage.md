@@ -175,10 +175,13 @@ record counts both write paths already have.
 
 ## Migration
 
-`migrate_legacy_sessions` runs at startup (`app::migrate_session_store`,
-before the GPUI, terminal and ACP frontends start). It is cheap when there
-are no flat session files, and holds `sessions/migration.lock` otherwise so a
-second process waits.
+`migrate_legacy_sessions` runs at startup, before the frontends touch the
+session store. It is cheap when there are no flat session files, and holds
+`sessions/migration.lock` otherwise so a second process waits. It reports
+`MigrationProgress` as it goes: GPUI runs it on the backend thread and shows
+a small window with a progress bar instead of the main window, which opens
+when the migration is done; the terminal UI and ACP print the progress to
+stderr. The MCP server mode doesn't migrate.
 
 Old sessions get new IDs, so everything that stores IDs is rewritten:
 `metadata.json`, `lifecycle.json`, and the `session:<id>` owner keys in
@@ -194,7 +197,11 @@ session folder. The phases make the run restartable at any point:
 5. Move the old session files to `sessions/legacy/`.
 
 A rerun takes the recorded IDs, skips sessions that already have a journal,
-and repeats the idempotent rest. Sessions that fail to parse or have an agent
+and repeats the idempotent rest. Until the IDs are recorded, each folder
+reserved in phase 2 holds a `migration-reservation` file naming its old
+session, and a rerun takes those folders over instead of numbering past
+them. An empty folder alone wouldn't do: it can also be an ACP reservation of
+a running instance. Sessions that fail to parse or have an agent
 of an older version running stay in place and are reported.
 
 On the 1148 sessions above the migration took 16 s, every session loaded

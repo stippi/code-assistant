@@ -103,7 +103,7 @@ fn main() -> Result<()> {
                     sandbox_policy: sandbox_mode.to_policy(sandbox_network),
                 };
 
-                app::migrate_session_store();
+                app::migrate_session_store_on_stderr();
                 block_on(app::acp::run(verbose, config))
             }
             #[cfg(not(feature = "acp-frontend"))]
@@ -140,8 +140,6 @@ fn main() -> Result<()> {
                 // Terminal UI mode - log to file to prevent UI interference
                 logging::setup_logging_for_terminal_ui(args.verbose);
             }
-
-            app::migrate_session_store();
 
             // Ensure the path exists and is a directory
             if !args.path.is_dir() {
@@ -183,6 +181,7 @@ fn main() -> Result<()> {
             } else {
                 #[cfg(feature = "terminal-frontend")]
                 {
+                    app::migrate_session_store_on_stderr();
                     block_on(app::terminal::run(config))
                 }
                 #[cfg(not(feature = "terminal-frontend"))]

@@ -1667,6 +1667,7 @@ name = "code-assistant"
 version = "0.2.17"
 dependencies = [
  "anyhow",
+ "async-channel",
  "clap",
  "code_assistant_core",
  "command_executor",

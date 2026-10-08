@@ -16,7 +16,7 @@ mod journal;
 pub mod layout;
 mod migration;
 pub use layout::{SessionLayout, SessionPath};
-pub use migration::MigrationReport;
+pub use migration::{MigrationPhase, MigrationProgress, MigrationReport};
 
 // ============================================================================
 // Session Branching Types

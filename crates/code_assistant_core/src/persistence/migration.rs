@@ -19,7 +19,11 @@
 //!    sessions deleted long ago (locks, UI states, drafts).
 //!
 //! A rerun takes the recorded mapping, skips sessions that already have a
-//! journal, and repeats the idempotent rest.
+//! journal, and repeats the idempotent rest. Until the mapping is recorded,
+//! each reserved folder holds a `migration-reservation` file naming its old
+//! session, so a run interrupted in phase 2 leaves no gaps: the next one
+//! takes over those folders. (An empty folder alone could also be an ACP
+//! reservation of a running instance.)
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -36,9 +40,60 @@ use crate::utils::file_utils::{self, atomic_write_json, lock_exclusive};
 const ALIASES_FILE: &str = "legacy-ids.json";
 const LEGACY_DIR: &str = "legacy";
 const LOCK_FILE: &str = "migration.lock";
+/// Names the old session a folder was reserved for, until the mapping is
+/// recorded.
+const RESERVATION_FILE: &str = "migration-reservation";
 /// Old sessions written at the same time. Each is parsed whole, and the
 /// largest are several hundred megabytes.
 const PARALLEL_WRITERS: usize = 4;
+
+/// How far a migration run is, reported as it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationProgress {
+    pub phase: MigrationPhase,
+    /// Sessions done in this phase, out of `total`.
+    pub done: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationPhase {
+    /// Reading the old sessions to allocate their new IDs.
+    Reading,
+    /// Writing the new sessions.
+    Writing,
+    /// Rewriting references and moving the old files away.
+    Finishing,
+}
+
+impl MigrationPhase {
+    /// What the phase does, for progress displays.
+    pub fn description(self) -> &'static str {
+        match self {
+            MigrationPhase::Reading => "Reading sessions",
+            MigrationPhase::Writing => "Writing sessions",
+            MigrationPhase::Finishing => "Finishing up",
+        }
+    }
+}
+
+impl MigrationProgress {
+    /// How far the whole run is, from 0 to 1. Writing takes most of the
+    /// time, so it gets most of the range.
+    pub fn fraction(&self) -> f32 {
+        let (start, width) = match self.phase {
+            MigrationPhase::Reading => (0.0, 0.25),
+            MigrationPhase::Writing => (0.25, 0.7),
+            MigrationPhase::Finishing => (0.95, 0.05),
+        };
+        let within = if self.total == 0 {
+            0.0
+        } else {
+            self.done as f32 / self.total as f32
+        };
+        start + width * within
+    }
+}
 
 /// What a migration run did.
 #[derive(Debug, Default)]
@@ -74,13 +129,23 @@ struct LegacyConfig {
 }
 
 impl FileSessionPersistence {
-    /// Move flat session files into session folders. Cheap when there is
-    /// nothing to move; otherwise holds a lock so a second process waits
-    /// instead of migrating in parallel. `legacy_drafts_dir` is where drafts
-    /// used to be kept.
-    pub fn migrate_legacy_sessions(&mut self, legacy_drafts_dir: &Path) -> Result<MigrationReport> {
+    /// Whether there are flat session files to migrate. Cheap: one
+    /// directory listing.
+    pub fn has_legacy_sessions(&self) -> bool {
+        legacy_session_files(self.layout.sessions_dir()).is_ok_and(|files| !files.is_empty())
+    }
+
+    /// Move flat session files into session folders, reporting `progress`
+    /// as it goes. Cheap when there is nothing to move; otherwise holds a
+    /// lock so a second process waits instead of migrating in parallel.
+    /// `legacy_drafts_dir` is where drafts used to be kept.
+    pub fn migrate_legacy_sessions(
+        &mut self,
+        legacy_drafts_dir: &Path,
+        progress: &(dyn Fn(MigrationProgress) + Sync),
+    ) -> Result<MigrationReport> {
         let sessions_dir = self.layout.sessions_dir().to_path_buf();
-        if legacy_session_files(&sessions_dir)?.is_empty() {
+        if !self.has_legacy_sessions() {
             return Ok(MigrationReport::default());
         }
         let _lock = lock_exclusive(&sessions_dir.join(LOCK_FILE))?;
@@ -92,8 +157,15 @@ impl FileSessionPersistence {
         // Phases 1 and 2: new IDs, in creation order.
         let aliases_path = sessions_dir.join(ALIASES_FILE);
         let mut aliases: BTreeMap<String, String> = read_json(&aliases_path)?.unwrap_or_default();
+        let mut reserved = self.read_reservations()?;
+        let total = files.len();
         let mut pending = Vec::new();
-        for legacy in files {
+        for (index, legacy) in files.into_iter().enumerate() {
+            progress(MigrationProgress {
+                phase: MigrationPhase::Reading,
+                done: index,
+                total,
+            });
             let agent_lock = sessions_dir.join(format!("{}.agent.lock", legacy.old_id));
             if file_utils::is_agent_locked(&agent_lock) {
                 report
@@ -102,7 +174,11 @@ impl FileSessionPersistence {
                 continue;
             }
             if !aliases.contains_key(&legacy.old_id) {
-                match self.allocate_for(&legacy) {
+                let allocated = match reserved.remove(&legacy.old_id) {
+                    Some(new_id) => Ok(new_id),
+                    None => self.allocate_for(&legacy),
+                };
+                match allocated {
                     Ok(new_id) => {
                         aliases.insert(legacy.old_id.clone(), new_id);
                     }
@@ -115,9 +191,18 @@ impl FileSessionPersistence {
             pending.push(legacy);
         }
         atomic_write_json(&aliases_path, &aliases)?;
+        // The mapping is recorded; reservations of sessions that turned out
+        // unreadable are given up.
+        for session_id in self.layout.ids_of_folders_with(RESERVATION_FILE)? {
+            let session_dir = self.layout.session_dir(&session_id)?;
+            std::fs::remove_file(session_dir.join(RESERVATION_FILE))?;
+            if !aliases.values().any(|new_id| *new_id == session_id) {
+                let _ = std::fs::remove_dir(&session_dir);
+            }
+        }
 
         // Phase 3: the new sessions.
-        let written = self.write_migrated(&pending, &aliases, legacy_drafts_dir);
+        let written = self.write_migrated(&pending, &aliases, legacy_drafts_dir, progress);
         let mut metadata = Vec::new();
         let mut retire_list = Vec::new();
         for (legacy, result) in pending.iter().zip(written) {
@@ -138,6 +223,11 @@ impl FileSessionPersistence {
         }
 
         // Phase 4: references to the old IDs.
+        progress(MigrationProgress {
+            phase: MigrationPhase::Finishing,
+            done: 0,
+            total: report.migrated.len(),
+        });
         if !report.migrated.is_empty() {
             let renamed: BTreeMap<&str, &str> = report
                 .migrated
@@ -164,16 +254,34 @@ impl FileSessionPersistence {
         Ok(report)
     }
 
+    /// The folders an interrupted run reserved, by old session ID.
+    fn read_reservations(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut reserved = std::collections::HashMap::new();
+        for session_id in self.layout.ids_of_folders_with(RESERVATION_FILE)? {
+            let marker = self.layout.session_dir(&session_id)?.join(RESERVATION_FILE);
+            let old_id = std::fs::read_to_string(marker)?;
+            reserved.insert(old_id.trim().to_string(), session_id);
+        }
+        Ok(reserved)
+    }
+
     /// Reserve the new ID of an old session from its project and creation
-    /// date.
+    /// date, marking the folder as reserved for it.
     fn allocate_for(&self, legacy: &Legacy) -> Result<String> {
         let json = std::fs::read_to_string(&legacy.path)?;
         let header: LegacyHeader = serde_json::from_str(&json)
             .with_context(|| format!("failed to parse {}", legacy.path.display()))?;
         let project_root = header.config.init_path.or(header.init_path);
         let created = chrono::DateTime::<chrono::Local>::from(header.created_at).date_naive();
-        self.layout
-            .allocate_session_id(project_root.as_deref(), created)
+        let new_id = self
+            .layout
+            .allocate_session_id(project_root.as_deref(), created)?;
+        // Not synced: a marker lost to a power failure only leaves a gap.
+        std::fs::write(
+            self.layout.session_dir(&new_id)?.join(RESERVATION_FILE),
+            &legacy.old_id,
+        )?;
+        Ok(new_id)
     }
 
     /// Write every pending session under its new ID, a few at a time, and
@@ -183,8 +291,16 @@ impl FileSessionPersistence {
         pending: &[Legacy],
         aliases: &BTreeMap<String, String>,
         legacy_drafts_dir: &Path,
+        progress: &(dyn Fn(MigrationProgress) + Sync),
     ) -> Vec<Result<ChatMetadata>> {
         let next = AtomicUsize::new(0);
+        let finished = AtomicUsize::new(0);
+        let total = pending.len();
+        progress(MigrationProgress {
+            phase: MigrationPhase::Writing,
+            done: 0,
+            total,
+        });
         let results: Mutex<Vec<Option<Result<ChatMetadata>>>> =
             Mutex::new((0..pending.len()).map(|_| None).collect());
         std::thread::scope(|scope| {
@@ -207,6 +323,11 @@ impl FileSessionPersistence {
                                     Ok(metadata)
                                 });
                         results.lock().unwrap()[index] = Some(result);
+                        progress(MigrationProgress {
+                            phase: MigrationPhase::Writing,
+                            done: finished.fetch_add(1, Ordering::Relaxed) + 1,
+                            total,
+                        });
                     }
                 });
             }
@@ -497,7 +618,7 @@ mod tests {
 
         fn migrate(&self) -> MigrationReport {
             self.persistence()
-                .migrate_legacy_sessions(&self.drafts())
+                .migrate_legacy_sessions(&self.drafts(), &|_| {})
                 .unwrap()
         }
     }
@@ -687,6 +808,82 @@ mod tests {
             assert!(sessions.join(kept).exists(), "{kept}");
         }
         assert!(legacy.drafts().join("chat_broken.json").exists());
+    }
+
+    #[test]
+    fn a_rerun_takes_over_the_folders_an_interrupted_run_reserved() {
+        let legacy = Legacy::new();
+        legacy.add_session("chat_a", OCT_7);
+        legacy.add_session("chat_b", OCT_7 + 60);
+        // Interrupted while allocating, before the mapping was recorded:
+        // chat_a got 001, a folder reserved for a session that is gone
+        // got 002.
+        legacy.write(
+            "sessions/-w-proj/2026-10-07-001/migration-reservation",
+            "chat_a",
+        );
+        legacy.write(
+            "sessions/-w-proj/2026-10-07-002/migration-reservation",
+            "chat_gone",
+        );
+
+        let report = legacy.migrate();
+
+        assert_eq!(
+            report.migrated,
+            [
+                ("chat_a".to_string(), "-w-proj/2026-10-07-001".to_string()),
+                ("chat_b".to_string(), "-w-proj/2026-10-07-003".to_string()),
+            ]
+        );
+        let sessions = legacy.sessions();
+        assert!(
+            !sessions
+                .join("-w-proj/2026-10-07-001/migration-reservation")
+                .exists()
+        );
+        assert!(!sessions.join("-w-proj/2026-10-07-002").exists());
+        assert!(
+            !sessions
+                .join("-w-proj/2026-10-07-003/migration-reservation")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn progress_is_reported_per_session_and_phase() {
+        let legacy = Legacy::new();
+        legacy.add_session("chat_a", OCT_7);
+        legacy.add_session("chat_b", OCT_7 + 60);
+        let reports = Mutex::new(Vec::new());
+
+        legacy
+            .persistence()
+            .migrate_legacy_sessions(&legacy.drafts(), &|progress| {
+                reports.lock().unwrap().push(progress)
+            })
+            .unwrap();
+
+        let reports = reports.into_inner().unwrap();
+        let in_phase = |phase| -> Vec<(usize, usize)> {
+            reports
+                .iter()
+                .filter(|p| p.phase == phase)
+                .map(|p| (p.done, p.total))
+                .collect()
+        };
+        assert_eq!(in_phase(MigrationPhase::Reading), [(0, 2), (1, 2)]);
+        assert_eq!(in_phase(MigrationPhase::Writing), [(0, 2), (1, 2), (2, 2)]);
+        assert_eq!(in_phase(MigrationPhase::Finishing), [(0, 2)]);
+    }
+
+    #[test]
+    fn the_fraction_runs_through_the_phases() {
+        let at = |phase, done, total| MigrationProgress { phase, done, total }.fraction();
+        assert_eq!(at(MigrationPhase::Reading, 0, 10), 0.0);
+        assert_eq!(at(MigrationPhase::Reading, 10, 10), 0.25);
+        assert_eq!(at(MigrationPhase::Writing, 5, 10), 0.6);
+        assert_eq!(at(MigrationPhase::Finishing, 0, 0), 0.95);
     }
 
     #[test]
