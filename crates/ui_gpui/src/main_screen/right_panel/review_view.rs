@@ -222,6 +222,8 @@ pub struct ReviewView {
     selection_anchor: Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
     /// Keeps the selection pill and the comment card next to the rows.
     anchor: crate::comments::AnchorTracker,
+    /// The selection whose pill a press elsewhere dismissed.
+    pill_dismissed: Option<super::line_selection::Selected<FileKey>>,
 
     /// Filesystem watcher on the listed repos (keyed by their roots so a
     /// changed set restarts it). Dropping it stops watching.
@@ -277,6 +279,7 @@ impl ReviewView {
             pending_reveal: None,
             selection_anchor: Rc::default(),
             anchor: Default::default(),
+            pill_dismissed: None,
             watcher: None,
             watch_task: None,
             listing_generation: GENERATION_UNSEEN,
@@ -1562,6 +1565,22 @@ mod tests {
             assert!(comment.in_diff);
             assert!(comment.excerpt.starts_with("+line 2"));
         });
+        assert!(cx.debug_bounds("review-selection-comment").is_none());
+
+        // A press elsewhere closes the card…
+        let outside = gpui_kit::point(gpui_kit::px(4.), gpui_kit::px(4.));
+        cx.simulate_click(outside, gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.comment_editor.is_none()));
+
+        // …and hides the pill until the selection changes.
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("review-selection-comment").is_some());
+        cx.simulate_click(outside, gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
         assert!(cx.debug_bounds("review-selection-comment").is_none());
     }
 }

@@ -165,15 +165,23 @@ impl ReviewView {
             self.anchor.track(position, window);
             return position.map(|p| floating(p, editor.clone()));
         }
+        let dismissed = self.selection.get() == self.pill_dismissed.as_ref();
         let position = row
-            .filter(|_| self.selection.get().is_some() && !self.selection.is_dragging())
+            .filter(|_| {
+                self.selection.get().is_some() && !self.selection.is_dragging() && !dismissed
+            })
             .map(|b| point(b.right() - px(72.), b.bottom() + px(2.)));
         self.anchor.track(position, window);
         let view = cx.entity().downgrade();
         let view_for_comment = view.clone();
+        // A press elsewhere hides the pill until the selection changes.
+        let dismiss = cx.listener(|this, _: &gpui_kit::MouseDownEvent, _, cx| {
+            this.pill_dismissed = this.selection.get().cloned();
+            cx.notify();
+        });
         Some(floating(
             position?,
-            selection_pill(
+            div().on_mouse_down_out(dismiss).child(selection_pill(
                 "review-selection",
                 move |_, cx| {
                     view.update(cx, |view, cx| view.copy_selection(cx)).ok();
@@ -184,7 +192,7 @@ impl ReviewView {
                         .ok();
                 },
                 cx,
-            ),
+            )),
         ))
     }
 

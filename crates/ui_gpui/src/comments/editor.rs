@@ -1,6 +1,6 @@
 //! The small card in which the user writes or edits one comment, floating
 //! next to the commented lines or passage ([`super::floating`]).
-//! Cmd/Ctrl-Enter saves, Escape cancels.
+//! Cmd/Ctrl-Enter saves; Escape or a press outside the card cancels.
 
 use code_assistant_core::line_comments::LineComment;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -101,6 +101,10 @@ impl Render for CommentEditor {
             .border_color(theme.border)
             .bg(theme.popover)
             .shadow_lg()
+            // A press anywhere else closes the card, like Cancel.
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| {
+                cx.emit(CommentEditorEvent::Cancel);
+            }))
             .capture_action(cx.listener(|_, _: &Escape, _, cx| {
                 cx.emit(CommentEditorEvent::Cancel);
                 cx.stop_propagation();

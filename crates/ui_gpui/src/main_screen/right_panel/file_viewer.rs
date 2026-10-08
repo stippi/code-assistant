@@ -78,6 +78,8 @@ pub struct FileViewer {
     _comment_editor_subscription: Option<Subscription>,
     /// Keeps the selection pill and the comment card next to their lines.
     anchor: AnchorTracker,
+    /// The selection whose pill a press elsewhere dismissed.
+    pill_dismissed: Option<std::ops::Range<usize>>,
 }
 
 impl EventEmitter<CommentChange> for FileViewer {}
@@ -106,6 +108,7 @@ impl FileViewer {
             _editor_subscriptions: Vec::new(),
             _comment_editor_subscription: None,
             anchor: AnchorTracker::default(),
+            pill_dismissed: None,
         }
     }
 
@@ -438,7 +441,7 @@ impl FileViewer {
             return (None, position);
         }
         let range = editor.selected_range();
-        if range.is_empty() {
+        if range.is_empty() || self.pill_dismissed.as_ref() == Some(&range) {
             return (None, None);
         }
         let pill = editor
@@ -642,9 +645,14 @@ impl FileViewer {
         let position = pill?;
         let viewer = cx.entity().downgrade();
         let viewer_for_comment = viewer.clone();
+        // A press elsewhere hides the pill until the selection changes.
+        let dismiss = cx.listener(|this, _: &gpui_kit::MouseDownEvent, _, cx| {
+            this.pill_dismissed = this.editor.as_ref().map(|e| e.read(cx).selected_range());
+            cx.notify();
+        });
         Some(floating(
             position,
-            selection_pill(
+            div().on_mouse_down_out(dismiss).child(selection_pill(
                 "file-selection",
                 move |_, cx| {
                     viewer
@@ -657,7 +665,7 @@ impl FileViewer {
                         .ok();
                 },
                 cx,
-            ),
+            )),
         ))
     }
 }
