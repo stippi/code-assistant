@@ -579,7 +579,10 @@ mod tests {
         );
         assert!(gpui.get_pending_user_question("a").is_some());
         assert!(gpui.get_pending_user_question("b").is_none());
-        assert!(gpui.sessions_awaiting_permission().contains("a"));
+        assert_eq!(
+            gpui.sessions_awaiting_user().get("a"),
+            Some(&code_assistant_core::session::lifecycle::AwaitingUser::Answer)
+        );
 
         futures::executor::block_on(
             gpui.handle_stream_event(ui_event("a", UiEvent::UserQuestionsResolved { request_id })),

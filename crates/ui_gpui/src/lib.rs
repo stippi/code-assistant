@@ -872,22 +872,21 @@ impl Gpui {
 
     /// The sessions with a permission request still open, whichever session
     /// is viewed. The sidebar flags them as needing the user now.
-    /// Sessions blocked on the user: open permission prompts or questions.
-    pub fn sessions_awaiting_permission(&self) -> std::collections::HashSet<String> {
-        let mut sessions: std::collections::HashSet<String> = self
-            .pending_permission_requests
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(asking, _)| asking.clone())
-            .collect();
-        sessions.extend(
-            self.pending_user_questions
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(asking, _)| asking.clone()),
-        );
+    /// Sessions blocked on the user and what for. A permission prompt
+    /// outranks open questions: it is what the agent waits on right now.
+    pub fn sessions_awaiting_user(
+        &self,
+    ) -> std::collections::HashMap<String, code_assistant_core::session::lifecycle::AwaitingUser>
+    {
+        use code_assistant_core::session::lifecycle::AwaitingUser;
+
+        let mut sessions = std::collections::HashMap::new();
+        for (asking, _) in self.pending_user_questions.lock().unwrap().iter() {
+            sessions.insert(asking.clone(), AwaitingUser::Answer);
+        }
+        for (asking, _) in self.pending_permission_requests.lock().unwrap().iter() {
+            sessions.insert(asking.clone(), AwaitingUser::Approval);
+        }
         sessions
     }
 
