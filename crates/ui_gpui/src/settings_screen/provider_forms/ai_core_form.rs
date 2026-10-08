@@ -257,9 +257,35 @@ impl ProviderForm for AiCoreProviderForm {
             config.insert("api_base_url".to_string(), Value::String(api_base_url));
         }
 
-        if !self.deployments.is_empty() {
+        // A mapping typed into the add row but not added yet is saved too,
+        // rather than dropped with the form.
+        let mut deployments = self.deployments.clone();
+        let pending_model = self
+            .new_deployment_model_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let pending_id = self
+            .new_deployment_id_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if !pending_model.is_empty()
+            && !pending_id.is_empty()
+            && !deployments.iter().any(|d| d.model_id == pending_model)
+        {
+            deployments.push(DeploymentEntry {
+                model_id: pending_model,
+                deployment_id: pending_id,
+                api_type: self.new_deployment_api_type.clone(),
+            });
+        }
+
+        if !deployments.is_empty() {
             let mut models = serde_json::Map::new();
-            for entry in &self.deployments {
+            for entry in &deployments {
                 if entry.api_type == "anthropic" {
                     models.insert(
                         entry.model_id.clone(),
@@ -619,5 +645,71 @@ impl Render for AiCoreProviderForm {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    fn form(cx: &mut TestAppContext) -> (Entity<AiCoreProviderForm>, &mut VisualTestContext) {
+        cx.update(gpui_kit::init);
+        cx.add_window_view(AiCoreProviderForm::new)
+    }
+
+    fn type_into(
+        form: &Entity<AiCoreProviderForm>,
+        cx: &mut VisualTestContext,
+        pick: fn(&AiCoreProviderForm) -> Entity<InputState>,
+        text: &str,
+    ) {
+        form.update_in(cx, |form, window, cx| {
+            pick(form).update(cx, |state, cx| {
+                state.set_value(SharedString::from(text.to_string()), window, cx)
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_mapping_typed_but_not_added_is_saved(cx: &mut TestAppContext) {
+        let (form, cx) = form(cx);
+        type_into(
+            &form,
+            cx,
+            |f| f.new_deployment_model_input.clone(),
+            "model-a",
+        );
+        type_into(&form, cx, |f| f.new_deployment_id_input.clone(), " dep-1 ");
+        form.update(cx, |form, _| form.new_deployment_api_type = "openai".into());
+
+        let config = form.read_with(cx, |form, cx| form.to_config_json(cx));
+        assert_eq!(
+            config["models"]["model-a"],
+            serde_json::json!({"deployment": "dep-1", "api_type": "openai"})
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_added_mapping_wins_over_the_add_row(cx: &mut TestAppContext) {
+        let (form, cx) = form(cx);
+        form.update(cx, |form, _| {
+            form.deployments.push(DeploymentEntry {
+                model_id: "model-a".into(),
+                deployment_id: "dep-1".into(),
+                api_type: "anthropic".into(),
+            })
+        });
+        type_into(
+            &form,
+            cx,
+            |f| f.new_deployment_model_input.clone(),
+            "model-a",
+        );
+        type_into(&form, cx, |f| f.new_deployment_id_input.clone(), "dep-2");
+
+        let config = form.read_with(cx, |form, cx| form.to_config_json(cx));
+        assert_eq!(config["models"]["model-a"], "dep-1");
+        assert_eq!(config["models"].as_object().unwrap().len(), 1);
     }
 }
