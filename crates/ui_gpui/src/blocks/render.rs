@@ -440,9 +440,32 @@ impl BlockView {
                     .text_color(cx.theme().foreground)
                     .child(self.markdown_view(&block.content, true, cx))
                     .into_any_element();
+                let comments = Self::comments_on(&block.content, cx);
+                let warning = cx.theme().warning;
+                let origin = self.block_origin.clone();
                 div()
                     .mt_3()
+                    .relative()
+                    .when(!comments.is_empty(), |d| {
+                        d.pl_2().border_l_2().border_color(warning.opacity(0.7))
+                    })
+                    .child(
+                        gpui_kit::canvas(
+                            move |bounds, _, _| origin.set(Some(bounds.origin)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .on_mouse_up(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|this, event: &gpui_kit::MouseUpEvent, _, cx| {
+                            this.on_text_mouse_up(event.position, cx)
+                        }),
+                    )
                     .child(self.with_copy_button(group_name, body, cx))
+                    .children(self.render_comment_badge(&comments, cx))
+                    .children(self.render_text_floating(window, cx))
                     .into_any_element()
             }
             BlockData::ThinkingBlock(block) => {
@@ -863,6 +886,7 @@ impl BlockView {
         let theme = cx.theme();
         let expanded = self.comments_expanded;
         let label = match comments {
+            [c] if c.on_message => "1 comment on a message".to_owned(),
             [c] => format!("1 comment on {}:{}", c.path, c.lines),
             _ => format!("{} line comments", comments.len()),
         };
@@ -908,12 +932,13 @@ impl BlockView {
                     .pl_2()
                     .border_l_2()
                     .border_color(theme.warning.opacity(0.6))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(format!("{}:{}", c.path, c.lines)),
-                    )
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(
+                        if c.on_message {
+                            "on a message".to_owned()
+                        } else {
+                            format!("{}:{}", c.path, c.lines)
+                        },
+                    ))
                     .child(
                         div()
                             .p_1p5()

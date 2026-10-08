@@ -28,19 +28,19 @@
 
 mod comments;
 
-use super::comment_editor::{CommentChange, CommentEditor};
 use super::line_selection::ChunkMarks;
 use super::line_selection::{LineSelection, SelectsLines, row_selection};
 use super::review_rows::{
     DiffBody, FileOutline, RepoOutline, ReviewRow, changed_span, files_by_proximity, flatten,
 };
+use crate::comments::CommentChange;
+use crate::comments::editor::CommentEditor;
 use crate::shared::file_icons;
 use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_chunk};
 use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
 use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, Size,
     scroll::ScrollableElement,
@@ -54,6 +54,7 @@ use gpui_kit::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // Compare-mode dropdown
@@ -217,6 +218,10 @@ pub struct ReviewView {
     _comment_editor_subscription: Option<Subscription>,
     /// A comment to show once its file's diff is loaded.
     pending_reveal: Option<LineComment>,
+    /// Window bounds of the selection's last row, written when it is painted.
+    selection_anchor: Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
+    /// Keeps the selection pill and the comment card next to the rows.
+    anchor: crate::comments::AnchorTracker,
 
     /// Filesystem watcher on the listed repos (keyed by their roots so a
     /// changed set restarts it). Dropping it stops watching.
@@ -270,6 +275,8 @@ impl ReviewView {
             comment_editor: None,
             _comment_editor_subscription: None,
             pending_reveal: None,
+            selection_anchor: Rc::default(),
+            anchor: Default::default(),
             watcher: None,
             watch_task: None,
             listing_generation: GENERATION_UNSEEN,
@@ -1171,6 +1178,9 @@ impl ReviewView {
             color: theme.selection,
             marked: self.chunk_marks(key, prepared, base_line, chunk.lines.len()),
             mark_color: theme.warning,
+            anchor: self
+                .anchors_selection_end(key, base_line, chunk.lines.len())
+                .then(|| self.selection_anchor.clone()),
         };
         let selection = row_selection(key.clone(), base_line, marks, self.focus_handle.clone(), cx);
 
@@ -1253,31 +1263,8 @@ impl Render for ReviewView {
                 .into_any_element();
         }
 
-        // A "Copy" button appears while there is a selection; it (and Cmd/Ctrl-C
-        // on the focused panel) copies the selected lines.
-        let copy_button = self.selection.get().is_some().then(|| {
-            let theme = cx.theme();
-            div()
-                .id("review-copy-selection")
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1()
-                .px_2()
-                .py_0p5()
-                .rounded(px(4.))
-                .cursor_pointer()
-                .bg(theme.muted)
-                .hover(|s| s.bg(theme.border))
-                .text_xs()
-                .text_color(theme.foreground)
-                .child("Copy")
-                .on_click(cx.listener(|this, _ev, _window, cx| this.copy_selection(cx)))
-                .into_any_element()
-        });
-
-        // Header: compare-mode selector (base selectors live per repo), plus
-        // the copy button when a selection exists.
+        // Header: compare-mode selector (base selectors live per repo). Copy
+        // and comment float next to the selection.
         let header = div()
             .flex()
             .flex_row()
@@ -1297,20 +1284,7 @@ impl Render for ReviewView {
                             .text_color(muted),
                     )
                     .min_w(px(130.)),
-            )
-            .children(copy_button)
-            .when_some(self.comment_label(), |d, label| {
-                d.child(
-                    Button::new("review-comment")
-                        .label(label)
-                        .xsmall()
-                        .ghost()
-                        .tooltip("Comment on the selected lines (⌘⇧M)")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.start_comment(window, cx)),
-                        ),
-                )
-            });
+            );
 
         // The render callback only runs for rows in (or near) the viewport.
         self.sync_rows();
@@ -1341,7 +1315,7 @@ impl Render for ReviewView {
                     .child(body)
                     .vertical_scrollbar(&self.list_state),
             )
-            .children(self.comment_editor.clone())
+            .children(self.render_floating(window, cx))
             .into_any_element()
     }
 }
@@ -1549,5 +1523,45 @@ mod tests {
             assert!(view.selection.get().is_some());
             assert!(view.selected_text().is_none());
         });
+    }
+
+    #[gpui_kit::test]
+    fn a_selection_shows_the_pill_and_its_comment_button_opens_the_card(cx: &mut TestAppContext) {
+        let key: FileKey = (PathBuf::from("/repo"), "a.rs".into());
+        let (view, cx) = view_with_files(vec![added_file("a.rs")], cx);
+        view.update(cx, |view, cx| {
+            view.file_diffs.insert(
+                key.clone(),
+                LoadedDiff {
+                    file: added_file("a.rs"),
+                    prepared: prepared(10),
+                    stamp: 1,
+                },
+            );
+            view.begin_selection(key.clone(), 2, cx);
+            view.extend_selection(&key, 4, cx);
+            view.end_selection();
+            cx.notify();
+        });
+        // The first frame paints the rows and records the selection's end;
+        // the next one floats the pill there.
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+
+        let bounds = cx
+            .debug_bounds("review-selection-comment")
+            .expect("the pill shows");
+        cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, cx| {
+            let editor = view.comment_editor.as_ref().expect("the card opened");
+            let comment = editor.read(cx).comment();
+            assert_eq!((comment.start_line, comment.end_line), (3, 5));
+            assert!(comment.in_diff);
+            assert!(comment.excerpt.starts_with("+line 2"));
+        });
+        assert!(cx.debug_bounds("review-selection-comment").is_none());
     }
 }

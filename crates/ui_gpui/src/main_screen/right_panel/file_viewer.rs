@@ -15,8 +15,9 @@
 //! follow edits). After a load or save each comment is found again by its
 //! excerpt ([`line_comments::locate`]); one that moved is updated.
 
-use super::comment_editor::{CommentChange, CommentEditor, CommentEditorEvent};
 use crate::Gpui;
+use crate::comments::editor::{CommentEditor, CommentEditorEvent};
+use crate::comments::{AnchorTracker, CommentChange, floating, selection_pill};
 use crate::tool_cards::diff_syntax::language_for_path;
 use code_assistant_core::line_comments::{self, LineComment};
 use code_assistant_core::session::FileContent;
@@ -26,8 +27,8 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::{ActiveTheme, Sizable, v_flex};
 use gpui_kit::{
-    Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, KeyDownEvent, Render,
-    Subscription, Task, Window, div, prelude::*,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, KeyDownEvent, Pixels,
+    Point, Render, Subscription, Task, Window, div, point, prelude::*, px,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -75,6 +76,8 @@ pub struct FileViewer {
     focus_handle: FocusHandle,
     _editor_subscriptions: Vec<Subscription>,
     _comment_editor_subscription: Option<Subscription>,
+    /// Keeps the selection pill and the comment card next to their lines.
+    anchor: AnchorTracker,
 }
 
 impl EventEmitter<CommentChange> for FileViewer {}
@@ -102,6 +105,7 @@ impl FileViewer {
             focus_handle: cx.focus_handle(),
             _editor_subscriptions: Vec::new(),
             _comment_editor_subscription: None,
+            anchor: AnchorTracker::default(),
         }
     }
 
@@ -349,20 +353,6 @@ impl FileViewer {
             .cloned()
     }
 
-    /// Whether the header offers to comment (a file is in the editor).
-    pub fn can_comment(&self) -> bool {
-        self.editor.is_some() && self.root.is_some()
-    }
-
-    /// Label of the header's comment button.
-    pub fn comment_label(&self, cx: &gpui_kit::App) -> &'static str {
-        if self.comment_at_cursor(cx).is_some() {
-            "Edit comment"
-        } else {
-            "Comment"
-        }
-    }
-
     /// Open the comment editor for the selected lines (or the comment there).
     pub fn start_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let comment = match self.comment_at_cursor(cx) {
@@ -380,6 +370,7 @@ impl FileViewer {
                     end_line: end,
                     old_side: false,
                     in_diff: false,
+                    on_message: false,
                     excerpt,
                     text: String::new(),
                 }
@@ -420,6 +411,50 @@ impl FileViewer {
         self.comment_editor = None;
         self._comment_editor_subscription = None;
         cx.notify();
+    }
+
+    /// Where the selection pill and the comment card float, in window
+    /// coordinates, from the editor's last layout: the pill under the end of
+    /// a non-empty selection while it is in view; the card under the
+    /// commented lines (kept inside the editor).
+    fn floating_positions(
+        &self,
+        cx: &gpui_kit::App,
+    ) -> (Option<Point<Pixels>>, Option<Point<Pixels>>) {
+        let Some(editor) = &self.editor else {
+            return (None, None);
+        };
+        let editor = editor.read(cx);
+        let visible = editor.input_bounds();
+        if let Some(card) = &self.comment_editor {
+            let comment = card.read(cx).comment();
+            let text = editor.text();
+            let row = comment.end_line.max(1).min(text.lines_len().max(1)) - 1;
+            let offset = text.line_start_offset(row);
+            let position = editor.range_to_bounds(&(offset..offset)).map(|b| {
+                let y = (b.bottom() + px(4.)).clamp(visible.top(), visible.bottom() - px(40.));
+                point(b.left(), y)
+            });
+            return (None, position);
+        }
+        let range = editor.selected_range();
+        if range.is_empty() {
+            return (None, None);
+        }
+        let pill = editor
+            .range_to_bounds(&(range.end..range.end))
+            .filter(|b| visible.contains(&b.origin))
+            .map(|b| point(b.left(), b.bottom() + px(2.)));
+        (pill, None)
+    }
+
+    fn copy_selection(&self, cx: &mut gpui_kit::App) {
+        if let Some(editor) = &self.editor {
+            let text = editor.read(cx).selected_value().to_string();
+            if !text.is_empty() {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            }
+        }
     }
 
     /// Select a revealed comment's lines and open it.
@@ -592,6 +627,41 @@ impl FileViewer {
     }
 }
 
+impl FileViewer {
+    /// The selection pill or the comment card, floating next to the lines.
+    fn render_floating(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let (pill, card) = self.floating_positions(cx);
+        self.anchor.track(pill.or(card), window);
+        if let (Some(position), Some(editor)) = (card, &self.comment_editor) {
+            return Some(floating(position, editor.clone()));
+        }
+        let position = pill?;
+        let viewer = cx.entity().downgrade();
+        let viewer_for_comment = viewer.clone();
+        Some(floating(
+            position,
+            selection_pill(
+                "file-selection",
+                move |_, cx| {
+                    viewer
+                        .update(cx, |viewer, cx| viewer.copy_selection(cx))
+                        .ok();
+                },
+                move |window, cx| {
+                    viewer_for_comment
+                        .update(cx, |viewer, cx| viewer.start_comment(window, cx))
+                        .ok();
+                },
+                cx,
+            ),
+        ))
+    }
+}
+
 impl Focusable for FileViewer {
     fn focus_handle(&self, _cx: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
@@ -658,6 +728,6 @@ impl Render for FileViewer {
             }))
             .children(self.render_banner(cx))
             .child(div().flex_1().min_h_0().child(body))
-            .children(self.comment_editor.clone())
+            .children(self.render_floating(window, cx))
     }
 }

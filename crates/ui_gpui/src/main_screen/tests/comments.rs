@@ -18,6 +18,7 @@ fn comment(file: &str, lines: (usize, usize), text: &str) -> LineComment {
         end_line: lines.1,
         old_side: false,
         in_diff: false,
+        on_message: false,
         excerpt: "let x = y.unwrap();".into(),
         text: text.into(),
     }
@@ -154,4 +155,26 @@ fn the_title_bar_switch_opens_switches_and_closes_the_panel(cx: &mut TestAppCont
     assert_eq!(panel_state(&mut test), Some(RightPanelView::Review));
     test.click("right-panel-view-Review");
     assert_eq!(panel_state(&mut test), None);
+}
+
+#[gpui_kit::test]
+fn a_comment_on_a_message_reaches_the_draft_and_the_transcript(cx: &mut TestAppContext) {
+    let mut test = MainScreenTest::new(cx);
+    test.view_session("a");
+    let mut on_message = LineComment::on_message("Use a ledger first.");
+    on_message.text = "why not both?".into();
+    test.cx.update(|_, cx| {
+        crate::comments::report(crate::comments::CommentChange::Upsert(on_message), cx)
+    });
+    test.settle();
+
+    let comments = test.comments();
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].on_message);
+    // Message blocks see it through the global, to mark the quoted message.
+    test.cx.update(|_, cx| {
+        let marked = crate::comments::message_comments(cx);
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0].excerpt, "Use a ledger first.");
+    });
 }

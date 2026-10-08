@@ -6,9 +6,8 @@
 //! marked, whether the comment was made here or in the Files view.
 
 use super::*;
-use crate::main_screen::right_panel::comment_editor::{
-    CommentChange, CommentEditor, CommentEditorEvent,
-};
+use crate::comments::CommentChange;
+use crate::comments::editor::{CommentEditor, CommentEditorEvent};
 use code_assistant_core::line_comments::LineComment;
 use similar::ChangeTag;
 use std::ops::Range;
@@ -128,19 +127,65 @@ impl ReviewView {
             end_line: *numbers_used.iter().max()?,
             old_side,
             in_diff: true,
+            on_message: false,
             excerpt,
             text: String::new(),
         })
     }
 
-    /// Label of the header's comment button, if one is offered.
-    pub(super) fn comment_label(&self) -> Option<&'static str> {
-        let comment = self.selection_comment()?;
-        Some(if comment.id != 0 {
-            "Edit comment"
-        } else {
-            "Comment"
+    /// Whether the chunk of `key` starting at flat line `base_line` holds the
+    /// selection's last row.
+    pub(super) fn anchors_selection_end(
+        &self,
+        key: &FileKey,
+        base_line: usize,
+        rows: usize,
+    ) -> bool {
+        self.selection.get().is_some_and(|sel| {
+            let (_, hi) = sel.range();
+            &sel.key == key && (base_line..base_line + rows).contains(&hi)
         })
+    }
+
+    /// The selection pill under the selection's last row, or the comment
+    /// card while one is open.
+    pub(super) fn render_floating(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        use crate::comments::{floating, selection_pill};
+        use gpui_kit::point;
+        // Written by the last paint; cleared so a scrolled-away row hides it.
+        let row = self.selection_anchor.take();
+        if let Some(editor) = &self.comment_editor {
+            let position = row
+                .map(|b| point(b.left() + px(28.), b.bottom() + px(2.)))
+                .or(self.anchor.last());
+            self.anchor.track(position, window);
+            return position.map(|p| floating(p, editor.clone()));
+        }
+        let position = row
+            .filter(|_| self.selection.get().is_some() && !self.selection.is_dragging())
+            .map(|b| point(b.right() - px(72.), b.bottom() + px(2.)));
+        self.anchor.track(position, window);
+        let view = cx.entity().downgrade();
+        let view_for_comment = view.clone();
+        Some(floating(
+            position?,
+            selection_pill(
+                "review-selection",
+                move |_, cx| {
+                    view.update(cx, |view, cx| view.copy_selection(cx)).ok();
+                },
+                move |window, cx| {
+                    view_for_comment
+                        .update(cx, |view, cx| view.start_comment(window, cx))
+                        .ok();
+                },
+                cx,
+            ),
+        ))
     }
 
     pub(super) fn start_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -272,6 +317,7 @@ mod tests {
             end_line: lines.1,
             old_side,
             in_diff: true,
+            on_message: false,
             excerpt: String::new(),
             text: String::new(),
         }

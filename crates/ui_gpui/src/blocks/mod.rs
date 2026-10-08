@@ -1,3 +1,4 @@
+mod comments;
 pub mod container;
 pub mod data;
 mod render;
@@ -231,6 +232,22 @@ pub struct BlockView {
     deferred_output_requested: bool,
     /// A text block of line comments shows them listed instead of folded.
     comments_expanded: bool,
+    /// Window origin of a text block, written each paint, so the selection
+    /// pill and the comment card can float at a place within it.
+    block_origin: Rc<Cell<Option<gpui_kit::Point<Pixels>>>>,
+    /// Where the mouse was released over selected text, relative to the
+    /// block; the selection pill shows there.
+    selection_offset: Option<gpui_kit::Point<Pixels>>,
+    /// The passage selected when the mouse was released; kept because a
+    /// press on the pill may clear the window's text selection.
+    selected_passage: Option<String>,
+    /// The open comment card and its place relative to the block.
+    comment_editor: Option<(
+        Entity<crate::comments::editor::CommentEditor>,
+        gpui_kit::Point<Pixels>,
+    )>,
+    _comment_editor_subscription: Option<gpui_kit::Subscription>,
+    anchor: crate::comments::AnchorTracker,
 }
 
 impl BlockView {
@@ -286,6 +303,12 @@ impl BlockView {
             focus_handle: cx.focus_handle(),
             deferred_output_requested: false,
             comments_expanded: false,
+            block_origin: Rc::default(),
+            selection_offset: None,
+            selected_passage: None,
+            comment_editor: None,
+            _comment_editor_subscription: None,
+            anchor: Default::default(),
         }
     }
 

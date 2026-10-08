@@ -1,6 +1,6 @@
-//! The box in which the user writes or edits one line comment, shown at the
-//! bottom of the view the lines were selected in. Cmd/Ctrl-Enter saves,
-//! Escape cancels.
+//! The small card in which the user writes or edits one comment, floating
+//! next to the commented lines or passage ([`super::floating`]).
+//! Cmd/Ctrl-Enter saves, Escape cancels.
 
 use code_assistant_core::line_comments::LineComment;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -8,16 +8,8 @@ use gpui_kit::component::input::{Escape, InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::{
     Context, Entity, EventEmitter, FocusHandle, Focusable, Render, Subscription, Window, div,
-    prelude::*,
+    prelude::*, px,
 };
-
-/// A view's change to the draft's comments.
-#[derive(Clone, Debug)]
-pub enum CommentChange {
-    /// Add (`id` 0) or replace a comment.
-    Upsert(LineComment),
-    Remove(u64),
-}
 
 pub enum CommentEditorEvent {
     /// The comment with the entered text.
@@ -42,7 +34,7 @@ impl CommentEditor {
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(2, 8)
-                .placeholder("Comment on these lines…")
+                .placeholder("Add a comment…")
                 .default_value(text)
         });
         input.update(cx, |input, cx| input.focus(window, cx));
@@ -88,24 +80,27 @@ impl Render for CommentEditor {
         let existing = self.comment.id != 0;
         let id = self.comment.id;
         let title = format!(
-            "{} {}:{}",
+            "{} {}",
             if existing {
                 "Edit comment on"
             } else {
                 "Comment on"
             },
-            self.comment.file_name(),
-            self.comment.lines_label()
+            self.comment.location_label()
         );
         div()
-            .flex_none()
+            .id("comment-editor")
+            .occlude()
+            .w(px(340.))
             .flex()
             .flex_col()
             .gap_1p5()
             .p_2()
-            .border_t_1()
+            .rounded_lg()
+            .border_1()
             .border_color(theme.border)
-            .bg(theme.title_bar)
+            .bg(theme.popover)
+            .shadow_lg()
             .capture_action(cx.listener(|_, _: &Escape, _, cx| {
                 cx.emit(CommentEditorEvent::Cancel);
                 cx.stop_propagation();

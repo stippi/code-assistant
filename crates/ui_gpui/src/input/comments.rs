@@ -100,7 +100,10 @@ impl InputArea {
                 } else {
                     ""
                 };
-                format!("{}:{} · {text}{ellipsis}", c.file_name(), c.lines_label())
+                format!("{} · {text}{ellipsis}", c.location_label())
+            }
+            _ if comments.iter().any(|c| c.on_message) => {
+                format!("{} comments", comments.len())
             }
             _ => {
                 let files: BTreeSet<_> = comments.iter().map(|c| &c.file).collect();
@@ -225,7 +228,7 @@ impl InputArea {
                                 div()
                                     .text_xs()
                                     .text_color(theme.muted_foreground)
-                                    .child(format!("{}:{}", c.file_name(), c.lines_label())),
+                                    .child(c.location_label()),
                             )
                             .child(
                                 div()
@@ -317,6 +320,7 @@ mod tests {
             end_line: 5,
             old_side: false,
             in_diff: false,
+            on_message: false,
             excerpt: "x".into(),
             text: text.into(),
         }
@@ -333,6 +337,16 @@ mod tests {
         assert_eq!(
             InputArea::comments_label(&[comment("/p/a.rs", "x"), comment("/p/a.rs", "y")]),
             "2 comments in a.rs"
+        );
+        let mut on_message = LineComment::on_message("a passage");
+        on_message.text = "why?".into();
+        assert_eq!(
+            InputArea::comments_label(std::slice::from_ref(&on_message)),
+            "message · why?"
+        );
+        assert_eq!(
+            InputArea::comments_label(&[on_message, comment("/p/a.rs", "x")]),
+            "2 comments"
         );
         assert_eq!(
             InputArea::comments_label(&[

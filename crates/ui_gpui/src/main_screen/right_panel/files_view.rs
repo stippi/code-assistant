@@ -8,10 +8,10 @@
 //! they change on disk. The open file, the expanded directories and whether
 //! ignored entries show are remembered per session.
 
-use super::comment_editor::CommentChange;
 use super::file_filter::{FileMatch, filter_paths};
 use super::file_viewer::FileViewer;
 use crate::Gpui;
+use crate::comments::CommentChange;
 use crate::shared::{file_icons, ui_state};
 use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::session::{DirListing, EntryKind, TreeWatcher};
@@ -851,8 +851,6 @@ impl FilesView {
         let viewer = self.viewer.read(cx);
         let path = viewer.path()?.to_owned();
         let dirty = viewer.is_dirty();
-        let comment_label = viewer.can_comment().then(|| viewer.comment_label(cx));
-        let viewer_entity = self.viewer.clone();
         Some(
             div()
                 .flex_none()
@@ -884,19 +882,6 @@ impl FilesView {
                             .tooltip(|window, cx| {
                                 gpui_kit::component::tooltip::Tooltip::new("Unsaved edits")
                                     .build(window, cx)
-                            }),
-                    )
-                })
-                .when_some(comment_label, |d, label| {
-                    d.child(
-                        Button::new("files-comment")
-                            .label(label)
-                            .xsmall()
-                            .ghost()
-                            .tooltip("Comment on the selected lines (⌘⇧M)")
-                            .on_click(move |_, window, cx| {
-                                viewer_entity
-                                    .update(cx, |viewer, cx| viewer.start_comment(window, cx));
                             }),
                     )
                 }),

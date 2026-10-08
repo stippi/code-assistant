@@ -48,6 +48,10 @@ impl<K: Clone + PartialEq> LineSelection<K> {
         self.selected.as_ref()
     }
 
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
     pub fn clear(&mut self) {
         self.selected = None;
         self.dragging = false;
@@ -128,6 +132,9 @@ pub(crate) struct ChunkMarks {
     pub color: Hsla,
     pub marked: Vec<Range<usize>>,
     pub mark_color: Hsla,
+    /// Set for the chunk holding the selection's last row; see
+    /// [`RowSelection::anchor`].
+    pub anchor: Option<Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>>,
 }
 
 /// The [`RowSelection`] for one chunk of `key`'s rows starting at flat line
@@ -184,6 +191,7 @@ pub(crate) fn row_selection<V: SelectsLines>(
         color: marks.color,
         marked: marks.marked,
         mark_color: marks.mark_color,
+        anchor: marks.anchor,
         on_start,
         on_drag,
         on_end,

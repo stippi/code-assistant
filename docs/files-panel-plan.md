@@ -47,10 +47,8 @@ Decisions taken while building:
   `SessionService::write_project_file` and keeps the file's encoding.
 - **The Review view keeps its diff rows.** Its selection moved into the
   shared `LineSelection` helper; commented rows get a bar at the left edge.
-- **Comment box at the bottom** of the view instead of inline below the
-  lines (the Review list is virtualized in chunks; the editor owns its
-  layout). A header button ("Comment" / "Edit comment") or Cmd/Ctrl-Shift-M
-  opens it for the selection; Cmd/Ctrl-Enter saves, Escape cancels.
+- **Comment card** opens from the selection pill or Cmd/Ctrl-Shift-M (Files
+  and Review); Cmd/Ctrl-Enter saves, Escape cancels.
 - **Markers.** In the editor, commented lines are tinted with editor
   decorations, which follow edits; in the Review view, rows covered by a
   comment carry a bar. A selection over a commented range edits that
@@ -60,6 +58,19 @@ Decisions taken while building:
   reveal it again (Review or Files).
 - **Re-anchoring** happens after a load or save in the editor
   (`line_comments::locate`); diff comments are not re-anchored.
+- **Comments on chat messages.** Releasing the mouse over selected text in
+  a message shows the selection pill there; its comment button opens the
+  card. The comment carries the selected passage (Markdown source) as a
+  quote and goes to the model as `<comment on="message">` with a `<quote>`.
+  A message containing a pending comment's quote gets a border and a badge
+  that opens the comment; the composer's list scrolls to it.
+- **Selection pill and floating card everywhere.** In the editor, the
+  Review diffs and the chat, a selection shows a small pill (copy, comment)
+  at its end, and the comment card floats next to the lines instead of
+  docking at the bottom. Positions come from the last frame's layout; when
+  they move, one more frame is drawn (`comments::AnchorTracker`). The
+  Review rows take presses through a hitbox so the pill above them keeps
+  its clicks.
 - **Switching views** happens in the title bar (Review | Files | Browser),
   which replaced the panel toggle button: a click opens the panel on that
   view or switches to it; clicking the shown view closes the panel.

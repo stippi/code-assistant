@@ -8,7 +8,6 @@
 
 #[cfg(feature = "browser-panel")]
 mod browser;
-pub mod comment_editor;
 mod file_filter;
 mod file_viewer;
 pub mod files_view;
@@ -16,8 +15,8 @@ mod line_selection;
 mod review_rows;
 pub mod review_view;
 
+pub use crate::comments::CommentChange;
 use code_assistant_core::line_comments::LineComment;
-pub use comment_editor::CommentChange;
 use files_view::FilesView;
 use gpui_kit::{Context, Entity, FocusHandle, Focusable, Render, Window, div, prelude::*};
 use review_view::ReviewView;

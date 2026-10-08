@@ -1,4 +1,5 @@
-//! Comments the user attaches to lines of a file before sending a message.
+//! Comments the user attaches to lines of a file, or to a passage of a chat
+//! message, before sending a message.
 //!
 //! The composer collects them as one [`DraftAttachment::LineComments`]
 //! (crate::persistence::DraftAttachment). On send they become a single text
@@ -36,6 +37,10 @@ pub struct LineComment {
     /// tells a frontend where to show it again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_diff: bool,
+    /// On a passage of a chat message rather than on a file: `excerpt` is the
+    /// quoted passage; `file` and the lines are unused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_message: bool,
     /// The selected lines as shown when the comment was made.
     pub excerpt: String,
     pub text: String,
@@ -48,6 +53,31 @@ impl LineComment {
             self.start_line.to_string()
         } else {
             format!("{}-{}", self.start_line, self.end_line)
+        }
+    }
+
+    /// Where the comment is, for compact labels: `lib.rs:12-15`, or
+    /// `message` for a comment on a chat message.
+    pub fn location_label(&self) -> String {
+        if self.on_message {
+            "message".to_owned()
+        } else {
+            format!("{}:{}", self.file_name(), self.lines_label())
+        }
+    }
+
+    /// A comment on a chat message, quoting `quote`.
+    pub fn on_message(quote: impl Into<String>) -> Self {
+        Self {
+            id: 0,
+            file: PathBuf::new(),
+            start_line: 0,
+            end_line: 0,
+            old_side: false,
+            in_diff: false,
+            on_message: true,
+            excerpt: quote.into(),
+            text: String::new(),
         }
     }
 
@@ -80,6 +110,14 @@ pub fn render(comments: &[LineComment]) -> String {
     let mut out = String::from(OPEN_TAG);
     out.push('\n');
     for c in comments {
+        if c.on_message {
+            out.push_str(&format!(
+                "<comment on=\"message\">\n<quote>\n{}\n</quote>\n{}\n</comment>\n",
+                cap_excerpt(&c.excerpt),
+                c.text.trim(),
+            ));
+            continue;
+        }
         let side = if c.old_side { " side=\"old\"" } else { "" };
         out.push_str(&format!(
             "<comment path=\"{}\" lines=\"{}\"{side}>\n<code>\n{}\n</code>\n{}\n</comment>\n",
@@ -136,10 +174,14 @@ pub fn locate(lines: &[&str], comment: &LineComment) -> Option<(usize, usize)> {
 /// A comment read back from a rendered block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedComment {
+    /// Empty for a comment on a message.
     pub path: String,
+    /// Empty for a comment on a message.
     pub lines: String,
+    /// The commented lines, or the quoted passage of a message.
     pub code: String,
     pub text: String,
+    pub on_message: bool,
 }
 
 /// Read a block produced by [`render`]; `None` for any other text.
@@ -157,13 +199,25 @@ pub fn parse(block: &str) -> Option<Vec<ParsedComment>> {
         let inner_and_rest = &after[head_end + 1..];
         let end = inner_and_rest.find("</comment>")?;
         let inner = &inner_and_rest[..end];
-        let code_start = inner.find("<code>\n")? + "<code>\n".len();
-        let code_end = inner.find("\n</code>")?;
+        let on_message = attribute(head, "on").as_deref() == Some("message");
+        let tag = if on_message { "quote" } else { "code" };
+        let (open, close) = (format!("<{tag}>\n"), format!("\n</{tag}>"));
+        let code_start = inner.find(&open)? + open.len();
+        let code_end = inner.find(&close)?;
         comments.push(ParsedComment {
-            path: attribute(head, "path")?,
-            lines: attribute(head, "lines")?,
+            path: if on_message {
+                String::new()
+            } else {
+                attribute(head, "path")?
+            },
+            lines: if on_message {
+                String::new()
+            } else {
+                attribute(head, "lines")?
+            },
             code: inner[code_start..code_end].to_owned(),
-            text: inner[code_end + "\n</code>".len()..].trim().to_owned(),
+            text: inner[code_end + close.len()..].trim().to_owned(),
+            on_message,
         });
         rest = &inner_and_rest[end + "</comment>".len()..];
     }
@@ -188,6 +242,7 @@ mod tests {
             end_line: lines.1,
             old_side: false,
             in_diff: false,
+            on_message: false,
             excerpt: excerpt.to_owned(),
             text: text.to_owned(),
         }
@@ -246,6 +301,22 @@ mod tests {
             Some((7, 8))
         );
         assert_eq!(locate(&["a", "z"], &c), None);
+    }
+
+    #[test]
+    fn message_comments_quote_the_passage() {
+        let mut c = LineComment::on_message("Use a ledger first.");
+        c.text = "why not both?".into();
+        let block = render(&[c.clone(), comment("a.rs", (1, 1), "x", "y")]);
+        assert!(block.contains(
+            "<comment on=\"message\">\n<quote>\nUse a ledger first.\n</quote>\nwhy not both?\n</comment>"
+        ));
+        let parsed = parse(&block).unwrap();
+        assert!(parsed[0].on_message);
+        assert_eq!(parsed[0].code, "Use a ledger first.");
+        assert_eq!(parsed[0].text, "why not both?");
+        assert!(!parsed[1].on_message);
+        assert_eq!(c.location_label(), "message");
     }
 
     #[test]

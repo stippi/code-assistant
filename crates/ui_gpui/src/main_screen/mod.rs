@@ -230,6 +230,7 @@ pub struct MainScreen {
     _input_area_subscription: Subscription,
     _right_panel_subscription: Subscription,
     _open_file_subscription: Subscription,
+    _comment_bus_subscription: Subscription,
     _plan_banner_subscription: Subscription,
     _project_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
@@ -294,16 +295,20 @@ impl MainScreen {
                 this.open_file_in_panel(request.clone(), cx);
             },
         );
+        // Comments made on chat messages change the composer's draft too.
+        let comment_bus = cx.new(|_| crate::comments::CommentBus);
+        cx.set_global(crate::comments::CommentBusGlobal(comment_bus.clone()));
+        let comment_bus_subscription = cx.subscribe(
+            &comment_bus,
+            |this: &mut Self, _, change: &crate::comments::CommentChange, cx| {
+                this.apply_comment_change(change, cx);
+            },
+        );
         // Comment edits in the panel change the composer's draft.
         let right_panel_subscription = cx.subscribe(
             &right_panel,
             |this: &mut Self, _, change: &right_panel::CommentChange, cx| {
-                this.input_area.update(cx, |input, cx| match change {
-                    right_panel::CommentChange::Upsert(comment) => {
-                        input.upsert_comment(comment.clone(), cx)
-                    }
-                    right_panel::CommentChange::Remove(id) => input.remove_comment(*id, cx),
-                });
+                this.apply_comment_change(change, cx);
             },
         );
 
@@ -346,6 +351,7 @@ impl MainScreen {
             _input_area_subscription: input_area_subscription,
             _right_panel_subscription: right_panel_subscription,
             _open_file_subscription: open_file_subscription,
+            _comment_bus_subscription: comment_bus_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _project_sidebar_subscription: project_sidebar_subscription,
             _new_project_dialog_subscription: None,
@@ -380,6 +386,53 @@ impl MainScreen {
         cx: &mut Context<Self>,
     ) {
         self.toggle_right_sidebar(cx);
+    }
+
+    /// Apply a comment change from the panel or the transcript to the draft.
+    fn apply_comment_change(
+        &mut self,
+        change: &crate::comments::CommentChange,
+        cx: &mut Context<Self>,
+    ) {
+        self.input_area.update(cx, |input, cx| match change {
+            crate::comments::CommentChange::Upsert(comment) => {
+                input.upsert_comment(comment.clone(), cx)
+            }
+            crate::comments::CommentChange::Remove(id) => input.remove_comment(*id, cx),
+        });
+    }
+
+    /// Scroll to the message quoted by `comment` and open the comment there.
+    fn reveal_message_comment(
+        &mut self,
+        comment: code_assistant_core::line_comments::LineComment,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(gpui) = cx.try_global::<Gpui>() else {
+            return;
+        };
+        let containers = gpui.message_queue.lock().unwrap().clone();
+        let quote = comment.excerpt.trim().to_owned();
+        let found = containers.iter().enumerate().find_map(|(ix, container)| {
+            container
+                .read(cx)
+                .elements()
+                .into_iter()
+                .find(|block| {
+                    block
+                        .read(cx)
+                        .text_content()
+                        .is_some_and(|text| text.contains(&quote))
+                })
+                .map(|block| (ix, block))
+        });
+        let Some((ix, block)) = found else {
+            gpui.display_status("The commented message is not shown");
+            return;
+        };
+        self.messages_view.read(cx).reveal_message(ix);
+        block.update(cx, |block, cx| block.reveal_comment(comment, window, cx));
     }
 
     /// Show a file in the right panel's Files view, opening the panel. A file
@@ -754,9 +807,15 @@ impl MainScreen {
                 }
             }
             InputAreaEvent::CommentsChanged { comments } => {
+                // Message blocks read the comments to mark what was commented.
+                cx.set_global(crate::comments::CurrentComments(comments.clone()));
+                cx.refresh_windows();
                 let comments = comments.clone();
                 self.right_panel
                     .update(cx, |panel, cx| panel.set_comments(comments, cx));
+            }
+            InputAreaEvent::RevealComment { comment } if comment.on_message => {
+                self.reveal_message_comment(comment.clone(), _window, cx);
             }
             InputAreaEvent::RevealComment { comment } => {
                 if self.right_sidebar_collapsed {
