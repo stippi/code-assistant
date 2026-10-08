@@ -117,8 +117,10 @@ is written to `blobs/<sha256>.json`, and the record keeps a reference:
 {"$blob": "9f86d081…", "size": 18392011}
 ```
 
-Loading resolves the references before the executions are deserialized;
-`agent_core` and the tools don't see any of this.
+`load_chat_session` resolves the references before the executions are
+deserialized, so `agent_core` and the tools don't see any of this. Showing
+a session doesn't read them at all (see [Reading on
+demand](#reading-tool-results-on-demand)).
 
 - **Content-addressed**: a blob is written once and never changed, so saving
   doesn't rewrite stored results, and identical results (the same
@@ -129,10 +131,6 @@ Loading resolves the references before the executions are deserialized;
   the drive-cache flush (`F_FULLFSYNC`) that takes milliseconds per call on
   macOS. The journal record referring to it is written afterwards with the
   full flush, which makes both durable in order.
-- **Eager loading**: `render_tool_results_in_messages` and
-  `convert_tool_executions_to_ui_data` walk all executions, and the
-  `ResourcesTracker` deduplicates file contents across them, so opening a
-  session still loads every result.
 - Blobs nothing refers to any more are deleted during compaction.
 
 ## Append-only journal
@@ -154,8 +152,8 @@ same id:
   the changed nodes and executions plus a header if the header changed — one
   synced write under `entry.lock`. Stored tool results are neither read nor
   written. The run gets the new metadata back for its notification.
-- **Other updates** (`update_entry`): the closure still sees the whole
-  session, resolved. Afterwards `journal::diff` compares before and after and
+- **Other updates** (`update_entry`): the closure sees the whole
+  session, with its tool results unresolved. Afterwards `journal::diff` compares before and after and
   appends only what differs.
 - `metadata.json` is written only when the session's entry changed.
 
@@ -212,8 +210,61 @@ ACP clients see the new IDs through `session/list`, and a client that sends
 an old ID to `session/load` can't be redirected, because it would keep using
 that ID for every later request.
 
+## Reading tool results on demand
+
+Reading every blob made switching sessions slower than with the single
+session file: opening a blob file took about 0.8 ms even with a warm cache
+(on a machine whose endpoint protection scans files as they are opened),
+and cold up to several milliseconds, on top of parsing, deserializing and
+rendering the result. So showing a session reads none of them:
+
+- **Resident sessions** (`SessionInstance::session`, and what
+  `update_entry` returns) keep large tool results as blob references
+  (`load_chat_session_unresolved`, `is_blob_reference`). A resident
+  session is read again only when its journal changed
+  (`journal_version`: inode, length, modification time); revisiting an
+  unchanged session reads nothing.
+- **Snapshots and transcripts** (`convert_tool_executions_to_ui_data`)
+  leave out the output of a successful stored result and mark it
+  `ToolResultData::output_deferred`. Status and duration come from the
+  conversation's `tool_result` blocks, which record `is_error` and the
+  timestamps. Failures and results without a `tool_result` block are read,
+  their output explains them.
+- **On demand**: `SessionService::load_tool_output` returns one result
+  complete. It takes the record from the manager and reads the blob after
+  letting go of it. GPUI asks when the block shows the output: cards that
+  are expanded right away, inline blocks when expanded. The answer arrives
+  as a tool status update.
+- **Rendering for the UI doesn't deduplicate**: only `read_files::render`
+  (the LLM's view) uses the `ResourcesTracker`, so each result renders on
+  its own the same as in sequence.
+- **Followers get everything**: the watcher refresh appends only new
+  executions, with their outputs (ACP replays them).
+- **Agent runs** resolve every result they start from.
+
+Measured from the click in the GPUI sidebar to the end of the first frame
+showing the session (release build, fresh APFS clone of the data for
+"cold", the second visit for "warm"; milliseconds):
+
+| Session                         | single file cold / warm | all blobs cold / warm | on demand cold / warm |
+|---------------------------------|-------------------------|-----------------------|-----------------------|
+| 500 KB, 17 blobs                | 239 / 128               | 298 / 137             | 182 / 129             |
+| 2.5 MB, 50 blobs                | 304 / 261               | 541 / 302             | 251 / 198             |
+| 16 MB, 217 blobs                | 780 / 752               | 1775 / 874            | 349 / 307             |
+| 118 MB, 123 blobs (1)           | 1369 / 1316             | 1441 / 1328           | 257 / 306             |
+| 394 MB, 237 MB `delete_files`   | 1040 / 720              |                       | 168 / 131             |
+
+(1) The app showed this session at start, so its first switch was already
+warm.
+
+Besides the blobs, the GPUI frontend spent up to 800 ms applying the tool
+results of a large session: each result went to every message container,
+copying its output once per container. They now apply in one pass by
+tool ID. What remains is converting the messages (20 to 70 ms) and GPUI's
+first layout of all rows (60 to 160 ms).
+
 ## Possible next steps
 
-- Lazy blob loading, and UI-only data such as `deleted_contents` kept out of
-  the result the runtime loads.
+- UI-only data such as `deleted_contents` kept out of the result the
+  runtime loads.
 - Images stored as image files instead of base64 inside JSON blobs.
