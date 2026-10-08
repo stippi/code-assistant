@@ -555,7 +555,7 @@ impl Gpui {
                     sessions.len()
                 );
                 // Update local cache
-                *self.chat_sessions.lock().unwrap() = sessions.clone();
+                self.set_chat_sessions(sessions.clone());
                 let _current_session_id = self.current_session_id.lock().unwrap().clone();
 
                 // Refresh all windows to trigger re-render with new chat data
