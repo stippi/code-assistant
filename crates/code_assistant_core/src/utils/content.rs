@@ -1,10 +1,17 @@
 use crate::persistence::DraftAttachment;
 use llm::ContentBlock;
+use std::path::Path;
 use std::time::SystemTime;
 
 pub use agent_core::text_summary_from_blocks;
 
-pub fn content_blocks_from(message: &str, attachments: &[DraftAttachment]) -> Vec<ContentBlock> {
+/// The content blocks of a user message. Line comments name their files
+/// relative to `project_root` where they lie inside it.
+pub fn content_blocks_from(
+    message: &str,
+    attachments: &[DraftAttachment],
+    project_root: Option<&Path>,
+) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
 
     if !message.is_empty() {
@@ -44,6 +51,16 @@ pub fn content_blocks_from(message: &str, attachments: &[DraftAttachment]) -> Ve
                     "File: {filename}\n{content}"
                 )));
             }
+            DraftAttachment::LineComments { comments } if !comments.is_empty() => {
+                let comments = match project_root {
+                    Some(root) => crate::line_comments::relative_to(comments, root),
+                    None => comments.clone(),
+                };
+                blocks.push(ContentBlock::new_text(crate::line_comments::render(
+                    &comments,
+                )));
+            }
+            DraftAttachment::LineComments { .. } => {}
         }
     }
 

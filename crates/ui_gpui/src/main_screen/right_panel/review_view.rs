@@ -26,13 +26,19 @@
 //! listing entry changed is stale and re-requested, but keeps rendering until
 //! its replacement arrives, so nothing flickers.
 
+mod comments;
+
+use super::line_selection::ChunkMarks;
+use super::line_selection::{LineSelection, SelectsLines, row_selection};
 use super::review_rows::{
     DiffBody, FileOutline, RepoOutline, ReviewRow, changed_span, files_by_proximity, flatten,
 };
+use crate::comments::CommentChange;
+use crate::comments::editor::CommentEditor;
 use crate::shared::file_icons;
 use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_chunk};
-use crate::tool_cards::diff_rows::{EndCallback, LineCallback, RowSelection};
 use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
+use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
 use gpui_kit::component::{
@@ -168,24 +174,6 @@ struct LoadedDiff {
     stamp: u64,
 }
 
-/// A whole-line text selection within a single file's diff. `anchor` and
-/// `head` are indices into that file's flattened hunk lines (the concatenation
-/// of every hunk's lines, which is exactly what the diff chunks render); either
-/// end may be the smaller. Selection never spans files.
-#[derive(Clone)]
-struct DiffSelection {
-    file: FileKey,
-    anchor: usize,
-    head: usize,
-}
-
-impl DiffSelection {
-    /// Inclusive `(low, high)` line range.
-    fn range(&self) -> (usize, usize) {
-        (self.anchor.min(self.head), self.anchor.max(self.head))
-    }
-}
-
 pub struct ReviewView {
     session_id: Option<String>,
     mode_state: Entity<SelectState<Vec<ModeOption>>>,
@@ -220,11 +208,22 @@ pub struct ReviewView {
     rows: Vec<ReviewRow>,
     list_state: ListState,
 
-    /// Current whole-line text selection in a file's diff, if any. Copying
-    /// (Cmd/Ctrl-C or the header button) reads from this.
-    selection: Option<DiffSelection>,
-    /// Whether the pointer button is down for an in-progress drag-select.
-    dragging: bool,
+    /// Current whole-line text selection in a file's diff, if any; indices
+    /// are flat lines of the file's hunks. Copying (Cmd/Ctrl-C or the header
+    /// button) reads from this.
+    selection: LineSelection<FileKey>,
+    /// Every comment of the draft; rows they cover are marked.
+    comments: Vec<LineComment>,
+    comment_editor: Option<Entity<CommentEditor>>,
+    _comment_editor_subscription: Option<Subscription>,
+    /// A comment to show once its file's diff is loaded.
+    pending_reveal: Option<LineComment>,
+    /// Window bounds of the selection's last row, written when it is painted.
+    selection_anchor: Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
+    /// Keeps the selection pill and the comment card next to the rows.
+    anchor: crate::comments::AnchorTracker,
+    /// The selection whose pill a press elsewhere dismissed.
+    pill_dismissed: Option<super::line_selection::Selected<FileKey>>,
 
     /// Filesystem watcher on the listed repos (keyed by their roots so a
     /// changed set restarts it). Dropping it stops watching.
@@ -273,8 +272,14 @@ impl ReviewView {
             next_diff_stamp: 0,
             rows: Vec::new(),
             list_state: ListState::new(0, ListAlignment::Top, REVIEW_LIST_OVERDRAW).measure_all(),
-            selection: None,
-            dragging: false,
+            selection: LineSelection::default(),
+            comments: Vec::new(),
+            comment_editor: None,
+            _comment_editor_subscription: None,
+            pending_reveal: None,
+            selection_anchor: Rc::default(),
+            anchor: Default::default(),
+            pill_dismissed: None,
             watcher: None,
             watch_task: None,
             listing_generation: GENERATION_UNSEEN,
@@ -299,8 +304,7 @@ impl ReviewView {
         // Start the new session scrolled to the top.
         self.rows.clear();
         self.list_state.reset(0);
-        self.selection = None;
-        self.dragging = false;
+        self.selection.clear();
         // A new session lists its own repos; the watcher follows the listing.
         self.watcher = None;
         self.watch_task = None;
@@ -545,12 +549,7 @@ impl ReviewView {
         {
             self.in_flight = None;
         }
-        if let Some(sel) = &self.selection
-            && !live.contains(&sel.file)
-        {
-            self.selection = None;
-            self.dragging = false;
-        }
+        self.selection.retain(|file| live.contains(file));
 
         // Apply the persisted default base to any repo that has no explicit
         // override yet and whose resolved base differs. Seeding the override
@@ -1090,34 +1089,24 @@ impl ReviewView {
 
     /// Begin a new selection at flat line `line` in `file`, replacing any
     /// previous one and marking a drag as in progress.
+    #[cfg(test)]
     fn begin_selection(&mut self, file: FileKey, line: usize, cx: &mut Context<Self>) {
-        self.selection = Some(DiffSelection {
-            file,
-            anchor: line,
-            head: line,
-        });
-        self.dragging = true;
+        self.selection.begin(file, line, false);
         cx.notify();
     }
 
-    /// Extend the in-progress selection to flat line `line`, but only while a
-    /// drag that started in the same file is active.
+    /// Extend the in-progress selection to flat line `line`.
+    #[cfg(test)]
     fn extend_selection(&mut self, file: &FileKey, line: usize, cx: &mut Context<Self>) {
-        if !self.dragging {
-            return;
-        }
-        if let Some(sel) = &mut self.selection
-            && &sel.file == file
-            && sel.head != line
-        {
-            sel.head = line;
+        if self.selection.extend(file, line) {
             cx.notify();
         }
     }
 
     /// End the current drag; the selection itself is kept for copying.
+    #[cfg(test)]
     fn end_selection(&mut self) {
-        self.dragging = false;
+        self.selection.end();
     }
 
     /// A file's diff lines flattened across its hunks in render order — the
@@ -1137,8 +1126,8 @@ impl ReviewView {
     /// The selected lines joined by newlines, or `None` when there is nothing
     /// to copy (no selection, or the file's diff is no longer loaded).
     fn selected_text(&self) -> Option<String> {
-        let sel = self.selection.as_ref()?;
-        let lines = self.file_lines(&sel.file)?;
+        let sel = self.selection.get()?;
+        let lines = self.file_lines(&sel.key)?;
         if lines.is_empty() {
             return None;
         }
@@ -1157,7 +1146,7 @@ impl ReviewView {
     /// One chunk of a file's diff body. The first and last chunk carry the
     /// body's vertical padding, so the chunks read as one block. The rows are
     /// selectable: pointer events map to flat line indices in `key`'s diff and
-    /// drive the view's [`DiffSelection`].
+    /// drive the view's [`LineSelection`].
     fn render_chunk(
         &self,
         key: &FileKey,
@@ -1187,62 +1176,16 @@ impl ReviewView {
             .map(|h| h.lines.len())
             .sum::<usize>()
             + chunk.lines.start;
-        let row_count = chunk.lines.len();
-        let highlight = self
-            .selection
-            .as_ref()
-            .filter(|s| &s.file == key)
-            .map(|s| {
-                let (lo, hi) = s.range();
-                let start = lo.max(base_line);
-                let end = hi.min(base_line + row_count.saturating_sub(1));
-                if row_count > 0 && start <= end {
-                    (start - base_line)..(end - base_line + 1)
-                } else {
-                    0..0
-                }
-            })
-            .unwrap_or(0..0);
-
-        // Pointer callbacks reach the view through a weak handle, so the
-        // (static) closures held by the element never borrow it.
-        let entity = cx.entity().downgrade();
-        let on_start: LineCallback = {
-            let entity = entity.clone();
-            let focus = self.focus_handle.clone();
-            let key = key.clone();
-            Rc::new(move |line, window, cx: &mut gpui_kit::App| {
-                window.focus(&focus, cx);
-                if let Some(view) = entity.upgrade() {
-                    view.update(cx, |this, cx| this.begin_selection(key.clone(), line, cx));
-                }
-            })
-        };
-        let on_drag: LineCallback = {
-            let entity = entity.clone();
-            let key = key.clone();
-            Rc::new(move |line, _window, cx| {
-                if let Some(view) = entity.upgrade() {
-                    view.update(cx, |this, cx| this.extend_selection(&key, line, cx));
-                }
-            })
-        };
-        let on_end: EndCallback = {
-            Rc::new(move |_window, cx| {
-                if let Some(view) = entity.upgrade() {
-                    view.update(cx, |this, _cx| this.end_selection());
-                }
-            })
-        };
-
-        let selection = RowSelection {
-            base_line,
-            highlight,
+        let marks = ChunkMarks {
+            highlight: self.selection.highlight(key, base_line, chunk.lines.len()),
             color: theme.selection,
-            on_start,
-            on_drag,
-            on_end,
+            marked: self.chunk_marks(key, prepared, base_line, chunk.lines.len()),
+            mark_color: theme.warning,
+            anchor: self
+                .anchors_selection_end(key, base_line, chunk.lines.len())
+                .then(|| self.selection_anchor.clone()),
         };
+        let selection = row_selection(key.clone(), base_line, marks, self.focus_handle.clone(), cx);
 
         div()
             .w_full()
@@ -1268,6 +1211,16 @@ impl ReviewView {
     }
 }
 
+impl EventEmitter<CommentChange> for ReviewView {}
+
+impl SelectsLines for ReviewView {
+    type Key = FileKey;
+
+    fn line_selection(&mut self) -> &mut LineSelection<FileKey> {
+        &mut self.selection
+    }
+}
+
 impl Focusable for ReviewView {
     fn focus_handle(&self, _cx: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1280,6 +1233,7 @@ impl Render for ReviewView {
         // generation compare when nothing changed.
         self.sync_listing(window, cx);
         self.sync_diff(cx);
+        self.apply_pending_reveal(window, cx);
 
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
@@ -1312,31 +1266,8 @@ impl Render for ReviewView {
                 .into_any_element();
         }
 
-        // A "Copy" button appears while there is a selection; it (and Cmd/Ctrl-C
-        // on the focused panel) copies the selected lines.
-        let copy_button = self.selection.is_some().then(|| {
-            let theme = cx.theme();
-            div()
-                .id("review-copy-selection")
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1()
-                .px_2()
-                .py_0p5()
-                .rounded(px(4.))
-                .cursor_pointer()
-                .bg(theme.muted)
-                .hover(|s| s.bg(theme.border))
-                .text_xs()
-                .text_color(theme.foreground)
-                .child("Copy")
-                .on_click(cx.listener(|this, _ev, _window, cx| this.copy_selection(cx)))
-                .into_any_element()
-        });
-
-        // Header: compare-mode selector (base selectors live per repo), plus
-        // the copy button when a selection exists.
+        // Header: compare-mode selector (base selectors live per repo). Copy
+        // and comment float next to the selection.
         let header = div()
             .flex()
             .flex_row()
@@ -1356,8 +1287,7 @@ impl Render for ReviewView {
                             .text_color(muted),
                     )
                     .min_w(px(130.)),
-            )
-            .children(copy_button);
+            );
 
         // The render callback only runs for rows in (or near) the viewport.
         self.sync_rows();
@@ -1370,10 +1300,13 @@ impl Render for ReviewView {
         v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
                 if ks.modifiers.secondary() && ks.key == "c" {
                     this.copy_selection(cx);
+                    cx.stop_propagation();
+                } else if ks.modifiers.secondary() && ks.modifiers.shift && ks.key == "m" {
+                    this.start_comment(window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -1385,6 +1318,7 @@ impl Render for ReviewView {
                     .child(body)
                     .vertical_scrollbar(&self.list_state),
             )
+            .children(self.render_floating(window, cx))
             .into_any_element()
     }
 }
@@ -1589,8 +1523,64 @@ mod tests {
         // to copy, so copying is a safe no-op.
         view.update(cx, |view, cx| {
             view.begin_selection(key.clone(), 1, cx);
-            assert!(view.selection.is_some());
+            assert!(view.selection.get().is_some());
             assert!(view.selected_text().is_none());
         });
+    }
+
+    #[gpui_kit::test]
+    fn a_selection_shows_the_pill_and_its_comment_button_opens_the_card(cx: &mut TestAppContext) {
+        let key: FileKey = (PathBuf::from("/repo"), "a.rs".into());
+        let (view, cx) = view_with_files(vec![added_file("a.rs")], cx);
+        view.update(cx, |view, cx| {
+            view.file_diffs.insert(
+                key.clone(),
+                LoadedDiff {
+                    file: added_file("a.rs"),
+                    prepared: prepared(10),
+                    stamp: 1,
+                },
+            );
+            view.begin_selection(key.clone(), 2, cx);
+            view.extend_selection(&key, 4, cx);
+            view.end_selection();
+            cx.notify();
+        });
+        // The first frame paints the rows and records the selection's end;
+        // the next one floats the pill there.
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+
+        let bounds = cx
+            .debug_bounds("review-selection-comment")
+            .expect("the pill shows");
+        cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, cx| {
+            let editor = view.comment_editor.as_ref().expect("the card opened");
+            let comment = editor.read(cx).comment();
+            assert_eq!((comment.start_line, comment.end_line), (3, 5));
+            assert!(comment.in_diff);
+            assert!(comment.excerpt.starts_with("+line 2"));
+        });
+        assert!(cx.debug_bounds("review-selection-comment").is_none());
+
+        // A press elsewhere closes the card…
+        let outside = gpui_kit::point(gpui_kit::px(4.), gpui_kit::px(4.));
+        cx.simulate_click(outside, gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.comment_editor.is_none()));
+
+        // …and hides the pill until the selection changes.
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("review-selection-comment").is_some());
+        cx.simulate_click(outside, gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("review-selection-comment").is_none());
     }
 }

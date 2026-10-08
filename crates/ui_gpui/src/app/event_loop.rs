@@ -124,6 +124,15 @@ impl Gpui {
                                     let file_text = format!("File: {filename}\n{content}");
                                     new_message.add_text_block(&file_text, cx);
                                 }
+                                code_assistant_core::persistence::DraftAttachment::LineComments {
+                                    comments,
+                                } => {
+                                    if !comments.is_empty() {
+                                        let block =
+                                            code_assistant_core::line_comments::render(&comments);
+                                        new_message.add_text_block(&block, cx);
+                                    }
+                                }
                             }
                         }
 

@@ -3173,6 +3173,7 @@ dependencies = [
  "encoding_rs",
  "glob",
  "ignore",
+ "notify",
  "path-clean",
  "regex",
  "serde",

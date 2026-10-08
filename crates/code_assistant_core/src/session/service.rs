@@ -1674,15 +1674,20 @@ async fn user_message_blocks(
     message: &str,
     attachments: &[DraftAttachment],
 ) -> Result<Vec<llm::ContentBlock>> {
-    let mut blocks = content_blocks_from(message, attachments);
-    let project_name = {
+    let (project_name, project_root) = {
         let mut manager = ctx.manager.lock().await;
         manager.ensure_session_loaded(session_id)?;
-        manager
+        let config = &manager
             .get_session(session_id)
-            .map(|s| s.session.config.initial_project.clone())
             .ok_or_else(|| anyhow!("Session {session_id} not found"))?
+            .session
+            .config;
+        (
+            config.initial_project.clone(),
+            config.effective_project_path().cloned(),
+        )
     };
+    let mut blocks = content_blocks_from(message, attachments, project_root.as_deref());
     let pm = (ctx.runtime.project_manager_factory)();
     let Some(payload) =
         resolve_skill_trigger(pm.as_ref(), &project_name, &SkillsConfig::load(), message)
@@ -2188,6 +2193,11 @@ async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::Own
 }
 
 mod browsers;
+mod files;
+pub use files::{
+    DirEntry, DirListing, EntryKind, FileContent, ProjectDir, ProjectFile, ProjectFiles,
+    TreeWatcher,
+};
 mod lifecycle;
 mod new_context;
 

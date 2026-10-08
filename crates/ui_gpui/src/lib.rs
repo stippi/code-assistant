@@ -2,6 +2,7 @@ pub mod shared;
 
 mod app;
 pub mod blocks;
+pub mod comments;
 pub mod input;
 pub mod main_screen;
 pub mod messages;

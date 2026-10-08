@@ -228,6 +228,9 @@ pub struct MainScreen {
     context_limit_cache: Option<(String, u32)>,
     // Subscription to input area events
     _input_area_subscription: Subscription,
+    _right_panel_subscription: Subscription,
+    _open_file_subscription: Subscription,
+    _comment_bus_subscription: Subscription,
     _plan_banner_subscription: Subscription,
     _project_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
@@ -281,6 +284,33 @@ impl MainScreen {
 
         // Create the right (review) sidebar panel.
         let right_panel = cx.new(|cx| right_panel::RightPanel::new(window, cx));
+        // File paths clicked anywhere (e.g. in tool cards) open in the panel.
+        let open_file_bus = cx.new(|_| crate::shared::open_file::OpenFileBus);
+        cx.set_global(crate::shared::open_file::OpenFileGlobal(
+            open_file_bus.clone(),
+        ));
+        let open_file_subscription = cx.subscribe(
+            &open_file_bus,
+            |this: &mut Self, _, request: &crate::shared::open_file::OpenFileRequest, cx| {
+                this.open_file_in_panel(request.clone(), cx);
+            },
+        );
+        // Comments made on chat messages change the composer's draft too.
+        let comment_bus = cx.new(|_| crate::comments::CommentBus);
+        cx.set_global(crate::comments::CommentBusGlobal(comment_bus.clone()));
+        let comment_bus_subscription = cx.subscribe(
+            &comment_bus,
+            |this: &mut Self, _, change: &crate::comments::CommentChange, cx| {
+                this.apply_comment_change(change, cx);
+            },
+        );
+        // Comment edits in the panel change the composer's draft.
+        let right_panel_subscription = cx.subscribe(
+            &right_panel,
+            |this: &mut Self, _, change: &right_panel::CommentChange, cx| {
+                this.apply_comment_change(change, cx);
+            },
+        );
 
         let mut root_view = Self {
             input_area,
@@ -319,6 +349,9 @@ impl MainScreen {
             resize_start_width: 0.0,
             context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
+            _right_panel_subscription: right_panel_subscription,
+            _open_file_subscription: open_file_subscription,
+            _comment_bus_subscription: comment_bus_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _project_sidebar_subscription: project_sidebar_subscription,
             _new_project_dialog_subscription: None,
@@ -352,6 +385,109 @@ impl MainScreen {
         _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
+        self.toggle_right_sidebar(cx);
+    }
+
+    /// Apply a comment change from the panel or the transcript to the draft.
+    fn apply_comment_change(
+        &mut self,
+        change: &crate::comments::CommentChange,
+        cx: &mut Context<Self>,
+    ) {
+        self.input_area.update(cx, |input, cx| match change {
+            crate::comments::CommentChange::Upsert(comment) => {
+                input.upsert_comment(comment.clone(), cx)
+            }
+            crate::comments::CommentChange::Remove(id) => input.remove_comment(*id, cx),
+        });
+    }
+
+    /// Scroll to the message quoted by `comment` and open the comment there.
+    fn reveal_message_comment(
+        &mut self,
+        comment: code_assistant_core::line_comments::LineComment,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(gpui) = cx.try_global::<Gpui>() else {
+            return;
+        };
+        let containers = gpui.message_queue.lock().unwrap().clone();
+        let quote = comment.excerpt.trim().to_owned();
+        let found = containers.iter().enumerate().find_map(|(ix, container)| {
+            container
+                .read(cx)
+                .elements()
+                .into_iter()
+                .find(|block| {
+                    block
+                        .read(cx)
+                        .text_content()
+                        .is_some_and(|text| text.contains(&quote))
+                })
+                .map(|block| (ix, block))
+        });
+        let Some((ix, block)) = found else {
+            gpui.display_status("The commented message is not shown");
+            return;
+        };
+        self.messages_view.read(cx).reveal_message(ix);
+        block.update(cx, |block, cx| block.reveal_comment(comment, window, cx));
+    }
+
+    /// Show a file in the right panel's Files view, opening the panel. A file
+    /// of another project than the session's is not shown.
+    fn open_file_in_panel(
+        &mut self,
+        request: crate::shared::open_file::OpenFileRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let session_project = self
+            .current_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
+            .map(|s| s.initial_project.clone());
+        if let (Some(project), Some(session_project)) = (&request.project, &session_project)
+            && !project.is_empty()
+            && project != session_project
+        {
+            if let Some(gpui) = cx.try_global::<Gpui>() {
+                gpui.display_status(format!(
+                    "{} belongs to project {project}, not this session's",
+                    request.path
+                ));
+            }
+            return;
+        }
+        if self.current_session_id.is_none() {
+            return;
+        }
+        if self.right_sidebar_collapsed {
+            self.toggle_right_sidebar(cx);
+        }
+        self.right_panel.update(cx, |panel, cx| {
+            panel.open_file(request.path, request.line, cx)
+        });
+    }
+
+    /// A click on a view in the title bar's switch.
+    fn on_right_panel_view_clicked(
+        &mut self,
+        view: right_panel::RightPanelView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.right_sidebar_collapsed {
+            self.toggle_right_sidebar(cx);
+        } else if self.right_panel.read(cx).active_view() == view {
+            self.toggle_right_sidebar(cx);
+            return;
+        }
+        self.right_panel
+            .update(cx, |panel, cx| panel.set_active_view(view, cx));
+        cx.notify();
+    }
+
+    fn toggle_right_sidebar(&mut self, cx: &mut Context<Self>) {
         let should_expand = self.right_sidebar_collapsed;
         self.right_sidebar_collapsed = !self.right_sidebar_collapsed;
         self.right_animator.start(should_expand);
@@ -669,6 +805,25 @@ impl MainScreen {
                     );
                     self.report_user_activity(session_id, cx);
                 }
+            }
+            InputAreaEvent::CommentsChanged { comments } => {
+                // Message blocks read the comments to mark what was commented.
+                cx.set_global(crate::comments::CurrentComments(comments.clone()));
+                cx.refresh_windows();
+                let comments = comments.clone();
+                self.right_panel
+                    .update(cx, |panel, cx| panel.set_comments(comments, cx));
+            }
+            InputAreaEvent::RevealComment { comment } if comment.on_message => {
+                self.reveal_message_comment(comment.clone(), _window, cx);
+            }
+            InputAreaEvent::RevealComment { comment } => {
+                if self.right_sidebar_collapsed {
+                    self.toggle_right_sidebar(cx);
+                }
+                let comment = comment.clone();
+                self.right_panel
+                    .update(cx, |panel, cx| panel.reveal_comment(comment, cx));
             }
             InputAreaEvent::FocusRequested => {
                 // Handle focus request if needed
@@ -1912,31 +2067,30 @@ impl Render for MainScreen {
                             .flex()
                             .items_center()
                             .gap_1()
-                            // Review (right) sidebar toggle button
-                            .child(
-                                div()
-                                    .id("toggle-right-sidebar-btn")
-                                    .size(px(28.))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .child(
-                                        Icon::default()
-                                            .path(SharedString::from(
-                                                if self.right_sidebar_collapsed {
-                                                    "icons/panel_right_open.svg"
-                                                } else {
-                                                    "icons/panel_right_close.svg"
-                                                },
-                                            ))
-                                            .with_size(Size::Small)
-                                            .text_color(cx.theme().muted_foreground),
-                                    )
-                                    .on_click(cx.listener(Self::on_toggle_right_sidebar)),
-                            )
+                            // Right panel views: a click opens the panel on
+                            // a view or switches to it; clicking the shown
+                            // one closes the panel.
+                            .child({
+                                let shown = (!self.right_sidebar_collapsed)
+                                    .then(|| self.right_panel.read(cx).active_view());
+                                let screen = cx.entity().downgrade();
+                                div().mr_1().child(
+                                    crate::shared::segmented_switch::segmented_toggle(
+                                        "right-panel-view",
+                                        right_panel::RightPanelView::ALL,
+                                        shown,
+                                        move |view, _, cx| {
+                                            screen
+                                                .update(cx, |screen, cx| {
+                                                    screen.on_right_panel_view_clicked(view, cx)
+                                                })
+                                                .ok();
+                                        },
+                                        window,
+                                        cx,
+                                    ),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("about-btn")

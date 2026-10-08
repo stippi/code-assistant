@@ -412,6 +412,9 @@ impl TerminalUI {
                             } => {
                                 format!("[file ({filename})]")
                             }
+                            code_assistant_core::persistence::DraftAttachment::LineComments {
+                                comments,
+                            } => format!("[{} line comments]", comments.len()),
                         })
                         .collect();
                     if !attachment_lines.is_empty() {

@@ -1377,6 +1377,11 @@ pub enum DraftAttachment {
         filename: String,
         mime_type: String,
     },
+    /// Comments on lines of files; the composer keeps all of them in one.
+    #[serde(rename = "line_comments")]
+    LineComments {
+        comments: Vec<crate::line_comments::LineComment>,
+    },
 }
 
 /// What the composer of a session holds while the user has not sent it.

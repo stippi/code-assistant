@@ -64,6 +64,12 @@ pub(crate) struct RowSelection {
     pub highlight: Range<usize>,
     /// Highlight color (usually the theme's selection background).
     pub color: Hsla,
+    /// Local rows carrying a comment, marked by a bar at the left edge.
+    pub marked: Vec<Range<usize>>,
+    pub mark_color: Hsla,
+    /// Receives the window bounds of the last highlighted row when painted,
+    /// so the owner can float things next to the selection's end.
+    pub anchor: Option<Rc<std::cell::Cell<Option<Bounds<Pixels>>>>>,
     /// Pointer pressed on a row: `base_line + row`.
     pub on_start: LineCallback,
     /// Pointer dragged over a row while the button is held.
@@ -260,7 +266,7 @@ fn paint_rows(
     layout: &RowsLayout,
     geometry: RowGeometry,
     bounds: Bounds<Pixels>,
-    selection: Option<(&Range<usize>, Hsla)>,
+    selection: Option<&RowSelection>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -278,15 +284,23 @@ fn paint_rows(
         }
         // Selection sits above the add/delete tint but below the glyphs, so
         // the selected text stays readable.
-        if let Some((range, color)) = selection
-            && range.contains(&ix)
+        if let Some(sel) = selection
+            && sel.highlight.contains(&ix)
         {
             window.paint_quad(fill(
                 Bounds::new(
                     point(bounds.origin.x, y),
                     size(bounds.size.width, row_layout.height),
                 ),
-                color,
+                sel.color,
+            ));
+        }
+        if let Some(sel) = selection
+            && sel.marked.iter().any(|range| range.contains(&ix))
+        {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x, y), size(px(3.), row_layout.height)),
+                sel.mark_color,
             ));
         }
         if let Some(gutter) = &row_layout.gutter {
@@ -322,7 +336,9 @@ impl IntoElement for DiffRows {
 
 impl Element for DiffRows {
     type RequestLayoutState = LayoutCell;
-    type PrepaintState = ();
+    /// Selectable rows take presses through a hitbox, so something floating
+    /// above them (a selection pill) keeps its clicks.
+    type PrepaintState = Option<gpui_kit::Hitbox>;
 
     fn id(&self) -> Option<gpui_kit::ElementId> {
         None
@@ -372,11 +388,14 @@ impl Element for DiffRows {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut LayoutCell,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut App,
-    ) {
+    ) -> Option<gpui_kit::Hitbox> {
+        self.selection
+            .is_some()
+            .then(|| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal))
     }
 
     fn paint(
@@ -385,7 +404,7 @@ impl Element for DiffRows {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         cell: &mut LayoutCell,
-        _: &mut (),
+        hitbox: &mut Option<gpui_kit::Hitbox>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -394,16 +413,12 @@ impl Element for DiffRows {
             return;
         };
 
-        let selection = self
-            .selection
-            .as_ref()
-            .map(|s| (s.highlight.clone(), s.color));
         paint_rows(
             &self.rows,
             layout,
             self.geometry,
             bounds,
-            selection.as_ref().map(|(range, color)| (range, *color)),
+            self.selection.as_ref(),
             window,
             cx,
         );
@@ -419,6 +434,15 @@ impl Element for DiffRows {
                 y += row.height;
             }
             tops.push(y);
+            if let Some(anchor) = &sel.anchor
+                && let Some(last) = sel.highlight.end.checked_sub(1)
+                && last < layout.rows.len()
+            {
+                anchor.set(Some(Bounds::new(
+                    point(bounds.origin.x, tops[last]),
+                    size(bounds.size.width, tops[last + 1] - tops[last]),
+                )));
+            }
             let tops = Rc::new(tops);
             let base = sel.base_line;
             let row_count = layout.rows.len();
@@ -430,10 +454,13 @@ impl Element for DiffRows {
             drop(borrow);
 
             let tops_down = tops.clone();
+            let hitbox = hitbox.clone();
             window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && e.button == MouseButton::Left
-                    && bounds.contains(&e.position)
+                    && hitbox
+                        .as_ref()
+                        .map_or(bounds.contains(&e.position), |h| h.is_hovered(window))
                 {
                     on_start(
                         local_line(&tops_down, base, row_count, e.position.y),
@@ -560,7 +587,7 @@ mod tests {
         let (_, cx) = cx.add_window_view(|_, _| Root);
         let cx: &mut VisualTestContext = cx;
         let long = "x".repeat(200);
-        let (cell, ()) = cx.draw(point(px(0.), px(0.)), size(px(600.), px(400.)), |_, _| {
+        let (cell, _) = cx.draw(point(px(0.), px(0.)), size(px(600.), px(400.)), |_, _| {
             DiffRows::new(rows(&["short", "another"]), GEOMETRY)
         });
         {
@@ -572,7 +599,7 @@ mod tests {
             assert_eq!(layout.width, px(600.));
         }
 
-        let (cell, ()) = cx.draw(point(px(0.), px(0.)), size(px(120.), px(400.)), |_, _| {
+        let (cell, _) = cx.draw(point(px(0.), px(0.)), size(px(120.), px(400.)), |_, _| {
             DiffRows::new(rows(&[long.as_str()]), GEOMETRY)
         });
         let layout = cell.borrow();

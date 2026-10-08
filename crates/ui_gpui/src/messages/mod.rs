@@ -391,6 +391,13 @@ impl MessagesView {
     /// blocks, etc.) doesn't jerk the viewport. The animation loop
     /// recalculates the target each frame from `max_offset_for_scrollbar()`,
     /// so it naturally chases a continuously moving bottom.
+    /// Scroll so message `ix` is in view.
+    pub fn reveal_message(&self, ix: usize) {
+        if ix < self.list_state.item_count() {
+            self.list_state.scroll_to_reveal_item(ix);
+        }
+    }
+
     pub fn scroll_to_bottom(&mut self) {
         if self.list_state.item_count() == 0 {
             return;

@@ -87,6 +87,29 @@ pub struct UiSessionState {
     /// Last review compare mode ("working_tree" or "branch_vs_base").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_compare_mode: Option<String>,
+
+    /// What the Files view showed: open file, expanded directories, whether
+    /// gitignored entries were shown.
+    #[serde(default, skip_serializing_if = "FilesViewState::is_default")]
+    pub files_view: FilesViewState,
+}
+
+/// The Files view's state for one session. Paths are `/`-separated and
+/// relative to the project root.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FilesViewState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expanded: Vec<String>,
+    #[serde(default)]
+    pub show_ignored: bool,
+}
+
+impl FilesViewState {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,19 +313,32 @@ impl UiStateStore {
     }
 
     /// Which view the right panel last showed for a session.
-    #[cfg(feature = "browser-panel")]
     pub fn get_right_panel_view(&mut self, session_id: &str) -> Option<String> {
         self.get(session_id).right_panel_view
     }
 
     /// Persist which view the right panel shows for a session.
-    #[cfg(feature = "browser-panel")]
     pub fn set_right_panel_view(&mut self, session_id: &str, view: &str) {
         let state = self.states.entry(session_id.to_owned()).or_default();
         if state.right_panel_view.as_deref() == Some(view) {
             return;
         }
         state.right_panel_view = Some(view.to_owned());
+        self.dirty.insert(session_id.to_owned());
+    }
+
+    /// The Files view's state for a session.
+    pub fn get_files_view(&mut self, session_id: &str) -> FilesViewState {
+        self.get(session_id).files_view
+    }
+
+    /// Persist the Files view's state for a session.
+    pub fn set_files_view(&mut self, session_id: &str, files_view: FilesViewState) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.files_view == files_view {
+            return;
+        }
+        state.files_view = files_view;
         self.dirty.insert(session_id.to_owned());
     }
 

@@ -1,4 +1,5 @@
 pub mod attachment;
+mod comments;
 pub mod mcp_selector;
 pub mod model_selector;
 pub mod permission_selector;
@@ -74,6 +75,15 @@ pub enum InputAreaEvent {
     WorktreeCreateRequested,
     /// Worktree selector opened — request fresh data from backend
     WorktreeRefreshRequested,
+    /// The draft's line comments changed (added, edited, removed, sent or
+    /// loaded with a draft).
+    CommentsChanged {
+        comments: Vec<code_assistant_core::line_comments::LineComment>,
+    },
+    /// The user picked a comment in the chip's list: show its place.
+    RevealComment {
+        comment: code_assistant_core::line_comments::LineComment,
+    },
 }
 
 /// The composer's slash menu (see [`skill_completion`]).
@@ -99,6 +109,8 @@ pub struct InputArea {
     current_permission_tier: PermissionTier,
     attachments: Vec<DraftAttachment>,
     attachment_views: Vec<Entity<AttachmentView>>,
+    /// The line comments chip shows its list.
+    comments_popover_open: bool,
     focus_handle: FocusHandle,
 
     // Agent state for button rendering
@@ -172,6 +184,7 @@ impl InputArea {
             current_permission_tier: PermissionTier::default(),
             attachments: Vec::new(),
             attachment_views: Vec::new(),
+            comments_popover_open: false,
             focus_handle: cx.focus_handle(),
 
             agent_is_running: false,
@@ -207,7 +220,11 @@ impl InputArea {
 
         // Update attachments
         self.attachments = attachments;
+        self.comments_popover_open = false;
         self.rebuild_attachment_views(cx);
+        cx.emit(InputAreaEvent::CommentsChanged {
+            comments: self.comments().to_vec(),
+        });
     }
 
     /// Set content for editing a message (creates a branch).
@@ -326,8 +343,15 @@ impl InputArea {
         self.refresh_slash_menu(cx);
 
         // Clear attachments
+        let had_comments = !self.comments().is_empty();
         self.attachments.clear();
         self.attachment_views.clear();
+        self.comments_popover_open = false;
+        if had_comments {
+            cx.emit(InputAreaEvent::CommentsChanged {
+                comments: Vec::new(),
+            });
+        }
 
         // Clear edit mode
         self.clear_edit_mode();
@@ -479,6 +503,10 @@ impl InputArea {
         self.attachment_views.clear();
 
         for (index, attachment) in self.attachments.iter().enumerate() {
+            // Comments show as one chip, not as a tile.
+            if matches!(attachment, DraftAttachment::LineComments { .. }) {
+                continue;
+            }
             let attachment_view = cx.new(|cx| AttachmentView::new(attachment.clone(), index, cx));
 
             // Subscribe to attachment events
@@ -904,6 +932,7 @@ impl InputArea {
             })
             // Attachments area - show image previews when available
             .when(!self.attachments.is_empty(), |parent| {
+                let comments_chip = self.render_comments_chip(cx);
                 parent.child(
                     div()
                         .p_2()
@@ -911,9 +940,11 @@ impl InputArea {
                         .border_color(cx.theme().border)
                         .flex()
                         .flex_row()
+                        .items_end()
                         .gap_2()
                         .flex_wrap()
-                        .children(self.attachment_views.iter().cloned()),
+                        .children(self.attachment_views.iter().cloned())
+                        .children(comments_chip),
                 )
             })
             // Main input row: [text field + selectors] [buttons]

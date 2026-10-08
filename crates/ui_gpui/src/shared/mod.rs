@@ -5,6 +5,7 @@ pub mod context_indicator;
 pub mod file_icons;
 pub mod frame_profile;
 pub mod image;
+pub mod open_file;
 pub mod plan_banner;
 pub mod review_cache;
 pub mod segmented_switch;

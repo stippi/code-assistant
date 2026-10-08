@@ -32,7 +32,10 @@ pub mod watcher;
 pub use event_stream::{EventPayload, EventStream, SessionEvent, StreamError, Subscription};
 pub use manager::SessionManager;
 pub use service::SessionService;
-pub use service::{RepoReview, ReviewMode, ReviewScanState, WorktreeListing};
+pub use service::{
+    DirEntry, DirListing, EntryKind, FileContent, ProjectDir, ProjectFile, ProjectFiles,
+    RepoReview, ReviewMode, ReviewScanState, TreeWatcher, WorktreeListing,
+};
 pub use turn::{
     ResourceRef, ToolRecord, TurnDispatch, TurnHandle, TurnOutcome, TurnRequest, TurnStatus,
     TurnUsage,
