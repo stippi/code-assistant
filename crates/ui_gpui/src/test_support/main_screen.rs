@@ -207,6 +207,15 @@ impl MainScreenTest {
             })
     }
 
+    /// Whether the viewed session's agent waits for the model's answer: it
+    /// sent its request, so a message sent now waits for the next one.
+    pub fn agent_waits_for_the_model(&mut self) -> bool {
+        matches!(
+            *self.gpui.current_session_activity_state.lock().unwrap(),
+            Some(code_assistant_core::session::instance::SessionActivityState::WaitingForResponse)
+        )
+    }
+
     /// Show a session, as selecting it in the sidebar ends up doing once the
     /// core has loaded it.
     pub fn view_session(&mut self, session_id: &str) {

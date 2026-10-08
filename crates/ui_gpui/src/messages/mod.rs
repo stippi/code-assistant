@@ -813,8 +813,6 @@ impl MessagesView {
         &self.list_state
     }
 
-    /// Update the pending message for the current session
-    /// The message waiting for the running agent, as shown.
     /// Whether the list follows its tail, and whether it is scrolling there
     /// animated.
     #[cfg(test)]
@@ -822,6 +820,8 @@ impl MessagesView {
         (self.follow_tail, self.animation_active.get())
     }
 
+    /// Update the pending message for the current session
+    /// The message waiting for the running agent, as shown.
     #[cfg(test)]
     pub(crate) fn pending_message(&self) -> Option<String> {
         self.current_pending_message.lock().unwrap().clone()
